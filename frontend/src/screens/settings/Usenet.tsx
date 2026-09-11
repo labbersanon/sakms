@@ -41,8 +41,10 @@ import {
 import {
   fetchUsenetAutoGrabEnabled,
   fetchUsenetMaxConcurrentDownloads,
+  fetchUsenetSegmentResume,
   putUsenetAutoGrabEnabled,
   putUsenetMaxConcurrentDownloads,
+  putUsenetSegmentResume,
 } from "../../api/usenet";
 import { fetchAutoGrabSlots, putAutoGrabSlots } from "../../api/autograbSlots";
 import {
@@ -71,6 +73,7 @@ export const UsenetSection: Component = () => (
     <SectionSave>
       <SubscriptionsCard />
       <DownloadsCard />
+      <ResumeCard />
       <AutoGrabCard />
     </SectionSave>
   </div>
@@ -565,6 +568,114 @@ const DownloadsCard: Component = () => {
 };
 
 // source of truth is the whole point of coupling them there.
+
+// ResumeCard toggles Phase-2 NNTP segment resume and the force-full rollback.
+// Enabled (default): skip segments recorded in .sakms-resume.json after restart.
+// Force full: clear sidecars and re-fetch every segment (operator rollback).
+const ResumeCard: Component = () => {
+  const [enabled, setEnabled] = createSignal(true);
+  const [forceFull, setForceFull] = createSignal(false);
+  const [dirty, setDirty] = createSignal(false);
+  const [loadError, setLoadError] = createSignal<Error | null>(null);
+  const status = useSaveStatus();
+
+  onMount(() => {
+    void fetchUsenetSegmentResume()
+      .then((r) => {
+        setEnabled(r.enabled);
+        setForceFull(r.forceFull);
+      })
+      .catch((e) => setLoadError(e instanceof Error ? e : new Error(String(e))));
+  });
+
+  const save = async () => {
+    try {
+      await putUsenetSegmentResume({
+        enabled: enabled(),
+        forceFull: forceFull(),
+      });
+      setDirty(false);
+      status.set("✓ saved");
+    } catch (e) {
+      status.failed(e);
+      throw e;
+    }
+  };
+
+  const batched = useSectionSaveItem({
+    id: "usenet-segment-resume",
+    label: "segment resume",
+    dirty,
+    valid: () => true,
+    save,
+  });
+
+  return (
+    <Card title="Segment resume">
+      <label class="mb-3 flex items-start gap-2">
+        <input
+          type="checkbox"
+          class="mt-1"
+          aria-label="Enable segment resume"
+          checked={enabled()}
+          disabled={loadError() !== null}
+          onChange={(e) => {
+            setEnabled(e.currentTarget.checked);
+            setDirty(true);
+          }}
+        />
+        <span>
+          <span class={labelClass}>Resume completed segments after restart</span>
+          <Muted class="mt-1">
+            When on (default), sakms skips NNTP segments already written under
+            each NZB staging dir (.sakms-resume.json). When off, every relaunch
+            re-fetches the full article set.
+          </Muted>
+        </span>
+      </label>
+      <label class="mb-3 flex items-start gap-2">
+        <input
+          type="checkbox"
+          class="mt-1"
+          aria-label="Force full re-download"
+          checked={forceFull()}
+          disabled={loadError() !== null}
+          onChange={(e) => {
+            setForceFull(e.currentTarget.checked);
+            setDirty(true);
+          }}
+        />
+        <span>
+          <span class={labelClass}>Force full re-download</span>
+          <Muted class="mt-1">
+            Rollback switch: clear resume sidecars and re-download every
+            segment even if resume is enabled. Turn off again once the bad
+            resume state is flushed.
+          </Muted>
+        </span>
+      </label>
+      <Show when={loadError()}>
+        <ErrorText>
+          Couldn't load segment resume settings: {loadError()?.message}
+        </ErrorText>
+      </Show>
+      <Show when={!batched()}>
+        <div class="mt-3 flex items-center gap-2">
+          <Button
+            variant="primary"
+            class="!px-2 !py-1 !text-xs"
+            disabled={!dirty()}
+            onClick={() => void save().catch(() => {})}
+          >
+            Save
+          </Button>
+          <SaveStatus text={status.status().text} error={status.status().error} />
+        </div>
+      </Show>
+    </Card>
+  );
+};
+
 const AutoGrabCard: Component = () => {
   const [enabled, setEnabled] = createSignal(false);
   const [perCycle, setPerCycle] = createSignal(20);

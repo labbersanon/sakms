@@ -190,6 +190,7 @@ func reconcileImportUsenet(ctx context.Context, deps DownloadReconcileDeps, g *g
 		if err := usenet.RemoveOwnedStagingDir(deps.NZB.StagingDir(), gidDir); err != nil {
 			log.Printf("download reconcile: post-import staging cleanup %s: %v", gidDir, err)
 		}
+		deps.NZB.ClearResumeMirror(g.DownloadGID)
 	}
 	return nil
 }

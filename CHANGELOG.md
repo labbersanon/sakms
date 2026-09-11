@@ -8136,3 +8136,16 @@ Unknown GID alone never parks. True usenet segment resume remains phase 2.
 **Files:** `internal/api/downloadreconcile.go`, `internal/usenet/manager.go`
 (`RelaunchNZB`), `cmd/sakms/main.go`, `internal/api/usenetretry.go`.
 
+## 2026-09-11 — Usenet segment resume (Phase 2) + post-import cleanup
+
+ARR-parity Phase 2 for built-in Usenet: durable per-staging `.sakms-resume.json`
+sidecars skip completed NNTP segments after restart (with optional DB mirror for
+UI/debug), torrent seed-window baselines persist across boots, and a
+force-full setting clears sidecars for operator rollback.
+
+Post-import / post-unpack cleanup now removes resume sidecars (and the DB
+mirror) on the check-import, complete-importer, and reconcile paths — not only
+when the whole owned staging dir is deleted.
+
+Settings → Download → Usenet gains a Segment resume card
+(`GET/PUT /api/settings/usenet-segment-resume`). Defaults: resume on, force-full off.

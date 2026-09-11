@@ -183,6 +183,19 @@ func UsenetCompleteImporter(httpClient *http.Client, connStore *connections.Stor
 		}
 		if err := grabsStore.UpdateStatus(ctx, g.ID, grabs.Imported); err != nil {
 			log.Printf("usenet import: grab %d marking imported: %v", g.ID, err)
+			return
+		}
+		// Claude 2026-09-11: remove sakms-owned staging + resume mirror after import
+		// Reason: Phase 2 sidecars (.sakms-resume.json) and DB mirror must not linger;
+		//         complete-importer previously left the whole nzb-* tree on disk
+		// Troubleshooting: journal "usenet import: post-import"; downloadstate usenet_resume_state
+		// Review if: usenet gains a delayed-delete / quarantine path
+		if nzb != nil && gid != "" {
+			gidDir := filepath.Join(nzb.StagingDir(), gid)
+			if err := usenet.RemoveOwnedStagingDir(nzb.StagingDir(), gidDir); err != nil {
+				log.Printf("usenet import: post-import staging cleanup %s: %v", gidDir, err)
+			}
+			nzb.ClearResumeMirror(gid)
 		}
 	}
 }

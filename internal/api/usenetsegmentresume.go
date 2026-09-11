@@ -1,0 +1,88 @@
+package api
+
+import (
+	"encoding/json"
+	"net/http"
+	"strconv"
+
+	"github.com/labbersanon/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/usenet"
+)
+
+// Claude 2026-09-11: usenet segment-resume settings + live apply (Phase 2).
+// Reason: operators need skip-completed-segments on by default, plus a
+//   force-full rollback that clears sidecars without redeploying.
+// Troubleshooting: journal "usenet: resume"; keys UsenetSegmentResumeEnabledKey /
+//   UsenetSegmentResumeForceFullKey; staging file .sakms-resume.json
+// Review if: resume policy moves into the downloader config document.
+
+type usenetSegmentResumeResponse struct {
+	Enabled   bool `json:"enabled"`
+	ForceFull bool `json:"forceFull"`
+}
+
+type usenetSegmentResumeRequest struct {
+	Enabled   *bool `json:"enabled"`
+	ForceFull *bool `json:"forceFull"`
+}
+
+// getUsenetSegmentResumeHandler reports segment-resume + force-full knobs.
+// Defaults: enabled=true, forceFull=false when unset.
+func getUsenetSegmentResumeHandler(settingsStore *settings.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		enabled, err := settingsStore.GetBool(ctx, UsenetSegmentResumeEnabledKey, true)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		forceFull, err := settingsStore.GetBool(ctx, UsenetSegmentResumeForceFullKey, false)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, usenetSegmentResumeResponse{Enabled: enabled, ForceFull: forceFull})
+	}
+}
+
+// putUsenetSegmentResumeHandler stores resume knobs and applies them live to
+// the running usenet Manager when one is wired. nzb may be nil in tests.
+// Omitted fields keep their stored (or default) values.
+func putUsenetSegmentResumeHandler(settingsStore *settings.Store, nzb *usenet.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req usenetSegmentResumeRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		ctx := r.Context()
+		enabled, err := settingsStore.GetBool(ctx, UsenetSegmentResumeEnabledKey, true)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		forceFull, err := settingsStore.GetBool(ctx, UsenetSegmentResumeForceFullKey, false)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if req.Enabled != nil {
+			enabled = *req.Enabled
+		}
+		if req.ForceFull != nil {
+			forceFull = *req.ForceFull
+		}
+		if err := settingsStore.Set(ctx, UsenetSegmentResumeEnabledKey, strconv.FormatBool(enabled)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := settingsStore.Set(ctx, UsenetSegmentResumeForceFullKey, strconv.FormatBool(forceFull)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if nzb != nil {
+			nzb.SetResumePolicy(enabled, forceFull)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}

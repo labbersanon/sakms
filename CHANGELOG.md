@@ -8165,6 +8165,13 @@ video-present import shortcut while force-full is on. Usenet downloads expose
 `resumeMode` (`resumed` | `full` | `forced-full` | `disabled`) on the queue/SSE
 and Downloads UI.
 
+## 2026-09-11 — Session review fixes: seed credit + force-full payloads
+
+Critic pass over the full Phase-2 branch: keep negative seed baselines so
+credited upload survives restart/rebuild; force-full now cancels live usenet
+jobs and wipes non-meta staging payloads (not sidecars only); resumeMode
+included in downloads SSE equality; markSegment disabled re-check under lock.
+
 ## 2026-09-11 — Queue reconcile + unpacking/staging critic fixes
 
 **Problem:** Morning queue reconcile and owned-staging unpack/sweep work had not

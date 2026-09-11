@@ -8136,3 +8136,19 @@ Unknown GID alone never parks. True usenet segment resume remains phase 2.
 **Files:** `internal/api/downloadreconcile.go`, `internal/usenet/manager.go`
 (`RelaunchNZB`), `cmd/sakms/main.go`, `internal/api/usenetretry.go`.
 
+## 2026-09-11 — Queue reconcile + unpacking/staging critic fixes
+
+**Problem:** Morning queue reconcile and owned-staging unpack/sweep work had not
+had the same critic treatment as Phase 2. Automatic usenet import never cleared
+owned staging (only manual/reconcile/hourly sweep). Boot torrent restore raced
+`Start()`. Any `ResolveVideoFile` hit could import+wipe mid-download/sample.
+
+**Fix:**
+- `UsenetCompleteImporter` clears owned staging via shared `clearOwnedUsenetStaging`
+  (also used by manual import + reconcile)
+- `EngineReady` / `WaitForEngine`; boot waits then defers torrent restores
+- Reconcile import gate: owned + non-sample + ≥1MiB; failed import falls through to relaunch
+- Tests for auto-import cleanup, engine-not-ready deferral, sample reject
+
+**Outcome:** critic blockers addressed; targeted api tests green.
+

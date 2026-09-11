@@ -115,3 +115,34 @@ func assertExists(t *testing.T, p string) {
 		t.Fatalf("%s should exist: %v", p, err)
 	}
 }
+
+func TestSweep_DeletesAgedFailedGrab(t *testing.T) {
+	root := t.TempDir()
+	failedOld := filepath.Join(root, "nzb-7777777777777777")
+	failedNew := filepath.Join(root, "nzb-8888888888888888")
+	for _, d := range []string{failedOld, failedNew} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "x.rar"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldTime := time.Now().Add(-8 * 24 * time.Hour)
+	if err := os.Chtimes(failedOld, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeGrabs{byGID: map[string]*grabs.Grab{
+		"nzb-7777777777777777": {Status: grabs.Failed, DownloadGID: "nzb-7777777777777777"},
+		"nzb-8888888888888888": {Status: grabs.Failed, DownloadGID: "nzb-8888888888888888"},
+	}}
+	n, err := Sweep(context.Background(), time.Now(), root, 7*24*time.Hour, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("removed=%d want 1 (aged failed only)", n)
+	}
+	assertGone(t, failedOld)
+	assertExists(t, failedNew)
+}

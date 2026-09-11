@@ -8187,3 +8187,12 @@ owned staging (only manual/reconcile/hourly sweep). Boot torrent restore raced
 - Tests for auto-import cleanup, engine-not-ready deferral, sample reject
 
 **Outcome:** critic blockers addressed; targeted api tests green.
+
+## 2026-09-11 — Resume polish optionals
+
+Force-full is one-shot (clears after apply). Seed credit persistence no longer
+runs under the torrent poll lock. Segment skip now rejects sparse/NUL holes, not
+just short files. Staging sweeper ages out failed-grab dirs like orphans, and
+interval=0 polls for re-enable without restart. Settings UI copy + PUT response
+reflect the one-shot force-full clear.
+

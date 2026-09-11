@@ -1432,12 +1432,15 @@ func (m *Manager) pollLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			snap, stopSeeds, staleGIDs := m.pollSnapshot()
+			snap, stopSeeds, staleGIDs, seedCredits := m.pollSnapshot()
 			// Both passes were COLLECTED under m.mu and are acted on here,
 			// with the lock released. stopSeeding drops a torrent and deletes
 			// files; onStale's own body reaches back into the Manager. Either
 			// under the lock would stall every downloads handler, and the
 			// latter would deadlock outright the moment it stopped being async.
+			// SaveSeed is likewise off-lock: snapshotSeedCredits sampled under
+			// m.mu; persistSeedCredits does DB IO after unlock.
+			m.persistSeedCredits(seedCredits)
 			for _, s := range stopSeeds {
 				m.stopSeeding(s)
 			}
@@ -1540,6 +1543,46 @@ func (m *Manager) isStale(e *entry, now time.Time) bool {
 	return now.Sub(e.lastProgressAt) >= time.Duration(m.cfg.StaleThresholdMinutes)*time.Minute
 }
 
+// seedCreditSnap is credited-upload state sampled under m.mu for SaveSeed
+// after the poll lock is released (DB IO must not run under m.mu).
+type seedCreditSnap struct {
+	gid      string
+	started  time.Time
+	credited int64
+	total    int64
+}
+
+// snapshotSeedCredits returns per-seeding-entry credited upload while holding m.mu.
+func (m *Manager) snapshotSeedCredits() []seedCreditSnap {
+	var out []seedCreditSnap
+	for gid, e := range m.entries {
+		if e.t == nil || e.seedStartedAt.IsZero() || e.status != "complete" {
+			continue
+		}
+		stats := e.t.Stats()
+		uploaded := stats.BytesWrittenData.Int64() - e.seedBaselineUp
+		if uploaded < 0 {
+			uploaded = 0
+		}
+		out = append(out, seedCreditSnap{
+			gid: gid, started: e.seedStartedAt, credited: uploaded, total: e.seedTotalBytes,
+		})
+	}
+	return out
+}
+
+func (m *Manager) persistSeedCredits(snaps []seedCreditSnap) {
+	store := m.cfg.SeedStore
+	if store == nil {
+		return
+	}
+	for _, s := range snaps {
+		if err := store.SaveSeed(s.gid, s.started, s.credited, s.total); err != nil {
+			log.Printf("downloader: save seed state %s: %v", s.gid, err)
+		}
+	}
+}
+
 // seedStopReason reports why a seeding entry should stop — a ratio limit or a
 // duration limit, whichever trips first, with "" meaning "keep seeding".
 // Both limits are live simultaneously; a limit of 0 means that limit is not
@@ -1566,12 +1609,8 @@ func (m *Manager) seedStopReason(gid string, e *entry, now time.Time) string {
 		if uploaded < 0 {
 			uploaded = 0
 		}
-		// Persist credited upload so a mid-seed crash still restores ratio progress.
-		if store := m.cfg.SeedStore; store != nil {
-			if err := store.SaveSeed(gid, e.seedStartedAt, uploaded, e.seedTotalBytes); err != nil {
-				log.Printf("downloader: save seed state %s: %v", gid, err)
-			}
-		}
+		// SaveSeed is deliberately NOT called here — this runs under m.mu on the
+		// poll path. pollLoop persists snapshotSeedCredits after releasing the lock.
 		if ratio := m.cfg.SeedRatioLimit; ratio > 0 && e.seedTotalBytes > 0 {
 			if target := int64(float64(e.seedTotalBytes) * ratio); uploaded >= target {
 				return fmt.Sprintf("seed ratio limit %.2f reached (%d bytes uploaded of %d)", ratio, uploaded, e.seedTotalBytes)
@@ -1884,7 +1923,7 @@ func (m *Manager) SeedImportCopy(gid, importRoot string, importPaths []string) {
 // tick cannot re-collect it) and ACTED ON by pollLoop. m.mu is the same mutex
 // every downloads HTTP handler and the SSE fan-out take, so no torrent drop,
 // file I/O, or callback may run inside this function.
-func (m *Manager) pollSnapshot() (snap []Download, stopSeeds []seedStop, staleGIDs []string) {
+func (m *Manager) pollSnapshot() (snap []Download, stopSeeds []seedStop, staleGIDs []string, seedCredits []seedCreditSnap) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now()
@@ -2022,7 +2061,8 @@ func (m *Manager) pollSnapshot() (snap []Download, stopSeeds []seedStop, staleGI
 
 		out = append(out, m.buildEntry(gid, e))
 	}
-	return out, stopSeeds, staleGIDs
+	seedCredits = m.snapshotSeedCredits()
+	return out, stopSeeds, staleGIDs, seedCredits
 }
 
 // fanout delivers snap to every subscriber, dropping a stale pending snapshot

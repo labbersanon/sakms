@@ -70,3 +70,20 @@ func TestBeginSeeding_RestoresCreditedUpload(t *testing.T) {
 		t.Fatalf("SaveSeed credited=%d, want %d (must not wipe on restore)", got, credited)
 	}
 }
+
+func TestPersistSeedCredits_WritesOutsideLockShape(t *testing.T) {
+	store := &memSeedStore{}
+	m := &Manager{cfg: Config{SeedStore: store}}
+	started := time.Now().UTC().Add(-time.Minute)
+	m.persistSeedCredits([]seedCreditSnap{{
+		gid: "gid-x", started: started, credited: 42, total: 100,
+	}})
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if !store.ok || store.credited != 42 || store.total != 100 {
+		t.Fatalf("store = ok=%v credited=%d total=%d", store.ok, store.credited, store.total)
+	}
+	if !store.started.Equal(started) {
+		t.Fatalf("started = %v want %v", store.started, started)
+	}
+}

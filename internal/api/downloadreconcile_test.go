@@ -102,7 +102,6 @@ func TestReconcileInFlightDownloads_UnknownGIDWithURLDoesNotPark(t *testing.T) {
 	}
 }
 
-
 func TestReconcileInFlightDownloads_TorrentDefersWhenEngineNotReady(t *testing.T) {
 	ctx := context.Background()
 	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
@@ -189,5 +188,49 @@ func TestUsenetStagingReadyForImport_Gates(t *testing.T) {
 	}
 	if ok, why := usenetStagingReadyForImport(root, dir); ok || why != "no video" {
 		t.Fatalf("owned empty = (%v, %q)", ok, why)
+	}
+}
+
+func TestReconcileInFlightDownloads_ForceFullSkipsImport(t *testing.T) {
+	ctx := context.Background()
+	_, _, settingsStore, grabsStore, libStore, _, _, _, _, _ := testStores(t)
+	staging := t.TempDir()
+	nzb := usenet.New(usenet.Config{StagingDir: staging})
+	nzb.SetForceFullForTest(true)
+
+	gid := "nzb-ffffffffffffffff"
+	dir := filepath.Join(staging, gid)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, usenet.OwnedMarkerFile), []byte("sakms\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	payload := make([]byte, minUsenetReconcileImportBytes+64)
+	for i := range payload {
+		payload[i] = byte('A' + (i % 26))
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Movie.mkv"), payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, usenet.ResumeFileName), []byte(`{"v":1}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := dispatchedUsenetGrab(t, grabsStore, gid)
+	ReconcileInFlightDownloads(ctx, DownloadReconcileDeps{
+		SettingsStore: settingsStore, GrabsStore: grabsStore, LibStore: libStore, NZB: nzb,
+	})
+	got, err := grabsStore.Get(ctx, g.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status == grabs.Imported {
+		t.Fatal("force-full must skip staging import")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "Movie.mkv")); err != nil {
+		t.Fatalf("payload should remain for relaunch path: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, usenet.ResumeFileName)); !os.IsNotExist(err) {
+		t.Fatal("force-full reconcile should clear resume sidecar")
 	}
 }

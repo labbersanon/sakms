@@ -82,9 +82,28 @@ func putUsenetSegmentResumeHandler(settingsStore *settings.Store, nzb *usenet.Ma
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		appliedForceFull := forceFull
 		if nzb != nil {
 			nzb.SetResumePolicy(enabled, forceFull)
+			// SetResumePolicy clears force-full after a one-shot sweep.
+			if appliedForceFull {
+				_, stillForce := nzb.ResumePolicy()
+				forceFull = stillForce
+				if !forceFull {
+					if err := settingsStore.Set(ctx, UsenetSegmentResumeForceFullKey, "false"); err != nil {
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
+				}
+			}
+		} else if appliedForceFull {
+			// No live manager (tests): still treat force-full as one-shot in settings.
+			forceFull = false
+			if err := settingsStore.Set(ctx, UsenetSegmentResumeForceFullKey, "false"); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
-		w.WriteHeader(http.StatusNoContent)
+		writeJSON(w, usenetSegmentResumeResponse{Enabled: enabled, ForceFull: forceFull})
 	}
 }

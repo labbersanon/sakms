@@ -35,8 +35,8 @@ const (
 	// SweepSecondsKey: sweeper cadence. Default 3600. 0 disables the loop.
 	SweepSecondsKey = "usenet_stale_staging_sweep_seconds"
 
-	defaultOrphanDays  = 7
-	defaultSweepSecs   = 3600
+	defaultOrphanDays = 7
+	defaultSweepSecs  = 3600
 )
 
 // GrabLookup resolves a download GID to a grab, or grabs.ErrNotFound.
@@ -75,34 +75,64 @@ func LoadInterval(ctx context.Context, store *settings.Store) time.Duration {
 	return time.Duration(secs) * time.Second
 }
 
-// Run ticks until ctx is cancelled. interval<=0 means off (immediate return).
+// disabledPoll is how often Run re-checks settings while the sweeper is off
+// (interval 0). Keeps re-enable live without a process restart.
+const disabledPoll = 30 * time.Second
+
+// Run ticks until ctx is cancelled. interval<=0 means off: Run still waits and
+// re-reads settings so flipping SweepSecondsKey back above 0 re-enables without
+// restart (unlike a permanent return).
 func Run(ctx context.Context, interval time.Duration, stagingRoot string, grabsStore GrabLookup, settingsStore *settings.Store) {
-	if interval <= 0 {
-		return
-	}
 	if stagingRoot == "" {
 		log.Printf("stagingsweep: empty staging root — disabled")
 		return
 	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	// One pass at boot so existing leftovers don't wait a full interval.
-	runCycle(ctx, stagingRoot, grabsStore, settingsStore)
+	// No settings store and already off → nothing to re-enable later.
+	if interval <= 0 && settingsStore == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = LoadInterval(ctx, settingsStore)
+	}
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if settingsStore != nil {
-				if next := LoadInterval(ctx, settingsStore); next <= 0 {
-					log.Printf("stagingsweep: disabled via %s", SweepSecondsKey)
+		if interval <= 0 {
+			log.Printf("stagingsweep: disabled via %s — waiting for re-enable (poll %s)", SweepSecondsKey, disabledPoll)
+			for interval <= 0 {
+				select {
+				case <-ctx.Done():
 					return
-				} else if next != interval {
-					ticker.Reset(next)
-					interval = next
+				case <-time.After(disabledPoll):
+					interval = LoadInterval(ctx, settingsStore)
 				}
 			}
-			runCycle(ctx, stagingRoot, grabsStore, settingsStore)
+			log.Printf("stagingsweep: re-enabled — interval %s", interval)
+		}
+		ticker := time.NewTicker(interval)
+		// One pass when (re-)enabled so leftovers don't wait a full interval.
+		runCycle(ctx, stagingRoot, grabsStore, settingsStore)
+		enabled := true
+		for enabled {
+			select {
+			case <-ctx.Done():
+				ticker.Stop()
+				return
+			case <-ticker.C:
+				if settingsStore != nil {
+					next := LoadInterval(ctx, settingsStore)
+					if next <= 0 {
+						log.Printf("stagingsweep: disabled via %s", SweepSecondsKey)
+						ticker.Stop()
+						interval = 0
+						enabled = false
+						break
+					}
+					if next != interval {
+						ticker.Reset(next)
+						interval = next
+					}
+				}
+				runCycle(ctx, stagingRoot, grabsStore, settingsStore)
+			}
 		}
 	}
 }
@@ -180,6 +210,23 @@ func decide(ctx context.Context, now time.Time, dir, gid string, orphanAge time.
 	if g.Status == grabs.Imported {
 		return true, "grab imported"
 	}
-	// In-flight or failed-but-still-referenced — sakms may still need the files.
+	// Claude 2026-09-11: age out failed-grab staging like orphans
+	// Reason: Failed rows keep download_gid forever; staging sat until manual delete
+	// Troubleshooting: journal "failed grab age exceeded"; shares OrphanDaysKey
+	// Review if: Failed rows clear download_gid on terminal failure
+	if g.Status == grabs.Failed {
+		if orphanAge <= 0 {
+			return false, ""
+		}
+		fi, err := os.Stat(dir)
+		if err != nil {
+			return false, ""
+		}
+		if now.Sub(fi.ModTime()) < orphanAge {
+			return false, ""
+		}
+		return true, "failed grab age exceeded"
+	}
+	// In-flight — sakms may still need the files.
 	return false, ""
 }

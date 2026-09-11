@@ -371,7 +371,6 @@ func (m *Manager) SetResumePolicy(enabled, forceFull bool) {
 		//         the open FD + staging dir; idle dirs get payloads wiped so
 		//         ResolveVideoFile fails and reconcile relaunches.
 		// Troubleshooting: force-full still imports hollow mkv → wipe/cancel path
-		// Review if: force-full becomes a one-shot that auto-clears after relaunch
 		liveGIDs := make([]string, 0, len(lives))
 		for _, item := range lives {
 			liveGIDs = append(liveGIDs, item.gid)
@@ -383,6 +382,15 @@ func (m *Manager) SetResumePolicy(enabled, forceFull bool) {
 		}
 		n := m.SweepForceFull()
 		log.Printf("usenet: force-full — swept %d owned staging dir(s) (sidecars + payloads)", n)
+		// Claude 2026-09-11: force-full is one-shot, not sticky
+		// Reason: after wipe/cancel, leave resume enabled for subsequent jobs;
+		//         sticky force-full made every relaunch full until manually cleared
+		// Troubleshooting: journal "force-full one-shot cleared"; settings key resets via PUT
+		// Review if: UI needs an explicit "sticky force-full" mode
+		m.mu.Lock()
+		m.forceFullDownload = false
+		m.mu.Unlock()
+		log.Printf("usenet: force-full one-shot cleared — subsequent downloads may resume")
 	}
 }
 
@@ -745,6 +753,18 @@ func (m *Manager) FindByGID(gid string) (*Download, error) {
 
 // InjectDownloadForTest registers a live download entry so API tests can
 // simulate "engine still knows this GID" without driving a real NZB fetch.
+// SetForceFullForTest sets the live force-full flag without sweeping.
+// Production clears force-full via SetResumePolicy (one-shot); tests use this
+// to exercise reconcile's skip-import branch while the flag is asserted.
+func (m *Manager) SetForceFullForTest(v bool) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.forceFullDownload = v
+	m.mu.Unlock()
+}
+
 func (m *Manager) InjectDownloadForTest(gid string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -969,7 +989,7 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 	// Reason: Truncate-up + skip left sparse zero holes that ResolveVideoFile
 	//         still treated as importable video.
 	// Troubleshooting: hollow mkv after resume; file size matches but content is NUL
-	// Review if: sparse-aware coverage checks replace this guard
+	// Review if: preallocate can return once segmentCovered's hole checks prove enough
 	if fileSize > 0 && priorDone == 0 {
 		if err := f.Truncate(fileSize); err != nil {
 			return "", fmt.Errorf("pre-allocating %s: %w", outPath, err)
@@ -981,7 +1001,7 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 		fileBytes = fi.Size()
 	}
 
-	if !needFirst && !resume.segmentCovered(filename, firstMsg, fileBytes) {
+	if !needFirst && !resume.segmentCovered(f, filename, firstMsg, fileBytes) {
 		needFirst = true
 		first, err := m.fetchSegmentAny(segs[0].MsgID)
 		if err != nil {
@@ -995,7 +1015,7 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 	}
 
 	writeSeg := func(msgID string, number int, data []byte, offset int64) error {
-		if resume != nil && !resume.disabled && resume.segmentCovered(filename, msgID, fileBytes) {
+		if resume != nil && !resume.disabled && resume.segmentCovered(f, filename, msgID, fileBytes) {
 			m.addCompleted(gid, int64(len(data)))
 			return nil
 		}
@@ -1029,7 +1049,7 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 			seg := seg
 			g.Go(func() error {
 				msgID := strings.TrimSpace(seg.MsgID)
-				if resume != nil && !resume.disabled && resume.segmentCovered(filename, msgID, fileBytes) {
+				if resume != nil && !resume.disabled && resume.segmentCovered(f, filename, msgID, fileBytes) {
 					if n := resume.skippedBytes(filename, msgID, int(seg.Bytes)); n > 0 {
 						m.addCompleted(gid, int64(n))
 					}

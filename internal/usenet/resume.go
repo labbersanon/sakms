@@ -109,6 +109,26 @@ func (t *resumeTracker) hasSegment(filename, msgID string) bool {
 	return ok
 }
 
+// segmentCovered reports whether msgID is marked done AND the on-disk file is
+// large enough to contain that segment's recorded [offset, offset+length).
+// Skipping without this check leaves sparse/truncated holes that still import.
+func (t *resumeTracker) segmentCovered(filename, msgID string, fileBytes int64) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	f := t.snap.Files[filename]
+	if f == nil {
+		return false
+	}
+	seg, ok := f.Done[msgID]
+	if !ok {
+		return false
+	}
+	if seg.Length <= 0 {
+		return false
+	}
+	return fileBytes >= seg.Offset+int64(seg.Length)
+}
+
 func (t *resumeTracker) priorFile(firstMsg string) (name string, size int64, done int) {
 	if t == nil || t.disabled {
 		return "", 0, 0

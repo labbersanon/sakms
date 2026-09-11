@@ -56,8 +56,9 @@ const pollInterval = 500 * time.Millisecond
 // A divergence means a setting silently changes behavior across a restart,
 // which is worse than not applying it at all.
 
-// SeedStore persists torrent seed-window baselines (start time, upload baseline,
-// total bytes) so SeedRatioLimit / SeedDurationMinutes survive process restart.
+// SeedStore persists torrent seed-window state (start time, CREDITED upload
+// bytes, total bytes) so SeedRatioLimit / SeedDurationMinutes survive restart.
+// baselineUp on the wire is credited upload, not the live handle counter.
 // Claude 2026-09-11: Phase-2 ARR-parity — in-memory-only baselines reset every boot.
 type SeedStore interface {
 	SaveSeed(gid string, startedAt time.Time, baselineUp, totalBytes int64) error
@@ -1505,17 +1506,28 @@ func (m *Manager) isStale(e *entry, now time.Time) bool {
 // download may already have written bytes.
 //
 // Caller holds m.mu.
-func (m *Manager) seedStopReason(e *entry, now time.Time) string {
+func (m *Manager) seedStopReason(gid string, e *entry, now time.Time) string {
 	if e.seedStartedAt.IsZero() {
 		return ""
 	}
-	if ratio := m.cfg.SeedRatioLimit; ratio > 0 && e.seedTotalBytes > 0 && e.t != nil {
+	if e.t != nil {
 		// Count.Int64 has a pointer receiver, so the stats value must land in
 		// an addressable local first.
 		stats := e.t.Stats()
 		uploaded := stats.BytesWrittenData.Int64() - e.seedBaselineUp
-		if target := int64(float64(e.seedTotalBytes) * ratio); uploaded >= target {
-			return fmt.Sprintf("seed ratio limit %.2f reached (%d bytes uploaded of %d)", ratio, uploaded, e.seedTotalBytes)
+		if uploaded < 0 {
+			uploaded = 0
+		}
+		// Persist credited upload so a mid-seed crash still restores ratio progress.
+		if store := m.cfg.SeedStore; store != nil {
+			if err := store.SaveSeed(gid, e.seedStartedAt, uploaded, e.seedTotalBytes); err != nil {
+				log.Printf("downloader: save seed state %s: %v", gid, err)
+			}
+		}
+		if ratio := m.cfg.SeedRatioLimit; ratio > 0 && e.seedTotalBytes > 0 {
+			if target := int64(float64(e.seedTotalBytes) * ratio); uploaded >= target {
+				return fmt.Sprintf("seed ratio limit %.2f reached (%d bytes uploaded of %d)", ratio, uploaded, e.seedTotalBytes)
+			}
 		}
 	}
 	if mins := m.cfg.SeedDurationMinutes; mins > 0 {
@@ -1693,22 +1705,28 @@ func (m *Manager) beginSeeding(gid string, t *torrentlib.Torrent, seedPaths []st
 	}
 	started := time.Now()
 
-	// Restore durable seed window if this gid was already seeding before restart.
+	// Claude 2026-09-11: seed_baseline_up stores CREDITED upload bytes.
+	// Reason: raw handle counters reset on every torrent reopen; restoring
+	//         (written - credited) as baseline keeps SeedRatioLimit honest.
+	// Troubleshooting: ratio never completing across restarts → check this path
+	// Review if: anacrolix exposes durable uploaded counters natively
+	credited := int64(0)
 	if store := m.cfg.SeedStore; store != nil {
-		if prevStarted, prevBaseline, prevTotal, ok, err := store.LoadSeed(gid); err != nil {
+		if prevStarted, prevCredited, prevTotal, ok, err := store.LoadSeed(gid); err != nil {
 			log.Printf("downloader: load seed state %s: %v", gid, err)
 		} else if ok && !prevStarted.IsZero() {
-			// Keep the original window start so duration limits accumulate across boots.
 			started = prevStarted
-			// prevBaseline is the previous handle's BytesWrittenData; a new
-			// handle starts near 0, so credited upload cannot be recovered.
-			// Duration still persists via startedAt; upload credit resets.
-			_ = prevBaseline
+			credited = prevCredited
 			if prevTotal > 0 {
 				total = prevTotal
 			}
-			log.Printf("downloader: restored seed window for %s (started %s)", gid, started.UTC().Format(time.RFC3339))
+			log.Printf("downloader: restored seed window for %s (started %s, credited %d)", gid, started.UTC().Format(time.RFC3339), credited)
 		}
+	}
+	// written - baseline == credited (+ new upload on this handle)
+	baseline = baseline - credited
+	if baseline < 0 {
+		baseline = 0
 	}
 
 	m.mu.Lock()
@@ -1727,7 +1745,16 @@ func (m *Manager) beginSeeding(gid string, t *torrentlib.Torrent, seedPaths []st
 	}
 	if current {
 		if store := m.cfg.SeedStore; store != nil {
-			if err := store.SaveSeed(gid, started, baseline, total); err != nil {
+			// Persist credited upload (written - baseline), not the raw baseline counter.
+			creditedNow := int64(0)
+			if t != nil {
+				stats := t.Stats()
+				creditedNow = stats.BytesWrittenData.Int64() - baseline
+				if creditedNow < 0 {
+					creditedNow = 0
+				}
+			}
+			if err := store.SaveSeed(gid, started, creditedNow, total); err != nil {
 				log.Printf("downloader: save seed state %s: %v", gid, err)
 			}
 		}
@@ -1865,7 +1892,7 @@ func (m *Manager) pollSnapshot() (snap []Download, stopSeeds []seedStop, staleGI
 		// hooks into), so a check nested inside that guard could never fire and
 		// would be indistinguishable from "seeding is unbounded".
 		if e.t != nil && e.status == "complete" && !e.seedStartedAt.IsZero() {
-			if reason := m.seedStopReason(e, now); reason != "" {
+			if reason := m.seedStopReason(gid, e, now); reason != "" {
 				stopSeeds = append(stopSeeds, seedStop{
 					gid: gid,
 					t:   e.t,

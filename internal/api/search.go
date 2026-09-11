@@ -691,9 +691,11 @@ func importUsenetFromDisk(
 	if fi, err := os.Stat(contentPath); err == nil && !fi.IsDir() {
 		stagingDir = filepath.Dir(contentPath)
 	}
-	if err := usenet.RemoveOwnedStagingDir(filepath.Dir(stagingDir), stagingDir); err != nil {
-		log.Printf("usenet: post-import staging cleanup %s: %v", stagingDir, err)
+	gid := g.DownloadGID
+	if gid == "" {
+		gid = filepath.Base(stagingDir)
 	}
+	clearOwnedUsenetStaging(filepath.Dir(stagingDir), gid)
 	updated, err := grabsStore.Get(ctx, id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

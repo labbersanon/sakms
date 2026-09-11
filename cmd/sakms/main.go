@@ -546,15 +546,32 @@ func run() error {
 		go stagingsweep.Run(ctx, stagingsweep.LoadInterval(ctx, settingsStore), nzbManager.StagingDir(), grabsStore, settingsStore)
 	}
 
-	// Claude 2026-09-11: ARR-parity reconcile once at boot (also runs each usenet-retry tick).
-	// Reason: in-memory usenet/torrent queues are empty after restart; restore or import
-	//         before the failure sweep can strand unknown-GID grabs as forever-queued.
-	// Troubleshooting: journal "download reconcile:"; never parks solely on unknown GID
-	api.ReconcileInFlightDownloads(ctx, api.DownloadReconcileDeps{
+	// Claude 2026-09-11: ARR-parity reconcile once at boot (also each usenet-retry tick)
+	// Reason: in-memory queues empty after restart; restore/import before failure sweep
+	//         strands unknown-GID grabs. Wait for torrent engine so AddTorrent does not
+	//         race Start() ("engine not running") when usenet-retry is off.
+	// Troubleshooting: journal "download reconcile:"; "engine not ready"; never park on unknown GID alone
+	// Review if: Start exposes a ready channel instead of WaitForEngine polling
+	reconcileDeps := api.DownloadReconcileDeps{
 		HTTPClient: &http.Client{Timeout: outboundTimeout}, ConnStore: connStore, SCStore: serviceConnStore,
 		SettingsStore: settingsStore, GrabsStore: grabsStore, LibStore: libStore,
 		Prober: prober, VideoHasher: videoHasher, DL: dlManager, NZB: nzbManager,
-	})
+	}
+	if dlManager != nil {
+		waitCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		err := dlManager.WaitForEngine(waitCtx)
+		cancel()
+		if err != nil {
+			log.Printf("download reconcile: torrent engine not ready after wait: %v — deferring torrent restores", err)
+			go func() {
+				if err := dlManager.WaitForEngine(ctx); err != nil {
+					return
+				}
+				api.ReconcileInFlightDownloads(ctx, reconcileDeps)
+			}()
+		}
+	}
+	api.ReconcileInFlightDownloads(ctx, reconcileDeps)
 	// DELIBERATE, opt-in exception to this project's "manual by default, no
 	// background pollers" rule (see internal/recheck's package doc + CLAUDE.md):
 	// one background availability-recheck loop, gated OFF by default (interval

@@ -8224,3 +8224,15 @@ Search & pick. Backend: `POST /api/requests/promote`,
 `GET /api/modes/series/library/tmdb/{tmdbId}/missing-episodes`,
 `grabs.PromoteToFront`.
 
+**Shipped:** PR [#38](https://github.com/labbersanon/sakms/pull/38); merged
+to `main` as `bd1bc61`; server1 deploy
+`bd1bc619ac252cc2aa70e2650c9b8fea07bff09e`. Engineering reference:
+`docs/requests-grab-promote.md` (docs PR follows).
+
+## 2026-09-14 — Document Requests Grab / Promote / series episodes
+
+Added `docs/requests-grab-promote.md` (Promote semantics, APIs, eligibility,
+and interaction with progressive `pending_retry` backoff — Promote does not
+reset `retry_count`). Cross-linked from `CLAUDE.md` (AMENDED 2026-09-14 under
+the Usenet auto-grab / backoff bounds) and the feature CHANGELOG entry above.
+

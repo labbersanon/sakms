@@ -686,6 +686,16 @@ above, so don't drop them for convenience:
        `docs/pending-retry-backoff.md`. Supersedes any older claim that
        non–air-date parks stay on a flat daily interval.
 
+       **AMENDED 2026-09-14 — Requests Promote is the early-attempt escape
+       hatch for that ladder.** `grabs.PromoteToFront` (POST
+       `/api/requests/promote`) sets `retry_after = now`, pasts a future
+       `hold_until`, clears `download_gid`, and forces `pending_retry` — but
+       does **not** reset or bump `retry_count`, so the next no-match park
+       stays on the same backoff rung. Not download-client priority. Series
+       Requests rows also get a missing-episode detail page
+       (`GET /api/modes/series/library/tmdb/{tmdbId}/missing-episodes`).
+       Engineering reference: `docs/requests-grab-promote.md`.
+
     **Honest scope note, verified against the shipped code rather than
     predicted:** the toggle-ON Search hook (`runToggleGatedSearch`, reached
     from both `GET /api/modes/{mode}/search` and

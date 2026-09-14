@@ -70,10 +70,9 @@ const (
 	// the retry scheduler, the same convention every other interval-backed job
 	// in this package follows (see interval.go).
 	usenetRetryIntervalSecondsKey = "usenet_retry_interval_seconds"
-	// defaultUsenetRetryIntervalSeconds backs retry_after when the interval
-	// setting is unset or off. A pending_retry row parked at "now" would be due
-	// immediately, so an unset interval falls back to the spec's 24 hours
-	// rather than to 0.
+	// defaultUsenetRetryIntervalSeconds is the spec's 24-hour fallback for an
+	// unset or switched-off retry interval. It no longer backs retry_after —
+	// parks moved to grabs.RetryBackoff (see the note above parkGrabForRetry).
 	defaultUsenetRetryIntervalSeconds = 86400
 )
 
@@ -454,10 +453,16 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 // than falling through to Create. The caller named a specific row; minting a
 // different one instead is the very class of thing this preference closes.
 func parkPendingRetry(ctx context.Context, deps AutoGrabDeps, req AutoGrabRequest, reason string) (*grabs.Grab, error) {
-	after := time.Now().Add(usenetRetryInterval(ctx, deps.SettingsStore))
+	// Claude 2026-09-13: park delay is grabs.RetryBackoff, not a flat interval.
+	// Reason: an unmet floor must back off (24h→3d→10d→30d→60d→90d) on the same
+	//   ladder as every other pending_retry park.
+	// Troubleshooting: "retries every day forever" → a park path computing its
+	//   own retry_after instead of going through ParkWithBackoff.
+	// Review if: a consecutive-failure counter replaces cumulative retry_count.
+	now := time.Now()
 
 	if req.ExistingGrabID != 0 {
-		if err := deps.GrabsStore.SetPendingRetry(ctx, req.ExistingGrabID, after, reason); err != nil {
+		if err := deps.GrabsStore.ParkWithBackoff(ctx, req.ExistingGrabID, now, reason); err != nil {
 			return nil, err
 		}
 		return deps.GrabsStore.Get(ctx, req.ExistingGrabID)
@@ -466,15 +471,18 @@ func parkPendingRetry(ctx context.Context, deps AutoGrabDeps, req AutoGrabReques
 	existing, err := deps.GrabsStore.FindPendingRetry(ctx, req.Mode, req.TMDBID, req.Title, req.Season, req.SeasonSpecified, req.Episode)
 	switch {
 	case err == nil:
-		if err := deps.GrabsStore.SetPendingRetry(ctx, existing.ID, after, reason); err != nil {
+		if err := deps.GrabsStore.ParkWithBackoff(ctx, existing.ID, now, reason); err != nil {
 			return nil, err
 		}
-		// Re-read: SetPendingRetry always parks to pending_retry with a real
+		// Re-read: ParkWithBackoff always parks to pending_retry with a real
 		// retry_after (§4.4.1: the retry-attempt cap was removed 2026-08-01,
 		// an explicit product decision). Read back to log the scheduled retry
 		// time honestly, not to branch on a Failed status (unreachable).
 		return deps.GrabsStore.Get(ctx, existing.ID)
 	case errors.Is(err, grabs.ErrNotFound):
+		// RetryBackoff(0), not ParkWithBackoff: Create writes retry_count 0 and
+		// increments nothing, so this row's first delay is the 24h rung.
+		after := now.Add(grabs.RetryBackoff(0))
 		created, err := deps.GrabsStore.Create(ctx, grabs.Grab{
 			Mode: req.Mode, Title: req.Title, TMDBID: req.TMDBID, TVDBID: req.TVDBID,
 			SeasonNumber: req.Season, EpisodeNumber: req.Episode, SeasonSpecified: req.SeasonSpecified,
@@ -538,16 +546,15 @@ func parkPreReleaseRequest(ctx context.Context, grabsStore *grabs.Store, m mode.
 	})
 }
 
-// usenetRetryInterval is how far ahead retry_after is parked. An unset or
-// switched-off interval degrades to 24 hours rather than to zero, which would
-// make every parked row due immediately.
-func usenetRetryInterval(ctx context.Context, settingsStore *settings.Store) time.Duration {
-	seconds, err := loadIntervalSeconds(ctx, settingsStore, usenetRetryIntervalSecondsKey, defaultUsenetRetryIntervalSeconds)
-	if err != nil || seconds <= 0 {
-		seconds = defaultUsenetRetryIntervalSeconds
-	}
-	return time.Duration(seconds) * time.Second
-}
+// Claude 2026-09-13: usenetRetryInterval is gone — parks take their delay from
+//   grabs.RetryBackoff via ParkWithBackoff.
+// Reason: the progressive ladder must not share usenet_retry_interval_seconds
+//   with the scheduler tick and opt-in gate, which LoadUsenetRetryInterval
+//   still owns.
+// Troubleshooting: a park that always lands 24h out means a caller is still
+//   computing its own retry_after from an interval setting.
+// Review if: defaultUsenetRetryIntervalSeconds is dropped — it lost its last
+//   reader with this change, and this block goes with it.
 
 // parkGrabForRetry moves an existing grab into pending_retry after an
 // ASYNCHRONOUS retrieval failure (as opposed to parkPendingRetry, which covers
@@ -555,5 +562,5 @@ func usenetRetryInterval(ctx context.Context, settingsStore *settings.Store) tim
 // (checkImportHandler) and the retry scheduler's GID sweep share one
 // transition instead of each inventing its own retry_after.
 func parkGrabForRetry(ctx context.Context, deps AutoGrabDeps, id int64, reason string) error {
-	return deps.GrabsStore.SetPendingRetry(ctx, id, time.Now().Add(usenetRetryInterval(ctx, deps.SettingsStore)), reason)
+	return deps.GrabsStore.ParkWithBackoff(ctx, id, time.Now(), reason)
 }

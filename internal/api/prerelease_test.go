@@ -222,8 +222,8 @@ func TestReleaseDueGrabsPromotionIsIdempotentAfterANoMatch(t *testing.T) {
 	if len(due) != 0 {
 		t.Errorf("the row is still due for release after an attempt: %+v", due)
 	}
-	// It now belongs to the ordinary retry track.
-	retryDue, err := env.grabs.DueForRetry(ctx, time.Now().Add(48*time.Hour))
+	// It now belongs to the ordinary retry track (ParkWithBackoff → RetryBackoff(1)=3d).
+	retryDue, err := env.grabs.DueForRetry(ctx, time.Now().Add(grabs.RetryBackoff(1)+time.Hour))
 	if err != nil {
 		t.Fatalf("listing due for retry: %v", err)
 	}

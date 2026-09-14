@@ -316,12 +316,23 @@ func TestRetryDueGrabsNeverTerminatesAPermanentlyUngradeableRow(t *testing.T) {
 	alwaysFails := func(context.Context, mode.Mode) (*mode.Session, error) {
 		return nil, fmt.Errorf("prowlarr isn't configured")
 	}
-	// Well past what was previously the give-up cap; each tick 25 h later so
-	// the row is due again.
+	// Well past what was previously the give-up cap. The clock follows each
+	// park's own retry_after rather than a fixed step: RetryBackoff widens to
+	// 90d, so a +25h step stops clearing it after the first two rungs.
 	const cyclesWellPastTheOldCap = 12
+	now := time.Now()
 	for i := 0; i <= cyclesWellPastTheOldCap; i++ {
 		runUsenetRetryCycle(ctx, AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore},
-			alwaysFails, nil, nil, nil, nil, nil, time.Now().Add(time.Duration(i)*25*time.Hour))
+			alwaysFails, nil, nil, nil, nil, nil, now)
+		parked, err := grabsStore.Get(ctx, g.ID)
+		if err != nil {
+			t.Fatalf("reloading grab after cycle %d: %v", i, err)
+		}
+		dueAt, err := time.Parse(sqliteTimeFormat, parked.RetryAfter)
+		if err != nil {
+			t.Fatalf("parsing retry_after %q after cycle %d: %v", parked.RetryAfter, i, err)
+		}
+		now = dueAt.Add(time.Second)
 	}
 
 	got, err := grabsStore.Get(ctx, g.ID)
@@ -337,7 +348,7 @@ func TestRetryDueGrabsNeverTerminatesAPermanentlyUngradeableRow(t *testing.T) {
 	if got.RetryAfter == "" {
 		t.Errorf("a still-retrying row must stay parked for its next attempt, got empty RetryAfter")
 	}
-	due, err := grabsStore.DueForRetry(ctx, time.Now().Add(30*24*time.Hour))
+	due, err := grabsStore.DueForRetry(ctx, now)
 	if err != nil {
 		t.Fatalf("listing due grabs: %v", err)
 	}

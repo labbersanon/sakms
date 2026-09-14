@@ -8196,3 +8196,11 @@ just short files. Staging sweeper ages out failed-grab dirs like orphans, and
 interval=0 polls for re-enable without restart. Settings UI copy + PUT response
 reflect the one-shot force-full clear.
 
+## 2026-09-13 — Progressive pending_retry backoff (shared)
+
+All `pending_retry` parks now share one ladder via `grabs.RetryBackoff` /
+`ParkWithBackoff`: **24h → 3d → 10d → 30d → 60d → 90d** (90d plateau; never
+stops). Replaces the flat ~24h re-search for quality-floor / retrieval
+failures; air-date monitoring delegates to the same schedule instead of a
+separate table. Scheduler tick key `usenet_retry_interval_seconds` remains for
+opt-in/tick only — it no longer sets park delay.

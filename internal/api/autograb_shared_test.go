@@ -593,7 +593,8 @@ func TestParkGrabForRetryStaysVisibleToDueForRetry(t *testing.T) {
 	}
 
 	// The retry cycle must actually find it once retry_after has arrived.
-	due, err := grabsStore.DueForRetry(ctx, time.Now().Add(2*defaultUsenetRetryIntervalSeconds*time.Second))
+	// parkGrabForRetry → ParkWithBackoff on retry_count 0 parks at RetryBackoff(1)=3d.
+	due, err := grabsStore.DueForRetry(ctx, time.Now().Add(grabs.RetryBackoff(1)+time.Hour))
 	if err != nil {
 		t.Fatalf("DueForRetry: %v", err)
 	}

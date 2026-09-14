@@ -908,19 +908,20 @@ func TestAirDatePreFilterExcludesAPendingRetryEpisode(t *testing.T) {
 
 // --- T-C2.*: the air-date retry backoff -------------------------------------
 
-// TestAirDateRetryBackoffSchedule (T-C2.1) pins the exact documented schedule.
-// The table is correct as written: an implementation that produces a different
-// wall clock has a defect in its STORE CALL (SetPendingRetry's unconditional
-// retry_count increment), not in this table.
+// TestAirDateRetryBackoffSchedule (T-C2.1) pins the cadence air-date rows get:
+// the shared grabs.RetryBackoff ladder, restated here because this pass's wall
+// clock is what the rest of the T-C2 tests reason about.
 func TestAirDateRetryBackoffSchedule(t *testing.T) {
 	want := map[int]time.Duration{
-		-1: 24 * time.Hour, 0: 24 * time.Hour, 1: 24 * time.Hour, 2: 24 * time.Hour,
-		3: 72 * time.Hour, 4: 72 * time.Hour,
-		5: 168 * time.Hour, 6: 168 * time.Hour,
-		7: 336 * time.Hour, 8: 336 * time.Hour,
-		9: 720 * time.Hour, 10: 720 * time.Hour, 50: 720 * time.Hour, 1000: 720 * time.Hour,
+		-1: 24 * time.Hour, 0: 24 * time.Hour,
+		1: 3 * 24 * time.Hour,
+		2: 10 * 24 * time.Hour,
+		3: 30 * 24 * time.Hour,
+		4: 60 * 24 * time.Hour,
+		5: 90 * 24 * time.Hour, 6: 90 * 24 * time.Hour,
+		10: 90 * 24 * time.Hour, 50: 90 * 24 * time.Hour, 1000: 90 * 24 * time.Hour,
 	}
-	counts := []int{-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 50, 1000}
+	counts := []int{-1, 0, 1, 2, 3, 4, 5, 6, 10, 50, 1000}
 	previous := time.Duration(0)
 	for _, c := range counts {
 		got := airDateRetryBackoff(c)
@@ -935,8 +936,8 @@ func TestAirDateRetryBackoffSchedule(t *testing.T) {
 		}
 		previous = got
 	}
-	if airDateRetryBackoff(1000) != 720*time.Hour {
-		t.Error("the 30-day ceiling is not a ceiling")
+	if airDateRetryBackoff(1000) != 90*24*time.Hour {
+		t.Error("the 90-day ceiling is not a ceiling")
 	}
 }
 
@@ -963,9 +964,9 @@ func TestAirDateBackoffAppliesAcrossCycles(t *testing.T) {
 
 	now := base
 	lastCount := -1
-	// Six cycles crosses both the 2->3 and the 4->5 step boundaries, which are
-	// the cheapest transitions that catch a double increment.
-	for cycle := 1; cycle <= 6; cycle++ {
+	// Four cycles walk 24h→3d→10d→30d. Every rung of the shared ladder is a
+	// step boundary, so a double increment skips a rung and shows up at once.
+	for cycle := 1; cycle <= 4; cycle++ {
 		env.runCycle(t, now)
 
 		list := env.seriesGrabs(t)
@@ -982,8 +983,8 @@ func TestAirDateBackoffAppliesAcrossCycles(t *testing.T) {
 		lastCount = got.RetryCount
 		wantAfter := grabs.FormatTime(now.Add(airDateRetryBackoff(got.RetryCount)))
 		if got.RetryAfter != wantAfter {
-			t.Fatalf("cycle %d: retry_after = %q, want %q (= now + airDateRetryBackoff(%d)); the flat interval would have been %q",
-				cycle, got.RetryAfter, wantAfter, got.RetryCount, grabs.FormatTime(now.Add(24*time.Hour)))
+			t.Fatalf("cycle %d: retry_after = %q, want %q (= now + airDateRetryBackoff(%d))",
+				cycle, got.RetryAfter, wantAfter, got.RetryCount)
 		}
 		if got.RetryReason != airDateRetryReason {
 			t.Fatalf("cycle %d: retry_reason = %q, want %q — the sweep's own reason is also the already-backed-off flag", cycle, got.RetryReason, airDateRetryReason)
@@ -995,23 +996,23 @@ func TestAirDateBackoffAppliesAcrossCycles(t *testing.T) {
 		}
 		now = due.Add(time.Minute)
 	}
-	if lastCount != 5 {
-		t.Fatalf("after six cycles retry_count = %d, want 5", lastCount)
+	if lastCount != 3 {
+		t.Fatalf("after four cycles retry_count = %d, want 3", lastCount)
 	}
-	if airDateRetryBackoff(lastCount) != 168*time.Hour {
+	if airDateRetryBackoff(lastCount) != 30*24*time.Hour {
 		t.Fatalf("the run never crossed a step boundary, so it proves nothing about the double-increment defect")
 	}
 }
 
 // TestAirDateBackoffLeavesOtherTriggersAlone (T-C2.3) is the scoping regression
-// guard. The backoff must change the cadence of air-date-shaped rows and NOTHING
-// else — usenet no-match rows, Movies rows and the sibling stale-torrent path
-// all keep their flat, uncapped interval, byte for byte.
+// guard. The air-date sweep must rewrite air-date-shaped rows and NOTHING else —
+// usenet no-match rows, Movies rows and the sibling stale-torrent path keep the
+// schedule they already carry (shared grabs.RetryBackoff when they parked).
 //
 // Each row is seeded NOT yet due, so retryDueGrabs skips it and the only thing
 // that could touch it is the sweep. The seeded retry_count is high on purpose:
-// at that count the backoff would be a visibly different interval, so "unchanged"
-// is a real assertion rather than a coincidence of two 24-hour values agreeing.
+// at that count a rewrite would land a visibly different retry_after, so
+// "unchanged" is a real assertion rather than two equal timestamps agreeing.
 func TestAirDateBackoffLeavesOtherTriggersAlone(t *testing.T) {
 	now := time.Now()
 	env := newAirDateEnv(t, map[int][]fakeTMDBEpisode{1: {
@@ -1292,10 +1293,10 @@ func TestDispatchedThenReparkedAirDateRowTwoTierBound(t *testing.T) {
 		t.Fatalf("reloading after the searched cycle: %v", err)
 	}
 	if got.RetryReason != airDateRetryReason {
-		t.Fatalf("retry_reason = %q, want %q — the backoff sweep must own this row, or it retries forever on the flat interval", got.RetryReason, airDateRetryReason)
+		t.Fatalf("retry_reason = %q, want %q — the backoff sweep must own this row", got.RetryReason, airDateRetryReason)
 	}
 	if want := grabs.FormatTime(searched.Add(airDateRetryBackoff(got.RetryCount))); got.RetryAfter != want {
-		t.Fatalf("retry_after = %q, want the BACKOFF %q rather than the flat interval", got.RetryAfter, want)
+		t.Fatalf("retry_after = %q, want %q from airDateRetryBackoff(%d)", got.RetryAfter, want, got.RetryCount)
 	}
 
 	// (b) Un-monitoring leaves it alone in the handler, and the sweep reaps it on

@@ -294,10 +294,10 @@ func TestStaleTorrentHandler_ParkedRowIsRetriedOnTheNormalCycle(t *testing.T) {
 
 	StaleTorrentHandler(s.settings, s.grabs, dl)("gid-stale")
 
-	// The park sets retry_after to now + the 24h interval, so drive the cycle
-	// with a clock past that rather than rewriting the row.
+	// ParkWithBackoff parks at RetryBackoff(1)=3d on a fresh row — drive the
+	// cycle past that rather than rewriting the row.
 	runUsenetRetryCycle(ctx, AutoGrabDeps{SettingsStore: s.settings, GrabsStore: s.grabs},
-		staleSessionBuilder(s, dl), nil, nil, nil, nil, nil, time.Now().Add(25*time.Hour))
+		staleSessionBuilder(s, dl), nil, nil, nil, nil, nil, time.Now().Add(grabs.RetryBackoff(1)+time.Hour))
 
 	list, err := s.grabs.List(ctx, mode.Movies)
 	if err != nil {
@@ -338,7 +338,7 @@ func TestStaleTorrentHandler_RequeueHonorsTheAutoGrabGate(t *testing.T) {
 
 	StaleTorrentHandler(s.settings, s.grabs, dl)("gid-stale")
 	runUsenetRetryCycle(ctx, AutoGrabDeps{SettingsStore: s.settings, GrabsStore: s.grabs},
-		staleSessionBuilder(s, dl), nil, nil, nil, nil, nil, time.Now().Add(25*time.Hour))
+		staleSessionBuilder(s, dl), nil, nil, nil, nil, nil, time.Now().Add(grabs.RetryBackoff(1)+time.Hour))
 
 	got, err := s.grabs.Get(ctx, g.ID)
 	if err != nil {

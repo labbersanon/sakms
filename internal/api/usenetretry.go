@@ -264,7 +264,7 @@ func RunUsenetRetry(ctx context.Context, interval time.Duration, httpClient *htt
 // logic, extracted from the ticker loop so tests exercise it directly. The
 // sweep runs FIRST: it is what converts an asynchronous retrieval failure into
 // a pending_retry row, and a row it parks this cycle is deliberately not due
-// until the next one (parkGrabForRetry sets retry_after to now + interval).
+// until the next one (parkGrabForRetry → ParkWithBackoff / RetryBackoff).
 //
 // Fault isolation matches the rest of this codebase: one grab's failure is
 // logged and skipped, never fatal to the pass.

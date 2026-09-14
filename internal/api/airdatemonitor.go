@@ -437,57 +437,18 @@ func dispatchAirDateGrabsScoped(ctx context.Context, deps AutoGrabDeps, sess *mo
 }
 
 // airDateRetryBackoff maps an air-date-originated pending_retry row's current
-// retry_count to how far ahead its NEXT attempt is parked.
+// retry_count to how far ahead its NEXT attempt is parked. It is the air-date
+// view of the shared schedule, and the only seam to change if this pass ever
+// needs a cadence of its own again.
 //
-// Why it exists: with the global removal of the retry-attempt cap (2026-08-01),
-// an air-date row that never finds a qualifying release is re-searched by
-// retryDueGrabs every 24h FOREVER, and the set of such rows only ever grows —
-// an unbounded, permanently increasing live-indexer query volume, which is the
-// pattern CLAUDE.md's per-card-availability-badge rule bans outright.
-//
-// The resolution is a BACKOFF, not a re-introduced attempt cap: a
-// permanently-stuck episode must keep trying (a release genuinely can surface
-// years later) but must cost less and less to keep trying. The schedule
-// therefore never returns 0 and never stops — it plateaus.
-//
-//	retry_count   next attempt in     rationale
-//	-----------   ---------------     ---------
-//	0, 1, 2       24h                 a just-aired episode is usually indexed
-//	                                  within a few days; keep the daily cadence
-//	                                  for the window where it actually pays off.
-//	3, 4          72h    (3 days)
-//	5, 6          168h   (7 days)     weekly
-//	7, 8          336h   (14 days)    fortnightly
-//	>= 9          720h   (30 days)    the CEILING. Never longer, never zero.
-//
-// Wall clock for a permanently-stuck episode: the first dispatch is day 0, then
-// attempts land on days 1, 2, 3, 6, 9, 16, 23, 37, 51, then every 30 days. ~9
-// searches in the first two months, ~12 per year thereafter — against 365 per
-// year, forever, under the flat interval.
-//
-// That schedule is EXACT only because the sweep calls SetRetryAfter, which does
-// NOT increment retry_count. retry_count therefore advances by exactly +1 per
-// REAL search (parkPendingRetry's increment), and the row read back carries the
-// same count the interval above was computed from. An executor who traces a
-// double-increment and concludes this table is wrong has it backwards: the
-// table is right and the store call would be wrong.
-//
-// A negative retryCount (impossible from the schema, which defaults it to 0) is
-// treated as 0 rather than panicking or returning a zero Duration; a zero
-// Duration would make the row due immediately and reintroduce a tight loop.
+// Claude 2026-09-13: the air-date-only ladder now defers to grabs.RetryBackoff.
+// Reason: one progressive schedule for every pending_retry park.
+// Troubleshooting: the schedule is exact only while the sweep calls
+// SetRetryAfter rather than SetPendingRetry, so retry_count advances +1 per
+// REAL search. A halved wall clock means that contract broke, not this map.
+// Review if: air-date needs its own ladder back.
 func airDateRetryBackoff(retryCount int) time.Duration {
-	switch {
-	case retryCount <= 2:
-		return 24 * time.Hour
-	case retryCount <= 4:
-		return 72 * time.Hour
-	case retryCount <= 6:
-		return 168 * time.Hour
-	case retryCount <= 8:
-		return 336 * time.Hour
-	default:
-		return 720 * time.Hour
-	}
+	return grabs.RetryBackoff(retryCount)
 }
 
 // airDateShaped reports whether a pending_retry grab row has the STRUCTURAL
@@ -538,7 +499,7 @@ func airDateShaped(g grabs.Grab) bool {
 // is WHICH CONSUMER IS ASKING:
 //
 //   - The backoff sweep uses the WIDE predicate. Mis-classifying an operator's
-//     row there only slows that row's re-searches toward the 30-day ceiling —
+//     row there only slows that row's re-searches toward the 90-day ceiling —
 //     the download is already dead (SetPendingRetry cleared download_gid), so
 //     nothing in flight is harmed, the error is in the safe direction (fewer
 //     indexer queries, never more), and it is self-limiting at the ceiling.
@@ -562,11 +523,10 @@ func airDateOriginated(g grabs.Grab) bool {
 //
 // Running last is deliberate, for two reasons. The pre-filter must see rows
 // retryDueGrabs just re-armed, and — the load-bearing one — this sweep must
-// have the LAST WORD on retry_after: retryDueGrabs re-parks every row it
-// re-searches at the flat interval via parkPendingRetry, and this overrides that
-// with the backoff. Run before retryDueGrabs, the backoff would be silently
-// discarded every cycle while every unit test of airDateRetryBackoff still
-// passed.
+// have the LAST WORD on retry_after for air-date-shaped rows: it is what marks
+// them with airDateRetryReason and what reaps an un-monitored season. The delay
+// it stamps is the same grabs.RetryBackoff parkPendingRetry already applied,
+// re-applied through SetRetryAfter so re-stamping cannot advance retry_count.
 //
 // A row this cycle's own dispatch just parked is handled by the SAME code path,
 // with no special case: parkPendingRetry's Create writes retry_count 0 with
@@ -575,9 +535,9 @@ func airDateOriginated(g grabs.Grab) bool {
 //
 // Known, accepted gap, stated rather than hidden: a row re-parked by
 // reparkFailedRetry or by retryDueGrabs' AlreadyGrabbing branch carries a
-// different reason, fails condition 2, and stays on the flat interval for that
-// ONE cycle. It rejoins the backoff on the next cycle that produces a genuine
-// no-match. Bounded single-cycle slip, not a leak.
+// different reason, fails condition 2, and keeps parkPendingRetry's schedule for
+// that ONE cycle. It rejoins the air-date reason marker on the next cycle that
+// produces a genuine no-match. Bounded single-cycle slip, not a leak.
 func airDateBackoffSweep(ctx context.Context, deps AutoGrabDeps, libStore *library.Store, now time.Time) {
 	list, err := deps.GrabsStore.List(ctx, mode.Series)
 	if err != nil {

@@ -70,3 +70,9 @@ On a parked grab row, after successive no-matches:
 - `internal/api/airdatemonitor.go` — `airDateRetryBackoff` delegate
 - `CHANGELOG.md` — 2026-09-13 entry
 - `CLAUDE.md` — AMENDED 2026-09-13 under the unattended Usenet auto-grab bounds
+
+## Related: operator Promote
+
+Requests **Promote** (`grabs.PromoteToFront`) sets `retry_after = now` without
+resetting `retry_count`, so it pulls one row forward without restarting this
+ladder. See `docs/requests-grab-promote.md`.

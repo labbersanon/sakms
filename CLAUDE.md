@@ -676,6 +676,16 @@ above, so don't drop them for convenience:
        still a real, reachable status — just only via a genuinely terminal
        classification (the 451 path above), never via retry exhaustion.
 
+       **AMENDED 2026-09-13 — "normal interval" is no longer a flat 24h park.**
+       Park delay is the shared progressive ladder in `grabs.RetryBackoff` /
+       `ParkWithBackoff` (**24h → 3d → 10d → 30d → 60d → 90d** plateau; never
+       stops). Goal: chronic no-match titles stop eating every due cycle so
+       other queued rows still get attempts. `usenet_retry_interval_seconds`
+       still gates/ticks the scheduler; it does **not** set `retry_after`.
+       Air-date uses the same ladder. Full operator note:
+       `docs/pending-retry-backoff.md`. Supersedes any older claim that
+       non–air-date parks stay on a flat daily interval.
+
     **Honest scope note, verified against the shipped code rather than
     predicted:** the toggle-ON Search hook (`runToggleGatedSearch`, reached
     from both `GET /api/modes/{mode}/search` and
@@ -762,8 +772,9 @@ above, so don't drop them for convenience:
       documents this as a thing the page must never grow); "ranked via the
       existing scoring mechanism" holds (`autograb.Select`, an existing
       scorer, not a new one); "highest-scored candidate auto-downloads with
-      no human review step" holds; "no match → stays pending, retries every
-      24h" holds at *either* stage — no qualifying candidate, or no
+      no human review step" holds; "no match → stays pending, retries on the
+      progressive `grabs.RetryBackoff` ladder (AMENDED 2026-09-13 — was
+      'every 24h')" holds at *either* stage — no qualifying candidate, or no
       subscription holding the articles, both park the same
       `pending_retry` row; and "retry never bypasses scoring" holds because
       the retry restarts at the Prowlarr search.

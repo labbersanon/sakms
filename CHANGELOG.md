@@ -8198,9 +8198,18 @@ reflect the one-shot force-full clear.
 
 ## 2026-09-13 — Progressive pending_retry backoff (shared)
 
+**Goal:** chronic no-match / retrieval failures must not monopolize every
+retry cycle — spacing them out gives the rest of the `pending_retry` queue a
+real chance at re-search (and dispatch when a candidate clears the floor).
+
 All `pending_retry` parks now share one ladder via `grabs.RetryBackoff` /
 `ParkWithBackoff`: **24h → 3d → 10d → 30d → 60d → 90d** (90d plateau; never
 stops). Replaces the flat ~24h re-search for quality-floor / retrieval
 failures; air-date monitoring delegates to the same schedule instead of a
 separate table. Scheduler tick key `usenet_retry_interval_seconds` remains for
 opt-in/tick only — it no longer sets park delay.
+
+**Shipped:** PR [#36](https://github.com/labbersanon/sakms/pull/36); merged
+to `main` as `ebdad71`; server1 deploy
+`ebdad716da0e4d30050c62f25bf312e7488fab25`. Operator reference:
+`docs/pending-retry-backoff.md`.

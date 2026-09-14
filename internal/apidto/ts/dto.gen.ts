@@ -1160,6 +1160,32 @@ export interface RequestStatusResponse {
   items: RequestStatusItem[];
 }
 /**
+ * PromoteRequestRequest is POST /api/requests/promote's body — bump one grab
+ * to the front of the DueForRetry schedule (retry_after = now). GrabID is the
+ * RequestStatusItem.GrabID for a Pending / Pending Retry / Scheduled row.
+ */
+export interface PromoteRequestRequest {
+  grabId: number /* int64 */;
+}
+/**
+ * MissingEpisodeItem is one aired-or-catalogued episode with no file on disk,
+ * returned by GET /api/modes/series/library/tmdb/{tmdbId}/missing-episodes.
+ */
+export interface MissingEpisodeItem {
+  seasonNumber: number /* int */;
+  episodeNumber: number /* int */;
+  title?: string;
+  airDate?: string;
+}
+/**
+ * MissingEpisodesResponse is the missing-episode list for one series.
+ */
+export interface MissingEpisodesResponse {
+  tmdbId: number /* int */;
+  title: string;
+  episodes: MissingEpisodeItem[];
+}
+/**
  * ExcludeTitleRequest is POST /api/requests/exclude's body — permanently remove
  * one title from the Requests worklist. TMDBID is preferred when the row has one;
  * Title is required for an Adult scene (no TMDB id). At least one of TMDBID/Title

@@ -1,28 +1,25 @@
-// Request-status data access (F4). One read-only, cross-mode aggregation
-// endpoint (GET /api/requests) that rolls up, per title: In Library (from
-// tracked items), Pending (queued grabs), Pending Retry / Scheduled, and
-// Missing (Series episodes TMDB knows about with no file on disk). Pure
-// derive-on-read — no new persisted table. Goes through api() so it inherits
-// the session cookie and the global 401 → re-boot fallback.
+// Request-status data access (F4). Cross-mode worklist plus promote / missing-
+// episode helpers used by the Requests Grab / Promote / series-detail flows.
 
 import { api } from "./client";
 import type {
   ExcludeTitleRequest,
   ExcludeTitlesBatchResponse,
+  MissingEpisodesResponse,
+  PromoteRequestRequest,
   RequestStatusResponse,
 } from "@dto";
 
-export type { ExcludeTitleRequest, RequestStatusResponse };
+export type {
+  ExcludeTitleRequest,
+  MissingEpisodesResponse,
+  RequestStatusResponse,
+};
 
-// fetchRequests returns the cross-mode request-status rollup for the Requests
-// worklist screen.
 export function fetchRequests(): Promise<RequestStatusResponse> {
   return api<RequestStatusResponse>(`/api/requests`);
 }
 
-// excludeTitle permanently removes one title from the Requests worklist so it is
-// never auto-grabbed/matched again (204 on success). GET /api/requests then
-// suppresses the excluded title server-side.
 export function excludeTitle(body: ExcludeTitleRequest): Promise<void> {
   return api<void>(`/api/requests/exclude`, {
     method: "POST",
@@ -30,9 +27,6 @@ export function excludeTitle(body: ExcludeTitleRequest): Promise<void> {
   });
 }
 
-// excludeTitlesBatch removes several titles in one call (the bulk multi-select
-// "Remove Selected" form). Skip-and-continue: one item's failure never blocks
-// the rest, so the response carries a per-item ok/error result.
 export function excludeTitlesBatch(
   items: ExcludeTitleRequest[],
 ): Promise<ExcludeTitlesBatchResponse> {
@@ -40,4 +34,24 @@ export function excludeTitlesBatch(
     method: "POST",
     body: JSON.stringify({ items }),
   });
+}
+
+// promoteRequest bumps a Pending / Pending Retry / Scheduled grab to the front
+// of the retry schedule (retry_after = now).
+export function promoteRequest(grabId: number): Promise<void> {
+  const body: PromoteRequestRequest = { grabId };
+  return api<void>(`/api/requests/promote`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+// fetchMissingEpisodes lists catalogued episodes with no file on disk for one
+// tracked series.
+export function fetchMissingEpisodes(
+  tmdbId: number,
+): Promise<MissingEpisodesResponse> {
+  return api<MissingEpisodesResponse>(
+    `/api/modes/series/library/tmdb/${tmdbId}/missing-episodes`,
+  );
 }

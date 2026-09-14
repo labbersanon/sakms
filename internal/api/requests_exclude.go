@@ -26,6 +26,7 @@ func NewRequestsMux(grabsStore *grabs.Store, libStore *library.Store, excludesSt
 	mux.HandleFunc("GET /api/requests", requestsHandler(grabsStore, libStore, excludesStore))
 	mux.HandleFunc("POST /api/requests/exclude", excludeTitleHandler(excludesStore))
 	mux.HandleFunc("POST /api/requests/exclude-batch", excludeTitlesBatchHandler(excludesStore))
+	mux.HandleFunc("POST /api/requests/promote", promoteRequestHandler(grabsStore))
 	return mux
 }
 

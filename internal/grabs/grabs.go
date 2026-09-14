@@ -539,6 +539,40 @@ func (s *Store) SetRetryAfter(ctx context.Context, id int64, after time.Time, re
 	return dbutil.CheckAffected(res, id, ErrNotFound)
 }
 
+// PromoteToFront backs the operator "Promote" action on Requests: it moves a
+// queued or pending_retry grab to the front of the regular DueForRetry
+// schedule. Chronic no-match rows park far ahead on RetryBackoff, so it writes
+// retry_after = now and pasts a still-future hold_until, which is what clears
+// DueForRetry's hold guard for a Calendar pre-release row.
+//
+// Like SetRetryAfter above, it is NOT an attempt: retry_count is untouched, so
+// the row keeps its place on the backoff ladder. It also says nothing about
+// download-client priority. download_gid IS cleared, because a promoted row
+// rejoins the retry track and must not keep claiming a live download.
+//
+// Review if: product wants Promote to also reset retry_count and restart the
+// 24h ladder.
+func (s *Store) PromoteToFront(ctx context.Context, id int64, now time.Time, reason string) error {
+	nowStr := FormatTime(now)
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE grabs SET
+			status       = ?,
+			retry_after  = ?,
+			retry_reason = ?,
+			download_gid = '',
+			hold_until   = CASE
+				WHEN hold_until != '' AND hold_until > ? THEN ?
+				ELSE hold_until
+			END,
+			updated_at   = sakms_now()
+		WHERE id = ? AND status IN (?, ?)
+	`, string(PendingRetry), nowStr, reason, nowStr, nowStr, id, string(PendingRetry), string(Queued))
+	if err != nil {
+		return fmt.Errorf("promoting grab %d to front of schedule: %w", id, err)
+	}
+	return dbutil.CheckAffected(res, id, ErrNotFound)
+}
+
 // SetHoldUntil records (or refreshes) a Calendar pre-release request's hold:
 // it writes hold_until and retry_reason and NOTHING else.
 //

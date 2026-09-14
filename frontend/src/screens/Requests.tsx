@@ -1,42 +1,43 @@
 // Requests — a cross-mode request-status WORKLIST (F4), not a fourth grab view.
 //
-// What it adds over the two existing, deliberately-narrow sibling tabs (all
-// three live under the Queue sidebar entry):
-//   - the Calendar tab's History view is a raw, per-mode grab log (one mode at
-//     a time, read-only).
-//   - the Downloads tab is the live download-client queue status.
-// Neither rolls up state ACROSS modes, and neither surfaces what's still
-// MISSING. The Requests tab does both: one row per title spanning Movies/Series/Adult,
-// each tagged In Library / Pending (queued grab) / Pending Retry / Scheduled.
-// Missing is NOT one of those tags — it is a Series-only missing-episode count
-// that co-occurs with any of them. Pure derive-on-read (GET /api/requests).
-//
-// Status honesty: "Pending" is a queued grab awaiting first search/download;
-// live transfer progress lives on the Downloads tab, so there is no
-// "Downloading" filter option (rare Downloading badges still appear under All).
-// Mode chips follow MODES order (All, Movies, Series, Adult). Below them: a
-// row with Search (left) and Status dropdown (right). "Has Missing Episodes"
-// stays a boolean chip under that row. Search is local to this tab.
+// Row actions (for every status except In Library / Downloading):
+//   Grab          — one-click auto-grab (GrabDialog)
+//   Search & pick — open DetailPopup (or GrabDialog for Adult) to choose a release
+//   Promote       — bump grabId to the front of the DueForRetry schedule
+// Series rows open RequestsSeriesDetail (missing episodes + per-episode Grab).
 
 import {
   type Component,
+  For,
+  Show,
   createMemo,
   createResource,
   createSignal,
-  For,
-  Show,
 } from "solid-js";
+import type { AutoGrabRequest, DiscoverItem } from "@dto";
+import type { Mode } from "../api/discover";
 import {
   type ExcludeTitleRequest,
   type RequestStatusResponse,
   excludeTitle,
   excludeTitlesBatch,
   fetchRequests,
+  promoteRequest,
 } from "../api/requests";
-import type { DiscoverItem } from "../api/discover";
-import { Button, ErrorText, FILTER_BAR_FIELDS_CLASS, MODES, Muted, SelectField } from "../components/ui";
+import {
+  Button,
+  ErrorText,
+  FILTER_BAR_FIELDS_CLASS,
+  MODES,
+  Muted,
+  SelectField,
+} from "../components/ui";
 import { type GrabTarget, GrabDialog } from "./discover/shared";
 import { type DetailTarget, DetailPopup } from "./discover/DetailPopup";
+import {
+  RequestsSeriesDetail,
+  type SeriesDetailSource,
+} from "./RequestsSeriesDetail";
 import { useBulkSelection } from "./workflowHooks";
 import { matchesQueueSearch, QueueSearchField } from "./queueSearch";
 
@@ -48,10 +49,9 @@ const MODE_LABELS: Record<string, string> = {
   adult: "Adult",
 };
 
-// REQUEST_STATUS_ORDER is lifecycle order for the status dropdown. Presence
-// is still data-derived (only statuses the backend emitted appear); this list
-// only orders them and excludes "Downloading" (redundant with the Downloads
-// Queue tab).
+// REQUEST_STATUS_ORDER only ORDERS the status dropdown (presence stays
+// data-derived). "Downloading" is deliberately absent — live transfer progress
+// belongs to the Downloads tab — which Requests.test.tsx asserts.
 const REQUEST_STATUS_ORDER = [
   "Pending",
   "Pending Retry",
@@ -59,7 +59,6 @@ const REQUEST_STATUS_ORDER = [
   "In Library",
 ] as const;
 
-// FilterChips is "All + one per distinct value" for the mode row.
 const FilterChips: Component<{
   values: string[];
   selected: string | null;
@@ -96,6 +95,20 @@ const FilterChips: Component<{
   </div>
 );
 
+function canAct(item: RequestItem): boolean {
+  return item.status !== "In Library" && item.status !== "Downloading";
+}
+
+function canPromote(item: RequestItem): boolean {
+  return canAct(item) && item.grabId > 0;
+}
+
+// canOpenRow mirrors openRow: an Adult row has no detail view, and a row
+// without a TMDB id has nothing to resolve in either destination.
+function canOpenRow(item: RequestItem): boolean {
+  return item.mode !== "adult" && item.tmdbId > 0;
+}
+
 function detailTargetFor(item: RequestItem): DetailTarget | null {
   if (item.mode === "adult" || !item.tmdbId) return null;
   const mode = item.mode === "series" ? "series" : "movies";
@@ -109,6 +122,18 @@ function detailTargetFor(item: RequestItem): DetailTarget | null {
     mediaType: mode === "series" ? "tv" : "movie",
   };
   return { mode, item: discoverItem };
+}
+
+function grabTargetFor(item: RequestItem): GrabTarget {
+  const request: AutoGrabRequest = {
+    title: item.title,
+    tmdbId: item.tmdbId > 0 ? item.tmdbId : undefined,
+  };
+  return {
+    mode: item.mode as Mode,
+    label: item.title,
+    request,
+  };
 }
 
 function keyOf(item: RequestItem): string {
@@ -161,7 +186,11 @@ export const Requests: Component = () => {
   const [missingOnly, setMissingOnly] = createSignal(false);
   const [grabTarget, setGrabTarget] = createSignal<GrabTarget | null>(null);
   const [detailTarget, setDetailTarget] = createSignal<DetailTarget | null>(null);
+  const [seriesDetail, setSeriesDetail] = createSignal<SeriesDetailSource | null>(
+    null,
+  );
   const [actionError, setActionError] = createSignal<string | null>(null);
+  const [promotingId, setPromotingId] = createSignal<number | null>(null);
   const selection = useBulkSelection<string>();
 
   const items = () => data()?.items ?? [];
@@ -190,6 +219,10 @@ export const Requests: Component = () => {
     });
 
   const openRow = (item: RequestItem) => {
+    if (item.mode === "series" && item.tmdbId > 0) {
+      setSeriesDetail({ title: item.title, tmdbId: item.tmdbId });
+      return;
+    }
     const target = detailTargetFor(item);
     if (target) setDetailTarget(target);
   };
@@ -240,157 +273,228 @@ export const Requests: Component = () => {
     }
   };
 
+  const promoteOne = async (item: RequestItem): Promise<void> => {
+    if (!canPromote(item)) return;
+    setActionError(null);
+    setPromotingId(item.grabId);
+    try {
+      await promoteRequest(item.grabId);
+      await refetch();
+    } catch (err) {
+      setActionError((err as Error).message);
+    } finally {
+      setPromotingId(null);
+    }
+  };
+
+  const searchAndPick = (item: RequestItem) => {
+    const detail = detailTargetFor(item);
+    if (detail) {
+      setDetailTarget(detail);
+      return;
+    }
+    setGrabTarget(grabTargetFor(item));
+  };
+
   return (
-    <div>
-      <Show when={data.error}>
-        <ErrorText>{(data.error as Error)?.message}</ErrorText>
-      </Show>
+    <Show
+      when={seriesDetail()}
+      fallback={
+        <div>
+          <Show when={data.error}>
+            <ErrorText>{(data.error as Error)?.message}</ErrorText>
+          </Show>
 
-      <div class="mb-3 flex flex-col gap-2">
-        <Show when={modes().length > 1}>
-          <FilterChips
-            values={modes()}
-            selected={modeFilter()}
-            onSelect={setModeFilter}
-            labelOf={(m) => MODE_LABELS[m] ?? m}
-          />
-        </Show>
-        <div class={FILTER_BAR_FIELDS_CLASS}>
-          <QueueSearchField
-            id="requests-search"
-            value={search()}
-            onInput={setSearch}
-            placeholder="Search titles, status, mode…"
-          />
-          <SelectField
-            id="requests-filter-status"
-            label="Status"
-            value={statusFilter() ?? ""}
-            onChange={(v) => setStatusFilter(v === "" ? null : v)}
-          >
-            <option value="">All</option>
-            <For each={statuses()}>{(s) => <option value={s}>{s}</option>}</For>
-          </SelectField>
-        </div>
-        <div class="flex flex-wrap gap-1">
-          <button
-            type="button"
-            class="rounded-md px-3 py-1 text-xs font-medium transition"
-            classList={{
-              "bg-accent text-accent-fg": missingOnly(),
-              "bg-surface-2 text-muted hover:text-fg": !missingOnly(),
-            }}
-            onClick={() => setMissingOnly((v) => !v)}
-          >
-            Has Missing Episodes
-          </button>
-        </div>
-      </div>
+          <div class="mb-3 flex flex-col gap-2">
+            <Show when={modes().length > 1}>
+              <FilterChips
+                values={modes()}
+                selected={modeFilter()}
+                onSelect={setModeFilter}
+                labelOf={(m) => MODE_LABELS[m] ?? m}
+              />
+            </Show>
+            <div class={FILTER_BAR_FIELDS_CLASS}>
+              <QueueSearchField
+                id="requests-search"
+                value={search()}
+                onInput={setSearch}
+                placeholder="Search titles, status, mode…"
+              />
+              <SelectField
+                id="requests-filter-status"
+                label="Status"
+                value={statusFilter() ?? ""}
+                onChange={(v) => setStatusFilter(v === "" ? null : v)}
+              >
+                <option value="">All</option>
+                <For each={statuses()}>
+                  {(s) => <option value={s}>{s}</option>}
+                </For>
+              </SelectField>
+            </div>
+            <div class="flex flex-wrap gap-1">
+              <button
+                type="button"
+                class="rounded-md px-3 py-1 text-xs font-medium transition"
+                classList={{
+                  "bg-accent text-accent-fg": missingOnly(),
+                  "bg-surface-2 text-muted hover:text-fg": !missingOnly(),
+                }}
+                onClick={() => setMissingOnly((v) => !v)}
+              >
+                Has Missing Episodes
+              </button>
+            </div>
+          </div>
 
-      <Show when={selection.size() > 0}>
-        <div class="mb-3">
-          <Button variant="primary" onClick={() => void removeSelected()}>
-            Remove Selected ({selection.size()})
-          </Button>
-        </div>
-      </Show>
-      <Show when={actionError()}>
-        <ErrorText>{actionError()}</ErrorText>
-      </Show>
+          <Show when={selection.size() > 0}>
+            <div class="mb-3">
+              <Button variant="primary" onClick={() => void removeSelected()}>
+                Remove Selected ({selection.size()})
+              </Button>
+            </div>
+          </Show>
+          <Show when={actionError()}>
+            <ErrorText>{actionError()}</ErrorText>
+          </Show>
 
-      <Show when={!data.loading} fallback={<Muted>Loading…</Muted>}>
-        <Show
-          when={filtered().length > 0}
-          fallback={<Muted>No requests match this filter.</Muted>}
-        >
-          <label class="mb-2 flex items-center gap-2 text-xs text-muted">
-            <input
-              type="checkbox"
-              aria-label="Select all"
-              checked={allSelected()}
-              onChange={toggleSelectAll}
-            />
-            Select all
-          </label>
-          <ul class="flex flex-col gap-2">
-            <For each={filtered()}>
-              {(item) => {
-                const target = detailTargetFor(item);
-                return (
-                  <li
-                    class="flex items-center gap-3 rounded-md border border-border bg-surface p-3"
-                    classList={{
-                      "cursor-pointer hover:border-accent": !!target,
-                    }}
-                    onClick={() => openRow(item)}
-                  >
-                    <input
-                      type="checkbox"
-                      aria-label={`Select ${item.title}`}
-                      checked={selection.has(keyOf(item))}
-                      onClick={(e) => e.stopPropagation()}
-                      onChange={() => selection.toggle(keyOf(item))}
-                    />
-                    <div class="min-w-0 flex-1">
-                      <div class="truncate text-sm text-fg" title={item.title}>
-                        {item.title}
-                      </div>
-                      <div class="text-xs text-muted">
-                        {MODE_LABELS[item.mode] ?? item.mode}
-                        <Show when={item.missingCount > 0}>
-                          {" · "}
-                          {item.missingCount} missing
+          <Show when={!data.loading} fallback={<Muted>Loading…</Muted>}>
+            <Show
+              when={filtered().length > 0}
+              fallback={<Muted>No requests match this filter.</Muted>}
+            >
+              <label class="mb-2 flex items-center gap-2 text-xs text-muted">
+                <input
+                  type="checkbox"
+                  aria-label="Select all"
+                  checked={allSelected()}
+                  onChange={toggleSelectAll}
+                />
+                Select all
+              </label>
+              <ul class="flex flex-col gap-2">
+                <For each={filtered()}>
+                  {(item) => (
+                    <li
+                      class="flex flex-wrap items-center gap-2 rounded-md border border-border bg-surface p-3"
+                      classList={{
+                        "cursor-pointer hover:border-accent": canOpenRow(item),
+                      }}
+                      onClick={() => openRow(item)}
+                    >
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${item.title}`}
+                        checked={selection.has(keyOf(item))}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={() => selection.toggle(keyOf(item))}
+                      />
+                      <div class="min-w-0 flex-1">
+                        <div class="truncate text-sm text-fg" title={item.title}>
+                          {item.title}
+                        </div>
+                        <div class="text-xs text-muted">
+                          {MODE_LABELS[item.mode] ?? item.mode}
+                          <Show when={item.missingCount > 0}>
+                            {" · "}
+                            {item.missingCount} missing
+                          </Show>
+                        </div>
+                        <Show when={statusBlurb(item)}>
+                          {(blurb) => (
+                            <div class="text-xs text-warn">{blurb()}</div>
+                          )}
                         </Show>
                       </div>
-                      <Show when={statusBlurb(item)}>
-                        {(blurb) => <div class="text-xs text-warn">{blurb()}</div>}
+                      <span
+                        class="rounded-full px-2 py-0.5 text-[11px]"
+                        classList={{
+                          "bg-warn/20 text-warn":
+                            item.status === "Pending Retry" ||
+                            item.status === "Pending",
+                          "bg-surface-2 text-muted":
+                            item.status !== "Pending Retry" &&
+                            item.status !== "Pending",
+                        }}
+                      >
+                        {item.status}
+                      </span>
+                      <Show when={canAct(item)}>
+                        <Button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setGrabTarget(grabTargetFor(item));
+                          }}
+                        >
+                          Grab
+                        </Button>
+                        <Button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            searchAndPick(item);
+                          }}
+                        >
+                          Search & pick
+                        </Button>
                       </Show>
-                    </div>
-                    <span
-                      class="rounded-full px-2 py-0.5 text-[11px]"
-                      classList={{
-                        "bg-warn/20 text-warn":
-                          item.status === "Pending Retry" ||
-                          item.status === "Pending",
-                        "bg-surface-2 text-muted":
-                          item.status !== "Pending Retry" &&
-                          item.status !== "Pending",
-                      }}
-                    >
-                      {item.status}
-                    </span>
-                    <Button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void removeOne(item);
-                      }}
-                    >
-                      Remove
-                    </Button>
-                  </li>
-                );
-              }}
-            </For>
-          </ul>
-        </Show>
-      </Show>
+                      <Show when={canPromote(item)}>
+                        <Button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void promoteOne(item);
+                          }}
+                        >
+                          {promotingId() === item.grabId
+                            ? "Promoting…"
+                            : "Promote"}
+                        </Button>
+                      </Show>
+                      <Button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void removeOne(item);
+                        }}
+                      >
+                        Remove
+                      </Button>
+                    </li>
+                  )}
+                </For>
+              </ul>
+            </Show>
+          </Show>
 
-      <Show when={grabTarget()}>
-        {(t) => <GrabDialog target={t()} onClose={() => setGrabTarget(null)} />}
-      </Show>
-      <Show when={detailTarget()} keyed>
-        {(t) => (
-          <DetailPopup
-            target={t}
-            onClose={() => {
-              setDetailTarget(null);
-              void refetch();
-            }}
-            onSelectRecommendation={setDetailTarget}
-            onGrab={setGrabTarget}
-          />
-        )}
-      </Show>
-    </div>
+          <Show when={grabTarget()}>
+            {(t) => (
+              <GrabDialog target={t()} onClose={() => setGrabTarget(null)} />
+            )}
+          </Show>
+          <Show when={detailTarget()} keyed>
+            {(t) => (
+              <DetailPopup
+                target={t}
+                onClose={() => {
+                  setDetailTarget(null);
+                  void refetch();
+                }}
+                onSelectRecommendation={setDetailTarget}
+                onGrab={setGrabTarget}
+              />
+            )}
+          </Show>
+        </div>
+      }
+    >
+      {(series) => (
+        <RequestsSeriesDetail
+          series={series()}
+          onBack={() => {
+            setSeriesDetail(null);
+            void refetch();
+          }}
+        />
+      )}
+    </Show>
   );
 };

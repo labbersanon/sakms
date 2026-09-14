@@ -227,6 +227,9 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// Review if: Discover starts carrying a library series id on DetailTarget.
 	// Related files: frontend/src/components/SeasonsPanel.tsx, frontend/src/screens/discover/DetailPopup.tsx
 	mux.HandleFunc("GET /api/modes/series/library/tmdb/{tmdbId}/seasons", listSeasonStatesByTMDBHandler(seasons))
+	// Claude 2026-09-14: missing-episode list for Requests series detail.
+	// Reason: Requests needs per-episode Grab; MissingEpisodes was store-only.
+	mux.HandleFunc("GET /api/modes/series/library/tmdb/{tmdbId}/missing-episodes", missingEpisodesByTMDBHandler(libStore))
 	mux.HandleFunc("PUT /api/modes/series/library/tmdb/{tmdbId}/seasons", putAllSeasonsMonitoredByTMDBHandler(seasons, grabsStore))
 	mux.HandleFunc("PUT /api/modes/series/library/tmdb/{tmdbId}/seasons/{seasonNumber}/monitored", putSeasonMonitoredByTMDBHandler(seasons, grabsStore))
 

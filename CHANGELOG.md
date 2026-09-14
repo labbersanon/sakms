@@ -8213,3 +8213,14 @@ opt-in/tick only — it no longer sets park delay.
 to `main` as `ebdad71`; server1 deploy
 `ebdad716da0e4d30050c62f25bf312e7488fab25`. Operator reference:
 `docs/pending-retry-backoff.md`.
+
+## 2026-09-14 — Requests: Grab, Search & pick, Promote, series episodes
+
+Requests rows (except In Library / Downloading) gain **Grab**, **Search & pick**,
+and **Promote** (bump `retry_after` to now / past a future hold — top of the
+regular DueForRetry schedule, without resetting `retry_count` or download-client
+priority). Series rows open a missing-episode detail page with per-episode Grab /
+Search & pick. Backend: `POST /api/requests/promote`,
+`GET /api/modes/series/library/tmdb/{tmdbId}/missing-episodes`,
+`grabs.PromoteToFront`.
+

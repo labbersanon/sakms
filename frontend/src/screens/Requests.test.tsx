@@ -592,4 +592,34 @@ describe("Requests", () => {
     // The popup mounts (its Close button appears).
     expect(await screen.findByRole("button", { name: "Close" })).toBeInTheDocument();
   });
+
+  it("shows Grab, Search & pick, and Promote on a Pending Retry row", async () => {
+    stubRequests({
+      items: [
+        item({
+          title: "Stuck Movie",
+          status: "Pending Retry",
+          grabId: 9,
+          tmdbId: 42,
+          retryAfter: new Date(Date.now() + 86400000).toISOString(),
+        }),
+      ],
+    });
+    render(() => <Requests />);
+    expect(await screen.findByText("Stuck Movie")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Grab" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Search & pick" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Promote" })).toBeInTheDocument();
+  });
+
+  it("hides Grab/Promote on In Library rows", async () => {
+    stubRequests({
+      items: [item({ title: "Owned Movie", status: "In Library", tmdbId: 1 })],
+    });
+    render(() => <Requests />);
+    expect(await screen.findByText("Owned Movie")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Grab" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Promote" })).not.toBeInTheDocument();
+  });
+
 });

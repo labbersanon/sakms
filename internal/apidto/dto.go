@@ -1156,6 +1156,29 @@ type RequestStatusResponse struct {
 	Items []RequestStatusItem `json:"items"`
 }
 
+// PromoteRequestRequest is POST /api/requests/promote's body — bump one grab
+// to the front of the DueForRetry schedule (retry_after = now). GrabID is the
+// RequestStatusItem.GrabID for a Pending / Pending Retry / Scheduled row.
+type PromoteRequestRequest struct {
+	GrabID int64 `json:"grabId"`
+}
+
+// MissingEpisodeItem is one aired-or-catalogued episode with no file on disk,
+// returned by GET /api/modes/series/library/tmdb/{tmdbId}/missing-episodes.
+type MissingEpisodeItem struct {
+	SeasonNumber  int    `json:"seasonNumber"`
+	EpisodeNumber int    `json:"episodeNumber"`
+	Title         string `json:"title,omitempty"`
+	AirDate       string `json:"airDate,omitempty"`
+}
+
+// MissingEpisodesResponse is the missing-episode list for one series.
+type MissingEpisodesResponse struct {
+	TMDBID   int                  `json:"tmdbId"`
+	Title    string               `json:"title"`
+	Episodes []MissingEpisodeItem `json:"episodes"`
+}
+
 // --- Requests: excluded titles (permanent "remove") ------------------------
 //
 // A Requests row has no persisted identity (the worklist is derived on read), so

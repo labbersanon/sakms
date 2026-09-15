@@ -573,6 +573,11 @@ func run() error {
 			}()
 		}
 	}
+	// Claude 2026-09-15: wipe gap-damaged (pre-v2 resume) staging before
+	// reconcile relaunches in-flight NZBs with contiguous assembly.
+	if nzbManager != nil {
+		nzbManager.InvalidateLegacyResumes()
+	}
 	api.ReconcileInFlightDownloads(ctx, reconcileDeps)
 	// DELIBERATE, opt-in exception to this project's "manual by default, no
 	// background pollers" rule (see internal/recheck's package doc + CLAUDE.md):

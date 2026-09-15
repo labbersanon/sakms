@@ -406,6 +406,57 @@ func (m *Manager) SweepForceFull() int {
 	return m.sweepOwnedStaging(true)
 }
 
+// InvalidateLegacyResumes wipes staging dirs that still carry pre-v2 (gap-offset)
+// resume sidecars or orphan payloads without a current resume. Call once at
+// process start before ReconcileInFlightDownloads so damaged assemblies are
+// discarded and relaunched with contiguous writes.
+//
+// Claude 2026-09-15: upgrade wipe for yEnc-gap fix.
+// Reason: operator chose auto-wipe of gap-damaged staging on upgrade.
+// Troubleshooting: journal "invalidated legacy usenet staging"; empty nzb-* dirs.
+// Review if: resumeSchemaVersion bumps again — same wipe policy applies.
+func (m *Manager) InvalidateLegacyResumes() int {
+	if m == nil {
+		return 0
+	}
+	root := m.StagingDir()
+	if root == "" {
+		return 0
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		log.Printf("usenet: invalidate legacy resumes: read %s: %v", root, err)
+		return 0
+	}
+	n := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		dir := filepath.Join(root, e.Name())
+		if !IsOwnedStagingPath(root, dir) {
+			continue
+		}
+		if !StagingHasLegacyOrOrphanPayloads(dir) {
+			continue
+		}
+		log.Printf("usenet: invalidating legacy/gap-damaged staging %s", e.Name())
+		if err := ClearResumeArtifacts(dir); err != nil {
+			log.Printf("usenet: clear resume %s: %v", dir, err)
+		}
+		if err := wipeStagingPayloads(dir); err != nil {
+			log.Printf("usenet: wipe payloads %s: %v", dir, err)
+		}
+		m.ClearResumeMirror(e.Name())
+		n++
+	}
+	if n > 0 {
+		log.Printf("usenet: invalidated %d legacy usenet staging dir(s) for contiguous reassemble", n)
+	}
+	return n
+}
+
+
 func (m *Manager) sweepOwnedStaging(wipePayloads bool) int {
 	if m == nil {
 		return 0
@@ -886,16 +937,27 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 		return
 	}
 
-	// Optional PAR2 verify + best-effort repair. Failure is non-fatal: the
-	// download is marked complete with whatever files landed (the repair is
-	// unvalidated against real-world par2cmdline output — see research notes).
-	// Job slot already released above so another NZB can download meanwhile.
+	// Claude 2026-09-15: PAR2 fail-closed — do NOT mark complete when repair fails.
+	// Reason: gap-damaged assemblies were marked complete with unrepaired RARs,
+	//         then unpack/import reported "no video files". NZBGet ParRepair
+	//         treats unrepairable as failure; match that.
+	// Troubleshooting: journal "par2 repair ... failing download"; status=error.
+	// Review if: releases without PAR2 should stay best-effort (still do — no
+	//         .par2 means verifyAndRepair returns nil).
+	// Related: verifyAndRepair; assembleFile contiguous write.
 	repaired, repairErr := verifyAndRepair(dl.stagingDir, files)
 	if repairErr != nil {
-		log.Printf("usenet: par2 repair %s: %v (marking complete with unrepaired files)", gid, repairErr)
-	} else {
-		files = repaired
+		m.mu.Lock()
+		if dl.status != "removed" && dl.status != "paused" {
+			dl.status = "error"
+			dl.errorMsg = repairErr.Error()
+			dl.err = repairErr
+			log.Printf("usenet: par2 repair %s: %v (failing download — not marking complete)", gid, repairErr)
+		}
+		m.mu.Unlock()
+		return
 	}
+	files = repaired
 
 	// Claude 2026-09-03: unpack rar/zip/7z after PAR2, before import.
 	// Reason: most Usenet releases are multi-part RAR; import only resolves
@@ -903,12 +965,20 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 	// Troubleshooting: staging full of .partNN.rar, "no video files found".
 	// Review if: password-protected archives need a setting.
 	// Related: unpack.go; Dockerfile unrar + p7zip-full.
+	// Claude 2026-09-15: unpack failure is also fail-closed (no fake complete).
 	unpacked, unpackErr := unpackArchives(dl.stagingDir, files)
 	if unpackErr != nil {
-		log.Printf("usenet: unpack %s: %v (marking complete with packed files)", gid, unpackErr)
-	} else {
-		files = unpacked
+		m.mu.Lock()
+		if dl.status != "removed" && dl.status != "paused" {
+			dl.status = "error"
+			dl.errorMsg = unpackErr.Error()
+			dl.err = unpackErr
+			log.Printf("usenet: unpack %s: %v (failing download — not marking complete)", gid, unpackErr)
+		}
+		m.mu.Unlock()
+		return
 	}
+	files = unpacked
 
 	m.mu.Lock()
 	if dl.status != "removed" && dl.status != "paused" {
@@ -945,6 +1015,18 @@ func (m *Manager) downloadAll(ctx context.Context, gid string, dl *dlState, nzb 
 // Reason: RelaunchNZB after restart re-fetched every segment; ARR-parity needs durable skip of completed MsgIDs while keeping the same nzb-* dir.
 // Troubleshooting: journal "resuming — N segment(s)"; force-full clears sidecar.
 // Review if: PAR2 repair requires invalidating specific MsgIDs after a bad write.
+// assembleFile downloads every segment of one NZB file and writes a contiguous
+// on-disk file under dl.stagingDir.
+//
+// Claude 2026-09-15: write at cumulative decoded lengths, NOT yEnc begin offsets.
+// Reason: many posters advance =ypart begin by a round stride (e.g. 768000) while
+//         rapidyenc decodes fewer bytes; WriteAt(yencOffset) left 14–40 byte NUL
+//         gaps that made PAR2 report thousands of damaged slices and unrar fail,
+//         while NZBGet DirectWrite lays out by article/decoded sizes without gaps.
+// Troubleshooting: PAR2 "not repairable" with damage ≈ segment-boundary count;
+//         resume v1 sidecars are wiped (resumeSchemaVersion).
+// Review if: a poster emits overlapping yEnc ranges that require sparse WriteAt.
+// Related: docs plan; resume.go resumeSchemaVersion; NZBGet DirectWrite.
 func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzbFile NZBFile, maxConc int) (string, error) {
 	if len(nzbFile.Segs) == 0 {
 		return "", fmt.Errorf("no segments")
@@ -956,22 +1038,35 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 
 	resume := dl.resume
 	firstMsg := strings.TrimSpace(segs[0].MsgID)
-	filename, fileSize, priorDone := resume.priorFile(firstMsg)
+	var filename string
+	var fileSize int64
+	var priorDone int
+	if resume != nil {
+		filename, fileSize, priorDone = resume.priorFile(firstMsg)
+	}
 
-	var firstData []byte
-	var firstOffset int64
-	needFirst := filename == "" || resume == nil || resume.disabled || !resume.hasSegment(filename, firstMsg)
-	if needFirst {
+	got := make(map[int][]byte, len(segs))
+	var gotMu sync.Mutex
+
+	needFetch := func(name string, seg NZBSegment) bool {
+		if resume == nil || resume.disabled || name == "" {
+			return true
+		}
+		return !resume.hasSegment(name, strings.TrimSpace(seg.MsgID))
+	}
+
+	if filename == "" || needFetch(filename, segs[0]) {
 		first, err := m.fetchSegmentAny(segs[0].MsgID)
 		if err != nil {
 			return "", fmt.Errorf("segment 1: %w", err)
 		}
-		filename = preferredOutputName(first.filename, nzbFile.Subject)
+		if filename == "" {
+			filename = preferredOutputName(first.filename, nzbFile.Subject)
+		}
 		if first.fileSize > 0 {
 			fileSize = first.fileSize
 		}
-		firstData = first.data
-		firstOffset = first.offset
+		got[segs[0].Number] = first.data
 	}
 
 	outPath := filepath.Join(dl.stagingDir, filename)
@@ -985,88 +1080,84 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 	}
 	defer f.Close()
 
-	// Claude 2026-09-11: only preallocate on a fresh assemble (no prior segments).
-	// Reason: Truncate-up + skip left sparse zero holes that ResolveVideoFile
-	//         still treated as importable video.
-	// Troubleshooting: hollow mkv after resume; file size matches but content is NUL
-	// Review if: preallocate can return once segmentCovered's hole checks prove enough
-	if fileSize > 0 && priorDone == 0 {
-		if err := f.Truncate(fileSize); err != nil {
-			return "", fmt.Errorf("pre-allocating %s: %w", outPath, err)
-		}
-	}
-
 	fileBytes := int64(0)
 	if fi, statErr := f.Stat(); statErr == nil {
 		fileBytes = fi.Size()
 	}
 
-	if !needFirst && !resume.segmentCovered(f, filename, firstMsg, fileBytes) {
-		needFirst = true
-		first, err := m.fetchSegmentAny(segs[0].MsgID)
-		if err != nil {
-			return "", fmt.Errorf("segment 1: %w", err)
-		}
-		if first.fileSize > 0 {
-			fileSize = first.fileSize
-		}
-		firstData = first.data
-		firstOffset = first.offset
-	}
-
-	writeSeg := func(msgID string, number int, data []byte, offset int64) error {
-		if resume != nil && !resume.disabled && resume.segmentCovered(f, filename, msgID, fileBytes) {
-			m.addCompleted(gid, int64(len(data)))
-			return nil
-		}
-		if _, err := f.WriteAt(data, offset); err != nil {
-			return fmt.Errorf("writing segment %d: %w", number, err)
-		}
-		if end := offset + int64(len(data)); end > fileBytes {
-			fileBytes = end
-		}
-		m.addCompleted(gid, int64(len(data)))
-		if resume != nil {
-			if err := resume.markSegment(filename, msgID, number, offset, len(data), fileSize); err != nil {
-				log.Printf("usenet: resume persist %s seg %d: %v", gid, number, err)
+	// Re-check first segment coverage after open (hollow-file guard).
+	if _, ok := got[segs[0].Number]; !ok {
+		if resume == nil || resume.disabled || !resume.segmentCovered(f, filename, firstMsg, fileBytes) {
+			first, err := m.fetchSegmentAny(segs[0].MsgID)
+			if err != nil {
+				return "", fmt.Errorf("segment 1: %w", err)
 			}
+			if first.fileSize > 0 {
+				fileSize = first.fileSize
+			}
+			got[segs[0].Number] = first.data
 		}
-		return nil
 	}
 
-	if needFirst {
-		if err := writeSeg(firstMsg, segs[0].Number, firstData, firstOffset); err != nil {
-			return "", err
+	var g errgroup.Group
+	g.SetLimit(maxConc)
+	for _, seg := range segs[1:] {
+		seg := seg
+		msgID := strings.TrimSpace(seg.MsgID)
+		if resume != nil && !resume.disabled && resume.segmentCovered(f, filename, msgID, fileBytes) {
+			continue
 		}
-	} else if n := resume.skippedBytes(filename, firstMsg, int(segs[0].Bytes)); n > 0 {
+		g.Go(func() error {
+			res, err := m.fetchSegmentAny(seg.MsgID)
+			if err != nil {
+				return fmt.Errorf("segment %d: %w", seg.Number, err)
+			}
+			gotMu.Lock()
+			got[seg.Number] = res.data
+			gotMu.Unlock()
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return "", err
+	}
+
+	// Contiguous write in segment-number order using decoded lengths.
+	var cursor int64
+	for _, seg := range segs {
+		msgID := strings.TrimSpace(seg.MsgID)
+		if data, ok := got[seg.Number]; ok {
+			if _, err := f.WriteAt(data, cursor); err != nil {
+				return "", fmt.Errorf("writing segment %d: %w", seg.Number, err)
+			}
+			m.addCompleted(gid, int64(len(data)))
+			if resume != nil {
+				if err := resume.markSegment(filename, msgID, seg.Number, cursor, len(data), 0); err != nil {
+					log.Printf("usenet: resume persist %s seg %d: %v", gid, seg.Number, err)
+				}
+			}
+			cursor += int64(len(data))
+			continue
+		}
+		// Already on disk from a v2 resume — advance by recorded decoded length.
+		n := 0
+		if resume != nil {
+			n = resume.skippedBytes(filename, msgID, int(seg.Bytes))
+		}
+		if n <= 0 {
+			return "", fmt.Errorf("segment %d: missing decoded length for resume skip", seg.Number)
+		}
 		m.addCompleted(gid, int64(n))
+		cursor += int64(n)
 	}
 
-	if len(segs) > 1 {
-		var g errgroup.Group
-		g.SetLimit(maxConc)
-		for _, seg := range segs[1:] {
-			seg := seg
-			g.Go(func() error {
-				msgID := strings.TrimSpace(seg.MsgID)
-				if resume != nil && !resume.disabled && resume.segmentCovered(f, filename, msgID, fileBytes) {
-					if n := resume.skippedBytes(filename, msgID, int(seg.Bytes)); n > 0 {
-						m.addCompleted(gid, int64(n))
-					}
-					return nil
-				}
-				res, err := m.fetchSegmentAny(seg.MsgID)
-				if err != nil {
-					return fmt.Errorf("segment %d: %w", seg.Number, err)
-				}
-				return writeSeg(msgID, seg.Number, res.data, res.offset)
-			})
-		}
-		if err := g.Wait(); err != nil {
-			return "", err
-		}
+	if err := f.Truncate(cursor); err != nil {
+		return "", fmt.Errorf("truncating %s to contiguous size %d: %w", outPath, cursor, err)
 	}
-
+	if resume != nil {
+		resume.setFileSize(filename, cursor)
+	}
+	_ = fileSize // yEnc header size is advisory only; contiguous length may differ
 	return outPath, nil
 }
 

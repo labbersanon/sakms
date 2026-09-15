@@ -21,7 +21,8 @@ func TestArchiveLeaders_SkipsRarVolumes(t *testing.T) {
 		"video.mkv",
 	}
 	got := archiveLeaders(names)
-	want := []string{"bonus.zip", "other.rar", "release.part01.rar"}
+	// Complete RAR sets (part01+part02+…) rank ahead of singles / zip.
+	want := []string{"release.part01.rar", "bonus.zip", "other.rar"}
 	if len(got) != len(want) {
 		t.Fatalf("leaders = %v, want %v", got, want)
 	}
@@ -134,6 +135,65 @@ func TestUnpackArchives_FakeUnrarRunner(t *testing.T) {
 	}
 	if len(got) == 0 {
 		t.Fatal("expected refreshed file list")
+	}
+}
+
+// Claude 2026-09-15: obfuscated dual-set — orphan pretty part01 fails, hash set succeeds.
+func TestUnpackArchives_TriesNextLeaderAfterFailure(t *testing.T) {
+	dir := t.TempDir()
+	pretty := filepath.Join(dir, "Pretty.Show.part01.rar")
+	hash1 := filepath.Join(dir, "HashNameXX.part01.rar")
+	hash2 := filepath.Join(dir, "HashNameXX.part02.rar")
+	for _, p := range []string{pretty, hash1, hash2} {
+		if err := os.WriteFile(p, []byte("rar"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	oldLook, oldCmd := lookPath, unpackCommand
+	t.Cleanup(func() {
+		lookPath = oldLook
+		unpackCommand = oldCmd
+	})
+	lookPath = func(file string) (string, error) {
+		if file == "unrar" {
+			return "/bin/unrar-fake", nil
+		}
+		return "", exec.ErrNotFound
+	}
+	attempts := 0
+	unpackCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		attempts++
+		archive := ""
+		for _, a := range args {
+			if strings.HasSuffix(strings.ToLower(a), ".rar") {
+				archive = a
+				break
+			}
+		}
+		dest := args[len(args)-1]
+		dest = strings.TrimRight(dest, string(filepath.Separator))
+		helper := filepath.Join(t.TempDir(), "fake-unrar.sh")
+		var script string
+		if strings.Contains(archive, "Pretty.Show") {
+			script = "#!/bin/sh\necho 'Bad archive' >&2\nexit 1\n"
+		} else {
+			script = "#!/bin/sh\nprintf fake > \"$1/out.mkv\"\n"
+		}
+		if err := os.WriteFile(helper, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return exec.CommandContext(ctx, helper, dest)
+	}
+
+	if _, err := unpackArchives(dir, []string{pretty, hash1, hash2}); err != nil {
+		t.Fatalf("unpack should succeed via hash set: %v", err)
+	}
+	if attempts < 2 {
+		t.Fatalf("expected both leaders attempted, got %d", attempts)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "out.mkv")); err != nil {
+		t.Fatalf("expected out.mkv from hash set: %v", err)
 	}
 }
 

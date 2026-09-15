@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -139,6 +140,18 @@ func reconcileUsenetInFlight(ctx context.Context, deps DownloadReconcileDeps, g 
 	}
 
 	if err := deps.NZB.RelaunchNZB(ctx, g.DownloadGID, g.DownloadURL, g.Title); err != nil {
+		// Claude 2026-09-15: precheck miss on relaunch → park for re-search.
+		// Reason: aged NZB has no candidate list; park clears GID for retry cycle.
+		// Troubleshooting: reconcile parks with articlesUnavailableReason.
+		// Review if: relaunch should try a stored alternate URL (none today).
+		if errors.Is(err, usenet.ErrArticlesUnavailable) {
+			if parkErr := parkGrabForRetry(ctx, AutoGrabDeps{SettingsStore: deps.SettingsStore, GrabsStore: deps.GrabsStore}, g.ID, articlesUnavailableReason); parkErr != nil {
+				log.Printf("download reconcile: parking grab %d after precheck: %v", g.ID, parkErr)
+				return
+			}
+			log.Printf("download reconcile: grab %d parked — articles unavailable on relaunch", g.ID)
+			return
+		}
 		log.Printf("download reconcile: relaunching usenet grab %d gid %s: %v", g.ID, g.DownloadGID, err)
 		return
 	}

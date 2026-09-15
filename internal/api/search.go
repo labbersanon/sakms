@@ -419,6 +419,13 @@ func dispatchToDownloadClient(ctx context.Context, settingsStore *settings.Store
 		}
 		gid, err := nzb.AddNZB(ctx, downloadURL, title)
 		if err != nil {
+			// Claude 2026-09-15: precheck rejection is a client conflict, not a gateway error.
+			// Reason: Search & pick has no runners-up; 409 tells the UI to choose another release.
+			// Troubleshooting: Grab returns 409 with ErrArticlesUnavailable message.
+			// Review if: Search & pick gains multi-candidate retry like RunAutoGrab.
+			if errors.Is(err, usenet.ErrArticlesUnavailable) {
+				return "", "", http.StatusConflict, errors.New("this release's articles aren't on your subscriptions — pick another")
+			}
 			return "", "", http.StatusBadGateway, err
 		}
 		return "nntp", gid, http.StatusOK, nil

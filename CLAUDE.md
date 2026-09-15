@@ -1192,6 +1192,17 @@ above, so don't drop them for convenience:
     for the search + SAK's own native torrent/NNTP downloader for the grab)**.
     `dispatchToDownloadClient` (`internal/api/search.go`) has exactly two
     branches, `anacrolix` and `nntp`, and there is no third.
+    <!-- Claude 2026-09-15: Usenet pre-download article check
+    Reason: dead NZBs were wasting the full NNTP download before failing PAR2
+    Troubleshooting: AddNZB/RelaunchNZB STAT-sample first; ErrArticlesUnavailable
+    skips to next ranked candidate (max 3) inside RunAutoGrab / batch; Search 409
+    Review if: precheck disabled, candidate cap changed, or escalation goes full-NZB
+    Related files: docs/usenet-precheck.md, internal/usenet/precheck.go -->
+    **AMENDED 2026-09-15 — Usenet precheck:** before staging, NNTP STAT samples
+    payload segments (hybrid; escalate only files that miss in-sample). Abort is
+    `ErrArticlesUnavailable`. `RunAutoGrab` / batch may try up to 3 qualified
+    candidates in one cycle; manual Search maps that abort to HTTP 409. Always
+    on when Usenet pools exist. See `docs/usenet-precheck.md`.
 - **Series**: fully off Sonarr. Owns its own episode-aware library
   (`internal/library`'s `Series`/`Episode` types — genuinely different
   tables from Movies' `Item`, since Series needs rows for episodes TMDB

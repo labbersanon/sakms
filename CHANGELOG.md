@@ -8252,3 +8252,14 @@ Fix sakms Usenet failures NZBGet did not see on the same provider:
 Connection bumps / article retries deferred until this is verified live.
 Reference: `docs/usenet-contiguous-assembly.md`.
 
+
+## 2026-09-15 — Usenet: pre-download article availability check
+
+Before staging an NZB, sakms samples payload segments with NNTP STAT (hybrid:
+sample first, escalate only files that miss in-sample — option A). Sparse or
+all-missing samples abort with `ErrArticlesUnavailable` before BODY download.
+`RunAutoGrab` / batch dispatch try up to 3 ranked candidates in one cycle;
+manual Search returns HTTP 409. STAT that falsely reports missing is demoted
+process-lifetime after a BODY trust probe. Always on; zero Usenet pools = no-op.
+
+Reference: `docs/usenet-precheck.md`.

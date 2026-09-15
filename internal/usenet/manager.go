@@ -1412,14 +1412,26 @@ func preferredOutputName(yencName, subject string) string {
 	return sanitizeName(subject)
 }
 
-// verifyAndRepair runs PAR2 verification and best-effort repair on the files
-// assembled in dir. If no .par2 files are present, files is returned unchanged.
-// Repair failure is non-fatal — the caller logs and proceeds with unrepaired
-// output (see research notes on interoperability caveat for go-newsgroups/par2).
+// Claude 2026-09-15: obfuscated payloads often keep a .par2 subject name while
+// the body is Matroska/MP4/RAR. Magic-sniff before PAR2 so we do not fail-closed
+// on a healthy video that only looks like a repair set by extension.
+// Reason: Ancient Aliens E2E assembled a complete MKV named *.vol-01.par2;
+//   par2.Parse returned "no main packet" and the download was marked error.
+// Troubleshooting: journal "par2: skipping non-PAR2"; file(1) shows Matroska.
+// Review if: go-newsgroups/par2 gains content-type sniffing of its own.
+// Related: preferredOutputName; ResolveVideoFile extension gate.
+
+// verifyAndRepair runs PAR2 verification and repair on assembled files.
+// Files whose names end in .par2 but whose contents are not PAR2 packets are
+// reclassified (and renamed when a video/archive magic matches) so obfuscated
+// releases are not rejected. If no real .par2 sets remain, files is returned
+// unchanged. Real PAR2 repair failure stays fatal for the caller (fail-closed).
 func verifyAndRepair(dir string, files []string) ([]string, error) {
+	files = normalizeObfuscatedPar2Names(files)
+
 	var par2Paths, dataPaths []string
 	for _, p := range files {
-		if strings.HasSuffix(strings.ToLower(p), ".par2") {
+		if isPar2Payload(p) {
 			par2Paths = append(par2Paths, p)
 		} else {
 			dataPaths = append(dataPaths, p)
@@ -1478,6 +1490,78 @@ func verifyAndRepair(dir string, files []string) ([]string, error) {
 		}
 	}
 	return files, nil
+}
+
+// isPar2Payload reports whether path is a real PAR2 set (extension + magic).
+func isPar2Payload(path string) bool {
+	if !strings.HasSuffix(strings.ToLower(path), ".par2") {
+		return false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	head := make([]byte, 4)
+	n, err := f.Read(head)
+	if err != nil || n < 4 {
+		return false
+	}
+	return string(head) == "PAR2"
+}
+
+// normalizeObfuscatedPar2Names renames .par2 files whose payload magic is a
+// known video/archive type to a matching extension so import can see them.
+func normalizeObfuscatedPar2Names(files []string) []string {
+	out := make([]string, 0, len(files))
+	for _, p := range files {
+		if !strings.HasSuffix(strings.ToLower(p), ".par2") || isPar2Payload(p) {
+			out = append(out, p)
+			continue
+		}
+		ext := sniffMediaExt(p)
+		if ext == "" {
+			log.Printf("usenet: par2: skipping non-PAR2 payload %s (leaving name unchanged)", filepath.Base(p))
+			out = append(out, p)
+			continue
+		}
+		newPath := strings.TrimSuffix(p, filepath.Ext(p)) + ext
+		if err := os.Rename(p, newPath); err != nil {
+			log.Printf("usenet: par2: rename obfuscated %s → %s: %v", filepath.Base(p), filepath.Base(newPath), err)
+			out = append(out, p)
+			continue
+		}
+		log.Printf("usenet: par2: renamed obfuscated payload %s → %s", filepath.Base(p), filepath.Base(newPath))
+		out = append(out, newPath)
+	}
+	return out
+}
+
+// sniffMediaExt returns a file extension for common payload magics, or "" when
+// unrecognized (caller leaves the name alone).
+func sniffMediaExt(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	head := make([]byte, 12)
+	n, err := f.Read(head)
+	if err != nil || n < 4 {
+		return ""
+	}
+	switch {
+	case head[0] == 0x1A && head[1] == 0x45 && head[2] == 0xDF && head[3] == 0xA3:
+		return ".mkv"
+	case n >= 8 && string(head[4:8]) == "ftyp":
+		return ".mp4"
+	case string(head[:4]) == "Rar!":
+		return ".rar"
+	case n >= 2 && string(head[:2]) == "PK":
+		return ".zip"
+	default:
+		return ""
+	}
 }
 
 func countDamaged(r *par2lib.VerifyResult) int {

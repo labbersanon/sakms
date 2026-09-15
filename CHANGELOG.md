@@ -8273,3 +8273,11 @@ retries as slots free, so deferred work is not stuck until the 24h usenet-retry
 tick. Precheck/fetch storms and "pool is closed" under boot load were the
 prompt; indexer NZB completeness remains a separate track.
 
+## 2026-09-15 — Treat obfuscated .par2 payloads as media by magic
+
+Usenet subjects often keep a `.par2` name while the body is Matroska/MP4/RAR.
+`verifyAndRepair` was fail-closing on `par2.Parse` ("no main packet") for those
+files even when the download was complete. Magic-sniff `.par2` paths, rename
+recognized media/archives to a real extension, and only run PAR2 on actual PAR2
+packet sets. Unblocks import for obfuscated single-file WEB-DL releases.
+

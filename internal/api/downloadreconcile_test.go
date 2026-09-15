@@ -3,9 +3,11 @@ package api
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/labbersanon/sakms/internal/downloader"
 	"github.com/labbersanon/sakms/internal/grabs"
@@ -233,4 +235,149 @@ func TestReconcileInFlightDownloads_ForceFullSkipsImport(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, usenet.ResumeFileName)); !os.IsNotExist(err) {
 		t.Fatal("force-full reconcile should clear resume sidecar")
 	}
+}
+
+// nzbXMLOneSeg is a minimal one-segment NZB for relaunch throttle tests.
+const nzbXMLOneSeg = `<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE nzb PUBLIC "-//newzBin//DTD NZB 1.1//EN" "http://www.newzbin.com/DTD/nzb/nzb-1.1.dtd">
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+  <file poster="p" date="1" subject="a.mkv">
+    <groups><group>alt.binaries.test</group></groups>
+    <segments>
+      <segment bytes="100" number="1">seg1@test</segment>
+    </segments>
+  </file>
+</nzb>`
+
+func startNZBFixture(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-nzb")
+		_, _ = w.Write([]byte(nzbXMLOneSeg))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// forgottenUsenetGrab records an in-flight usenet grab the engine no longer
+// knows about, with owned (but empty) staging so reconcile takes the relaunch
+// path rather than importing.
+func forgottenUsenetGrab(t *testing.T, grabsStore *grabs.Store, staging, gid, nzbURL string) grabs.Grab {
+	t.Helper()
+	dir := filepath.Join(staging, gid)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, usenet.OwnedMarkerFile), []byte("sakms\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	g, err := grabsStore.Create(ctx, grabs.Grab{
+		Mode: mode.Movies, Title: "Throttle " + gid, TMDBID: 42,
+		Indexer: "I", Protocol: "usenet", DownloadClient: "usenet",
+		RootFolderPath: "/movies", DownloadURL: nzbURL,
+	})
+	if err != nil {
+		t.Fatalf("creating grab: %v", err)
+	}
+	if err := grabsStore.SetDownloadGID(ctx, g.ID, gid); err != nil {
+		t.Fatalf("setting download gid: %v", err)
+	}
+	return g
+}
+
+// TestUsenetRelaunchSlots_CountsActiveOnly ensures terminal downloads free slots.
+func TestUsenetRelaunchSlots_CountsActiveOnly(t *testing.T) {
+	resetUsenetReconcileDrainForTest()
+	nzb := usenet.New(usenet.Config{StagingDir: t.TempDir(), MaxConcurrentDownloads: 2})
+	if got := usenetRelaunchSlots(nzb); got != 2 {
+		t.Fatalf("empty manager slots = %d, want 2", got)
+	}
+	nzb.InjectDownloadForTest("nzb-aaaaaaaaaaaaaaaa")
+	if got := usenetRelaunchSlots(nzb); got != 1 {
+		t.Fatalf("one active slots = %d, want 1", got)
+	}
+	nzb.InjectDownloadForTest("nzb-bbbbbbbbbbbbbbbb")
+	if got := usenetRelaunchSlots(nzb); got != 0 {
+		t.Fatalf("two active slots = %d, want 0", got)
+	}
+}
+
+// TestReconcileInFlightDownloads_ThrottlesUsenetRelaunches caps kickoffs to
+// MaxConcurrentDownloads so boot does not stampede precheck + runDownload.
+func TestReconcileInFlightDownloads_ThrottlesUsenetRelaunches(t *testing.T) {
+	resetUsenetReconcileDrainForTest()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
+	srv := startNZBFixture(t)
+	staging := t.TempDir()
+	nzb := usenet.New(usenet.Config{
+		StagingDir: staging, HTTPClient: srv.Client(), MaxConcurrentDownloads: 1,
+	})
+	go nzb.Start(ctx)
+
+	for _, gid := range []string{"nzb-1111111111111111", "nzb-2222222222222222", "nzb-3333333333333333"} {
+		forgottenUsenetGrab(t, grabsStore, staging, gid, srv.URL)
+	}
+
+	ReconcileInFlightDownloads(ctx, DownloadReconcileDeps{
+		SettingsStore: settingsStore, GrabsStore: grabsStore, NZB: nzb,
+	})
+
+	// A relaunch starts then fails immediately (no NNTP pools), so count every
+	// engine entry rather than active ones — the gate is kickoffs, not survivors.
+	if got := len(nzb.List()); got != 1 {
+		t.Fatalf("engine downloads = %d, want 1 (throttled to MaxConcurrentDownloads); list=%v", got, nzb.List())
+	}
+}
+
+// TestReconcileInFlightDownloads_DrainResumesWhenSlotFrees ensures deferred
+// relaunches are not stuck until the 24h retry tick.
+func TestReconcileInFlightDownloads_DrainResumesWhenSlotFrees(t *testing.T) {
+	resetUsenetReconcileDrainForTest()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
+	srv := startNZBFixture(t)
+	staging := t.TempDir()
+	nzb := usenet.New(usenet.Config{
+		StagingDir: staging, HTTPClient: srv.Client(), MaxConcurrentDownloads: 1,
+	})
+	go nzb.Start(ctx)
+
+	oldInterval := usenetReconcileDrainInterval
+	usenetReconcileDrainInterval = 20 * time.Millisecond
+	t.Cleanup(func() { usenetReconcileDrainInterval = oldInterval })
+
+	gids := []string{"nzb-4444444444444444", "nzb-5555555555555555"}
+	for _, gid := range gids {
+		forgottenUsenetGrab(t, grabsStore, staging, gid, srv.URL)
+	}
+
+	// Occupy the only slot so the first pass defers everything.
+	nzb.InjectDownloadForTest("nzb-occupiedoccupied")
+
+	ReconcileInFlightDownloads(ctx, DownloadReconcileDeps{
+		SettingsStore: settingsStore, GrabsStore: grabsStore, NZB: nzb,
+	})
+	if got := len(nzb.List()); got != 1 {
+		t.Fatalf("after throttled pass List len = %d, want 1 (only injected)", got)
+	}
+
+	// Free the slot; drain should relaunch one deferred grab.
+	if err := nzb.Cancel("nzb-occupiedoccupied"); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, d := range nzb.List() {
+			if d.GID == gids[0] || d.GID == gids[1] {
+				return // drain relaunched at least one deferred grab
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("drain did not relaunch a deferred grab after slot freed; list=%v", nzb.List())
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -22,6 +23,15 @@ import (
 const ResumeFileName = ".sakms-resume.json"
 
 const resumeTmpName = ".sakms-resume.json.tmp"
+
+// resumeSchemaVersion is the durable resume sidecar format.
+// v1 wrote segments at yEnc begin offsets (leaving NUL gaps when decoded
+// length < begin stride). v2 writes contiguously by decoded length.
+// Claude 2026-09-15: bump for contiguous assembly fix.
+// Reason: gap-polluted v1 resumes must not be reused after the offset change.
+// Troubleshooting: journal "discarding legacy resume"; staging wiped + relaunch.
+// Review if: a future schema needs another wipe policy.
+const resumeSchemaVersion = 2
 
 type ResumeSnapshot struct {
 	Version int                    `json:"v"`
@@ -63,7 +73,7 @@ func loadResumeTracker(dir, gid string, mirror ResumeMirror, disabled bool) *res
 		mirror:   mirror,
 		disabled: disabled,
 		snap: ResumeSnapshot{
-			Version: 1,
+			Version: resumeSchemaVersion,
 			GID:     gid,
 			Files:   map[string]*ResumeFile{},
 		},
@@ -82,7 +92,19 @@ func loadResumeTracker(dir, gid string, mirror ResumeMirror, disabled bool) *res
 	if loaded.Files == nil {
 		loaded.Files = map[string]*ResumeFile{}
 	}
-	loaded.Version = 1
+	// Claude 2026-09-15: refuse v1 (yEnc-offset) resumes — they encode gaps.
+	// Reason: contiguous assembly (v2) cannot safely skip v1 ranges; leftover
+	//         NUL holes fail PAR2 / unrar. Wipe sidecar + payloads so the
+	//         next assemble is a clean contiguous write.
+	// Troubleshooting: "discarding legacy resume"; hollow rar after upgrade.
+	// Review if: resumeSchemaVersion bumps again and needs the same wipe.
+	if loaded.Version != resumeSchemaVersion {
+		log.Printf("usenet: discarding legacy resume v%d in %s (need v%d) — wiping staging payloads",
+			loaded.Version, dir, resumeSchemaVersion)
+		_ = ClearResumeArtifacts(dir)
+		_ = wipeStagingPayloads(dir)
+		return t
+	}
 	loaded.GID = gid
 	t.snap = loaded
 	return t
@@ -179,6 +201,23 @@ func (t *resumeTracker) skippedBytes(filename, msgID string, fallback int) int {
 	return n
 }
 
+func (t *resumeTracker) setFileSize(filename string, size int64) {
+	if t == nil || t.disabled || filename == "" || size <= 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	f := t.snap.Files[filename]
+	if f == nil {
+		f = &ResumeFile{Done: map[string]ResumeSeg{}}
+		t.snap.Files[filename] = f
+	}
+	f.Size = size
+	if err := t.persistLocked(); err != nil {
+		log.Printf("usenet: resume persist size %s: %v", filename, err)
+	}
+}
+
 func (t *resumeTracker) markSegment(filename, msgID string, number int, offset int64, length int, fileSize int64) error {
 	if t == nil {
 		return nil
@@ -244,6 +283,48 @@ func cloneResumeSnapshot(s ResumeSnapshot) ResumeSnapshot {
 
 // ClearResumeArtifacts removes the staging sidecar (and tmp) from dir.
 // Safe no-op when absent. Used by force-full relaunch and post-unpack cleanup.
+// resumeFileVersion returns the sidecar schema version, or 0 when missing/invalid.
+func resumeFileVersion(dir string) int {
+	data, err := os.ReadFile(filepath.Join(dir, ResumeFileName))
+	if err != nil {
+		return 0
+	}
+	var loaded ResumeSnapshot
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		return 0
+	}
+	return loaded.Version
+}
+
+// StagingHasLegacyOrOrphanPayloads reports whether dir has a pre-v2 resume sidecar (or
+// payload files without a current-schema resume). Used at startup to wipe
+// gap-damaged staging so reconcile can relaunch cleanly.
+func StagingHasLegacyOrOrphanPayloads(dir string) bool {
+	ver := resumeFileVersion(dir)
+	if ver != 0 && ver != resumeSchemaVersion {
+		return true
+	}
+	if ver == resumeSchemaVersion {
+		return false
+	}
+	// No resume sidecar: any non-meta payload is treated as potentially
+	// gap-damaged leftover from a pre-upgrade download.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if IsStagingMetaFile(e.Name()) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 func ClearResumeArtifacts(dir string) error {
 	var first error
 	for _, name := range []string{ResumeFileName, resumeTmpName} {

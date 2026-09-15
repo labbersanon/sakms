@@ -70,6 +70,7 @@ func unpackArchives(dir string, files []string) ([]string, error) {
 	defer cancel()
 
 	beforeVideos := videoNamesInDir(dir)
+	var firstErr error
 
 	// Up to two passes: some releases nest a rar inside a rar.
 	for pass := 0; pass < 2; pass++ {
@@ -87,6 +88,10 @@ func unpackArchives(dir string, files []string) ([]string, error) {
 		if len(leaders) == 0 {
 			break
 		}
+		// Claude 2026-09-15: try every leader; obfuscated releases often ship a
+		// pretty-named orphan part01 alongside a complete hash-named set.
+		// Returning on the first failure skipped the working set (NZBGet tries
+		// each RAR set independently).
 		for _, leader := range leaders {
 			path := filepath.Join(dir, leader)
 			var runErr error
@@ -107,13 +112,23 @@ func unpackArchives(dir string, files []string) ([]string, error) {
 				continue
 			}
 			if runErr != nil {
-				return files, fmt.Errorf("unpack %s: %w", leader, runErr)
+				log.Printf("usenet: unpack leader %s failed: %v — trying next set", leader, runErr)
+				if firstErr == nil {
+					firstErr = fmt.Errorf("unpack %s: %w", leader, runErr)
+				}
+				continue
 			}
+		}
+		if gainedVideo(beforeVideos, videoNamesInDir(dir)) {
+			break
 		}
 	}
 
 	afterVideos := videoNamesInDir(dir)
 	if !gainedVideo(beforeVideos, afterVideos) {
+		if firstErr != nil {
+			return files, fmt.Errorf("unpack: no video produced in %s (last leader error: %w)", dir, firstErr)
+		}
 		return files, fmt.Errorf("unpack: completed without producing a video file in %s", dir)
 	}
 
@@ -137,8 +152,15 @@ func archiveKind(name string) string {
 	}
 }
 
-// archiveLeaders returns one path basename per archive set (sorted), skipping
-// RAR volume members that are not the first part (.part01.rar / bare .rar).
+// archiveLeaders returns one path basename per archive set, skipping RAR volume
+// members that are not the first part (.part01.rar / bare .rar).
+//
+// Claude 2026-09-15: rank complete RAR sets before orphan pretty-named part01s.
+// Reason: obfuscated posts often include Show.Name.part01.rar (no part02) plus
+//          a full AbCdEf.part01–N.rar set; lexicographic order tried the orphan
+//          first and aborted before the hash set (see unpack loop).
+// Troubleshooting: unpack "Bad archive" on pretty part01 while hash parts exist.
+// Review if: .r00-style volume sets need the same completeness scoring.
 func archiveLeaders(names []string) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -158,7 +180,61 @@ func archiveLeaders(names []string) []string {
 		seen[key] = true
 		out = append(out, name)
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		si, sj := rarSetScore(out[i], names), rarSetScore(out[j], names)
+		if si != sj {
+			return si > sj
+		}
+		return out[i] < out[j]
+	})
 	return out
+}
+
+// rarSetScore prefers contiguous part01..N sets. Orphan part01 (no part02) scores 0.
+func rarSetScore(leader string, names []string) int {
+	if archiveKind(leader) != "rar" {
+		return 1 // zip/7z: single-file sets are fine
+	}
+	key := archiveSetKey(leader)
+	parts := map[int]bool{}
+	for _, name := range names {
+		if archiveSetKey(name) != key {
+			continue
+		}
+		lower := strings.ToLower(name)
+		if m := rarPartRE.FindStringSubmatch(lower); m != nil {
+			n := strings.TrimLeft(m[1], "0")
+			if n == "" {
+				n = "0"
+			}
+			var num int
+			fmt.Sscanf(n, "%d", &num)
+			parts[num] = true
+			continue
+		}
+		if rarVolumeRE.MatchString(lower) {
+			parts[0] = true // .rar + .r00 style — treat as present
+		}
+		if strings.HasSuffix(lower, ".rar") && !rarPartRE.MatchString(lower) {
+			parts[1] = true
+		}
+	}
+	if !parts[1] && !parts[0] {
+		return 0
+	}
+	// Count contiguous run from 1.
+	score := 0
+	for i := 1; i <= len(names)+1; i++ {
+		if !parts[i] {
+			break
+		}
+		score++
+	}
+	if score == 1 && !parts[2] {
+		// Lone part01 with no continuation — likely obfuscation decoy.
+		return 0
+	}
+	return score
 }
 
 func isRarVolumeNotLeader(name string) bool {

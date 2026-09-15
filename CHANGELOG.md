@@ -8236,3 +8236,19 @@ and interaction with progressive `pending_retry` backoff — Promote does not
 reset `retry_count`). Cross-linked from `CLAUDE.md` (AMENDED 2026-09-14 under
 the Usenet auto-grab / backoff bounds) and the feature CHANGELOG entry above.
 
+## 2026-09-15 — Usenet: contiguous assembly, PAR2 fail-closed, obfuscated RAR unpack
+
+Fix sakms Usenet failures NZBGet did not see on the same provider:
+
+- **Contiguous assembly** — write segments by cumulative decoded length (not yEnc
+  begin offsets), eliminating NUL gaps that broke PAR2/unrar.
+- **Resume v2** — discard gap-polluted v1 sidecars; wipe orphan/legacy staging at
+  boot via `InvalidateLegacyResumes` before reconcile.
+- **PAR2 fail-closed** — unrepairable PAR2 fails the download instead of marking
+  complete with packed junk.
+- **Obfuscation** — rank complete RAR sets over orphan pretty `part01`; try every
+  archive leader before giving up.
+
+Connection bumps / article retries deferred until this is verified live.
+Reference: `docs/usenet-contiguous-assembly.md`.
+

@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/dedup"
@@ -50,6 +52,41 @@ type DownloadReconcileDeps struct {
 	NZB           *usenet.Manager
 }
 
+// Claude 2026-09-15: throttle usenet relaunches to MaxConcurrentDownloads.
+// Reason: boot reconcile stampeded every forgotten NZB at once (precheck and
+// runDownload goroutines) — 20–45 "starting" plus "pool is closed" under load.
+// Troubleshooting: journal "download reconcile: ... deferred"; drain wakes on slots.
+// Review if: RelaunchNZB itself acquires the job semaphore before precheck.
+// Related: usenet.MaxConcurrentDownloads; RunUsenetRetry also calls reconcile.
+var usenetReconcileDrainRunning atomic.Bool
+
+// usenetReconcileDrainInterval is how often deferred relaunches retry after
+// slots free. Overridden in tests.
+var usenetReconcileDrainInterval = 15 * time.Second
+
+// usenetRelaunchSlots is how many RelaunchNZB calls reconcile may start now:
+// the cap minus downloads that still hold a fetch slot. Terminal downloads
+// released theirs already, so they do not block a relaunch.
+func usenetRelaunchSlots(nzb *usenet.Manager) int {
+	if nzb == nil {
+		return 0
+	}
+	active := 0
+	for _, d := range nzb.List() {
+		switch d.Status {
+		case "complete", "error", "paused", "removed":
+			// terminal — the fetch slot is already released
+		default:
+			active++
+		}
+	}
+	slots := nzb.MaxConcurrentDownloads() - active
+	if slots < 0 {
+		return 0
+	}
+	return slots
+}
+
 // ReconcileInFlightDownloads is the ARR-style queue sync for sakms's built-in
 // downloaders. For every queued/downloading grab whose live engine no longer
 // knows the GID:
@@ -64,9 +101,18 @@ type DownloadReconcileDeps struct {
 // An unknown GID alone NEVER parks — that was the boot-storm trap the failure
 // sweep correctly avoids, and this pass exists to restore rather than give up.
 func ReconcileInFlightDownloads(ctx context.Context, deps DownloadReconcileDeps) {
-	if deps.GrabsStore == nil {
-		return
+	if deferred := reconcileInFlightPass(ctx, deps); deferred > 0 {
+		startUsenetReconcileDrain(ctx, deps)
 	}
+}
+
+// reconcileInFlightPass walks queued/downloading grabs once. Returns how many
+// usenet relaunches were deferred because download slots were full.
+func reconcileInFlightPass(ctx context.Context, deps DownloadReconcileDeps) (deferred int) {
+	if deps.GrabsStore == nil {
+		return 0
+	}
+	budget := usenetRelaunchSlots(deps.NZB)
 	for _, m := range usenetRetryModes {
 		list, err := deps.GrabsStore.List(ctx, m)
 		if err != nil {
@@ -74,37 +120,88 @@ func ReconcileInFlightDownloads(ctx context.Context, deps DownloadReconcileDeps)
 			continue
 		}
 		for i := range list {
-			reconcileOneInFlight(ctx, deps, &list[i])
+			if reconcileOneInFlight(ctx, deps, &list[i], &budget) {
+				deferred++
+			}
 		}
 	}
+	return deferred
 }
 
-func reconcileOneInFlight(ctx context.Context, deps DownloadReconcileDeps, g *grabs.Grab) {
-	if g.Status != grabs.Queued && g.Status != grabs.Downloading {
+// startUsenetReconcileDrain runs a single background loop that re-runs
+// reconcile as slots free, so deferred relaunches are not stuck until the 24h
+// usenet-retry tick.
+// resetUsenetReconcileDrainForTest clears the drain singleton so API tests do
+// not leak a running drain (or its "already running" flag) into the next case.
+func resetUsenetReconcileDrainForTest() {
+	usenetReconcileDrainRunning.Store(false)
+}
+
+func startUsenetReconcileDrain(ctx context.Context, deps DownloadReconcileDeps) {
+	if deps.NZB == nil || ctx == nil {
 		return
 	}
-	if g.DownloadGID == "" {
+	if !usenetReconcileDrainRunning.CompareAndSwap(false, true) {
 		return
+	}
+	go func() {
+		defer usenetReconcileDrainRunning.Store(false)
+		ticker := time.NewTicker(usenetReconcileDrainInterval)
+		defer ticker.Stop()
+		idlePasses := 0
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if usenetRelaunchSlots(deps.NZB) <= 0 {
+					idlePasses = 0
+					continue
+				}
+				left := reconcileInFlightPass(ctx, deps)
+				if left > 0 {
+					idlePasses = 0
+					log.Printf("download reconcile: usenet drain — %d still deferred", left)
+					continue
+				}
+				idlePasses++
+				if idlePasses >= 2 {
+					log.Printf("download reconcile: usenet drain idle — stopping")
+					return
+				}
+			}
+		}
+	}()
+}
+
+// reconcileOneInFlight restores one forgotten grab and reports whether a
+// usenet relaunch was deferred for lack of a download slot.
+func reconcileOneInFlight(ctx context.Context, deps DownloadReconcileDeps, g *grabs.Grab, usenetBudget *int) bool {
+	if g.Status != grabs.Queued && g.Status != grabs.Downloading {
+		return false
+	}
+	if g.DownloadGID == "" {
+		return false
 	}
 
 	if strings.HasPrefix(g.DownloadGID, usenetGIDPrefix) {
-		reconcileUsenetInFlight(ctx, deps, g)
-		return
+		return reconcileUsenetInFlight(ctx, deps, g, usenetBudget)
 	}
 	reconcileTorrentInFlight(ctx, deps, g)
+	return false
 }
 
-func reconcileUsenetInFlight(ctx context.Context, deps DownloadReconcileDeps, g *grabs.Grab) {
+func reconcileUsenetInFlight(ctx context.Context, deps DownloadReconcileDeps, g *grabs.Grab, usenetBudget *int) bool {
 	if deps.NZB == nil {
-		return
+		return false
 	}
 	live, err := deps.NZB.FindByGID(g.DownloadGID)
 	if err != nil {
 		log.Printf("download reconcile: usenet lookup grab %d gid %s: %v", g.ID, g.DownloadGID, err)
-		return
+		return false
 	}
 	if live != nil {
-		return // engine still owns it — failure sweep / completion path apply
+		return false // engine still owns it — failure sweep / completion path apply
 	}
 
 	stagingPath := filepath.Join(deps.NZB.StagingDir(), g.DownloadGID)
@@ -124,7 +221,7 @@ func reconcileUsenetInFlight(ctx context.Context, deps DownloadReconcileDeps, g 
 			log.Printf("download reconcile: importing usenet staging for grab %d: %v — will relaunch", g.ID, err)
 		} else {
 			log.Printf("download reconcile: grab %d (%s) imported from staging after engine forget", g.ID, g.Title)
-			return
+			return false
 		}
 	} else if why != "" {
 		log.Printf("download reconcile: grab %d staging not import-ready (%s) — will relaunch", g.ID, why)
@@ -133,11 +230,19 @@ func reconcileUsenetInFlight(ctx context.Context, deps DownloadReconcileDeps, g 
 	if strings.TrimSpace(g.DownloadURL) == "" {
 		if err := parkGrabForRetry(ctx, AutoGrabDeps{SettingsStore: deps.SettingsStore, GrabsStore: deps.GrabsStore}, g.ID, restoreMissingURLReason); err != nil {
 			log.Printf("download reconcile: parking grab %d (missing URL): %v", g.ID, err)
-			return
+			return false
 		}
 		log.Printf("download reconcile: grab %d parked — no durable download URL to relaunch", g.ID)
-		return
+		return false
 	}
+
+	if *usenetBudget <= 0 {
+		log.Printf("download reconcile: grab %d (%s) deferred — usenet download slots full", g.ID, g.Title)
+		return true
+	}
+	// Reserve the slot before RelaunchNZB: prechecks that fail fast would
+	// otherwise let one pass blow past MaxConcurrentDownloads.
+	*usenetBudget--
 
 	if err := deps.NZB.RelaunchNZB(ctx, g.DownloadGID, g.DownloadURL, g.Title); err != nil {
 		// Claude 2026-09-15: precheck miss on relaunch → park for re-search.
@@ -147,15 +252,16 @@ func reconcileUsenetInFlight(ctx context.Context, deps DownloadReconcileDeps, g 
 		if errors.Is(err, usenet.ErrArticlesUnavailable) {
 			if parkErr := parkGrabForRetry(ctx, AutoGrabDeps{SettingsStore: deps.SettingsStore, GrabsStore: deps.GrabsStore}, g.ID, articlesUnavailableReason); parkErr != nil {
 				log.Printf("download reconcile: parking grab %d after precheck: %v", g.ID, parkErr)
-				return
+				return false
 			}
 			log.Printf("download reconcile: grab %d parked — articles unavailable on relaunch", g.ID)
-			return
+			return false
 		}
 		log.Printf("download reconcile: relaunching usenet grab %d gid %s: %v", g.ID, g.DownloadGID, err)
-		return
+		return false
 	}
 	log.Printf("download reconcile: grab %d (%s) relaunched into %s", g.ID, g.Title, g.DownloadGID)
+	return false
 }
 
 func reconcileTorrentInFlight(ctx context.Context, deps DownloadReconcileDeps, g *grabs.Grab) {

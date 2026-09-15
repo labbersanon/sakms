@@ -8263,3 +8263,13 @@ manual Search returns HTTP 409. STAT that falsely reports missing is demoted
 process-lifetime after a BODY trust probe. Always on; zero Usenet pools = no-op.
 
 Reference: `docs/usenet-precheck.md`.
+
+## 2026-09-15 — Throttle boot reconcile usenet relaunches
+
+Boot `ReconcileInFlightDownloads` no longer stampede-relaunches every forgotten
+NZB at once. Usenet kickoffs are capped to `MaxConcurrentDownloads` (counting
+in-memory non-terminal jobs). Leftovers stay queued and a short background drain
+retries as slots free, so deferred work is not stuck until the 24h usenet-retry
+tick. Precheck/fetch storms and "pool is closed" under boot load were the
+prompt; indexer NZB completeness remains a separate track.
+

@@ -756,3 +756,27 @@ export function yearOf(date: string): number | undefined {
   const y = date && date.length >= 4 ? parseInt(date.slice(0, 4), 10) : NaN;
   return Number.isFinite(y) ? y : undefined;
 }
+
+// Claude 2026-09-15: shared filter chip, lifted from Requests' inline chip so all
+// surfaces (Library, Discover Mainstream) look and behave identically.
+// Reason: plan §2 — one toggle chip, same styling as Requests' "Has Missing Episodes".
+// Troubleshooting: label text is caller-controlled; aria-pressed reflects active().
+// Review if: the chip design system changes (update all callers together).
+export const FilterChip: Component<{
+  label: string;
+  active: () => boolean;
+  onToggle: () => void;
+}> = (props) => (
+  <button
+    type="button"
+    aria-pressed={props.active()}
+    class="rounded-md px-3 py-1 text-xs font-medium transition"
+    classList={{
+      "bg-accent text-accent-fg": props.active(),
+      "bg-surface-2 text-muted hover:text-fg": !props.active(),
+    }}
+    onClick={props.onToggle}
+  >
+    {props.label}
+  </button>
+);

@@ -1726,6 +1726,14 @@ export interface TrackedItem {
    * Review if: Discover's existing-library row starts showing stars.
    */
   rating?: number /* int */;
+  /**
+   * Claude 2026-09-15: derived monitored flag — true when the item has an
+   * active grab (any mode) OR any monitored season (Series only). Absent
+   * (omitempty) means false. Derived at list time; never stored. See plan §1.2.
+   * Reason: client-side filter chip on Library and Discover Mainstream.
+   * Review if: GET /tracked gains server-side filter params.
+   */
+  monitored?: boolean;
 }
 /**
  * LibraryRatingRequest is PUT /api/modes/{mode}/items/{itemId}/rating

@@ -38,7 +38,8 @@ import {
   tmdbPoster,
 } from "../../api/discover";
 import { type TrackedItem, fetchTrackedItems } from "../../api/tag";
-import { Button, ErrorText, Muted, yearOf } from "../../components/ui";
+import { fetchRequests } from "../../api/requests";
+import { Button, ErrorText, FilterChip, Muted, yearOf } from "../../components/ui";
 import {
   type GrabTarget,
   ConfigureConnectionModal,
@@ -783,6 +784,14 @@ export const MainstreamDiscover: Component<{
   const [dismissedSetup, setDismissedSetup] = createSignal(false);
   const [reloadToken, setReloadToken] = createSignal(0);
 
+  // Claude 2026-09-15: monitoredOnly — view switch to local data, no TMDB discover calls.
+  // Reason: plan §4 — TMDB cannot express "show only what this install monitors".
+  // Chip on: clearSearch + resetFilters, hide filter bar, show monitored grid.
+  // Chip off: carousels return. Clear on search/filter/calendar (mutual exclusivity).
+  // No scheduler, no goroutine, no ticker — purely a signal + resource pair.
+  // Review if: a dedicated GET /api/modes/{mode}/monitored endpoint is added (plan §6 risk 10).
+  const [monitoredOnly, setMonitoredOnly] = createSignal(false);
+
   // Search: draft is the input value, submitted is the committed query. A
   // non-empty submitted query swaps the rows for the merged result grid.
   const [draft, setDraft] = createSignal("");
@@ -807,6 +816,7 @@ export const MainstreamDiscover: Component<{
         if (!contentType) return;
         setDraft("");
         setSubmitted("");
+        setMonitoredOnly(false);
         setFilters({ ...DEFAULT_MAINSTREAM_FILTERS, contentType });
       },
       { defer: true },
@@ -819,16 +829,20 @@ export const MainstreamDiscover: Component<{
   // signal that gates Edit (index.tsx), so calendar reuses it (Edit is disabled
   // whenever a filter is active OR calendar is showing), rather than adding a
   // second parallel prop for the same effect.
+  // monitoredOnly also disables Edit (reordering carousels against a replacement grid is meaningless).
   const [view, setView] = createSignal<MainstreamView>("rows");
   createEffect(() =>
-    props.onFilteringChange?.(filtering() || view() === "calendar"),
+    props.onFilteringChange?.(filtering() || monitoredOnly() || view() === "calendar"),
   );
 
   // selectView switches the top-level view; entering calendar clears any active
   // search (calendar is its own view, not a rows-mode activity) so returning to
   // rows lands back on the carousels, not a stale search result.
   const selectView = (v: MainstreamView) => {
-    if (v === "calendar") clearSearch();
+    if (v === "calendar") {
+      clearSearch();
+      setMonitoredOnly(false);
+    }
     setView(v);
   };
 
@@ -848,6 +862,7 @@ export const MainstreamDiscover: Component<{
   // the same tick, so clear defensively.
   const applyFilters = (f: MainstreamFilters) => {
     clearSearch();
+    setMonitoredOnly(false);
     setFilters(f);
   };
   const resetFilters = () =>
@@ -888,6 +903,49 @@ export const MainstreamDiscover: Component<{
     setDraft("");
     setSubmitted("");
   };
+
+  // monitoredItems: assembled once per chip-toggle-on — fetches tracked items
+  // (monitored===true) UNION requests (mode-scoped, grabId>0), deduped by
+  // tmdbId (title fallback), synthesized into TrackedItem shape. No TMDB discover
+  // calls fire while the chip is on (the load-bearing guardrail from plan §4.1).
+  // Keyed on [contentType, monitoredOnly] so it runs only on chip toggle, not Mainstream mount.
+  // fetchRequests is fetched only when the chip is on — same per-load cost as the Requests screen.
+  const [monitoredItems] = createResource(
+    () => (monitoredOnly() ? [props.contentType ?? null, true] as const : null),
+    async ([contentType]): Promise<TrackedItem[]> => {
+      const mode = contentType ?? "movies";
+      // Fetch tracked (with derived monitored flag) and cross-mode requests in parallel.
+      const [trackedAll, requestsResp] = await Promise.all([
+        fetchTrackedItems(mode).catch(() => [] as TrackedItem[]),
+        fetchRequests().catch(() => ({ items: [] })),
+      ]);
+      // (1) tracked rows where monitored===true.
+      const trackedMonitored = trackedAll.filter((i) => i.monitored === true);
+      // (2) request rows for this mode with grabId>0 (an active grab exists).
+      // Use grabId>0 as the signal per plan §6 rule 8 — never gate on status label strings.
+      const reqItems = requestsResp.items
+        .filter((r) => r.mode === mode && r.grabId > 0)
+        .map((r): TrackedItem => ({
+          id: 0,
+          title: r.title,
+          tags: [],
+          tmdbId: r.tmdbId,
+          monitored: true,
+        }));
+      // Dedupe (2) against (1) by tmdbId (title fallback when tmdbId is 0).
+      const seen = new Set<string>();
+      const result: TrackedItem[] = [];
+      for (const item of trackedMonitored) {
+        const key = item.tmdbId ? `tmdb:${item.tmdbId}` : `title:${item.title.toLowerCase()}`;
+        if (!seen.has(key)) { seen.add(key); result.push(item); }
+      }
+      for (const item of reqItems) {
+        const key = item.tmdbId ? `tmdb:${item.tmdbId}` : `title:${item.title.toLowerCase()}`;
+        if (!seen.has(key)) { seen.add(key); result.push(item); }
+      }
+      return result;
+    },
+  );
 
   const configureFor = () => notConfiguredService(setupError());
 
@@ -1102,10 +1160,14 @@ export const MainstreamDiscover: Component<{
 
   return (
     <div>
-      {/* Rows | Calendar view toggle. Lives in the filter-bar area inside the
-          Mainstream tab (not a third top-level Discover tab) — the same
-          avoid-a-degenerate-tab reasoning as index.tsx's Adult-disabled block. */}
-      <div class="mb-3 flex items-center gap-1">
+      {/* Rows | Calendar view toggle + Monitored chip. Lives in the filter-bar
+          area inside the Mainstream tab (not a third top-level Discover tab).
+          Claude 2026-09-15: Monitored chip added here — not inside MainstreamFilterSortBar,
+          which is a pure shell over TMDB query state. This is a local-state view switch.
+          Chip on → clearSearch + resetFilters; hides the filter bar; shows local monitored grid.
+          Chip off → carousels return. Mutual exclusivity with search/filter/calendar (plan §4.3).
+          Review if: a dedicated /api/modes/{mode}/monitored endpoint is added. */}
+      <div class="mb-3 flex flex-wrap items-center gap-1">
         <For each={["rows", "calendar"] as MainstreamView[]}>
           {(v) => (
             <button
@@ -1121,36 +1183,52 @@ export const MainstreamDiscover: Component<{
             </button>
           )}
         </For>
+        <FilterChip
+          label="Monitored"
+          active={monitoredOnly}
+          onToggle={() => {
+            const turningOn = !monitoredOnly();
+            if (turningOn) {
+              clearSearch();
+              resetFilters();
+            }
+            setMonitoredOnly((v) => !v);
+          }}
+        />
       </div>
 
-      <Show when={view() !== "calendar"}>
-        <form
-          class="mb-4 flex gap-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            // A search takes over the view — reset any active filter so clearing
-            // the search returns to the carousels, not into a stale filter grid.
-            resetFilters();
-            setSubmitted(draft());
-          }}
-        >
-          <input
-            class="w-full max-w-sm rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent"
-            placeholder="Search movies & shows…"
-            value={draft()}
-            onInput={(e) => setDraft(e.currentTarget.value)}
-          />
-          <Show when={searching()}>
-            <Button onClick={clearSearch}>Clear</Button>
-          </Show>
-        </form>
+      {/* Search + filter bar: hidden when monitoredOnly is on (replaced by the monitored grid). */}
+      <Show when={!monitoredOnly()}>
+        <Show when={view() !== "calendar"}>
+          <form
+            class="mb-4 flex gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              // A search takes over the view — reset any active filter so clearing
+              // the search returns to the carousels, not into a stale filter grid.
+              resetFilters();
+              setMonitoredOnly(false);
+              setSubmitted(draft());
+            }}
+          >
+            <input
+              class="w-full max-w-sm rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent"
+              placeholder="Search movies & shows…"
+              value={draft()}
+              onInput={(e) => setDraft(e.currentTarget.value)}
+            />
+            <Show when={searching()}>
+              <Button onClick={clearSearch}>Clear</Button>
+            </Show>
+          </form>
 
-        <Show when={!searching()}>
-          <MainstreamFilterSortBar
-            value={filters}
-            onChange={applyFilters}
-            lockedContentType={props.contentType}
-          />
+          <Show when={!searching()}>
+            <MainstreamFilterSortBar
+              value={filters}
+              onChange={applyFilters}
+              lockedContentType={props.contentType}
+            />
+          </Show>
         </Show>
       </Show>
 
@@ -1173,91 +1251,38 @@ export const MainstreamDiscover: Component<{
         </Show>
       </Show>
 
-      <Show
-        when={view() !== "calendar"}
-        fallback={
-          <CalendarView onGrab={setGrabTarget} onDetail={setDetailTarget} />
-        }
-      >
-      <Show
-        when={searching()}
-        fallback={
+      {/* Claude 2026-09-15: Monitored grid — replaces carousels when chip is on.
+          No TMDB calls while chip is on (plan §4.1 guardrail).
+          LibraryCard lazy-fetches posters via tmdbId and opens DetailPopup.
+          Cards with tmdbId===0 stay click-inert (existing LibraryCard behavior).
+          Direct Show/For rather than PaginatedStrip: monitoredItems is a
+          resource keyed on monitoredOnly(); rendering directly from the resource
+          correctly handles the async timing (PaginatedStrip's load callback
+          fires synchronously on reloadToken change before the resource resolves).
+          The list is bounded by what the operator actually monitors, not an
+          unbounded TMDB catalog, so one-shot full render is appropriate.
+          Review if: a dedicated /api/modes/{mode}/monitored endpoint is added. */}
+      <Show when={monitoredOnly()}>
+        <section class="mt-6">
+          <div class="mb-2 flex items-center justify-between gap-3">
+            <h2 class="text-sm font-semibold uppercase tracking-wide text-muted">
+              Monitored
+            </h2>
+          </div>
           <Show
-            when={filtering()}
-            fallback={
-              <>
-            <Show when={props.editMode?.()}>
-              <RowEditor
-                rows={rowDescriptors()}
-                onReorder={persistVisibleOrder}
-                onToggleEnabled={(r) => void toggleRowEnabled(r)}
-                onToggleHidden={(r) => toggleHidden(r.key)}
-                onDelete={(r) => void deleteRow(r)}
-              />
-              <Show when={editError()}>
-                <ErrorText>{editError()}</ErrorText>
-              </Show>
-            </Show>
-            <For each={visibleKeys()}>{(key) => renderRow(key)}</For>
-            <div class="mt-6 flex justify-center">
-              <Button onClick={() => setAddFeedOpen(true)}>+ Add RSS feed</Button>
-            </div>
-            <Show when={addFeedOpen()}>
-              <AddRssFeedModal
-                allowedTargets={["movie", "tv"]}
-                defaultTarget="movie"
-                onClose={() => setAddFeedOpen(false)}
-                onSaved={() => {
-                  setAddFeedOpen(false);
-                  setReloadToken((n) => n + 1);
-                }}
-              />
-            </Show>
-              </>
-            }
+            when={!monitoredItems.loading}
+            fallback={<Muted>Loading…</Muted>}
           >
-            <PaginatedStrip<DiscoverItem>
-              title="Filtered results"
-              reloadToken={() => JSON.stringify(filters())}
-              load={(page) =>
-                fetchDiscoverFiltered(
-                  filters().contentType,
-                  toFilterParams(filters()),
-                  page,
-                )
-              }
-              onError={setSetupError}
-              containerClass={MEDIA_POSTER_GRID_CLASS}
-            >
-              {(item) => (
-                <PosterCard
-                  mode={filters().contentType}
-                  item={item}
-                  onGrab={setGrabTarget}
-                  onDetail={setDetailTarget}
-                  layout="grid"
-                />
-              )}
-            </PaginatedStrip>
-          </Show>
-        }
-      >
-        <section class="mt-2">
-          <h2 class="mb-2 text-sm font-semibold uppercase tracking-wide text-muted">
-            Search results
-          </h2>
-          <Show when={!results.loading} fallback={<Muted>Searching…</Muted>}>
             <Show
-              when={(results()?.length ?? 0) > 0}
-              fallback={<Muted>No results found.</Muted>}
+              when={(monitoredItems() ?? []).length > 0}
+              fallback={<Muted>No monitored titles.</Muted>}
             >
               <div class={MEDIA_POSTER_GRID_CLASS}>
-                <For each={results()}>
-                  {(e) => (
-                    <PosterCard
-                      mode={e.mode}
-                      item={e.item}
-                      onGrab={setGrabTarget}
+                <For each={monitoredItems() ?? []}>
+                  {(item) => (
+                    <LibraryCard
+                      mode={(props.contentType ?? "movies") as "movies" | "series"}
+                      item={item}
                       onDetail={setDetailTarget}
                       layout="grid"
                     />
@@ -1268,6 +1293,104 @@ export const MainstreamDiscover: Component<{
           </Show>
         </section>
       </Show>
+
+      <Show when={!monitoredOnly()}>
+        <Show
+          when={view() !== "calendar"}
+          fallback={
+            <CalendarView onGrab={setGrabTarget} onDetail={setDetailTarget} />
+          }
+        >
+        <Show
+          when={searching()}
+          fallback={
+            <Show
+              when={filtering()}
+              fallback={
+                <>
+              <Show when={props.editMode?.()}>
+                <RowEditor
+                  rows={rowDescriptors()}
+                  onReorder={persistVisibleOrder}
+                  onToggleEnabled={(r) => void toggleRowEnabled(r)}
+                  onToggleHidden={(r) => toggleHidden(r.key)}
+                  onDelete={(r) => void deleteRow(r)}
+                />
+                <Show when={editError()}>
+                  <ErrorText>{editError()}</ErrorText>
+                </Show>
+              </Show>
+              <For each={visibleKeys()}>{(key) => renderRow(key)}</For>
+              <div class="mt-6 flex justify-center">
+                <Button onClick={() => setAddFeedOpen(true)}>+ Add RSS feed</Button>
+              </div>
+              <Show when={addFeedOpen()}>
+                <AddRssFeedModal
+                  allowedTargets={["movie", "tv"]}
+                  defaultTarget="movie"
+                  onClose={() => setAddFeedOpen(false)}
+                  onSaved={() => {
+                    setAddFeedOpen(false);
+                    setReloadToken((n) => n + 1);
+                  }}
+                />
+              </Show>
+                </>
+              }
+            >
+              <PaginatedStrip<DiscoverItem>
+                title="Filtered results"
+                reloadToken={() => JSON.stringify(filters())}
+                load={(page) =>
+                  fetchDiscoverFiltered(
+                    filters().contentType,
+                    toFilterParams(filters()),
+                    page,
+                  )
+                }
+                onError={setSetupError}
+                containerClass={MEDIA_POSTER_GRID_CLASS}
+              >
+                {(item) => (
+                  <PosterCard
+                    mode={filters().contentType}
+                    item={item}
+                    onGrab={setGrabTarget}
+                    onDetail={setDetailTarget}
+                    layout="grid"
+                  />
+                )}
+              </PaginatedStrip>
+            </Show>
+          }
+        >
+          <section class="mt-2">
+            <h2 class="mb-2 text-sm font-semibold uppercase tracking-wide text-muted">
+              Search results
+            </h2>
+            <Show when={!results.loading} fallback={<Muted>Searching…</Muted>}>
+              <Show
+                when={(results()?.length ?? 0) > 0}
+                fallback={<Muted>No results found.</Muted>}
+              >
+                <div class={MEDIA_POSTER_GRID_CLASS}>
+                  <For each={results()}>
+                    {(e) => (
+                      <PosterCard
+                        mode={e.mode}
+                        item={e.item}
+                        onGrab={setGrabTarget}
+                        onDetail={setDetailTarget}
+                        layout="grid"
+                      />
+                    )}
+                  </For>
+                </div>
+              </Show>
+            </Show>
+          </section>
+        </Show>
+        </Show>
       </Show>
 
       <Show when={grabTarget()}>

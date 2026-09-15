@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 )
@@ -73,6 +74,13 @@ type libraryTrackedItem struct {
 	// row. 0/omitted = unrated. GET /tracked must not look up catalog scores.
 	// Review if: Discover's existing-library row starts showing stars too.
 	Rating int `json:"rating,omitempty"`
+	// Claude 2026-09-15: derived monitored flag — true when the item has an
+	// active grab (any mode) OR any monitored season (Series only). Derived at
+	// list time from grabs + library_season_monitored; no new column or migration.
+	// Reason: client-side filter chip on Library/Discover — see plan §1.2.
+	// Troubleshooting: absent (omitempty) means false; compare explicitly with === true.
+	// Review if: GET /tracked gains server-side filter params (move filter server-side).
+	Monitored bool `json:"monitored,omitempty"`
 }
 
 // libraryTrackedFile mirrors apidto.TrackedItemFile for Movies multi-file titles.
@@ -109,19 +117,51 @@ func browserPlayableVideo(path string) bool {
 	}
 }
 
+// Claude 2026-09-15: activeGrabKeys hoists the grab list for ONE mode into a set of request keys
+// whose status passes isActiveGrab — same gate /api/requests uses so the two surfaces agree.
+// Reason: the monitored flag on GET /tracked must never disagree with Requests about what "outstanding" means.
+// Troubleshooting: used only inside listTrackedHandler, one call per mode branch — no per-row query.
+// Review if: isActiveGrab or requestKey change contract (keep these in sync).
+//
+// No scheduler, no goroutine, no ticker added by this function — purely a synchronous DB call per request.
+func activeGrabKeys(ctx context.Context, grabsStore *grabs.Store, m mode.Mode) (map[string]bool, error) {
+	grabList, err := grabsStore.List(ctx, m)
+	if err != nil {
+		return nil, fmt.Errorf("listing grabs for mode %s: %w", m, err)
+	}
+	out := map[string]bool{}
+	for _, g := range grabList {
+		if isActiveGrab(g.Status) {
+			out[requestKey(m, g.TMDBID, g.Title)] = true
+		}
+	}
+	return out, nil
+}
+
 // listTrackedHandler returns every item {mode} currently tracks — straight
 // from libStore for every mode now (no *arr app involved): items for Movies,
 // series for Series, scenes for Adult (Whisparr eliminated, Stage 4). Backs
 // the Tag workflow's item picker (there's no other way to browse what's
 // trackable to assign/remove a tag on) and is generically useful anywhere a
 // UI needs real item context instead of guessing an ID.
-func listTrackedHandler(libStore *library.Store) http.HandlerFunc {
+//
+// Claude 2026-09-15: grabsStore added to derive the Monitored field — one List
+// call per mode branch (Movies/Series/Adult), hoisted out of the row loop.
+// Series also calls MonitoredSeriesIDs once. No per-row DB query, no TMDB call.
+// Reason: Library and Discover Mainstream monitored-only filter chip (plan §1.3).
+// Review if: GET /tracked gains server-side filter params (move filtering server-side).
+func listTrackedHandler(libStore *library.Store, grabsStore *grabs.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		ctx := r.Context()
 
 		if m == mode.Movies {
 			items, err := libStore.List(ctx, mode.Movies)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			activeMovies, err := activeGrabKeys(ctx, grabsStore, mode.Movies)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -186,6 +226,7 @@ func listTrackedHandler(libStore *library.Store) http.HandlerFunc {
 					CollectionName: item.CollectionName, Genres: item.Genres, Cast: item.Cast,
 					CreatedAt: item.CreatedAt, QualityTiers: tiers, Files: trackedFiles,
 					VideoURL: itemVideoURL, Rating: item.Rating,
+					Monitored: activeMovies[requestKey(mode.Movies, item.TMDBID, item.Title)],
 				}
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -209,6 +250,16 @@ func listTrackedHandler(libStore *library.Store) http.HandlerFunc {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			activeSeries, err := activeGrabKeys(ctx, grabsStore, mode.Series)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			monitoredSeries, err := libStore.MonitoredSeriesIDs(ctx)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 			out := make([]libraryTrackedItem, len(series))
 			for i, s := range series {
 				tags, err := libStore.SeriesTags(ctx, s.ID)
@@ -216,7 +267,12 @@ func listTrackedHandler(libStore *library.Store) http.HandlerFunc {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
-				out[i] = libraryTrackedItem{ID: s.ID, Title: s.Title, Tags: tags, TMDBID: s.TMDBID, Year: s.Year, Genres: s.Genres, Cast: s.Cast, CreatedAt: s.CreatedAt, QualityTiers: tiersBySeries[s.ID], Rating: s.Rating}
+				out[i] = libraryTrackedItem{
+					ID: s.ID, Title: s.Title, Tags: tags, TMDBID: s.TMDBID, Year: s.Year,
+					Genres: s.Genres, Cast: s.Cast, CreatedAt: s.CreatedAt,
+					QualityTiers: tiersBySeries[s.ID], Rating: s.Rating,
+					Monitored: monitoredSeries[s.ID] || activeSeries[requestKey(mode.Series, s.TMDBID, s.Title)],
+				}
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(out)
@@ -238,6 +294,11 @@ func listTrackedHandler(libStore *library.Store) http.HandlerFunc {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			activeAdult, err := activeGrabKeys(ctx, grabsStore, mode.Adult)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 			out := make([]libraryTrackedItem, len(scenes))
 			for i, sc := range scenes {
 				tags, err := libStore.SceneTags(ctx, sc.ID)
@@ -255,7 +316,8 @@ func listTrackedHandler(libStore *library.Store) http.HandlerFunc {
 					PosterURL: sc.PosterURL,
 					Box:       sc.Box, SceneID: sc.SceneID,
 					Studio: sc.Studio, Date: sc.Date,
-					Rating: sc.Rating,
+					Rating:    sc.Rating,
+					Monitored: activeAdult[requestKey(mode.Adult, 0, sc.Title)],
 				}
 				if sc.FilePath != "" && browserPlayableVideo(sc.FilePath) {
 					out[i].VideoURL = fmt.Sprintf("/api/modes/adult/tracked/%d/video", sc.ID)

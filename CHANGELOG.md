@@ -8293,3 +8293,45 @@ Usenet engine failures also park (or permanently fail) the grab immediately via
 live installs no longer wait for that tick (or a browser poll) to leave
 "Downloading".
 
+
+## 2026-09-15 — Monitored-only filter chip (Library + Discover Mainstream)
+
+A "Monitored" filter chip is now available on the Library and Discover
+Mainstream surfaces for Movies and Series.
+
+**What "Monitored" means:** an item is monitored when it has an active grab
+(status queued/downloading/retrying/pending-release) OR, for series, at least
+one season row with `monitored = true`. The flag is derived server-side on
+`GET /api/modes/{mode}/tracked` and exposed as `monitored: bool` in
+`TrackedItem`; no new persisted column — avoids data drift.
+
+**Library:** toggling the chip narrows `visibleItems()` client-side. It
+intersects with genre, tier, and search filters rather than replacing them.
+The chip resets when the media-type tab changes. It is hidden for Adult
+Library (adult content is not monitored via this mechanism). Empty-state copy
+updated to "No items match these filters."
+
+**Discover Mainstream:** toggling the chip switches the grid away from the TMDB
+discover API entirely — the grid renders items from the local `/tracked`
+(monitored === true) and `/requests` (grabId > 0) endpoints, deduplicated by
+`tmdbId`. No new TMDB discover calls fire while the chip is active. The chip
+clears automatically when other filters, search, or calendar view are activated.
+
+**Backend changes:**
+- `internal/library/library_series.go`: `MonitoredSeriesIDs` — bulk query for
+  series with at least one monitored season (avoids N+1 in the loop).
+- `internal/api/tracked.go`: `Monitored bool` on `libraryTrackedItem`;
+  `activeGrabKeys` helper; `listTrackedHandler` extended to accept `grabsStore`.
+- `internal/apidto/dto.go`: `Monitored bool` on `TrackedItem`; TS regenerated.
+- `internal/api/handler.go`: updated `listTrackedHandler` registration.
+
+**Frontend changes:**
+- `frontend/src/components/ui.tsx`: shared `FilterChip` component.
+- `frontend/src/screens/Library.tsx`: `monitoredOnly` signal + filter + chip.
+- `frontend/src/screens/discover/Mainstream.tsx`: `monitoredOnly` signal;
+  `monitoredItems` resource from tracked+requests; grid switch.
+
+**Tests:** Go unit tests for `MonitoredSeriesIDs` and `listTrackedHandler`
+monitored-flag derivation; frontend tests for Library chip (filter, intersect,
+reset, absent in Adult) and Discover chip (no discover calls while on,
+deduplication, filter clearing).

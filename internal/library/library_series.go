@@ -508,6 +508,36 @@ type SeasonState struct {
 	Monitored    bool `json:"monitored"`
 }
 
+// Claude 2026-09-15: bulk monitored-series lookup for GET /tracked's derived monitored flag.
+// Reason: one query for the whole library, same hoisted-out-of-the-loop shape EpisodeTiersBySeries
+//   already uses — a per-series MonitoredSeasons call inside the loop would be N+1.
+// Troubleshooting: a series with ONLY monitored=false rows must NOT appear in this map.
+// Review if: GET /tracked starts accepting server-side filter params (would push this server-side).
+
+// MonitoredSeriesIDs returns the set of series IDs that have at least one season
+// with monitored = true. ONE query for the whole library, deliberately not a per-series
+// MonitoredSeasons call — same hoisted-out-of-the-loop shape EpisodeTiersBySeries
+// already uses for GET /tracked.
+func (s *Store) MonitoredSeriesIDs(ctx context.Context) (map[int64]bool, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT series_id FROM library_season_monitored WHERE monitored = true`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing monitored series ids: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning monitored series id: %w", err)
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
 // MonitoredSeasons returns seriesID's monitored season numbers as a set.
 //
 // ONE query per series, returning only monitored = true rows — deliberately not a

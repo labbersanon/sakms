@@ -48,6 +48,9 @@ export function fetchTagVocabulary(mode: Mode): Promise<TagEntry[]> {
 // fetchTrackedItems lists what the mode currently tracks (items/series/scenes),
 // each with its current tags — Library's item picker. One shared route
 // for every mode; for Adult the returned id is a library_scenes.id.
+// Claude 2026-09-15: TrackedItem.monitored is a DERIVED field, never stored —
+// the backend computes it at list time from grabs + library_season_monitored.
+// Absent (omitempty) means false; always compare with === true on the frontend.
 // Optional aspect appends ?aspect= for Adult Library tabs; omit it so the
 // handler's empty-case returns every row.
 export function fetchTrackedItems(

@@ -53,6 +53,7 @@ import {
   Button,
   // Card, // Claude 2026-08-13: only the commented-out AdultMoviesPlaceholder used this.
   ErrorText,
+  FilterChip,
   // ModeTabs, // Claude 2026-08-13: only the commented-out legacy Library shell used this.
   Muted,
   ScreenTabs,
@@ -671,6 +672,12 @@ const LibraryView: Component<{
   const [tier, setTier] = createSignal(props.initialTier ?? "");
   // sort orders the grid; "title" keeps the server's order.
   const [sort, setSort] = createSignal<SortKey>("title");
+  // Claude 2026-09-15: monitoredOnly restricts the grid to items where monitored===true.
+  // Reason: Library filter chip — derived server-side on GET /tracked, filtered client-side.
+  // Troubleshooting: monitored is omitempty, so absent means false; compare with === true.
+  // Review if: GET /tracked gains server-side filter params (move filter server-side).
+  // No scheduler, no goroutine, no ticker added — purely a local signal.
+  const [monitoredOnly, setMonitoredOnly] = createSignal(false);
   // detailDraft is the add-tag input value in the DetailPanel.
   const [detailDraft, setDetailDraft] = createSignal("");
 
@@ -699,6 +706,7 @@ const LibraryView: Component<{
         setDetailDraft("");
         setGenre("");
         setTier("");
+        setMonitoredOnly(false);
       },
       refetch: refresh,
     },
@@ -747,6 +755,8 @@ const LibraryView: Component<{
     if (q) items = items.filter((item) => item.title.toLowerCase().includes(q));
     if (g) items = items.filter((item) => (item.genres ?? []).includes(g));
     if (t) items = items.filter((item) => (item.qualityTiers ?? []).includes(t));
+    // monitored filter: compare explicitly with === true (field is omitempty, absent means false).
+    if (monitoredOnly()) items = items.filter((item) => item.monitored === true);
     if (sort() === "added") {
       // Copy before sorting — `items` may still be the resource's own array.
       // createdAt is fixed-width ISO-8601 UTC, so lexicographic descending IS
@@ -916,6 +926,23 @@ const LibraryView: Component<{
                 <option value="added">Newest first</option>
               </select>
             </div>
+            {/* Claude 2026-09-15: Monitored chip — only for Movies/Series (not Adult).
+                "Monitored" in Adult means performer/studio entity monitoring (a different concept).
+                Toggling clears selectedId/detailTarget, matching every other filter handler here.
+                Review if: Adult gains its own monitored chip with a distinct label. */}
+            <Show when={props.mode !== "adult"}>
+              <div class="flex items-end sm:self-end">
+                <FilterChip
+                  label="Monitored"
+                  active={monitoredOnly}
+                  onToggle={() => {
+                    setMonitoredOnly((v) => !v);
+                    setSelectedId(null);
+                    setDetailTarget(null);
+                  }}
+                />
+              </div>
+            </Show>
           </div>
           </div>
 
@@ -926,7 +953,7 @@ const LibraryView: Component<{
               <Show
                 when={visibleItems().length > 0}
                 fallback={
-                  <Muted class="mt-4">No items match this search or genre.</Muted>
+                  <Muted class="mt-4">No items match these filters.</Muted>
                 }
               >
                 <div class={MEDIA_POSTER_GRID_CLASS}>

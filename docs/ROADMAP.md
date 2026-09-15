@@ -2533,3 +2533,19 @@ Tagging, Import), Movies, Series, Papeles [sic], Compines [sic], Settings.
    total storage used/available). This is the "System dashboard" backlog
    item above — note the Network & Disk Usage piece specifically has no
    existing data source in SAK today.
+
+## Deferred: "watch an owned movie for a better release" — movie-level monitored flag
+
+The monitored-only chip (shipped 2026-09-15) deliberately does **not** add a
+new `library_items.monitored` column for Movies. The three tracking signals it
+exposes (active grab, held pre-release request, series season monitored) are
+already persisted; a new column would be a second hand-maintained source of
+truth for something the grabs table already knows — the exact drift this
+codebase avoids.
+
+If a genuine "keep watching this owned movie for a better quality release"
+feature lands in the future, it earns a movie-level flag (or a real
+`availability_watch` writer — `internal/recheck`, currently has no production
+writer) at that time. Until then, a movie is "monitored" if and only if it has
+an active or scheduled grab. See `.omc/plans/monitored-only-chip-discover-library.md`
+§0 for the full derivation rationale.

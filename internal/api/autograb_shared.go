@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"time"
 
@@ -83,6 +84,9 @@ const (
 	// articlesUnavailableReason is the retry_reason for a retrieval failure
 	// where every configured subscription answered 430.
 	articlesUnavailableReason = "no configured usenet subscription holds this release's articles"
+	// maxDispatchAttempts caps how many ranked candidates one RunAutoGrab
+	// cycle will try when precheck rejects NZBs (indexer grab-quota bound).
+	maxDispatchAttempts = 3
 	// weakIdentityReason is the retry_reason when Adult identity signals are
 	// too thin for silent unattended dispatch (adultIdentityWeak returned true).
 	//
@@ -348,12 +352,45 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 			return out, err
 		}
 	}
-	picked := releases[sel.PickIndex]
-
-	downloadClient, gid, status, err := dispatchToDownloadClient(ctx, deps.SettingsStore, sess, req.Mode, deps.NZB, string(picked.Protocol), picked.DownloadURL, picked.Title)
+	// Claude 2026-09-15: try the next qualified candidate when usenet precheck rejects.
+	// Reason: a single dead NZB must not end the cycle when runners-up exist.
+	// Troubleshooting: journal "usenet precheck: abort"; Selection.PickIndex is
+	//   rewritten to the candidate that actually dispatched.
+	var (
+		picked         = releases[sel.PickIndex]
+		downloadClient string
+		gid            string
+		err            error
+	)
+	order := qualifiedCandidateOrder(sel)
+	for _, idx := range order[:min(len(order), maxDispatchAttempts)] {
+		picked = releases[idx]
+		var status int
+		downloadClient, gid, status, err = dispatchToDownloadClient(ctx, deps.SettingsStore, sess, req.Mode, deps.NZB, string(picked.Protocol), picked.DownloadURL, picked.Title)
+		if err == nil {
+			sel.PickIndex = idx
+			out.Selection = sel
+			break
+		}
+		if !errors.Is(err, usenet.ErrArticlesUnavailable) {
+			out.Status, out.Err = status, err
+			return out, err
+		}
+		log.Printf("usenet precheck: candidate %d (%s) unavailable — trying next", idx, picked.Title)
+	}
+	// Only ErrArticlesUnavailable survives the loop; every other error returned above.
 	if err != nil {
-		out.Status, out.Err = status, err
-		return out, err
+		out.NoMatch = true
+		if req.Trigger == TriggerOperator {
+			return out, nil
+		}
+		g, parkErr := parkPendingRetry(ctx, deps, req, articlesUnavailableReason)
+		if parkErr != nil {
+			out.Status, out.Err = http.StatusInternalServerError, parkErr
+			return out, parkErr
+		}
+		out.GrabID, out.RetryStatus, out.RetryReason = g.ID, g.Status, g.RetryReason
+		return out, nil
 	}
 
 	if existing, dup, status, err := activeGrabForGID(ctx, deps.GrabsStore, req.Mode, gid); dup || err != nil {
@@ -563,4 +600,25 @@ func parkPreReleaseRequest(ctx context.Context, grabsStore *grabs.Store, m mode.
 // transition instead of each inventing its own retry_after.
 func parkGrabForRetry(ctx context.Context, deps AutoGrabDeps, id int64, reason string) error {
 	return deps.GrabsStore.ParkWithBackoff(ctx, id, time.Now(), reason)
+}
+
+// qualifiedCandidateOrder returns PickIndex first, then other Ranked indices
+// that cleared the quality floor (Qualified). Used by the precheck fallback loop.
+func qualifiedCandidateOrder(sel autograb.Selection) []int {
+	if sel.PickIndex < 0 {
+		return nil
+	}
+	out := []int{sel.PickIndex}
+	seen := map[int]bool{sel.PickIndex: true}
+	for _, idx := range sel.Ranked {
+		if seen[idx] {
+			continue
+		}
+		if idx < 0 || idx >= len(sel.Grades) || !sel.Grades[idx].Qualified {
+			continue
+		}
+		seen[idx] = true
+		out = append(out, idx)
+	}
+	return out
 }

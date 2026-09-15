@@ -315,6 +315,7 @@ type fakeNNTP struct {
 	articles map[string]fakeArticle
 
 	bodyCount atomic.Int64
+	statCount atomic.Int64
 
 	// gate, when non-nil, blocks every BODY response until it is closed. Each
 	// blocked request first signals on blocked (best-effort, never blocking).
@@ -408,6 +409,9 @@ func (f *fakeNNTP) serve(c net.Conn) {
 			fmt.Fprint(w, "381 password required\r\n")
 		case strings.HasPrefix(upper, "AUTHINFO PASS"):
 			fmt.Fprint(w, "281 authentication accepted\r\n")
+		case strings.HasPrefix(upper, "STAT "):
+			id := strings.Trim(strings.TrimSpace(line[len("STAT "):]), "<>")
+			f.serveStat(w, id)
 		case strings.HasPrefix(upper, "BODY "):
 			id := strings.Trim(strings.TrimSpace(line[len("BODY "):]), "<>")
 			f.serveBody(w, id)
@@ -418,6 +422,22 @@ func (f *fakeNNTP) serve(c net.Conn) {
 			return
 		}
 	}
+}
+
+func (f *fakeNNTP) serveStat(w *bufio.Writer, id string) {
+	f.statCount.Add(1)
+	f.mu.Lock()
+	a, ok := f.articles[id]
+	f.mu.Unlock()
+	if !ok {
+		fmt.Fprint(w, "430 no such article\r\n")
+		return
+	}
+	if a.status != 0 {
+		fmt.Fprintf(w, "%d article unavailable\r\n", a.status)
+		return
+	}
+	fmt.Fprintf(w, "223 0 <%s>\r\n", id)
 }
 
 func (f *fakeNNTP) serveBody(w *bufio.Writer, id string) {
@@ -711,42 +731,39 @@ func TestFetchSegmentAny_FallsBackAcrossPools(t *testing.T) {
 	}
 }
 
-// TestDownload_EveryPool430_IsArticleNotFound proves the retryable
-// classification survives the wrapping done by assembleFile and downloadAll.
-func TestDownload_EveryPool430_IsArticleNotFound(t *testing.T) {
+// TestAddNZB_EveryPool430_IsArticlesUnavailable proves the pre-download STAT
+// gate rejects an NZB whose payload articles are gone on every subscription,
+// before staging is allocated. Mid-download classification of 430 remains
+// covered by TestFetchSegmentAny_ErrorPrecedence.
+func TestAddNZB_EveryPool430_IsArticlesUnavailable(t *testing.T) {
 	p := makePayload(t, 2, 1024)
 	srvA := newFakeNNTP(t) // knows nothing -> 430
 	srvB := newFakeNNTP(t) // knows nothing -> 430
 	nzb := nzbServer(t, p)
 
+	staging := t.TempDir()
 	m := New(Config{
 		Servers:    []ServerConfig{srvA.cfg(), srvB.cfg()},
-		StagingDir: t.TempDir(),
+		StagingDir: staging,
 		HTTPClient: nzb.Client(),
 	})
 	gid, err := m.AddNZB(context.Background(), nzb.URL, "Missing Everywhere")
-	if err != nil {
-		t.Fatalf("AddNZB: %v", err)
+	if !errors.Is(err, ErrArticlesUnavailable) {
+		t.Fatalf("AddNZB err = %v, want ErrArticlesUnavailable", err)
 	}
-	d := waitTerminal(t, m, gid)
-	if d.Status != "error" {
-		t.Fatalf("status = %q, want error", d.Status)
+	if gid != "" {
+		t.Fatalf("gid = %q, want empty (no staging allocated)", gid)
 	}
-	if !errors.Is(d.Err, ErrArticleNotFound) {
-		t.Errorf("Download.Err = %v, want errors.Is ErrArticleNotFound", d.Err)
-	}
-	if errors.Is(d.Err, ErrArticleRemoved) {
-		t.Error("a 430-everywhere failure must NOT classify as the permanent ErrArticleRemoved")
-	}
-	if d.ErrorMessage == "" {
-		t.Error("ErrorMessage must still be populated for the UI")
+	entries, _ := os.ReadDir(staging)
+	if len(entries) != 0 {
+		t.Fatalf("staging should be empty after precheck abort, got %v", entries)
 	}
 }
 
-// TestDownload_451_IsArticleRemoved is the bug this task exists to fix: a
-// permanent DMCA takedown must be distinguishable from a transient failure, so
-// a retry ticker never retries it forever.
-func TestDownload_451_IsArticleRemoved(t *testing.T) {
+// TestAddNZB_451_IsArticlesUnavailable: a sampled 451 on a payload article
+// aborts at precheck. Fetch-time 451 classification remains in
+// TestFetchSegmentAny_ErrorPrecedence.
+func TestAddNZB_451_IsArticlesUnavailable(t *testing.T) {
 	p := makePayload(t, 2, 1024)
 	srv := newFakeNNTP(t)
 	srv.addStatus(p.msgIDs[0], 451)
@@ -754,19 +771,9 @@ func TestDownload_451_IsArticleRemoved(t *testing.T) {
 	nzb := nzbServer(t, p)
 
 	m := New(Config{Servers: []ServerConfig{srv.cfg()}, StagingDir: t.TempDir(), HTTPClient: nzb.Client()})
-	gid, err := m.AddNZB(context.Background(), nzb.URL, "Taken Down")
-	if err != nil {
-		t.Fatalf("AddNZB: %v", err)
-	}
-	d := waitTerminal(t, m, gid)
-	if d.Status != "error" {
-		t.Fatalf("status = %q, want error", d.Status)
-	}
-	if !errors.Is(d.Err, ErrArticleRemoved) {
-		t.Errorf("Download.Err = %v, want errors.Is ErrArticleRemoved", d.Err)
-	}
-	if errors.Is(d.Err, ErrArticleNotFound) {
-		t.Error("a 451 must NOT classify as the retryable ErrArticleNotFound")
+	_, err := m.AddNZB(context.Background(), nzb.URL, "Taken Down")
+	if !errors.Is(err, ErrArticlesUnavailable) {
+		t.Fatalf("AddNZB err = %v, want ErrArticlesUnavailable", err)
 	}
 }
 

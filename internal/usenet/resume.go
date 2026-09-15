@@ -325,6 +325,38 @@ func StagingHasLegacyOrOrphanPayloads(dir string) bool {
 	return false
 }
 
+// completedMsgIDsFromDir reads the resume sidecar so RelaunchNZB's precheck can
+// skip articles already durable-complete. Returns nil when the sidecar is
+// missing, unreadable, or written by an older schema version.
+func completedMsgIDsFromDir(dir string) map[string]bool {
+	data, err := os.ReadFile(filepath.Join(dir, ResumeFileName))
+	if err != nil {
+		return nil
+	}
+	var snap ResumeSnapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		return nil
+	}
+	if snap.Version != resumeSchemaVersion {
+		return nil
+	}
+	out := make(map[string]bool)
+	for _, f := range snap.Files {
+		if f == nil {
+			continue
+		}
+		for id := range f.Done {
+			if id != "" {
+				out[id] = true
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func ClearResumeArtifacts(dir string) error {
 	var first error
 	for _, name := range []string{ResumeFileName, resumeTmpName} {

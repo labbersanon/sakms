@@ -3,6 +3,7 @@ package usenet
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -95,9 +96,16 @@ func newPool(cfg ServerConfig) *pool {
 }
 
 // get returns an idle authenticated connection or dials a new one, never
-// exceeding effectiveMaxConns live sockets for this server.
-// Returns an error immediately if the pool has been closed.
+// exceeding effectiveMaxConns live sockets for this server. It blocks until a
+// connection is available, and errors immediately if the pool has been closed.
 func (p *pool) get() (*nntp.Conn, error) {
+	return p.getCtx(context.Background())
+}
+
+// getCtx is get with cancellation. Pre-download STAT checks run on the operator
+// HTTP path and must not hang a Grab request when every live slot is held by an
+// in-flight download.
+func (p *pool) getCtx(ctx context.Context) (*nntp.Conn, error) {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
@@ -114,6 +122,8 @@ func (p *pool) get() (*nntp.Conn, error) {
 
 	// No idle conn: wait for either a free live slot (dial) or a returned idle.
 	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	case p.live <- struct{}{}:
 		c, err := p.dial()
 		if err != nil {

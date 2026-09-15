@@ -95,6 +95,9 @@ type Manager struct {
 	downloads   map[string]*dlState
 	subscribers map[int]chan []Download
 	nextSubID   int
+	// statUnreliable latches for the process lifetime once a backend answers 430
+	// to STAT but still serves BODY, which makes the precheck gate unusable.
+	statUnreliable bool
 	// Claude 2026-09-01: job semaphore is MaxConcurrentDownloads, not Σ MaxConns.
 	// Reason: operators need "how many NZBs at once" separate from per-server
 	//   NNTP sockets; PAR2/unpack must not hold a download slot.
@@ -554,6 +557,15 @@ func (m *Manager) AddNZB(ctx context.Context, url, name string) (string, error) 
 		name = "usenet-download"
 	}
 
+	// Claude 2026-09-15: pre-download STAT gate before staging.
+	// Reason: abort dead NZBs before allocateStaging so no dir is left behind and
+	//   RunAutoGrab can try the next ranked candidate in the same cycle.
+	// Troubleshooting: AddNZB returns ErrArticlesUnavailable; journal "usenet precheck:".
+	// Review if: precheck moves behind a settings toggle (currently always on).
+	if _, err := m.precheckNZB(ctx, nzb, nil); err != nil {
+		return "", err
+	}
+
 	// Claude 2026-08-29: opaque nzb-<16 hex> GIDs, not a process-local nzb-N counter
 	// Reason: nextGID reset to 0 on every container restart, so AddNZB reused nzb-1
 	//   and ActiveByDownloadGID treated a new series as already grabbing (Furious
@@ -631,6 +643,18 @@ func (m *Manager) RelaunchNZB(ctx context.Context, gid, url, name string) error 
 	}
 	if name == "" {
 		name = "usenet-download"
+	}
+
+	// Claude 2026-09-15: precheck the still-needed articles on relaunch.
+	// Reason: aged NZBs often fall out of retention; fail closed before burning
+	//   the download slot again. Segments already resumable are not re-STATed.
+	// Troubleshooting: reconcile parks on ErrArticlesUnavailable.
+	var skip map[string]bool
+	if enabled, forceFull := m.ResumePolicy(); enabled && !forceFull {
+		skip = completedMsgIDsFromDir(filepath.Join(m.stagingDir, gid))
+	}
+	if _, err := m.precheckNZB(ctx, nzb, skip); err != nil {
+		return err
 	}
 
 	if err := os.MkdirAll(m.stagingDir, 0o755); err != nil {

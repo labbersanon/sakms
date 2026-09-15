@@ -8281,3 +8281,15 @@ files even when the download was complete. Magic-sniff `.par2` paths, rename
 recognized media/archives to a real extension, and only run PAR2 on actual PAR2
 packet sets. Unblocks import for obfuscated single-file WEB-DL releases.
 
+## 2026-09-15 — Dedupe obfuscated .par2 rename paths + park usenet errors live
+
+`normalizeObfuscatedPar2Names` now remaps/dedupes duplicate paths after a rename
+so a repeated staging path (common from colliding NZB output names) no longer
+spams `skipping non-PAR2` or leaves ghost paths that poison later PAR2 reads.
+
+Usenet engine failures also park (or permanently fail) the grab immediately via
+`SetOnError` → `UsenetErrorHandler`, sharing `applyUsenetFailure` with
+`sweepUsenetFailures`. The 24h retry sweep remains the restart-recovery path;
+live installs no longer wait for that tick (or a browser poll) to leave
+"Downloading".
+

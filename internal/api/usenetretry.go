@@ -347,31 +347,51 @@ func sweepUsenetFailures(ctx context.Context, deps AutoGrabDeps, lookup usenetDo
 			if dl == nil || dl.Err == nil {
 				continue
 			}
-			switch classifyDownloadState(dl.Status, dl.Err) {
+			status, err := applyUsenetFailure(ctx, deps, g, dl.Err, parkGrabForRetry)
+			if err != nil {
+				log.Printf("usenet retry: applying failure for grab %d: %v", g.ID, err)
+				continue
+			}
+			switch status {
 			case grabs.PendingRetry:
-				// 430 from every configured subscription, or an unclassified
-				// transient failure — retryable either way. Parking (not a bare
-				// UpdateStatus) is required: DueForRetry ignores a
-				// pending_retry row with an empty retry_after, and parking also
-				// clears the now-stale GID so the row is visible to it at all.
-				reason := usenetRetrievalReason(dl.Err)
-				if err := parkGrabForRetry(ctx, deps, g.ID, reason); err != nil {
-					log.Printf("usenet retry: parking grab %d after a retrieval failure: %v", g.ID, err)
-					continue
-				}
-				log.Printf("usenet retry: grab %d (%s) parked for re-search — %s", g.ID, g.Title, reason)
+				log.Printf("usenet retry: grab %d (%s) parked for re-search — %s", g.ID, g.Title, usenetRetrievalReason(dl.Err))
 			case grabs.Failed:
-				// Only a 451 ErrArticleRemoved reaches here: it is a permanent
-				// takedown and is NEVER retried. Every other classified failure
-				// is retryable above, exactly as the polling path treats it.
-				if err := deps.GrabsStore.UpdateStatus(ctx, g.ID, grabs.Failed); err != nil {
-					log.Printf("usenet retry: failing grab %d: %v", g.ID, err)
-					continue
-				}
 				log.Printf("usenet retry: grab %d (%s) failed permanently: %v", g.ID, g.Title, dl.Err)
 			}
 		}
 	}
+}
+
+// applyUsenetFailure is the shared classify→park/fail decision used by both
+// sweepUsenetFailures (authoritative restart recovery) and UsenetErrorHandler
+// (live fast path). Classification stays on classifyDownloadState so the two
+// callers cannot diverge on 430 vs 451; a double-park only bumps retry_count,
+// and each caller's queued/downloading guard stops worse.
+//
+// Parking (not a bare UpdateStatus) is required for PendingRetry: DueForRetry
+// ignores a pending_retry row with an empty retry_after, and parking clears the
+// now-stale GID. Only ErrArticleRemoved reaches Failed — never retried.
+//
+// Claude 2026-09-15: the "error" state is hard-coded, not taken from the
+// caller's Download.Status.
+// Reason: classifyDownloadState ignores state entirely once failure is
+// non-nil, and both callers guard on failure != nil, so passing the live
+// status could not change the outcome.
+// Review if: a non-failure state ever needs this, which means a real state
+// parameter rather than a constant.
+func applyUsenetFailure(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, failure error, park grabParker) (grabs.Status, error) {
+	status := classifyDownloadState("error", failure)
+	switch status {
+	case grabs.PendingRetry:
+		if err := park(ctx, deps, g.ID, usenetRetrievalReason(failure)); err != nil {
+			return "", err
+		}
+	case grabs.Failed:
+		if err := deps.GrabsStore.UpdateStatus(ctx, g.ID, grabs.Failed); err != nil {
+			return "", err
+		}
+	}
+	return status, nil
 }
 
 // retryDueGrabs re-runs the full auto-grab pipeline for every row whose

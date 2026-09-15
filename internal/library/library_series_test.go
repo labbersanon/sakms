@@ -1343,3 +1343,91 @@ func TestCompactEpisodeCode_RedSkeltonPopulationArithmetic(t *testing.T) {
 		t.Errorf("expected a 10-slot Pending ceiling once the uncatalogued S25E16 is removed, got %d", ceiling)
 	}
 }
+
+// Claude 2026-09-15: MonitoredSeriesIDs tests — one query for the whole library,
+// returns only series with ≥1 monitored=true season.
+// Reason: derived-monitored flag for GET /tracked (plan §1.1 / §5).
+// Review if: MonitoredSeriesIDs query or MonitoredSeasons semantics change.
+
+// TestMonitoredSeriesIDs_ReturnsSetsWithMonitoredSeason proves the basic happy path:
+// a series with at least one monitored=true season appears in the map.
+func TestMonitoredSeriesIDs_ReturnsSetsWithMonitoredSeason(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	a, err := s.UpsertSeries(ctx, Series{TMDBID: 900, Title: "Show A", RootFolderPath: "/tv"})
+	if err != nil {
+		t.Fatalf("seeding series A: %v", err)
+	}
+	b, err := s.UpsertSeries(ctx, Series{TMDBID: 901, Title: "Show B", RootFolderPath: "/tv"})
+	if err != nil {
+		t.Fatalf("seeding series B: %v", err)
+	}
+
+	// A has season 1 monitored; B has only an explicit false row.
+	if err := s.SetSeasonMonitored(ctx, a.ID, 1, true); err != nil {
+		t.Fatalf("setting monitored for A: %v", err)
+	}
+	if err := s.SetSeasonMonitored(ctx, b.ID, 1, false); err != nil {
+		t.Fatalf("setting monitored=false for B: %v", err)
+	}
+
+	ids, err := s.MonitoredSeriesIDs(ctx)
+	if err != nil {
+		t.Fatalf("MonitoredSeriesIDs: %v", err)
+	}
+	if !ids[a.ID] {
+		t.Errorf("expected series A (id=%d) to be in monitored set, got %v", a.ID, ids)
+	}
+	if ids[b.ID] {
+		t.Errorf("expected series B (id=%d, only monitored=false) to be absent, got %v", b.ID, ids)
+	}
+}
+
+// TestMonitoredSeriesIDs_EmptyMapWhenNoMonitoredRows proves the function returns
+// an empty map (not nil) when no series has any monitored=true season.
+func TestMonitoredSeriesIDs_EmptyMapWhenNoMonitoredRows(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.UpsertSeries(ctx, Series{TMDBID: 902, Title: "Some Show", RootFolderPath: "/tv"}); err != nil {
+		t.Fatalf("seeding series: %v", err)
+	}
+
+	ids, err := s.MonitoredSeriesIDs(ctx)
+	if err != nil {
+		t.Fatalf("MonitoredSeriesIDs: %v", err)
+	}
+	if ids == nil {
+		t.Errorf("expected empty map, not nil")
+	}
+	if len(ids) != 0 {
+		t.Errorf("expected empty map, got %v", ids)
+	}
+}
+
+// TestMonitoredSeriesIDs_OnlyFalseRowIsAbsent proves that a series with ONLY
+// explicit monitored=false rows is not included — the key invariant from plan §1.1.
+func TestMonitoredSeriesIDs_OnlyFalseRowIsAbsent(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	series, err := s.UpsertSeries(ctx, Series{TMDBID: 903, Title: "Unmonitored Show", RootFolderPath: "/tv"})
+	if err != nil {
+		t.Fatalf("seeding series: %v", err)
+	}
+	// Two explicitly-false seasons.
+	for _, season := range []int{1, 2} {
+		if err := s.SetSeasonMonitored(ctx, series.ID, season, false); err != nil {
+			t.Fatalf("setting season %d monitored=false: %v", season, err)
+		}
+	}
+
+	ids, err := s.MonitoredSeriesIDs(ctx)
+	if err != nil {
+		t.Fatalf("MonitoredSeriesIDs: %v", err)
+	}
+	if ids[series.ID] {
+		t.Errorf("series with only monitored=false rows must not appear in the set, got %v", ids)
+	}
+}

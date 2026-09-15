@@ -12,7 +12,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 )
@@ -818,5 +820,216 @@ func TestTrackedVideoHandler_MoviesServesWhileAdultLocked(t *testing.T) {
 	}
 	if string(body) != marker {
 		t.Fatalf("body = %q, want marker", body)
+	}
+}
+
+// Claude 2026-09-15: newTrackedTestServerWithGrabs is newTrackedTestServer's sibling that
+// also returns the grabs store so Monitored-flag tests can seed grab rows.
+// Reason: Monitored is derived from grabs + library_season_monitored at list time (plan §1.3).
+// Review if: the test helper or NewMux signature changes.
+func newTrackedTestServerWithGrabs(t *testing.T) (*library.Store, *grabs.Store, *httptest.Server) {
+	t.Helper()
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	mux := NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return libStore, grabsStore, srv
+}
+
+// seedGrab creates one grab row and returns it.
+func seedGrab(t *testing.T, grabsStore *grabs.Store, g grabs.Grab) grabs.Grab {
+	t.Helper()
+	out, err := grabsStore.Create(context.Background(), g)
+	if err != nil {
+		t.Fatalf("seeding grab: %v", err)
+	}
+	return out
+}
+
+// TestListTracked_Movies_QueuedGrabSetsMonitored: a queued grab → monitored=true.
+func TestListTracked_Movies_QueuedGrabSetsMonitored(t *testing.T) {
+	libStore, grabsStore, srv := newTrackedTestServerWithGrabs(t)
+	ctx := context.Background()
+
+	item, err := libStore.Upsert(ctx, library.Item{
+		Mode: mode.Movies, TMDBID: 101, Title: "The Matrix", Year: 1999, RootFolderPath: "/movies",
+	})
+	if err != nil {
+		t.Fatalf("seeding movie: %v", err)
+	}
+	seedGrab(t, grabsStore, grabs.Grab{
+		Mode: mode.Movies, TMDBID: 101, Title: "The Matrix", Status: grabs.Queued,
+	})
+
+	got := getTrackedItems(t, srv, "movies")
+	if len(got) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(got))
+	}
+	if got[0].ID != item.ID {
+		t.Fatalf("wrong item id")
+	}
+	if !got[0].Monitored {
+		t.Errorf("expected Monitored=true for queued grab, got false")
+	}
+}
+
+// TestListTracked_Movies_NoGrabDoesNotSetMonitored: no grab → monitored absent.
+func TestListTracked_Movies_NoGrabDoesNotSetMonitored(t *testing.T) {
+	libStore, _, srv := newTrackedTestServerWithGrabs(t)
+	ctx := context.Background()
+
+	if _, err := libStore.Upsert(ctx, library.Item{
+		Mode: mode.Movies, TMDBID: 102, Title: "Interstellar", Year: 2014, RootFolderPath: "/movies",
+	}); err != nil {
+		t.Fatalf("seeding movie: %v", err)
+	}
+
+	got := getTrackedItems(t, srv, "movies")
+	if len(got) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(got))
+	}
+	if got[0].Monitored {
+		t.Errorf("expected Monitored absent (omitempty=false) when no active grab, got true")
+	}
+}
+
+// TestListTracked_Movies_HeldPreReleaseGrabSetsMonitored: a held pending_retry
+// (Calendar pre-release) → monitored=true (status-only gate per plan §0.1).
+func TestListTracked_Movies_HeldPreReleaseGrabSetsMonitored(t *testing.T) {
+	libStore, grabsStore, srv := newTrackedTestServerWithGrabs(t)
+	ctx := context.Background()
+
+	if _, err := libStore.Upsert(ctx, library.Item{
+		Mode: mode.Movies, TMDBID: 104, Title: "Upcoming Film", Year: 2027, RootFolderPath: "/movies",
+	}); err != nil {
+		t.Fatalf("seeding movie: %v", err)
+	}
+	// A held pre-release row is PendingRetry with a future HoldUntil.
+	futureHold := grabs.FormatTime(time.Now().Add(24 * time.Hour))
+	seedGrab(t, grabsStore, grabs.Grab{
+		Mode: mode.Movies, TMDBID: 104, Title: "Upcoming Film",
+		Status:    grabs.PendingRetry,
+		HoldUntil: futureHold,
+	})
+
+	got := getTrackedItems(t, srv, "movies")
+	if len(got) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(got))
+	}
+	if !got[0].Monitored {
+		t.Errorf("expected Monitored=true for held pre-release (PendingRetry) grab, got false")
+	}
+}
+
+// TestListTracked_Series_MonitoredSeasonSetsMonitored: one monitored season → true.
+func TestListTracked_Series_MonitoredSeasonSetsMonitored(t *testing.T) {
+	libStore, _, srv := newTrackedTestServerWithGrabs(t)
+	ctx := context.Background()
+
+	series, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 200, Title: "Breaking Bad", Year: 2008, RootFolderPath: "/tv"})
+	if err != nil {
+		t.Fatalf("seeding series: %v", err)
+	}
+	if err := libStore.SetSeasonMonitored(ctx, series.ID, 1, true); err != nil {
+		t.Fatalf("setting season monitored: %v", err)
+	}
+
+	got := getTrackedItems(t, srv, "series")
+	if len(got) != 1 {
+		t.Fatalf("expected 1 series, got %d", len(got))
+	}
+	if !got[0].Monitored {
+		t.Errorf("expected Monitored=true for series with monitored season, got false")
+	}
+}
+
+// TestListTracked_Series_OnlyFalseSeasonDoesNotSetMonitored: only explicit false row → absent.
+func TestListTracked_Series_OnlyFalseSeasonDoesNotSetMonitored(t *testing.T) {
+	libStore, _, srv := newTrackedTestServerWithGrabs(t)
+	ctx := context.Background()
+
+	series, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 201, Title: "Some Show", Year: 2010, RootFolderPath: "/tv"})
+	if err != nil {
+		t.Fatalf("seeding series: %v", err)
+	}
+	if err := libStore.SetSeasonMonitored(ctx, series.ID, 1, false); err != nil {
+		t.Fatalf("setting season monitored=false: %v", err)
+	}
+
+	got := getTrackedItems(t, srv, "series")
+	if len(got) != 1 {
+		t.Fatalf("expected 1 series, got %d", len(got))
+	}
+	if got[0].Monitored {
+		t.Errorf("expected Monitored absent for series with only monitored=false season, got true")
+	}
+}
+
+// TestListTracked_Series_ActiveGrabWithNoMonitoredSeasonSetsMonitored.
+func TestListTracked_Series_ActiveGrabWithNoMonitoredSeasonSetsMonitored(t *testing.T) {
+	libStore, grabsStore, srv := newTrackedTestServerWithGrabs(t)
+	ctx := context.Background()
+
+	series, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 202, Title: "Dark", Year: 2017, RootFolderPath: "/tv"})
+	if err != nil {
+		t.Fatalf("seeding series: %v", err)
+	}
+	// No monitored season rows; an active grab.
+	seedGrab(t, grabsStore, grabs.Grab{Mode: mode.Series, TMDBID: 202, Title: "Dark", Status: grabs.Queued})
+
+	got := getTrackedItems(t, srv, "series")
+	if len(got) != 1 {
+		t.Fatalf("expected 1 series, got %d", len(got))
+	}
+	if got[0].ID != series.ID {
+		t.Fatalf("wrong series id")
+	}
+	if !got[0].Monitored {
+		t.Errorf("expected Monitored=true for series with active grab and no monitored season, got false")
+	}
+}
+
+// TestListTracked_Series_MonitoredSeasonAndActiveGrab: both signals → true (no double-count panic).
+func TestListTracked_Series_MonitoredSeasonAndActiveGrab(t *testing.T) {
+	libStore, grabsStore, srv := newTrackedTestServerWithGrabs(t)
+	ctx := context.Background()
+
+	series, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 203, Title: "Stranger Things", Year: 2016, RootFolderPath: "/tv"})
+	if err != nil {
+		t.Fatalf("seeding series: %v", err)
+	}
+	if err := libStore.SetSeasonMonitored(ctx, series.ID, 1, true); err != nil {
+		t.Fatalf("setting season monitored: %v", err)
+	}
+	seedGrab(t, grabsStore, grabs.Grab{Mode: mode.Series, TMDBID: 203, Title: "Stranger Things", Status: grabs.Downloading})
+
+	got := getTrackedItems(t, srv, "series")
+	if len(got) != 1 {
+		t.Fatalf("expected 1 series, got %d", len(got))
+	}
+	if !got[0].Monitored {
+		t.Errorf("expected Monitored=true when both monitored season and active grab, got false")
+	}
+}
+
+// TestListTracked_Adult_TitleKeyedGrabSetsMonitored: Adult uses title-keyed requestKey (no TMDB id).
+func TestListTracked_Adult_TitleKeyedGrabSetsMonitored(t *testing.T) {
+	libStore, grabsStore, srv := newTrackedTestServerWithGrabs(t)
+	ctx := context.Background()
+
+	if _, err := libStore.UpsertScene(ctx, library.Scene{
+		Box: "stashdb", SceneID: "s99", Title: "Some Scene", RootFolderPath: "/adult",
+	}); err != nil {
+		t.Fatalf("seeding scene: %v", err)
+	}
+	// Adult grabs have TMDBID=0 and are keyed by lowercased title.
+	seedGrab(t, grabsStore, grabs.Grab{Mode: mode.Adult, TMDBID: 0, Title: "Some Scene", Status: grabs.Queued})
+
+	got := getTrackedItems(t, srv, "adult")
+	if len(got) != 1 {
+		t.Fatalf("expected 1 scene, got %d", len(got))
+	}
+	if !got[0].Monitored {
+		t.Errorf("expected Monitored=true for adult scene with active title-keyed grab, got false")
 	}
 }

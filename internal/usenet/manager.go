@@ -81,7 +81,14 @@ type Manager struct {
 	httpClient *http.Client
 	stagingDir string
 	onComplete func(gid string, files []string)
-	startCtx   context.Context // set by Start under mu; nil until then
+	// Claude 2026-09-15: park grab on engine error without waiting for 24h sweep
+	// Reason: sweepUsenetFailures only runs on usenet_retry_interval; live failures
+	//   left rows at downloading until that tick (or a browser poll).
+	// Troubleshooting: Requests stuck "Downloading" after journal "usenet: download … error"
+	// Review if: RunUsenetRetry gains a short failure-only ticker of its own
+	// Related: SetOnError; api.UsenetErrorHandler; sweepUsenetFailures
+	onError  func(gid string, failure error)
+	startCtx context.Context // set by Start under mu; nil until then
 
 	// Claude 2026-09-11: segment resume policy (Phase 2 ARR-parity)
 	// Reason: after restart RelaunchNZB must skip durable completed segments
@@ -306,6 +313,28 @@ func (m *Manager) currentSemaphore() chan struct{} {
 // SetOnComplete wires the completion callback. Safe to call before Start.
 func (m *Manager) SetOnComplete(fn func(gid string, files []string)) {
 	m.onComplete = fn
+}
+
+// SetOnError wires the failure callback. Safe to call before Start. Fires when
+// a download transitions to Status=="error" with a non-nil Err — the fast path
+// for parking grabs without waiting on the usenet-retry sweep tick.
+func (m *Manager) SetOnError(fn func(gid string, failure error)) {
+	m.onError = fn
+}
+
+// fireOnError invokes onError asynchronously when set. Never call under m.mu.
+//
+// Claude 2026-09-15: ctx.Err guard keeps shutdown cancel from parking rows
+// Reason: a cancelled ctx is a shutdown, not a retrieval failure — those rows
+// are ReconcileInFlightDownloads' to relaunch. downloadAll rarely consults ctx
+// today, so a cancelled download can still reach here with an error.
+// Troubleshooting: grab parked for re-search across a restart instead of relaunching
+// Review if: onError also covers AddNZB/RelaunchNZB sync failures
+func (m *Manager) fireOnError(ctx context.Context, gid string, failure error) {
+	if m.onError == nil || failure == nil || ctx.Err() != nil {
+		return
+	}
+	go m.onError(gid, failure)
 }
 
 // StagingDir returns the directory where assembled NZB files are written.
@@ -936,6 +965,7 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 	<-sem
 	released = true
 	if err != nil {
+		failed := false
 		m.mu.Lock()
 		if dl.status != "removed" && dl.status != "paused" {
 			dl.status = "error"
@@ -947,6 +977,7 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 			// unclassified error (a dial or decode failure) alike as
 			// retryable, since neither proves the article is really gone.
 			dl.err = err
+			failed = true
 			// Claude 2026-09-01: mirror NZBGet ErrorTarget=both — UI alone was
 			// losing the reason on every container restart (in-memory queue).
 			// Reason: Downloads showed red errors, docker logs had none, and
@@ -958,6 +989,9 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 			log.Printf("usenet: download %s (%s) error: %v", gid, dl.name, err)
 		}
 		m.mu.Unlock()
+		if failed {
+			m.fireOnError(ctx, gid, err)
+		}
 		return
 	}
 
@@ -971,14 +1005,19 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 	// Related: verifyAndRepair; assembleFile contiguous write.
 	repaired, repairErr := verifyAndRepair(dl.stagingDir, files)
 	if repairErr != nil {
+		failed := false
 		m.mu.Lock()
 		if dl.status != "removed" && dl.status != "paused" {
 			dl.status = "error"
 			dl.errorMsg = repairErr.Error()
 			dl.err = repairErr
+			failed = true
 			log.Printf("usenet: par2 repair %s: %v (failing download — not marking complete)", gid, repairErr)
 		}
 		m.mu.Unlock()
+		if failed {
+			m.fireOnError(ctx, gid, repairErr)
+		}
 		return
 	}
 	files = repaired
@@ -992,14 +1031,19 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 	// Claude 2026-09-15: unpack failure is also fail-closed (no fake complete).
 	unpacked, unpackErr := unpackArchives(dl.stagingDir, files)
 	if unpackErr != nil {
+		failed := false
 		m.mu.Lock()
 		if dl.status != "removed" && dl.status != "paused" {
 			dl.status = "error"
 			dl.errorMsg = unpackErr.Error()
 			dl.err = unpackErr
+			failed = true
 			log.Printf("usenet: unpack %s: %v (failing download — not marking complete)", gid, unpackErr)
 		}
 		m.mu.Unlock()
+		if failed {
+			m.fireOnError(ctx, gid, unpackErr)
+		}
 		return
 	}
 	files = unpacked
@@ -1512,29 +1556,93 @@ func isPar2Payload(path string) bool {
 
 // normalizeObfuscatedPar2Names renames .par2 files whose payload magic is a
 // known video/archive type to a matching extension so import can see them.
+//
+// Claude 2026-09-15: dedupe + remap after rename
+// Reason: assembleFile can emit the same outPath multiple times; after the
+//   first rename, later copies hit a gone .par2 and logged "skipping non-PAR2"
+//   ~N times. Stale paths left in the slice also poison verifyAndRepair's
+//   dataPaths ReadFile when a real PAR2 set exists.
+// Troubleshooting: journal spam "skipping non-PAR2"; par2: reading data file …
+// Review if: assembleFile uniquifies colliding output names
 func normalizeObfuscatedPar2Names(files []string) []string {
+	renamed := make(map[string]string)
+	emitted := make(map[string]bool)
 	out := make([]string, 0, len(files))
+	emit := func(p string) {
+		if emitted[p] {
+			return
+		}
+		emitted[p] = true
+		out = append(out, p)
+	}
+	// adopt re-points a gone .par2 at whatever a prior pass renamed it to.
+	adopt := func(p string) bool {
+		dest := findRenamedObfuscatedSibling(p)
+		if dest == "" {
+			return false
+		}
+		renamed[p] = dest
+		emit(dest)
+		return true
+	}
 	for _, p := range files {
+		if dest, ok := renamed[p]; ok {
+			emit(dest)
+			continue
+		}
 		if !strings.HasSuffix(strings.ToLower(p), ".par2") || isPar2Payload(p) {
-			out = append(out, p)
+			if _, err := os.Stat(p); err != nil {
+				continue // gone / unreadable — drop rather than poison dataPaths
+			}
+			emit(p)
+			continue
+		}
+		if _, err := os.Stat(p); os.IsNotExist(err) {
+			adopt(p)
 			continue
 		}
 		ext := sniffMediaExt(p)
 		if ext == "" {
 			log.Printf("usenet: par2: skipping non-PAR2 payload %s (leaving name unchanged)", filepath.Base(p))
-			out = append(out, p)
+			emit(p)
 			continue
 		}
 		newPath := strings.TrimSuffix(p, filepath.Ext(p)) + ext
+		if _, err := os.Stat(newPath); err == nil {
+			// Source is still present too — refuse to clobber the target.
+			log.Printf("usenet: par2: rename obfuscated %s → %s: target exists", filepath.Base(p), filepath.Base(newPath))
+			emit(p)
+			continue
+		}
 		if err := os.Rename(p, newPath); err != nil {
+			if os.IsNotExist(err) && adopt(p) {
+				continue
+			}
 			log.Printf("usenet: par2: rename obfuscated %s → %s: %v", filepath.Base(p), filepath.Base(newPath), err)
-			out = append(out, p)
+			if _, srcErr := os.Stat(p); srcErr == nil {
+				emit(p)
+			}
 			continue
 		}
 		log.Printf("usenet: par2: renamed obfuscated payload %s → %s", filepath.Base(p), filepath.Base(newPath))
-		out = append(out, newPath)
+		renamed[p] = newPath
+		emit(newPath)
 	}
 	return out
+}
+
+// findRenamedObfuscatedSibling returns an existing sibling path for a gone
+// .par2 that was renamed to a sniffed media/archive extension. The extension
+// list must stay the same set sniffMediaExt can return.
+func findRenamedObfuscatedSibling(par2Path string) string {
+	base := strings.TrimSuffix(par2Path, filepath.Ext(par2Path))
+	for _, ext := range []string{".mkv", ".mp4", ".rar", ".zip"} {
+		cand := base + ext
+		if _, err := os.Stat(cand); err == nil {
+			return cand
+		}
+	}
+	return ""
 }
 
 // sniffMediaExt returns a file extension for common payload magics, or "" when

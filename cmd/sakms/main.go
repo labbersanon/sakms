@@ -539,6 +539,13 @@ func run() error {
 	}
 	if nzbManager != nil {
 		nzbManager.SetOnComplete(api.UsenetCompleteImporter(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, settingsStore, grabsStore, libStore, prober, dlManager, nzbManager, videoHasher))
+		// Claude 2026-09-15: park usenet engine errors immediately (not only 24h sweep)
+		// Reason: sweepUsenetFailures only runs on usenet_retry_interval; live failures
+		//   left grabs at downloading until that tick or a browser poll.
+		// Troubleshooting: journal "usenet error: grab … parked"; SetOnError before Start
+		// Review if: RunUsenetRetry interval is shortened for failure-only recovery
+		// Related: usenet.SetOnError; UsenetErrorHandler; applyUsenetFailure
+		nzbManager.SetOnError(api.UsenetErrorHandler(settingsStore, grabsStore))
 		go nzbManager.Start(ctx)
 		// Claude 2026-09-11: sweep sakms-owned stale usenet staging dirs
 		// Reason: imported leftovers + aged orphan RAR trees (~122G); only deletes

@@ -289,7 +289,7 @@ func TestExcludeTitle_SingleEndpoint(t *testing.T) {
 	_, _, excludesStore := requestsTestStores(t)
 	ctx := context.Background()
 
-	mux := NewRequestsMux(grabs.New(nil, nil), library.New(nil), excludesStore)
+	mux := NewRequestsMux(grabs.New(nil, nil), library.New(nil), excludesStore, nil, nil)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -331,7 +331,7 @@ func TestExcludeTitlesBatch_SkipAndContinue(t *testing.T) {
 	_, _, excludesStore := requestsTestStores(t)
 	ctx := context.Background()
 
-	mux := NewRequestsMux(grabs.New(nil, nil), library.New(nil), excludesStore)
+	mux := NewRequestsMux(grabs.New(nil, nil), library.New(nil), excludesStore, nil, nil)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 

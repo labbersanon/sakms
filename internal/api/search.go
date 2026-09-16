@@ -326,6 +326,17 @@ func grabHandler(httpClient *http.Client, connStore *connections.Store, scStore 
 			return
 		}
 
+		// Claude 2026-09-16: movie-release gate for manual Search grabs.
+		// Reason: an operator picking a release from the Search screen must be
+		//   blocked by the same gate as unattended paths — a theatrical-only film
+		//   in the search results is still a CAM risk.
+		// Troubleshooting: unexpected 409 on a manual pick → check TMDB
+		//   release_dates for the film (types 4/5/6 US entries).
+		if _, blocked, reason := gateMovieGrab(ctx, sess.TMDB, m, req.TMDBID); blocked {
+			http.Error(w, reason, http.StatusConflict)
+			return
+		}
+
 		downloadClient, gid, status, err := dispatchToDownloadClient(ctx, settingsStore, sess, m, nzb, req.Protocol, req.DownloadURL, req.Title)
 		if err != nil {
 			http.Error(w, err.Error(), status)

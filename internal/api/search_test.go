@@ -279,6 +279,14 @@ func TestGrabHandler_Torrent_SendsToAria2AndRecordsGrab(t *testing.T) {
 	dl := newTestDownloader("gid-abc", t.TempDir())
 
 	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	ctx := context.Background()
+
+	// Configure a TMDB fake so gateMovieGrab allows TMDBID=42.
+	tmdbSrv := fakeTMDBMovieRuntime(t, 100)
+	overrideFixedURL(t, "tmdb", tmdbSrv.URL)
+	if err := connStore.Upsert(ctx, "tmdb", tmdbSrv.URL, "key"); err != nil {
+		t.Fatalf("tmdb upsert: %v", err)
+	}
 
 	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, dl, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
@@ -302,6 +310,49 @@ func TestGrabHandler_Torrent_SendsToAria2AndRecordsGrab(t *testing.T) {
 	}
 	if g.DownloadClient != "anacrolix" || g.DownloadGID != "gid-abc" || g.Status != grabs.Queued {
 		t.Errorf("unexpected grab: %+v", g)
+	}
+}
+
+// TestGrabHandler_UnreleasedMovieReturns409 — the gate blocks a manual grab
+// pick when TMDB has only a theatrical US release.
+func TestGrabHandler_UnreleasedMovieReturns409(t *testing.T) {
+	dl := newTestDownloader("gid-nr", t.TempDir())
+
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	ctx := context.Background()
+
+	// Theatrical-only TMDB server.
+	theatricalSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{{
+				"iso_3166_1": "US",
+				"release_dates": []map[string]any{
+					{"type": 3, "release_date": "2025-01-01T00:00:00.000Z"},
+				},
+			}},
+		})
+	}))
+	defer theatricalSrv.Close()
+	overrideFixedURL(t, "tmdb", theatricalSrv.URL)
+	if err := connStore.Upsert(ctx, "tmdb", theatricalSrv.URL, "key"); err != nil {
+		t.Fatalf("tmdb upsert: %v", err)
+	}
+
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, dl, nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	body, _ := json.Marshal(grabRequest{
+		Title: "In-Cinema Film", TMDBID: 99, Protocol: "torrent",
+		DownloadURL: "magnet:?xt=urn:btih:ABCDEF1234567890abcdef1234567890abcdef99", RootFolderPath: "/movies",
+	})
+	resp, err := http.Post(srv.URL+"/api/modes/movies/search/grab", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", resp.StatusCode)
 	}
 }
 

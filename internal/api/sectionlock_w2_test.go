@@ -266,7 +266,7 @@ func newW2RequestsFixture(t *testing.T) (*httptest.Server, *sectionlock.Store, *
 	}
 
 	grabsStore := grabs.New(sqlDB, secretStore)
-	requestsMux := NewRequestsMux(grabsStore, library.New(sqlDB), excludes.New(sqlDB))
+	requestsMux := NewRequestsMux(grabsStore, library.New(sqlDB), excludes.New(sqlDB), nil, nil)
 	gated := auth.Middleware(secretStore, authStore, requestsMux,
 		auth.WithSectionGate(sectionlock.NewGate(lockStore, secretStore)))
 

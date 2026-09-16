@@ -228,6 +228,13 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, scSt
 			return
 		}
 
+		// Movie-release gate blocked dispatch: no search was done, no row was
+		// created. Surface a 409 so the caller knows why the grab did not fire.
+		if out.MovieBlocked {
+			http.Error(w, "movie not yet available — no US digital, physical or TV release on TMDB", out.Status)
+			return
+		}
+
 		// Fallback: nothing cleared the floor → hand back the ranked pick list
 		// (best bitrate score first, the same score that rejected them all).
 		// TriggerOperator deliberately parks NO pending_retry row here: a human
@@ -263,6 +270,13 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, scSt
 // the indexer is named by indexerOrFeed. Returns the recorded grab DTO plus the
 // HTTP status a caller should surface on error.
 func grabDirectEnclosure(ctx context.Context, sess *mode.Session, m mode.Mode, settingsStore *settings.Store, nzb *usenet.Manager, grabsStore *grabs.Store, req apidto.AutoGrabRequest) (dto *apidto.Grab, alreadyGrabbing bool, status int, err error) {
+	// Claude 2026-09-16: movie-release gate for direct-enclosure grabs.
+	// Reason: an enclosure URL grab bypasses RunAutoGrab entirely and would
+	//   otherwise never be checked — a feed item for an in-cinema film would
+	//   grab straight to the download client.
+	if _, blocked, reason := gateMovieGrab(ctx, sess.TMDB, m, req.TMDBID); blocked {
+		return nil, false, http.StatusConflict, fmt.Errorf("%s", reason)
+	}
 	rootFolder, err := autoGrabRootFolder(ctx, settingsStore, m)
 	if err != nil {
 		return nil, false, http.StatusBadRequest, err

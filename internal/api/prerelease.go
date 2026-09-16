@@ -189,6 +189,14 @@ func releaseDueGrabs(ctx context.Context, deps AutoGrabDeps, build sessionBuilde
 			// The request is not lost — it has simply joined the ordinary retry
 			// track, which is where a released film belongs.
 			reparkFailedRetry(ctx, deps, g, err)
+		case out.MovieBlocked:
+			// The movie-release gate blocked dispatch: no search ran. RunAutoGrab
+			// already re-held the row (HoldForRelease) so it stays on the release
+			// track with the updated hold_until. Do NOT abandon the cycle — the
+			// next row may be a different film with a real release. Do NOT consume
+			// an attempt slot for this: no Prowlarr search happened.
+			log.Printf("pre-release: grab %d (%s) re-held by movie-release gate — no digital/physical/TV release yet", g.ID, g.Title)
+			attempts-- // undo the pre-increment; this row did not cost a slot
 		case out.Gated:
 			// The toggle went off between the cycle's interval read and the gate.
 			// Every remaining row would be gated too, so stop rather than log once

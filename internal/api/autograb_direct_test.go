@@ -319,3 +319,48 @@ func TestAutoGrabBatchHandler_DirectGrabSkipsProwlarr(t *testing.T) {
 		t.Errorf("expected a feed-sourced grab under /adult, got %+v", r.Grab)
 	}
 }
+
+// TestGrabDirectEnclosure_UnreleasedMovieBlocked — the direct-enclosure path
+// for a Movies row blocks when TMDB has only a theatrical US release.
+func TestGrabDirectEnclosure_UnreleasedMovieBlocked(t *testing.T) {
+	// Theatrical-only TMDB server.
+	theatricalSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{{
+				"iso_3166_1": "US",
+				"release_dates": []map[string]any{
+					{"type": 3, "release_date": "2025-01-01T00:00:00.000Z"},
+				},
+			}},
+		})
+	}))
+	defer theatricalSrv.Close()
+
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	ctx := context.Background()
+	overrideFixedURL(t, "tmdb", theatricalSrv.URL)
+	if err := connStore.Upsert(ctx, "tmdb", theatricalSrv.URL, "key"); err != nil {
+		t.Fatalf("tmdb upsert: %v", err)
+	}
+	if err := settingsStore.Set(ctx, moviesLibraryRootFolderKey, "/movies"); err != nil {
+		t.Fatalf("setting root: %v", err)
+	}
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, newTestDownloader("gid-d", t.TempDir()), nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	req := apidto.AutoGrabBatchRequest{Items: []apidto.AutoGrabBatchItem{
+		{Mode: "movies", Request: apidto.AutoGrabRequest{
+			Title: "In-Cinema Film", TMDBID: 42,
+			DownloadURL: feedMagnet, DownloadProtocol: "torrent",
+		}},
+	}}
+	resp, out := postBatch(t, srv.URL, req)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 batch status, got %d", resp.StatusCode)
+	}
+	if len(out.Results) != 1 || out.Results[0].Error == "" {
+		t.Fatalf("expected one errored result (gate blocked), got %+v", out.Results)
+	}
+}

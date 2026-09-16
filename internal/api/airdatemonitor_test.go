@@ -1207,7 +1207,7 @@ func TestUnMonitoringCancelsQueuedAirDateRetries(t *testing.T) {
 		}
 	}
 
-	srv := httptest.NewServer(NewRequestsMux(env.grabs, env.lib, env.excludes))
+	srv := httptest.NewServer(NewRequestsMux(env.grabs, env.lib, env.excludes, nil, nil))
 	defer srv.Close()
 	resp, err := http.Get(srv.URL + "/api/requests")
 	if err != nil {
@@ -2304,7 +2304,7 @@ func TestRequestsMissingCountStaysUnfiltered(t *testing.T) {
 		t.Fatalf("fixture is wrong: %d missing episodes, want 4", len(missing))
 	}
 
-	srv := httptest.NewServer(NewRequestsMux(env.grabs, env.lib, env.excludes))
+	srv := httptest.NewServer(NewRequestsMux(env.grabs, env.lib, env.excludes, nil, nil))
 	defer srv.Close()
 	resp, err := http.Get(srv.URL + "/api/requests")
 	if err != nil {

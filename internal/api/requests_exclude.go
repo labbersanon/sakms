@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/labbersanon/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/excludes"
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/library"
@@ -21,12 +22,12 @@ import (
 // a new store through NewMux's ~245 call sites. GET /api/requests moved here with
 // them (it now reads the exclusion list to suppress removed titles), so it is
 // deliberately NOT registered in NewMux anymore.
-func NewRequestsMux(grabsStore *grabs.Store, libStore *library.Store, excludesStore *excludes.Store) *http.ServeMux {
+func NewRequestsMux(grabsStore *grabs.Store, libStore *library.Store, excludesStore *excludes.Store, connStore *connections.Store, httpClient *http.Client) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/requests", requestsHandler(grabsStore, libStore, excludesStore))
 	mux.HandleFunc("POST /api/requests/exclude", excludeTitleHandler(excludesStore))
 	mux.HandleFunc("POST /api/requests/exclude-batch", excludeTitlesBatchHandler(excludesStore))
-	mux.HandleFunc("POST /api/requests/promote", promoteRequestHandler(grabsStore))
+	mux.HandleFunc("POST /api/requests/promote", promoteRequestHandler(grabsStore, connStore, httpClient))
 	return mux
 }
 

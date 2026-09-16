@@ -439,7 +439,7 @@ func staleSessionBuilder(s staleTestStores, dl *downloader.Manager) sessionBuild
 
 func fetchRequests(t *testing.T, s staleTestStores) []apidto.RequestStatusItem {
 	t.Helper()
-	srv := httptest.NewServer(NewRequestsMux(s.grabs, s.library, s.excludes))
+	srv := httptest.NewServer(NewRequestsMux(s.grabs, s.library, s.excludes, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/requests")

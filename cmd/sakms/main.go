@@ -436,7 +436,7 @@ func run() error {
 	// recheckTriggerMux above). Mounted exact ("/api/requests", GET list) +
 	// subtree ("/api/requests/", POST exclude/exclude-batch) on top below, both
 	// beating the general "/api/" subtree.
-	requestsMux := api.NewRequestsMux(grabsStore, libStore, excludesStore)
+	requestsMux := api.NewRequestsMux(grabsStore, libStore, excludesStore, connStore, &http.Client{Timeout: outboundTimeout})
 	protectedRequests := auth.Middleware(secretStore, authStore, requestsMux, sectionGate...)
 
 	// The section lock's own control surface — its own mux for the same

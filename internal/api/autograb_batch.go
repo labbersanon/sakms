@@ -324,6 +324,14 @@ func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, stor
 
 	// Claude 2026-08-11: store wired (A3/§6.1) — Adult uses cache-first via
 	// resolveAdultReleases inside autoGrabSearch.
+	// Claude 2026-09-16: movie-release gate for the search path in batch grabs.
+	// Reason: grabOneBatchItem reimplements score-and-dispatch rather than
+	//   delegating to RunAutoGrab, so the gate must be applied here explicitly.
+	//   The direct-enclosure path above delegates to grabDirectEnclosure which
+	//   already has the gate; this covers the autoGrabSearch path only.
+	if _, blocked, reason := gateMovieGrab(ctx, sess.TMDB, m, req.TMDBID); blocked {
+		return nil, false, false, nil, "", fmt.Errorf("%s", reason)
+	}
 	releases, runtimeSeconds, err := autoGrabSearch(ctx, sess, m, store, req)
 	if err != nil {
 		return nil, false, false, nil, "", err

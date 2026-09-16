@@ -120,7 +120,7 @@ func LoadAutoGrabDrainInterval(ctx context.Context, settingsStore *settings.Stor
 	if seconds > 0 {
 		return time.Duration(seconds) * time.Second
 	}
-	enabled, err := settingsStore.GetBool(ctx, usenetAutoGrabEnabledKey)
+	enabled, err := settingsStore.GetBool(ctx, usenetAutoGrabEnabledKey, false)
 	if err != nil || !enabled {
 		return 0
 	}

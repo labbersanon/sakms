@@ -75,6 +75,13 @@ const (
 	// unset or switched-off retry interval. It no longer backs retry_after —
 	// parks moved to grabs.RetryBackoff (see the note above parkGrabForRetry).
 	defaultUsenetRetryIntervalSeconds = 86400
+
+	// autoGrabDrainIntervalKey is the drain worker's cadence setting.
+	// 0 = off (default), written to 60 by putUsenetAutoGrabEnabledHandler
+	// alongside usenet_retry_interval_seconds so the two stay coupled.
+	// When > 0 the drain owns air-date dispatch; the daily cycle's pass only
+	// runs catalog sync + backoff sweep. See autograbdrain.go.
+	autoGrabDrainIntervalKey = "autograb_drain_interval_seconds"
 )
 
 const (
@@ -193,6 +200,27 @@ type AutoGrabRequest struct {
 	// fresh GID per call, so the GID dedup guard cannot catch that duplicate.
 	// Zero on every non-retry trigger, which keeps their Create path unchanged.
 	ExistingGrabID int64
+
+	// SearchPhases, when non-empty, drives the two-phase Usenet-first search
+	// inside RunAutoGrab. Each element is a prowlarr.Scope sentinel passed to
+	// autoGrabSearch; RunAutoGrab tries them in order and stops at the first
+	// phase that produces a qualifying (non-Fallback) SelectBest result.
+	//
+	// Empty value means today's single all-indexer search (ScopeAll) — every
+	// existing trigger (operator one-click, batch, Search hook, pre-release,
+	// Adult, retry) passes no phases and keeps its current wire contract
+	// unchanged. Only the drain worker and the torrent-escalation path set it.
+	//
+	// When phase 2 runs but also misses, out.Releases/out.Selection describe
+	// the last phase's results — documented here because rankedAutoGrabCandidates
+	// renders them for TriggerOperator and the Requests view.
+	//
+	// Claude 2026-09-16: first consumer of {mode}_protocol_preference setting.
+	// Reason: the drain derives its default phase order from the mode's stored
+	//   protocol preference; "usenet" or "" → [ScopeUsenet, ScopeTorrent];
+	//   "torrent" → [ScopeTorrent, ScopeUsenet]. This makes the previously
+	//   inert setting live — note in PR.
+	SearchPhases []prowlarr.Scope
 }
 
 // AutoGrabOutcome is what happened. Exactly one of Grabbed / AlreadyGrabbing /
@@ -289,42 +317,87 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 		return AutoGrabOutcome{MovieBlocked: true, Status: http.StatusConflict}, nil
 	}
 
-	releases, runtimeSeconds := req.Releases, req.RuntimeSeconds
-	if releases == nil {
-		var err error
-		releases, runtimeSeconds, err = autoGrabSearch(ctx, sess, req.Mode, deps.ReleaseStore, apidto.AutoGrabRequest{
-			Title: req.Title, TMDBID: req.TMDBID, Studio: req.Studio,
-			SeasonNumber: req.Season, EpisodeNumber: req.Episode,
-			SeasonSpecified: req.SeasonSpecified, DurationSeconds: req.DurationSeconds,
-			ReleaseTitle: req.ReleaseTitle,
-			Box:          req.Box, SceneID: req.SceneID, Performers: req.Performers,
-		})
+	// Claude 2026-09-16: two-phase Usenet-first search.
+	// Reason: SearchPhases drives protocol-scoped indexer queries — phase 1 is
+	//   Usenet-only (indexerIds=-1), phase 2 torrent-only (indexerIds=-2) — so
+	//   torrent indexers are never queried on a Usenet hit. Empty SearchPhases
+	//   means today's single ScopeAll search, preserving every existing trigger's
+	//   wire contract. See AutoGrabRequest.SearchPhases for phase semantics.
+	// Troubleshooting: unexpected extra Prowlarr calls → check SearchPhases at
+	//   the call site; "out.Releases describes the wrong phase" → see below.
+	// Review if: phase ordering logic moves out of the drain into the caller.
+	phases := req.SearchPhases
+	if len(phases) == 0 {
+		phases = []prowlarr.Scope{prowlarr.ScopeAll}
+	}
+
+	// scoreOnePhase runs one phase's search → filter → score and returns the
+	// releases and Selection for that phase. Extracted here rather than as a
+	// named function to keep the closure over req/sess/deps without threading
+	// every parameter through a signature.
+	type phaseResult struct {
+		releases       []prowlarr.Release
+		runtimeSeconds float64
+		sel            autograb.Selection
+	}
+	scoreOnePhase := func(scope prowlarr.Scope) (phaseResult, error) {
+		var pr phaseResult
+
+		// Pre-fetched releases bypass the phase search entirely (Search hook path
+		// or Adult cache-hit). Use them as-is on the first (and only) phase.
+		if req.Releases != nil {
+			pr.releases = req.Releases
+			pr.runtimeSeconds = req.RuntimeSeconds
+		} else {
+			var err error
+			pr.releases, pr.runtimeSeconds, err = autoGrabSearch(ctx, sess, req.Mode, deps.ReleaseStore, scope, apidto.AutoGrabRequest{
+				Title: req.Title, TMDBID: req.TMDBID, Studio: req.Studio,
+				SeasonNumber: req.Season, EpisodeNumber: req.Episode,
+				SeasonSpecified: req.SeasonSpecified, DurationSeconds: req.DurationSeconds,
+				ReleaseTitle: req.ReleaseTitle,
+				Box:          req.Box, SceneID: req.SceneID, Performers: req.Performers,
+			})
+			if err != nil {
+				return pr, err
+			}
+		}
+
+		// Claude 2026-08-03: apply FilterSeasonScope before scoring.
+		if req.Mode == mode.Series {
+			pr.releases = FilterSeasonScope(pr.releases, req.Season, req.Episode, req.SeasonSpecified)
+		}
+
+		neutralizeSeasonPacks := req.Mode == mode.Series && pr.runtimeSeconds > 0
+		candidates := buildAutoGrabCandidates(pr.releases, pr.runtimeSeconds, neutralizeSeasonPacks)
+		pr.sel = autograb.SelectBest(candidates, autoGrabTiers(ctx, deps.SettingsStore, req.Mode), minSeedersFor(req.Mode))
+		return pr, nil
+	}
+
+	// Phase loop: try each phase in order, stop at the first qualifying result.
+	// out.Releases/out.Selection describe the LAST phase run (the one acted on),
+	// which is the qualifying one on a hit or the final phase on a total miss.
+	var (
+		releases       []prowlarr.Release
+		runtimeSeconds float64
+		sel            autograb.Selection
+	)
+	for i, phase := range phases {
+		pr, err := scoreOnePhase(phase)
 		if err != nil {
 			return AutoGrabOutcome{Status: http.StatusBadGateway, Err: err}, err
 		}
+		releases = pr.releases
+		runtimeSeconds = pr.runtimeSeconds
+		sel = pr.sel
+		// A qualifying candidate in any phase ends the search. Pre-fetched
+		// releases (req.Releases != nil) are only ever used on the first iteration
+		// and bypass all subsequent phases — the caller supplied one list.
+		if !sel.Fallback || req.Releases != nil || i == len(phases)-1 {
+			break
+		}
+		log.Printf("auto-grab: phase %d (%v) miss for %q — trying next phase", i+1, phase, req.Title)
 	}
-
-	// Claude 2026-08-03: apply FilterSeasonScope before scoring.
-	// Reason: half of the "picking Season 4 grabs S1E1" fix — see
-	// FilterSeasonScope's doc (releasematch.go) for the full root-cause
-	// chain. Runs regardless of whether releases came from autoGrabSearch
-	// above or arrived pre-fetched via req.Releases (the Search-hook path):
-	// either source can carry a wrong-season release Prowlarr's own
-	// query-scoping didn't exclude. A no-op when req.SeasonSpecified is
-	// false (FilterSeasonScope's own contract).
-	// Troubleshooting: if a Series auto-grab dispatches the wrong season
-	// again, confirm this call is still present before assuming the
-	// regression is back in prowlarr.SearchByID itself.
-	if req.Mode == mode.Series {
-		releases = FilterSeasonScope(releases, req.Season, req.Episode, req.SeasonSpecified)
-	}
-
-	// A real per-episode runtime mustn't be applied to season packs the indexer
-	// returned for the episode query — neutralize those so they can't
-	// over-qualify (see buildAutoGrabCandidates).
-	neutralizeSeasonPacks := req.Mode == mode.Series && runtimeSeconds > 0
-	candidates := buildAutoGrabCandidates(releases, runtimeSeconds, neutralizeSeasonPacks)
-	sel := autograb.SelectBest(candidates, autoGrabTiers(ctx, deps.SettingsStore, req.Mode), minSeedersFor(req.Mode))
+	_ = runtimeSeconds // retained for future scoreOnePhase callers if needed
 
 	out := AutoGrabOutcome{Selection: sel, Releases: releases, Status: http.StatusOK}
 

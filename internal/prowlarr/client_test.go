@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -289,6 +290,87 @@ func TestSearchByID(t *testing.T) {
 			for _, oldParam := range []string{"tmdbid=", "imdbid=", "tvdbid=", "season=", "ep="} {
 				if strings.Contains(gotRawPath, oldParam) {
 					t.Errorf("old top-level structured param %q leaked into the request: %q", oldParam, gotRawPath)
+				}
+			}
+		})
+	}
+}
+
+// TestSearchByID_IndexerScope covers the three Scope sentinels and the explicit
+// IndexerIDs override. Acceptance criteria from the plan:
+//   - ScopeUsenet emits exactly one indexerIds=-1
+//   - ScopeTorrent emits exactly one indexerIds=-2
+//   - ScopeAll (zero value) emits no indexerIds at all
+//   - Explicit IndexerIDs{3,7} emits two repeated params, suppresses sentinel
+//   - A zero-value SearchByIDParams produces a byte-identical query to today
+func TestSearchByID_IndexerScope(t *testing.T) {
+	tests := []struct {
+		name             string
+		params           SearchByIDParams
+		wantIndexerIDs   []string // all expected indexerIds values
+		wantNoIndexerIDs bool     // true when no indexerIds param at all
+	}{
+		{
+			name:             "ScopeAll (zero value) emits no indexerIds param",
+			params:           SearchByIDParams{TMDBID: 550, Scope: ScopeAll},
+			wantNoIndexerIDs: true,
+		},
+		{
+			name:           "ScopeUsenet emits indexerIds=-1",
+			params:         SearchByIDParams{TMDBID: 550, Scope: ScopeUsenet},
+			wantIndexerIDs: []string{"-1"},
+		},
+		{
+			name:           "ScopeTorrent emits indexerIds=-2",
+			params:         SearchByIDParams{TMDBID: 550, Scope: ScopeTorrent},
+			wantIndexerIDs: []string{"-2"},
+		},
+		{
+			name:           "explicit IndexerIDs wins over Scope, repeated not comma-joined",
+			params:         SearchByIDParams{TMDBID: 550, Scope: ScopeUsenet, IndexerIDs: []int{3, 7}},
+			wantIndexerIDs: []string{"3", "7"},
+		},
+		{
+			// Regression: a zero-value SearchByIDParams (every existing caller's shape)
+			// must produce no indexerIds param — the wire contract is unchanged.
+			name:             "zero-value params produce no indexerIds (regression guard)",
+			params:           SearchByIDParams{TMDBID: 1},
+			wantNoIndexerIDs: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotRaw string
+			c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				gotRaw = r.URL.RawQuery
+				w.Write([]byte(searchFixture))
+			})
+
+			if _, err := c.SearchByID(context.Background(), tt.params); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			// Parse the query so we get all repeated values for indexerIds.
+			parsed, err := url.ParseQuery(gotRaw)
+			if err != nil {
+				t.Fatalf("could not parse raw query %q: %v", gotRaw, err)
+			}
+
+			got := parsed["indexerIds"]
+			if tt.wantNoIndexerIDs {
+				if len(got) > 0 {
+					t.Errorf("expected no indexerIds param, got %v (raw: %s)", got, gotRaw)
+				}
+				return
+			}
+			if len(got) != len(tt.wantIndexerIDs) {
+				t.Errorf("indexerIds count: want %v, got %v (raw: %s)", tt.wantIndexerIDs, got, gotRaw)
+				return
+			}
+			for i, want := range tt.wantIndexerIDs {
+				if got[i] != want {
+					t.Errorf("indexerIds[%d]: want %q, got %q (raw: %s)", i, want, got[i], gotRaw)
 				}
 			}
 		})

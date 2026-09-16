@@ -675,6 +675,29 @@ func run() error {
 		connStore, serviceConnStore, settingsStore, grabsStore, excludesStore, webhookStore, libStore, dlManager, nzbManager,
 		adultMonitoredStore, adultNewestReleaseStore, prober, videoHasher)
 
+	// Auto-grab drain worker — the eighth deliberate, opt-in exception to
+	// "manual by default", and the second with dispatch authority (alongside
+	// RunUsenetRetry). Dispatches Series episodes newest-first, one at a time,
+	// while a Usenet download slot is free. Gated OFF by default — its interval
+	// is written by the auto-grab toggle (on -> 60, off -> 0), coupled the same
+	// way the retry loop is. To remove entirely: delete
+	// internal/api/autograbdrain.go, this call, and unwind autoGrabDrainIntervalKey
+	// from autograb_shared.go and usenetretry.go.
+	go api.RunAutoGrabDrain(ctx, api.LoadAutoGrabDrainInterval(ctx, settingsStore), api.AutoGrabDrainDeps{
+		AutoGrabDeps: api.AutoGrabDeps{
+			SettingsStore: settingsStore,
+			NZB:           nzbManager,
+			GrabsStore:    grabsStore,
+		},
+		HTTPClient:   &http.Client{Timeout: outboundTimeout},
+		ConnStore:    connStore,
+		SCStore:      serviceConnStore,
+		LibStore:     libStore,
+		ExcludeStore: excludesStore,
+		DL:           dlManager,
+		NZBManager:   nzbManager,
+	})
+
 	// General Rename/Purge/Dedup scan scheduler — the fourth deliberate
 	// exception to "manual by default" (see internal/scanschedule's package doc
 	// + CLAUDE.md's AMENDED "no scheduler" note). Built as a compile-time

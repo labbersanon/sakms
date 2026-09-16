@@ -8489,3 +8489,136 @@ prevent camcorder recordings from landing in the library.
   resolution, unchanged on TMDB error, horizon skip); updated releaseDueGrabs
   tests to account for `refreshPreReleaseHolds` modifying `hold_until`.
 - `frontend/src/screens/Requests.test.tsx`: sentinel-blurb rendering test.
+
+---
+
+## Unattended Auto-Grab Drain — Usenet-first, newest-first background dispatch
+
+**Branch:** `cursor/autograb-usenet-first-drain-c2d5`
+**Date:** 2026-09-16
+
+### What changed
+
+Five coordinated changes that together implement the unattended drain:
+
+**A. Prowlarr scope — `internal/prowlarr/client.go`**
+
+Added `Scope` type (`ScopeAll`, `ScopeUsenet` = -1, `ScopeTorrent` = -2) and
+`IndexerIDs []int` to `SearchByIDParams`. The `addIndexerScope` helper emits
+repeated `&indexerIds=` parameters (never comma-joined — Prowlarr rejects
+comma-joined values with 400). `ScopeAll` (zero value) emits nothing, so every
+existing `SearchByIDParams` literal keeps today's all-indexer behaviour.
+
+**B. Two-phase RunAutoGrab — `internal/api/autograb_shared.go`**
+
+`AutoGrabRequest` now carries `SearchPhases []prowlarr.Scope`. When set, the
+inner `scoreOnePhase` closure runs each phase in order, breaking on the first
+qualifying `SelectBest` result. Empty `SearchPhases` degrades to `[ScopeAll]`
+— existing callers unchanged. Updated `autograb_batch.go` and
+`discover_availability.go` to pass `prowlarr.ScopeAll`.
+
+**C. Newest-first air-date dispatch — `internal/api/airdatemonitor.go`**
+
+`dispatchAirDateGrabsScoped` sorts candidates descending by air date (newest
+first) instead of the previous ascending order.
+
+`monitorAirDates` gains a `dispatch bool` parameter: when the drain is active
+(its interval > 0), the daily retry cycle passes `dispatch=false` so only one
+goroutine ever dispatches air-date episodes.
+
+`usenetretry.go`'s `runUsenetRetryCycle` reads `autoGrabDrainIntervalKey` to
+determine whether to suppress dispatch in the daily cycle.
+
+`putUsenetAutoGrabEnabledHandler` now writes `autoGrabDrainIntervalKey`
+alongside `usenet_retry_interval_seconds` — on → 60 s, off → 0 — so the two
+switches cannot diverge.
+
+**D. Drain worker — `internal/api/autograbdrain.go` (new file)**
+
+`RunAutoGrabDrain(ctx, interval, deps)` is the eighth interval-driven
+scheduler and the second with dispatch authority. Interval ≤ 0 returns
+immediately (off by default). Each tick:
+
+1. Re-reads the interval and stops cleanly when set to 0.
+2. Gates on `usenet_autograb_enabled` and `downloads_global_paused`.
+3. Handles escalated pending_retry rows (next_search_scope='torrent') first.
+4. Counts free Usenet slots from the grabs table.
+5. Applies in-process token-bucket pacing
+   (`autograb_drain_searches_per_hour`, default 60;
+   `autograb_drain_torrent_searches_per_day`, default 25).
+6. Rebuilds `activeSeriesGrabKeys` before each candidate so a dispatch is
+   immediately visible to the next iteration.
+7. Dispatches one item via `RunAutoGrab` with `SearchPhases = [ScopeUsenet]`
+   (or both phases when `autograb_torrent_fallback_enabled` and within
+   `autograb_torrent_fallback_max_age_days` of the air date).
+8. Returns after each dispatch (slot consumed) or when no candidates remain.
+
+Launched in `cmd/sakms/main.go` alongside `RunUsenetRetry`.
+
+**E. Usenet failure → torrent escalation — migration 0022 + `grabs.go` + `usenetretry.go`**
+
+Migration `0022_grabs_next_search_scope.sql` adds
+`next_search_scope TEXT NOT NULL DEFAULT ''` to `grabs`.
+
+`Grab.NextSearchScope` is a one-shot marker: `''` = normal Usenet-first
+preference, `'torrent'` = skip Usenet on the next attempt only. The marker
+is consumed (cleared to `''`) by whichever path (drain or retry cycle) performs
+the next attempt, regardless of outcome.
+
+`applyUsenetFailure` now branches on `ErrArticleNotFound` (430): it calls
+`SetPendingRetryWithScope(id, now, reason, "torrent")` — parking with
+`retry_after = now` (due immediately) and `next_search_scope = 'torrent'` in
+one atomic statement, GID cleared. Other failures (unclassified) still use
+`ParkWithBackoff`; 451 still goes to `Failed`.
+
+`retryDueGrabs` calls `nextSearchPhases(g)` to build `SearchPhases` from the
+grab's `NextSearchScope`, and `ClearNextSearchScope` before `RunAutoGrab` to
+consume the marker. The drain's `drainEscalatedDueRetries` step mirrors this
+for series-mode escalated rows.
+
+### New settings keys
+
+| Key | Default | Purpose |
+|---|---|---|
+| `autograb_drain_interval_seconds` | 0 (off), written to 60 by the toggle | Drain cadence |
+| `autograb_drain_searches_per_hour` | 60 | Phase-1 pacing |
+| `autograb_drain_torrent_searches_per_day` | 25 | Phase-2 budget |
+| `autograb_torrent_fallback_enabled` | true | Torrent fallback master switch |
+| `autograb_torrent_fallback_max_age_days` | 30 | Escalation age predicate |
+
+### Tests added
+
+- `internal/prowlarr/client_test.go`: `TestSearchByID_IndexerScope` — repeated
+  `indexerIds` encoding, Usenet/Torrent/All/IndexerIDs precedence.
+- `internal/api/airdatemonitor_test.go`: `TestAirDateCapsDispatchesAtCapNewestFirst`
+  updated to assert newest-first order.
+- `internal/api/autograbdrain_static_test.go` (new): `TestDrainWorkerHasItsOwnScheduler`
+  — static AST test enforcing that `autograbdrain.go` owns the ticker loop and
+  `airdatemonitor.go` still has no goroutine or ticker.
+- `internal/api/autograbdrain_test.go` (new):
+  - `TestTwoPhaseUsenetHitSkipsTorrent` — Usenet hit means torrent phase skipped.
+  - `TestTwoPhaseUsenetMissSearchesTorrent` — Usenet miss causes torrent search.
+  - `TestSlotGateBlocksDispatchWhenFull` — `freeUsenetSlots` returns 0 at capacity.
+  - `TestFailureEscalationSetsNextSearchScope` — 430 → scope+due-now; 451 no scope.
+  - `TestNextSearchPhasesConsumesTorrentScope` — `nextSearchPhases` helper.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/prowlarr/client.go` | Scope type, IndexerIDs, addIndexerScope |
+| `internal/prowlarr/client_test.go` | TestSearchByID_IndexerScope |
+| `internal/api/autograb.go` | scope param threaded to autoGrabSearch |
+| `internal/api/autograb_shared.go` | SearchPhases + scoreOnePhase loop; autoGrabDrainIntervalKey const |
+| `internal/api/autograb_batch.go` | Pass prowlarr.ScopeAll |
+| `internal/api/discover_availability.go` | Pass prowlarr.ScopeAll |
+| `internal/api/airdatemonitor.go` | Newest-first sort; dispatch bool; dispatch ownership |
+| `internal/api/airdatemonitor_test.go` | Newest-first assertion updated |
+| `internal/api/usenetretry.go` | dispatch param; autoGrabDrainIntervalKey coupling; nextSearchPhases; applyUsenetFailure escalation; prowlarr import |
+| `internal/api/autograbdrain.go` | New: drain worker |
+| `internal/api/autograbdrain_static_test.go` | New: ticker placement enforcement |
+| `internal/api/autograbdrain_test.go` | New: drain / escalation tests |
+| `internal/grabs/grabs.go` | NextSearchScope field; SetPendingRetryWithScope; ClearNextSearchScope; all SELECTs updated |
+| `internal/db/migrations/0022_grabs_next_search_scope.sql` | New migration |
+| `cmd/sakms/main.go` | go api.RunAutoGrabDrain launch |
+

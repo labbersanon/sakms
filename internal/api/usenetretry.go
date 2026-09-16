@@ -112,6 +112,7 @@ import (
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/prowlarr"
 	"github.com/labbersanon/sakms/internal/rename"
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
@@ -299,7 +300,13 @@ func runUsenetRetryCycle(ctx context.Context, deps AutoGrabDeps, build sessionBu
 
 	sweepUsenetFailures(ctx, deps, lookup)
 	retryDueGrabs(ctx, deps, build, excluded, now)
-	monitorAirDates(ctx, deps, build, libStore, excluded, now)
+	// Claude 2026-09-16: drain worker takes over air-date dispatch when active.
+	// Reason: exactly one owner of air-date dispatch at runtime. When
+	//   autograb_drain_interval_seconds > 0 the drain runs its own newer-first
+	//   pass; the daily cycle keeps catalog sync + backoff sweep only.
+	// Review if: drain is removed or daily cycle regains dispatch authority.
+	drainInterval, _ := loadIntervalSeconds(ctx, deps.SettingsStore, autoGrabDrainIntervalKey, 0)
+	monitorAirDates(ctx, deps, build, libStore, excluded, drainInterval <= 0, now)
 	releaseDueGrabs(ctx, deps, build, libStore, excluded, now)
 	// Claude 2026-08-24: fifth pass — Adult monitored-entity dispatch.
 	// Reads pool for scenes added since monitored_since, dispatches auto-grabs.
@@ -379,12 +386,34 @@ func sweepUsenetFailures(ctx context.Context, deps AutoGrabDeps, lookup usenetDo
 // status could not change the outcome.
 // Review if: a non-failure state ever needs this, which means a real state
 // parameter rather than a constant.
+//
+// Claude 2026-09-16: ErrArticleNotFound (430) escalates to torrent on next attempt.
+// Reason: a 430 means zero Usenet indexers hold the article — re-searching Usenet
+// immediately is provably futile and wastes the indexer's API budget. Setting
+// next_search_scope='torrent' and parking with retry_after=now makes the drain or
+// retry cycle issue indexerIds=-2 on the next tick instead.
+// One-shot: ClearNextSearchScope is called before the next RunAutoGrab so the
+// marker does not accumulate across cycles.
+// Review if: escalation should be conditional (e.g. only within N days of air date).
 func applyUsenetFailure(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, failure error, park grabParker) (grabs.Status, error) {
 	status := classifyDownloadState("error", failure)
 	switch status {
 	case grabs.PendingRetry:
-		if err := park(ctx, deps, g.ID, usenetRetrievalReason(failure)); err != nil {
-			return "", err
+		reason := usenetRetrievalReason(failure)
+		if errors.Is(failure, usenet.ErrArticleNotFound) {
+			// 430: escalate — park due-now with next_search_scope='torrent'.
+			// SetPendingRetryWithScope increments retry_count and clears the GID
+			// atomically (same contract as SetPendingRetry / ParkWithBackoff).
+			// The escalation "costs one rung of the backoff ladder" (plan §E) because
+			// retry_count advances; a subsequent miss after the torrent attempt re-parks
+			// on the normal Usenet-first order at the new count.
+			if err := deps.GrabsStore.SetPendingRetryWithScope(ctx, g.ID, time.Now(), reason, "torrent"); err != nil {
+				return "", err
+			}
+		} else {
+			if err := park(ctx, deps, g.ID, reason); err != nil {
+				return "", err
+			}
 		}
 	case grabs.Failed:
 		if err := deps.GrabsStore.UpdateStatus(ctx, g.ID, grabs.Failed); err != nil {
@@ -423,6 +452,21 @@ func retryDueGrabs(ctx context.Context, deps AutoGrabDeps, build sessionBuilderF
 			continue
 		}
 
+		// Claude 2026-09-16: consume next_search_scope before the attempt.
+		// Reason: the marker is one-shot — clear it now so a failed torrent
+		// attempt returns the row to normal Usenet-first order on the backoff
+		// ladder, rather than pinning it to torrent indefinitely.
+		// The clear is best-effort: if it fails, the row retries with scope
+		// still set (torrent again), which is recoverable — the same clearance
+		// will succeed on the next cycle. Do not abort the attempt.
+		// Review if: clearing is moved inside RunAutoGrab / parkPendingRetry.
+		phases := nextSearchPhases(ctx, deps, g)
+		if g.NextSearchScope != "" {
+			if err := deps.GrabsStore.ClearNextSearchScope(ctx, g.ID); err != nil {
+				log.Printf("usenet retry: clearing next_search_scope for grab %d: %v (continuing with scope %q)", g.ID, err, g.NextSearchScope)
+			}
+		}
+
 		out, err := RunAutoGrab(ctx, deps, sess, AutoGrabRequest{
 			Mode: g.Mode, Title: g.Title, TMDBID: g.TMDBID, TVDBID: g.TVDBID,
 			Season: g.SeasonNumber, Episode: g.EpisodeNumber, SeasonSpecified: g.SeasonSpecified,
@@ -432,6 +476,7 @@ func retryDueGrabs(ctx context.Context, deps AutoGrabDeps, build sessionBuilderF
 			ExistingGrabID: g.ID,
 			// Releases nil = "search for me". Unlike the Search hook, a retry
 			// row carries the TMDB id RunAutoGrab's internal search needs.
+			SearchPhases: phases,
 		})
 		switch {
 		case err != nil:
@@ -480,6 +525,23 @@ func retryDueGrabs(ctx context.Context, deps AutoGrabDeps, build sessionBuilderF
 			log.Printf("usenet retry: grab %d (%s) still has no qualifying candidate (%s)", g.ID, g.Title, out.RetryStatus)
 		}
 	}
+}
+
+// nextSearchPhases returns the SearchPhases for the next RunAutoGrab attempt on g.
+// If g.NextSearchScope is 'torrent', returns [ScopeTorrent] (skip Usenet entirely
+// for this one attempt). Otherwise returns nil (empty = normal ScopeAll behaviour
+// for the retry cycle, matching every existing trigger's contract).
+//
+// Claude 2026-09-16: intentionally returns nil (not [ScopeUsenet, ScopeTorrent])
+// for the non-escalated case. The retry cycle predates the two-phase drain and
+// previously issued ScopeAll searches — returning nil preserves that behaviour
+// so existing retries are not accidentally changed to Usenet-only.
+// Review if: the retry cycle is explicitly opted into two-phase logic.
+func nextSearchPhases(ctx context.Context, deps AutoGrabDeps, g grabs.Grab) []prowlarr.Scope {
+	if g.NextSearchScope == "torrent" {
+		return []prowlarr.Scope{prowlarr.ScopeTorrent}
+	}
+	return nil // ScopeAll (existing behaviour)
 }
 
 // reparkFailedRetry records a failed retry ATTEMPT, so the attempt is counted
@@ -584,6 +646,19 @@ func putUsenetAutoGrabEnabledHandler(settingsStore *settings.Store) http.Handler
 			interval = usenetAutoGrabIntervalSeconds
 		}
 		if _, err := storeIntervalSeconds(ctx, settingsStore, usenetRetryIntervalSecondsKey, interval, 0); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Claude 2026-09-16: couple the drain interval to the auto-grab toggle.
+		// Reason: two switches that can disagree eventually will — same coupling
+		//   the retry interval has. On → 60s; off → 0. The drain's "re-enable
+		//   needs a restart" caveat applies here too (same as the retry loop).
+		// Review if: the drain gains an independent interval control.
+		drainInterval := 0
+		if req.Enabled {
+			drainInterval = 60
+		}
+		if _, err := storeIntervalSeconds(ctx, settingsStore, autoGrabDrainIntervalKey, drainInterval, 0); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

@@ -829,15 +829,21 @@ func TestAirDateSkipsExcludedSeries(t *testing.T) {
 	}
 }
 
-// TestAirDateCapsDispatchesAtTwentyOldestFirst (T-4.5). The cap bounds NEW
-// dispatch attempts only, and the ordering is what makes a backlog drain
-// predictably instead of the same rows being retried every cycle.
+// TestAirDateCapsDispatchesAtCapNewestFirst (T-4.5). The cap bounds NEW
+// dispatch attempts only, and the ordering (NEWEST first since 2026-09-16) is
+// what makes a recently-aired episode visible immediately rather than behind
+// an old backlog.
 //
-// A single series is also bounded by maxAirDateGrabsPerSeriesPerCycle (fairness
-// vs classic backlogs). That sub-cap is what this case asserts for one series;
+// CORRECTED 2026-09-16 — superseded claim, quoted: "the ordering is what makes
+// a backlog drain predictably instead of the same rows being retried every cycle."
+// The ordering now dispatches NEWEST first so a freshly aired episode is not
+// starved behind a classic backlog. This is the locked product decision #1.
+//
+// A single series is also bounded by maxAirDateGrabsPerSeriesPerCycle. That
+// sub-cap is what this case asserts for one series;
 // TestAirDatePerSeriesCycleCapFairness covers multi-series drain toward the
 // global maxAirDateGrabsPerCycle budget.
-func TestAirDateCapsDispatchesAtTwentyOldestFirst(t *testing.T) {
+func TestAirDateCapsDispatchesAtCapNewestFirst(t *testing.T) {
 	now := time.Now()
 	episodes := []fakeTMDBEpisode{}
 	for i := 1; i <= 25; i++ {
@@ -861,16 +867,18 @@ func TestAirDateCapsDispatchesAtTwentyOldestFirst(t *testing.T) {
 	for _, g := range list {
 		dispatched[g.EpisodeNumber] = true
 	}
-	// Episode N airs on day -(30-N), so lower numbers are OLDER: the cap must
-	// take the oldest want episodes and leave the rest for later cycles.
-	for i := 1; i <= want; i++ {
+	// Episode N airs on day -(30-N), so HIGHER numbers are NEWER: the cap must
+	// take the newest want episodes (21-25, airing days -9 to -5) and leave the
+	// older ones for later cycles.
+	// CORRECTED 2026-09-16 from oldest-first: now newest-first.
+	for i := 25 - want + 1; i <= 25; i++ {
 		if !dispatched[i] {
-			t.Errorf("episode %d (older) was skipped while newer episodes were dispatched", i)
+			t.Errorf("episode %d (newer) was skipped while older episodes were dispatched", i)
 		}
 	}
-	for i := want + 1; i <= 25; i++ {
+	for i := 1; i <= 25-want; i++ {
 		if dispatched[i] {
-			t.Errorf("episode %d (newer) was dispatched ahead of an older one", i)
+			t.Errorf("episode %d (older) was dispatched ahead of a newer one", i)
 		}
 	}
 }

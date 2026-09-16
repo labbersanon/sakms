@@ -173,7 +173,8 @@ func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections
 			log.Printf("discover availability: mode=adult title=%q servedFromCache=%v", title, res.FromCache)
 		} else {
 			var err error
-			releases, runtimeSeconds, err = autoGrabSearch(ctx, sess, m, releaseStore, req)
+			// ScopeAll: discoverAvailabilityHandler is operator-facing, never two-phase.
+			releases, runtimeSeconds, err = autoGrabSearch(ctx, sess, m, releaseStore, prowlarr.ScopeAll, req)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadGateway)
 				return

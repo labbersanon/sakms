@@ -156,6 +156,13 @@ func (b *seriesBackfill) run(seriesID int64) {
 // background cycle's eligibleEpisodes. syncSeriesCatalog's discovery loop skips
 // Season 0 for auto-monitor-on-discovery only; that asymmetry must not be
 // "aligned" here.
+//
+// INHERITED: day-after grab timing. dispatchAirDateGrabsScoped calls
+// eligibleEpisodes, which now requires AirDate < today (strictly before). A
+// monitor-on click therefore does not grab an episode that aired today — the
+// first grab fires the following UTC day, identical to the background cycle's
+// behaviour. That is intentional: "don't search before the broadcast day has
+// ended anywhere" applies equally to operator clicks and background passes.
 func (b *seriesBackfill) runOnce(seriesID int64, seasons map[int]bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), seriesBackfillTimeout)
 	defer cancel()

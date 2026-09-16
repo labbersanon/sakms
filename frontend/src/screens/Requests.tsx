@@ -169,7 +169,7 @@ function retryBlurb(item: RequestItem): string | null {
 
 function scheduledBlurb(item: RequestItem): string | null {
   if (!item.holdUntil) return null;
-  return `Held until ${item.holdUntil.slice(0, 10)} — its release date`;
+  return `Held until ${item.holdUntil.slice(0, 10)} — the day after its release date`;
 }
 
 function statusBlurb(item: RequestItem): string | null {

@@ -103,12 +103,33 @@ type AutoGrabDrainDeps struct {
 // LoadAutoGrabDrainInterval reads the drain cadence, returning 0 ("off") for
 // any unset, blank, non-integer, or non-positive value — same tolerant read
 // LoadUsenetRetryInterval uses.
+//
+// Claude 2026-09-16: seed drain interval when auto-grab is already on
+// Reason: the toggle couples drain on→60 / off→0, but installs that enabled
+//   auto-grab before this feature shipped never flip the toggle again — without
+//   a seed the drain stays at 0 forever and newest-first Usenet-first drain never
+//   runs. One-shot write when enabled && unset/0; never overrides an explicit
+//   positive value or an explicit off while auto-grab is off.
+// Troubleshooting: journal missing "autograb drain: background drain enabled"
+// Review if: settings UI exposes an independent drain interval control
 func LoadAutoGrabDrainInterval(ctx context.Context, settingsStore *settings.Store) time.Duration {
 	seconds, err := loadIntervalSeconds(ctx, settingsStore, autoGrabDrainIntervalKey, 0)
-	if err != nil || seconds <= 0 {
+	if err != nil {
 		return 0
 	}
-	return time.Duration(seconds) * time.Second
+	if seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	enabled, err := settingsStore.GetBool(ctx, usenetAutoGrabEnabledKey)
+	if err != nil || !enabled {
+		return 0
+	}
+	// Auto-grab on but drain unset/0 — seed the coupled default.
+	if _, err := storeIntervalSeconds(ctx, settingsStore, autoGrabDrainIntervalKey, 60, 0); err != nil {
+		log.Printf("autograb drain: seeding interval failed: %v", err)
+		return 0
+	}
+	return 60 * time.Second
 }
 
 // RunAutoGrabDrain drives the drain loop until ctx is cancelled. interval is

@@ -35,6 +35,31 @@ const (
 	Usenet  Protocol = "usenet"
 )
 
+// Scope limits a SearchByID query to one protocol's indexers via Prowlarr's
+// sentinel indexerIds values. The zero value is ScopeAll, so every existing
+// SearchByIDParams literal keeps today's all-indexer behaviour without change.
+//
+// Prowlarr API facts (Servarr wiki + issues #2440 / #2631):
+//   - indexerIds=-1 → all configured Usenet indexers only
+//   - indexerIds=-2 → all configured torrent indexers only
+//   - parameter absent → all indexers (both protocols)
+//
+// Array parameters must be REPEATED (&indexerIds=-1), never comma-joined —
+// current Prowlarr rejects comma-joined values with a 400.
+//
+// On an install with zero Usenet indexers, ScopeUsenet returns an empty
+// result set — that is the correct "phase 1 miss" signal, not an error.
+type Scope int
+
+const (
+	// ScopeAll is the zero value: no indexerIds parameter emitted, all indexers.
+	ScopeAll Scope = 0
+	// ScopeUsenet restricts the search to Prowlarr's Usenet indexers (indexerIds=-1).
+	ScopeUsenet Scope = -1
+	// ScopeTorrent restricts the search to Prowlarr's torrent indexers (indexerIds=-2).
+	ScopeTorrent Scope = -2
+)
+
 // Config parameterizes the client for one Prowlarr instance.
 type Config struct {
 	BaseURL string
@@ -156,6 +181,17 @@ type SearchByIDParams struct {
 	SeasonSpecified bool   // true when a season (possibly 0/Specials) was deliberately picked
 	Episode         int    // 0 if not applicable
 	Categories      []int
+
+	// Scope limits the search to one protocol's indexers via Prowlarr's
+	// sentinel indexerIds values. ScopeAll (zero value) emits no indexerIds
+	// parameter, preserving today's all-indexer behaviour for every existing
+	// caller. ScopeUsenet emits indexerIds=-1; ScopeTorrent emits indexerIds=-2.
+	//
+	// IndexerIDs, when non-empty, wins over Scope: the explicit id list is
+	// sent verbatim as repeated indexerIds params and Scope is ignored. This
+	// lets an operator target a specific indexer set without touching Scope.
+	Scope      Scope
+	IndexerIDs []int
 }
 
 // SearchByID runs a structured, id-based Prowlarr search — the id-scoped
@@ -238,6 +274,7 @@ func (c *Client) SearchByID(ctx context.Context, params SearchByIDParams) ([]Rel
 	}
 
 	addCategories(q, params.Categories)
+	addIndexerScope(q, params.Scope, params.IndexerIDs)
 
 	return c.search(ctx, q)
 }
@@ -253,6 +290,25 @@ func addCategories(q url.Values, categories []int) {
 		cats[i] = strconv.Itoa(cat)
 	}
 	q.Set("categories", strings.Join(cats, ","))
+}
+
+// addIndexerScope emits Prowlarr's indexerIds parameter(s) for protocol
+// scoping. When IndexerIDs is non-empty it wins (explicit operator-chosen set,
+// repeated once per id). Otherwise Scope maps to a sentinel: ScopeUsenet →
+// indexerIds=-1, ScopeTorrent → indexerIds=-2, ScopeAll → no param emitted.
+//
+// Parameters are REPEATED, never comma-joined — current Prowlarr rejects
+// comma-joined indexerIds with a 400 (Prowlarr issue #2440).
+func addIndexerScope(q url.Values, scope Scope, indexerIDs []int) {
+	if len(indexerIDs) > 0 {
+		for _, id := range indexerIDs {
+			q.Add("indexerIds", strconv.Itoa(id))
+		}
+		return
+	}
+	if scope != ScopeAll {
+		q.Add("indexerIds", strconv.Itoa(int(scope)))
+	}
 }
 
 // search performs the /api/v1/search GET for an already-built query and maps

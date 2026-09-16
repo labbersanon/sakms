@@ -120,8 +120,22 @@ const (
 // holds no session and never has (both of its other passes are session-free by
 // design), so a session parameter could only be satisfied by building a Series
 // session on every cycle even when this pass is inert.
+// monitorAirDates is the whole pass: catalog sync for every tracked series,
+// then (when dispatch is true) detection and dispatch, then the backoff sweep.
+// It runs as the third step of runUsenetRetryCycle.
+//
+// dispatch is false when the drain worker is active (autograbdrain.go), because
+// the drain owns air-date dispatch. The catalog sync and backoff sweep run
+// unconditionally so an operator who turns the drain off keeps getting metadata
+// updates. When dispatch is false, dispatchAirDateGrabs is skipped entirely —
+// a no-op there would cost a full TMDB catalog scan with no dispatch output.
+//
+// Claude 2026-09-16: added dispatch bool parameter.
+// Reason: exactly ONE owner of air-date dispatch at runtime (plan guardrail).
+//   runUsenetRetryCycle passes dispatch=false when autograb_drain_interval_seconds>0.
+// Review if: drain and daily dispatch ownership model changes.
 func monitorAirDates(ctx context.Context, deps AutoGrabDeps, build sessionBuilderFunc,
-	libStore *library.Store, excluded map[string]bool, now time.Time) {
+	libStore *library.Store, excluded map[string]bool, dispatch bool, now time.Time) {
 
 	if libStore == nil {
 		return // the library store isn't wired — nothing to monitor
@@ -162,7 +176,9 @@ func monitorAirDates(ctx context.Context, deps AutoGrabDeps, build sessionBuilde
 		syncSeriesCatalog(ctx, sess, libStore, series, discovery)
 	}
 
-	dispatchAirDateGrabs(ctx, deps, sess, libStore, seriesList, excluded, now)
+	if dispatch {
+		dispatchAirDateGrabs(ctx, deps, sess, libStore, seriesList, excluded, now)
+	}
 	airDateBackoffSweep(ctx, deps, libStore, now)
 }
 
@@ -284,12 +300,10 @@ type airDateCandidate struct {
 }
 
 // dispatchAirDateGrabs is the background cycle's entry point: detection over
-// the freshly-synced catalog, dispatching oldest air date first under the
-// cycle's global and per-series caps.
-//
-// The ordering (air date, then series title, season, episode) is what makes a
-// backlog drain predictably instead of the same 20 rows being retried every
-// cycle, and it is what makes the cap deterministic across runs.
+// the freshly-synced catalog. Since 2026-09-16 the drain worker owns the
+// primary dispatch path (see autograbdrain.go); this call remains so an
+// install that turns the drain OFF keeps its previous air-date dispatch.
+// Ordering is newest-first (see dispatchAirDateGrabsScoped).
 func dispatchAirDateGrabs(ctx context.Context, deps AutoGrabDeps, sess *mode.Session,
 	libStore *library.Store, seriesList []library.Series, excluded map[string]bool, now time.Time) {
 	limit, perSeries := airDateDispatchCaps(ctx, deps.SettingsStore)
@@ -298,11 +312,21 @@ func dispatchAirDateGrabs(ctx context.Context, deps AutoGrabDeps, sess *mode.Ses
 }
 
 // dispatchAirDateGrabsScoped is the shared dispatcher for the background
-// air-date cycle and the monitor-on series backfill.
+// air-date cycle (when the drain is disabled) and the monitor-on series backfill.
 //
 // seasons, when non-nil, restricts candidates to those season numbers (the
 // seasons the operator just turned on). limit is the total attempt budget;
 // perSeriesLimit caps attempts per series ID (0 = uncapped per series).
+//
+// Claude 2026-09-16: ordering flipped to NEWEST air date first.
+// Reason: newest/recently-aired-first is the locked product decision (#1).
+//   Oldest-first caused a classic backlog (one series with many old episodes)
+//   to starve newly-aired episodes every cycle — the 20/cycle cap consumed all
+//   slots before reaching recent episodes of other series.
+// Cascade: seriesBackfill.runOnce calls this function, so a monitor-on click
+//   also dispatches newest-first. That is correct — an operator enabling a show
+//   wants its recent season first, not its pilot.
+// Review if: the locked newest-first decision is revisited.
 func dispatchAirDateGrabsScoped(ctx context.Context, deps AutoGrabDeps, sess *mode.Session,
 	libStore *library.Store, seriesList []library.Series, seasons map[int]bool,
 	limit, perSeriesLimit int, excluded map[string]bool, now time.Time) {
@@ -343,10 +367,13 @@ func dispatchAirDateGrabsScoped(ctx context.Context, deps AutoGrabDeps, sess *mo
 	if len(candidates) == 0 {
 		return
 	}
+	// Primary key: NEWEST air date first (see dispatchAirDateGrabsScoped doc).
+	// Tie-breakers are ascending to keep ordering deterministic across runs
+	// and consistent between test cycles.
 	sort.SliceStable(candidates, func(i, j int) bool {
 		a, b := candidates[i], candidates[j]
 		if a.episode.AirDate != b.episode.AirDate {
-			return a.episode.AirDate < b.episode.AirDate
+			return a.episode.AirDate > b.episode.AirDate // newest first
 		}
 		if a.series.Title != b.series.Title {
 			return a.series.Title < b.series.Title

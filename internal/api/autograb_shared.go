@@ -75,6 +75,13 @@ const (
 	// unset or switched-off retry interval. It no longer backs retry_after —
 	// parks moved to grabs.RetryBackoff (see the note above parkGrabForRetry).
 	defaultUsenetRetryIntervalSeconds = 86400
+
+	// autoGrabDrainIntervalKey is the drain worker's cadence setting.
+	// 0 = off (default), written to 60 by putUsenetAutoGrabEnabledHandler
+	// alongside usenet_retry_interval_seconds so the two stay coupled.
+	// When > 0 the drain owns air-date dispatch; the daily cycle's pass only
+	// runs catalog sync + backoff sweep. See autograbdrain.go.
+	autoGrabDrainIntervalKey = "autograb_drain_interval_seconds"
 )
 
 const (

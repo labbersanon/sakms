@@ -299,7 +299,13 @@ func runUsenetRetryCycle(ctx context.Context, deps AutoGrabDeps, build sessionBu
 
 	sweepUsenetFailures(ctx, deps, lookup)
 	retryDueGrabs(ctx, deps, build, excluded, now)
-	monitorAirDates(ctx, deps, build, libStore, excluded, now)
+	// Claude 2026-09-16: drain worker takes over air-date dispatch when active.
+	// Reason: exactly one owner of air-date dispatch at runtime. When
+	//   autograb_drain_interval_seconds > 0 the drain runs its own newer-first
+	//   pass; the daily cycle keeps catalog sync + backoff sweep only.
+	// Review if: drain is removed or daily cycle regains dispatch authority.
+	drainInterval, _ := loadIntervalSeconds(ctx, deps.SettingsStore, autoGrabDrainIntervalKey, 0)
+	monitorAirDates(ctx, deps, build, libStore, excluded, drainInterval <= 0, now)
 	releaseDueGrabs(ctx, deps, build, libStore, excluded, now)
 	// Claude 2026-08-24: fifth pass — Adult monitored-entity dispatch.
 	// Reads pool for scenes added since monitored_since, dispatches auto-grabs.

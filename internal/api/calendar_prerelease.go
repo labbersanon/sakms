@@ -1,15 +1,19 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"time"
 
 	"github.com/labbersanon/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/tmdb"
 )
 
 // Calendar's click-to-request route: POST /api/calendar/prerelease-request.
@@ -72,7 +76,16 @@ import (
 //  3. MISS. parkPreReleaseRequest mints the held row — or loses a race to a
 //     concurrent click and degrades to the same alreadyRequested answer step 2
 //     produces. See the branch.
-func preReleaseRequestHandler(grabsStore *grabs.Store, libStore *library.Store) http.HandlerFunc {
+// Claude 2026-09-16: added connStore/httpClient for TMDB-derived hold_until.
+// Reason: req.ReleaseDate was the theatrical primary date from the Calendar client;
+//   using it directly made a theatrical date become hold_until, and the moment it
+//   passed the film was searched — while still in cinemas. hold_until is now
+//   resolved from TMDB's typed 4/5/6 release data, making req.ReleaseDate
+//   advisory only (still validated for wire compatibility, never used as hold).
+// Troubleshooting: if hold_until = 9999-12-31, TMDB is unconfigured or has no
+//   typed US release for this film yet — the refresh pass corrects it each cycle.
+// Review if: the hold-resolution logic or the sentinel value changes.
+func preReleaseRequestHandler(grabsStore *grabs.Store, libStore *library.Store, connStore *connections.Store, httpClient *http.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
@@ -89,23 +102,20 @@ func preReleaseRequestHandler(grabsStore *grabs.Store, libStore *library.Store) 
 			http.Error(w, "title is required", http.StatusBadRequest)
 			return
 		}
-		// TMDB hands out a bare YYYY-MM-DD; parsing it as UTC midnight is what
-		// keeps the hold from being a day off. grabs.FormatTime takes a time.Time,
-		// so the parse cannot be skipped by passing the string through.
-		until, err := time.Parse(dateOnlyLayout, req.ReleaseDate)
-		if err != nil {
+		// req.ReleaseDate is still required for wire compatibility: a Calendar client
+		// on a stale build sends the theatrical date, and we 400 rather than silently
+		// accepting a structurally wrong request. But the value NEVER sets hold_until —
+		// hold is resolved from TMDB below. A theatrical primary date arriving from
+		// a stale Calendar client is the original bug this feature closes.
+		if _, err := time.Parse(dateOnlyLayout, req.ReleaseDate); err != nil {
 			http.Error(w, "releaseDate must be a YYYY-MM-DD date", http.StatusBadRequest)
 			return
 		}
-		// Claude 2026-09-16: day-after timing — hold_until is the first promotable
-		// instant, which is the day AFTER the release date (release midnight UTC + 24h).
-		// Reason: dispatching on the release day itself races the actual release;
-		//   adding one day here keeps hold_until's meaning as "first promotable instant"
-		//   so DueForRelease, DueForRetry, PromoteToFront, and the Requests chip are
-		//   all unmodified.
-		// Troubleshooting: pre-release requests promoted on the release day itself.
-		// Review if: day-after timing decision is revisited.
-		until = until.AddDate(0, 0, 1)
+
+		// Resolve the actual hold from TMDB's typed 4/5/6 data. A TMDB error or
+		// no typed date both produce the sentinel (9999-12-31), not a 502: the
+		// request is accepted and the refresh pass corrects the hold each cycle.
+		until := buildPreReleaseHold(ctx, connStore, httpClient, req.TMDBID)
 
 		// Step 1 — outstanding work by some OTHER means. nonHeldMovieWork is
 		// deliberately blind to held rows (see its doc): a held row for this id IS
@@ -215,3 +225,37 @@ func preReleaseRequestHandler(grabsStore *grabs.Store, libStore *library.Store) 
 // time.DateOnly so the intent is legible next to grabs.FormatTime's sortable
 // layout, which is a different thing entirely.
 const dateOnlyLayout = "2006-01-02"
+
+// buildPreReleaseHold resolves the hold_until for a pre-release request from
+// TMDB's typed 4/5/6 (Digital/Physical/TV) release data. It never fails:
+//   - TMDB unconfigured, TMDB error, or no typed date → sentinelTime
+//   - known typed date (past or future) → earliest + 24h
+//
+// The +24h keeps hold_until's meaning as "first promotable instant" (the same
+// day-after rule calendar_prerelease.go applied to client-supplied dates), so
+// DueForRelease, PromoteToFront, and the Requests chip are unmodified.
+//
+// A TMDB error MUST NOT return an error to the caller: the operator's click is
+// not lost over a transient hiccup, and the sentinel is the safe answer — the
+// refresh pass (refreshPreReleaseHolds) corrects it next cycle.
+func buildPreReleaseHold(ctx context.Context, connStore *connections.Store, httpClient *http.Client, tmdbID int) time.Time {
+	if connStore == nil || httpClient == nil {
+		return sentinelTime
+	}
+	conn, err := connStore.Get(ctx, "tmdb")
+	if err != nil {
+		log.Printf("pre-release hold: TMDB not configured — using sentinel hold: %v", err)
+		return sentinelTime
+	}
+	client := tmdb.New(tmdb.Config{BaseURL: tmdb.DefaultBaseURL, APIKey: conn.APIKey}, httpClient)
+	earliest, known, err := client.USAcquirableRelease(ctx, tmdbID)
+	if err != nil {
+		log.Printf("pre-release hold: TMDB error for tmdbID=%d — using sentinel hold: %v", tmdbID, err)
+		return sentinelTime
+	}
+	if !known {
+		log.Printf("pre-release hold: no typed US 4/5/6 release for tmdbID=%d — using sentinel hold", tmdbID)
+		return sentinelTime
+	}
+	return earliest.Add(24 * time.Hour)
+}

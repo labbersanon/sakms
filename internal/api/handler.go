@@ -564,7 +564,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// pass of the retry cycle promotes it. It needs no *excludes.Store, so it
 	// stays on this mux; see calendar_prerelease.go for why no exclusion check
 	// belongs at create time.
-	mux.HandleFunc("POST /api/calendar/prerelease-request", preReleaseRequestHandler(grabsStore, libStore))
+	mux.HandleFunc("POST /api/calendar/prerelease-request", preReleaseRequestHandler(grabsStore, libStore, connStore, httpClient))
 
 	// Download queue: torrent (anacrolix) + usenet (NNTP) merged into one
 	// stream. GID routing: "nzb-" prefix → usenet engine, otherwise torrent.

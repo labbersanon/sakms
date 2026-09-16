@@ -81,7 +81,97 @@ const (
 	// row's state, and UpdateStatus takes only (id, status) and cannot carry
 	// one — which is why the reason is a separate, EARLIER call.
 	preReleaseSupersededReason = "the film was already grabbed or added to the library, so this request was cancelled"
+
+	// holdRefreshHorizon bounds how far ahead refreshPreReleaseHolds looks.
+	// Holds beyond this window are skipped and self-heal when they come inside
+	// it. gateMovieGrab is the backstop: if a stale near-future hold promotes
+	// without refreshing, the gate re-holds it at the corrected date.
+	holdRefreshHorizon = 14 * 24 * time.Hour
 )
+
+// heldRequests is every promotable-someday held row, sentinel holds included.
+// DueForRelease with sentinelTime as its bound IS that query — reusing it
+// beats a second near-identical statement that can drift from its four guards.
+// All sentinel-held rows satisfy hold_until <= sentinelTime because the
+// comparison is lexicographic and sentinel equals itself.
+func heldRequests(ctx context.Context, store *grabs.Store) ([]grabs.Grab, error) {
+	return store.DueForRelease(ctx, sentinelTime)
+}
+
+// refreshPreReleaseHolds re-resolves every held request's hold_until against
+// TMDB's typed 4/5/6 release data each cycle, so a hold parked on the sentinel
+// (or on a date TMDB has since corrected) becomes accurate before the promotion
+// read below runs.
+//
+// Only sentinel holds and holds within holdRefreshHorizon are checked. A hold
+// eight months out is skipped and self-heals when it comes inside the window.
+// gateMovieGrab is the backstop if it doesn't: a stale hold that promotes while
+// still theatrical will be re-held by the gate.
+//
+// Rows are processed SEQUENTIALLY, never concurrently — the codebase's hard
+// rule against concurrent TMDB fan-outs (see maxPreReleaseGrabsPerCycle's doc).
+//
+// On TMDB error, leave the row untouched rather than setting a wrong hold.
+// This is only safe because gateMovieGrab fails closed: a near-future stale hold
+// surviving a TMDB outage will promote, the gate will re-hold it, and the row
+// returns here next cycle.
+func refreshPreReleaseHolds(ctx context.Context, deps AutoGrabDeps, build sessionBuilderFunc, now time.Time) {
+	rows, err := heldRequests(ctx, deps.GrabsStore)
+	if err != nil {
+		log.Printf("pre-release refresh: listing held requests: %v", err)
+		return
+	}
+	if len(rows) == 0 {
+		return
+	}
+
+	// Build once for the whole pass, not per row.
+	sess, err := build(ctx, mode.Movies)
+	if err != nil {
+		log.Printf("pre-release refresh: building Movies session: %v — skipping hold refresh (gateMovieGrab protects promoted rows)", err)
+		return
+	}
+	if sess.TMDB == nil {
+		log.Printf("pre-release refresh: TMDB not configured — skipping hold refresh")
+		return
+	}
+
+	for _, g := range rows {
+		isSentinel := g.HoldUntil == unresolvedReleaseHold
+		if !isSentinel {
+			// Only refresh holds coming due within the horizon; far-future holds
+			// are skipped and self-heal when they approach the window.
+			holdTime, parseErr := time.Parse(time.RFC3339, g.HoldUntil)
+			if parseErr != nil {
+				// Unparseable hold_until: leave it alone; it is not sentinel and
+				// we cannot tell where it falls. The gate protects promotion.
+				continue
+			}
+			if holdTime.After(now.Add(holdRefreshHorizon)) {
+				continue
+			}
+		}
+
+		earliest, known, tmdbErr := sess.TMDB.USAcquirableRelease(ctx, g.TMDBID)
+		if tmdbErr != nil {
+			// Leave untouched — see doc comment. Logged at info so an outage
+			// doesn't flood ERROR for every held row every cycle.
+			log.Printf("pre-release refresh: TMDB error for grab %d (tmdbID=%d): %v — leaving hold unchanged", g.ID, g.TMDBID, tmdbErr)
+			continue
+		}
+
+		if !known {
+			if err := deps.GrabsStore.SetHoldUntil(ctx, g.ID, sentinelTime, awaitingReleaseReason); err != nil {
+				log.Printf("pre-release refresh: setting sentinel hold on grab %d: %v", g.ID, err)
+			}
+			continue
+		}
+		newHold := earliest.Add(24 * time.Hour)
+		if err := deps.GrabsStore.SetHoldUntil(ctx, g.ID, newHold, heldRequestReason); err != nil {
+			log.Printf("pre-release refresh: updating hold on grab %d to %v: %v", g.ID, newHold, err)
+		}
+	}
+}
 
 // releaseDueGrabs promotes every held Calendar pre-release request whose
 // hold_until has arrived, re-arming its existing row through RunAutoGrab.
@@ -111,6 +201,17 @@ func releaseDueGrabs(ctx context.Context, deps AutoGrabDeps, build sessionBuilde
 	if libStore == nil {
 		return // the library store isn't wired — nothing to check duplicates against
 	}
+
+	// Claude 2026-09-16: step 0 — refresh held rows' hold_until from TMDB.
+	// Reason: sentinel-held rows (theatrical-only, TMDB error at request time)
+	//   would never be returned by DueForRelease without this correction pass.
+	//   Near-term holds are also refreshed in case TMDB corrected the date.
+	//   A build failure or missing TMDB is logged and skipped; gateMovieGrab
+	//   is the backstop if a stale hold promotes.
+	// Troubleshooting: held rows stuck at sentinel → check TMDB release_dates
+	//   for the film; if TMDB returns a typed date, this pass will advance it.
+	// Review if: holdRefreshHorizon or sentinel value changes.
+	refreshPreReleaseHolds(ctx, deps, build, now)
 
 	due, err := deps.GrabsStore.DueForRelease(ctx, now)
 	if err != nil {

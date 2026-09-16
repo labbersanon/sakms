@@ -8386,3 +8386,106 @@ affect 0 rows; the residual cost of any same-day searches that already fired
   2099-08-02 (new release date 2099-08-01 + 1).
 - `TestPreReleaseRequest_DueForReleaseTimingDayAfter`: new behavioural test
   asserting `DueForRelease(now)` misses on the release day and hits at now+24h.
+
+## 2026-09-16 — US acquirable-release movie grab gate (CAM prevention)
+
+**Decision:** movies must not be searched or dispatched until a US TMDB release
+of type 4 (Digital), 5 (Physical), or 6 (TV) exists with a date ≤ today. A
+theatrical-only release is accepted as a Calendar pre-release request and held
+at a sentinel (`9999-12-31`) until TMDB announces a typed date. The goal is to
+prevent camcorder recordings from landing in the library.
+
+**Design:** two-layer architecture (see `.omc/plans/movies-us-release-gate.md`):
+
+- **Layer 1 — hold accuracy** (`buildPreReleaseHold`, `refreshPreReleaseHolds`):
+  keeps `hold_until` honest by resolving TMDB's typed 4/5/6 date at request time
+  and refreshing it each cycle. A sentinel hold means "no typed date yet", not
+  "release far in the future". A correct `hold_until` produces accurate Requests
+  scheduling copy ("Held until 2025-06-16") and minimal TMDB churn (only
+  near-horizon and sentinel holds are refreshed each cycle).
+
+- **Layer 2 — hard gate** (`gateMovieGrab`, `moviereleasegate.go`): a
+  fail-closed predicate every Movies dispatch path runs before searching.
+  Blocks on nil TMDB client, TMDB error, no typed US 4/5/6 entry, or a future
+  typed date. Layer 2 is the actual enforcement point; Layer 1 alone can be
+  defeated by a TMDB date correction or clock skew.
+
+**TMDB** (`internal/tmdb/client.go`):
+- Added `USAcquirableRelease(ctx, tmdbID) (earliest time.Time, known bool, err
+  error)` — scans `/movie/{id}/release_dates` for the earliest US release of
+  types 4, 5, or 6. Returns `known=false` (theatrical-only) vs `known=true,
+  earliest.After(now)` (future typed date) vs `known=true,
+  !earliest.After(now)` (acquirable now).
+- Refactored `HasUSRelease` to delegate to `USAcquirableRelease`; widens
+  Discover's `upcomingReleaseTypes` to include type 6 (TV).
+- `digitalReleaseTypes` in `calendar_upcoming.go` likewise widened to include 6.
+
+**Grabs store** (`internal/grabs/grabs.go`):
+- Added `HoldForRelease(ctx, id, until, reason)` — sets `hold_until`, clears
+  `retry_after`, ensures a re-held row stays on the release track (not the
+  retry track).
+
+**Gate helper** (`internal/api/moviereleasegate.go`, new file):
+- `unresolvedReleaseHold` sentinel = `9999-12-31T00:00:00.000Z`.
+- `gateMovieGrab(ctx, client, mode, tmdbID) (movieRelease, blocked, reason)`.
+- Non-Movies or tmdbID ≤ 0: allow (no TMDB call). TMDB nil, error, unknown, or
+  future: block with appropriate hold.
+- `AutoGrabOutcome.MovieBlocked` field (distinct from `Gated`, which aborts
+  the whole `releaseDueGrabs` cycle).
+
+**Call sites wired (all Movies dispatch paths):**
+1. `RunAutoGrab` (`autograb_shared.go`) — after toggle gate, before search;
+   on block, re-holds the existing row via `HoldForRelease`.
+2. `grabHandler` (`search.go`) — manual Search for a movie.
+3. `grabDirectEnclosure` (`autograb.go`) — direct URL dispatch.
+4. `grabOneBatchItem` (`autograb_batch.go`) — batch grab path.
+5. `promoteRequestHandler` (`requests_promote.go`) — Promote button in
+   Requests; now accepts `connStore` and `httpClient`.
+6. `preReleaseRequestHandler` (`calendar_prerelease.go`) — Calendar click;
+   `req.ReleaseDate` is now advisory only (validated for wire compatibility,
+   never used as `hold_until`). `buildPreReleaseHold` derives `hold_until`
+   from TMDB; TMDB error → sentinel, never a 502.
+7. `releaseDueGrabs` (`prerelease.go`) — step 0 runs `refreshPreReleaseHolds`
+   before the due-row loop; `out.MovieBlocked` decrements the attempt counter
+   (no Prowlarr search happened).
+
+**Refresh pass** (`internal/api/prerelease.go`):
+- `heldRequests` — all rows with `hold_until ≤ sentinel` (i.e. every held row,
+  sentinel-held and near-future alike, since `DueForRelease(sentinelTime)` is
+  the correct query).
+- `refreshPreReleaseHolds` — iterates held rows, skips those beyond
+  `holdRefreshHorizon` (14 days), calls `USAcquirableRelease` for the rest,
+  and writes the corrected `hold_until` (or re-sets sentinel on TMDB error —
+  leave-it-alone, not overwrite).
+- Runs as step 0 of `releaseDueGrabs`, before the promotion read.
+
+**Frontend** (`frontend/src/screens/Requests.tsx`):
+- `scheduledBlurb` detects a `9999-` prefix and renders "Held until a US
+  digital, physical or TV release is announced" instead of a literal
+  "Held until 9999-12-31" date.
+
+**Tests added / updated:**
+- `internal/tmdb/client_test.go`: `TestUSAcquirableRelease_*` (type 6 past,
+  theatrical-only, earliest of several types, future typed date, non-US
+  ignored, unparseable date skipped); `TestHasUSRelease_TrueForPastTVRelease`.
+- `internal/tmdb/client_extended_test.go`: updated Discover query shape test
+  to expect `with_release_type=4|5|6`.
+- `internal/grabs/grabs_test.go`: `TestHoldForRelease_*` (core contract, non-
+  pending-retry refusal, appears in DueForRelease not DueForRetry).
+- `internal/api/moviereleasegate_test.go` (new): unit tests for all
+  `gateMovieGrab` branches.
+- `internal/api/autograb_shared_test.go`: injected `releasedTMDBClient` into
+  Movies sessions so existing tests pass through the gate.
+- `internal/api/autograb_handler_test.go`: updated `fakeTMDBMovieRuntime` to
+  serve `release_dates`; added `TestAutoGrabHandler_Movies_UnreleasedReturns409`.
+- `internal/api/autograb_direct_test.go`: `TestGrabDirectEnclosure_UnreleasedMovieBlocked`.
+- `internal/api/autograb_batch_test.go`: `TestAutoGrabBatch_UnreleasedMovieIsPerItemErrorAndBatchContinues`.
+- `internal/api/requests_promote_test.go`: `TestPromote_RefusesUnreleasedMovie`,
+  `TestPromote_AllowsReleasedMovie`, `TestPromote_AllowsSeriesRow`.
+- `internal/api/calendar_prerelease_test.go`: updated `preReleaseMux` to
+  provide a fake TMDB server; added tests for theatrical-only sentinel hold,
+  TMDB-date vs client-date precedence, and TMDB-error sentinel.
+- `internal/api/prerelease_test.go`: `TestRefreshPreReleaseHolds_*` (sentinel
+  resolution, unchanged on TMDB error, horizon skip); updated releaseDueGrabs
+  tests to account for `refreshPreReleaseHolds` modifying `hold_until`.
+- `frontend/src/screens/Requests.test.tsx`: sentinel-blurb rendering test.

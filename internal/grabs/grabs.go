@@ -169,6 +169,14 @@ type Grab struct {
 	// \x1f + entity_id (see adultnewest.FormatMonitorKey). Never cleared after
 	// dispatch — provenance outlives the grab, same as HoldUntil.
 	MonitorEntityKey string `json:"monitorEntityKey,omitempty"`
+	// NextSearchScope is the one-shot escalation marker set when a Usenet
+	// download fails with a 430/not-found. Values: '' (empty = use normal
+	// Usenet-first preference order) or 'torrent' (skip Usenet, search torrent
+	// indexers on the next attempt only). The marker is consumed — cleared back
+	// to '' — by whichever path (drain or retry cycle) performs the next
+	// attempt, regardless of outcome. Set via SetPendingRetryWithScope.
+	// Migration: 0022_grabs_next_search_scope.sql.
+	NextSearchScope  string `json:"nextSearchScope,omitempty"`
 	CreatedAt        string `json:"createdAt"`
 	UpdatedAt        string `json:"updatedAt"`
 }
@@ -272,7 +280,7 @@ func (s *Store) List(ctx context.Context, m mode.Mode) ([]Grab, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, next_search_scope, created_at, updated_at
 		FROM grabs WHERE mode = ? ORDER BY created_at DESC, id DESC
 	`, string(m))
 	if err != nil {
@@ -299,7 +307,7 @@ func (s *Store) Get(ctx context.Context, id int64) (*Grab, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, next_search_scope, created_at, updated_at
 		FROM grabs WHERE id = ?
 	`, id)
 	g, err := s.scanGrab(row)
@@ -382,7 +390,7 @@ func (s *Store) GetByDownloadGID(ctx context.Context, gid string) (*Grab, error)
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, next_search_scope, created_at, updated_at
 		FROM grabs WHERE download_gid = ?
 	`, gid)
 	g, err := s.scanGrab(row)
@@ -416,7 +424,7 @@ func (s *Store) ActiveByDownloadGID(ctx context.Context, m mode.Mode, gid string
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, next_search_scope, created_at, updated_at
 		FROM grabs WHERE mode = ? AND download_gid = ? AND status NOT IN ('imported', 'failed')
 		ORDER BY id ASC LIMIT 1
 	`, string(m), gid)
@@ -443,7 +451,7 @@ func (s *Store) scanGrab(row rowScanner) (Grab, error) {
 	var m, encryptedURL string
 	err := row.Scan(&g.ID, &m, &g.Title, &g.TMDBID, &g.TVDBID, &g.SeasonNumber, &g.EpisodeNumber, &g.SeasonSpecified, &g.QualityProfileID, &g.Indexer, &g.Protocol,
 		&g.DownloadClient, &g.ClientRef, &g.DownloadGID, &g.DownloadStatus, &g.DownloadStagingPath, &g.Status, &g.RootFolderPath, &g.FlaggedForReview, &g.FlagReason,
-		&encryptedURL, &g.RetryAfter, &g.RetryCount, &g.RetryReason, &g.HoldUntil, &g.MonitorEntityKey, &g.CreatedAt, &g.UpdatedAt)
+		&encryptedURL, &g.RetryAfter, &g.RetryCount, &g.RetryReason, &g.HoldUntil, &g.MonitorEntityKey, &g.NextSearchScope, &g.CreatedAt, &g.UpdatedAt)
 	g.Mode = mode.Mode(m)
 	if err != nil {
 		return g, err
@@ -498,6 +506,54 @@ func (s *Store) SetPendingRetry(ctx context.Context, id int64, after time.Time, 
 		return fmt.Errorf("setting grab %d pending retry: %w", id, err)
 	}
 	return dbutil.CheckAffected(res, id, ErrNotFound)
+}
+
+// SetPendingRetryWithScope parks a grab for re-search AND sets next_search_scope
+// atomically. It is identical to SetPendingRetry except that it also writes
+// next_search_scope in the same statement.
+//
+// Use this for the Usenet-failure → torrent escalation path: a 430/not-found
+// on a Usenet download parks immediately (after = now) with scope = "torrent"
+// so the next attempt (drain or retry cycle) issues indexerIds=-2 instead of
+// the normal Usenet-first phases. The marker is one-shot: whoever performs the
+// next attempt must clear it (via ClearNextSearchScope) before calling RunAutoGrab.
+//
+// Claude 2026-09-16: intentionally not a wrapper around SetPendingRetry to keep
+// the GID clear + scope set atomic — two separate calls would leave a window
+// where the GID is cleared but the scope is not yet written, which a concurrent
+// reader could observe.
+// Review if: SetPendingRetry gains an options pattern, at which point scope
+// can become one option.
+func (s *Store) SetPendingRetryWithScope(ctx context.Context, id int64, after time.Time, reason, scope string) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE grabs SET
+			retry_count       = retry_count + 1,
+			status            = 'pending_retry',
+			retry_after       = ?,
+			retry_reason      = ?,
+			next_search_scope = ?,
+			download_gid      = '',
+			updated_at        = sakms_now()
+		WHERE id = ?
+	`, FormatTime(after), reason, scope, id)
+	if err != nil {
+		return fmt.Errorf("setting grab %d pending retry with scope %q: %w", id, scope, err)
+	}
+	return dbutil.CheckAffected(res, id, ErrNotFound)
+}
+
+// ClearNextSearchScope resets next_search_scope to '' on a pending_retry row.
+// Called by the retry cycle and drain just before performing the next attempt,
+// so the one-shot escalation marker is consumed regardless of whether the
+// attempt dispatches or misses.
+func (s *Store) ClearNextSearchScope(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE grabs SET next_search_scope = '', updated_at = sakms_now() WHERE id = ?
+	`, id)
+	if err != nil {
+		return fmt.Errorf("clearing next_search_scope for grab %d: %w", id, err)
+	}
+	return nil
 }
 
 // SetRetryAfter reschedules an ALREADY-PARKED grab without counting a fresh
@@ -800,7 +856,7 @@ func (s *Store) DueForRetry(ctx context.Context, now time.Time) ([]Grab, error) 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, next_search_scope, created_at, updated_at
 		FROM grabs
 		WHERE status = ? AND download_gid = '' AND retry_after != '' AND retry_after <= ?
 		  AND (hold_until = '' OR hold_until <= ?)
@@ -846,7 +902,7 @@ func (s *Store) FindPendingRetry(ctx context.Context, m mode.Mode, tmdbID int, t
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, next_search_scope, created_at, updated_at
 		FROM grabs
 		WHERE mode = ? AND status = ? AND season_number = ? AND season_specified = ? AND episode_number = ?
 		ORDER BY id ASC
@@ -907,7 +963,7 @@ func (s *Store) FindHeldRequest(ctx context.Context, m mode.Mode, tmdbID int) (*
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, next_search_scope, created_at, updated_at
 		FROM grabs
 		WHERE mode = ? AND tmdb_id = ? AND hold_until != ''
 		ORDER BY id ASC LIMIT 1
@@ -951,7 +1007,7 @@ func (s *Store) DueForRelease(ctx context.Context, now time.Time) ([]Grab, error
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, next_search_scope, created_at, updated_at
 		FROM grabs
 		WHERE status = ? AND download_gid = '' AND retry_after = ''
 		  AND hold_until != '' AND hold_until <= ?

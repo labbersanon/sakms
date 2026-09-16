@@ -258,12 +258,14 @@ func upcomingEpisodes(missing []library.Episode, from, to string) []library.Epis
 	return out
 }
 
-// digitalReleaseTypes are TMDB's release_dates type ids for Digital (4) and
-// Physical (5) — the same two tmdb.DiscoverMoviesUpcoming's query A filters on
-// (its own list is unexported) and the same two HasUSRelease treats as
-// "actually available". MovieDetails' ReleaseDates list is already US-scoped,
+// digitalReleaseTypes are TMDB's release_dates type ids for Digital (4),
+// Physical (5), and TV (6) — the same three tmdb.USAcquirableRelease treats as
+// "actually acquirable". MovieDetails' ReleaseDates list is already US-scoped,
 // matching tmdb.UpcomingRegion, so no region filtering is needed here.
-var digitalReleaseTypes = map[int]bool{4: true, 5: true}
+// Claude 2026-09-16: added 6 (TV) to align with USAcquirableRelease's type set
+// so the Calendar's displayed date matches the server-side hold computation.
+// Review if: the acquirable definition changes.
+var digitalReleaseTypes = map[int]bool{4: true, 5: true, 6: true}
 
 // resolveTypedReleaseDate returns the date this movie should bucket on.
 //

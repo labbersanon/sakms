@@ -214,6 +214,12 @@ type AutoGrabOutcome struct {
 	// Gated: a non-operator trigger ran while usenet_autograb_enabled was off.
 	// Nothing was searched, scored, dispatched or recorded.
 	Gated bool
+	// MovieBlocked: the movie-release gate blocked dispatch because no US
+	// digital/physical/TV release (types 4/5/6) exists yet or is confirmed
+	// on TMDB. Unlike Gated, this does NOT abort the whole releaseDueGrabs
+	// cycle — one blocked movie is re-held and the cycle continues with the
+	// next row.
+	MovieBlocked bool
 
 	Selection autograb.Selection
 	// Releases is the candidate list actually scored, index-aligned with
@@ -259,6 +265,28 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 		if !enabled {
 			return AutoGrabOutcome{Gated: true, Status: http.StatusOK}, nil
 		}
+	}
+
+	// Claude 2026-09-16: movie-release gate — Layer 2 of CAM-prevention.
+	// Reason: a theatrical-only movie must never be searched or dispatched.
+	//   This gate runs after the toggle (which proves the operator wants unattended
+	//   grab) but before autoGrabSearch (so no indexer is ever contacted for an
+	//   unreleased film). TriggerOperator is NOT exempt: an operator clicking
+	//   Discover Grab on a film still in cinemas is a mistake the gate prevents.
+	//   See moviereleasegate.go for the full decision table.
+	// Troubleshooting: unexpected 409s on movie auto-grabs → check TMDB
+	//   release_dates for the film (types 4/5/6 US entries).
+	// Review if: the acquirable definition or the gate's call sites change.
+	if rel, blocked, reason := gateMovieGrab(ctx, sess.TMDB, req.Mode, req.TMDBID); blocked {
+		log.Printf("movie-release gate: blocked %q (tmdbID=%d): %s", req.Title, req.TMDBID, reason)
+		if req.ExistingGrabID != 0 && deps.GrabsStore != nil {
+			// Re-hold the promoted row so it stays on the release track (not
+			// the retry track) and comes back when the date arrives.
+			if err := deps.GrabsStore.HoldForRelease(ctx, req.ExistingGrabID, rel.HoldUntil, awaitingReleaseReason); err != nil {
+				log.Printf("movie-release gate: failed to re-hold grab %d: %v", req.ExistingGrabID, err)
+			}
+		}
+		return AutoGrabOutcome{MovieBlocked: true, Status: http.StatusConflict}, nil
 	}
 
 	releases, runtimeSeconds := req.Releases, req.RuntimeSeconds

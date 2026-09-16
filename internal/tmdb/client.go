@@ -1362,10 +1362,12 @@ func (c *Client) DiscoverTVFiltered(ctx context.Context, opts FilterOptions, pag
 // release-date list repeats), not operator-configurable.
 const UpcomingRegion = "US"
 
-// upcomingReleaseTypes are TMDB's release_dates type ids for Digital (4) and
-// Physical (5) — the same two HasUSRelease treats as "actually available",
-// expressed here as a /discover with_release_type filter instead.
-var upcomingReleaseTypes = []int{4, 5}
+// upcomingReleaseTypes are TMDB's release_dates type ids for Digital (4),
+// Physical (5), and TV (6) — the same three USAcquirableRelease treats as
+// "actually acquirable", expressed here as a /discover with_release_type filter.
+// Claude 2026-09-16: added 6 (TV) to align with USAcquirableRelease's type set.
+// Review if: the acquirable definition changes.
+var upcomingReleaseTypes = []int{4, 5, 6}
 
 // ReleaseKindDigital/ReleaseKindPlanned are UpcomingMovie.ReleaseKind's only
 // two values: a digital/physical release dated in the window, or a
@@ -1561,47 +1563,78 @@ type releaseDatesResponse struct {
 }
 
 // TMDB's release_dates "type" enum (documented: 1 Premiere, 2 Theatrical
-// limited, 3 Theatrical, 4 Digital, 5 Physical, 6 TV) — HasUSRelease only
-// counts type 4/5 as "actually acquirable," not a theatrical-only release.
+// limited, 3 Theatrical, 4 Digital, 5 Physical, 6 TV) — types 4/5/6 are the
+// three consumer-acquirable release types; 1/2/3 mean only that the film is
+// in cinemas. UNVERIFIED ASSUMPTION: modeled from TMDB's public API
+// documentation only, not yet confirmed against a live call.
 const (
 	releaseTypeDigital  = 4
 	releaseTypePhysical = 5
+	releaseTypeTV       = 6
 )
 
-// HasUSRelease reports whether TMDB's /movie/{id}/release_dates lists a US
-// digital or physical release dated today or earlier — i.e. whether this
-// movie is actually acquirable yet, as opposed to theatrical-only or still
-// upcoming. Movies only: TMDB's TV catalog has no equivalent release_dates
-// concept. A movie with no US entry at all, or only earlier-stage entries
-// (premiere/theatrical), returns false — the same title as "not yet
-// released" for this check's purpose. UNVERIFIED ASSUMPTION (per this
-// project's honesty-about-unverified-assumptions convention): modeled from
-// TMDB's public API documentation only, not yet confirmed against a live
-// call.
-func (c *Client) HasUSRelease(ctx context.Context, tmdbID int) (bool, error) {
+// USAcquirableRelease returns the earliest US release among TMDB release types
+// 4 (Digital), 5 (Physical) and 6 (TV) — the three that mean a real
+// consumer-acquirable copy exists, as opposed to 1/2/3 (premiere, limited
+// theatrical, theatrical), which mean only that the film is in cinemas.
+//
+// known=false means TMDB lists no such entry at all: theatrical-only, no US
+// entry, or unannounced. It is NOT the same as a future date, and callers
+// must not conflate them — a future date is a schedulable hold, an unknown
+// one is an indefinite one.
+//
+// UNVERIFIED ASSUMPTION (per this project's honesty-about-unverified-assumptions
+// convention): modeled from TMDB's public API documentation only, not yet
+// confirmed against a live call. Type 6 (TV) may include broadcast premieres
+// that predate home release; if it turns out to admit CAM-era titles, narrowing
+// back to 4/5 is a one-const change.
+func (c *Client) USAcquirableRelease(ctx context.Context, tmdbID int) (earliest time.Time, known bool, err error) {
 	var resp releaseDatesResponse
 	if err := c.do(ctx, fmt.Sprintf("/movie/%d/release_dates", tmdbID), nil, &resp); err != nil {
-		return false, err
+		return time.Time{}, false, err
 	}
-	now := time.Now()
 	for _, country := range resp.Results {
 		if country.ISO31661 != "US" {
 			continue
 		}
 		for _, rd := range country.ReleaseDates {
-			if rd.Type != releaseTypeDigital && rd.Type != releaseTypePhysical {
+			if rd.Type != releaseTypeDigital && rd.Type != releaseTypePhysical && rd.Type != releaseTypeTV {
 				continue
 			}
-			t, err := time.Parse(time.RFC3339, rd.ReleaseDate)
-			if err != nil {
+			t, parseErr := time.Parse(time.RFC3339, rd.ReleaseDate)
+			if parseErr != nil {
+				// Unparseable date: skip rather than fail, same degradation
+				// resolveTypedReleaseDate uses (one bad entry must not block).
 				continue
 			}
-			if !t.After(now) {
-				return true, nil
+			if !known || t.Before(earliest) {
+				earliest = t
+				known = true
 			}
 		}
 	}
-	return false, nil
+	return earliest, known, nil
+}
+
+// HasUSRelease reports whether TMDB's /movie/{id}/release_dates lists a US
+// digital, physical or TV release (types 4/5/6) dated today or earlier.
+// Delegates to USAcquirableRelease so the two share one type set and one
+// network call. See USAcquirableRelease's doc for the UNVERIFIED ASSUMPTION.
+//
+// Claude 2026-09-16: widened from 4/5 to 4/5/6 by delegating to
+// USAcquirableRelease. Reason: the movie-release gate uses the same 4/5/6 set;
+// keeping Discover's HasUSRelease filter at 4/5 would hide from Discover titles
+// the gate will actually grab (TV-released films), which is incoherent.
+// Review if: the 4/5/6 acquirable definition changes.
+func (c *Client) HasUSRelease(ctx context.Context, tmdbID int) (bool, error) {
+	earliest, known, err := c.USAcquirableRelease(ctx, tmdbID)
+	if err != nil {
+		return false, err
+	}
+	if !known {
+		return false, nil
+	}
+	return !earliest.After(time.Now()), nil
 }
 
 // findResponse is the envelope for TMDB's /find/{external_id} endpoint, which

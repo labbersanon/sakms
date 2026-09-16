@@ -18,12 +18,34 @@ import (
 // fakeTMDBMovieRuntime serves /movie/{id} with a real runtime — the autograb
 // Movies path needs it as the bitrate scorer's denominator (fakeTMDBServer in
 // availability_test.go omits runtime, which would force every candidate to
-// unknown-bitrate).
+// unknown-bitrate). Also serves /movie/{id}/release_dates with a past type-4
+// US digital entry so gateMovieGrab allows Movies rows through without
+// blocking every existing test suite.
+//
+// Claude 2026-09-16: added /release_dates branch.
+// Reason: gateMovieGrab now runs inside RunAutoGrab before any search; without
+//   a typed US release entry in the fake TMDB, every Movies auto-grab test
+//   blocks at the gate, which would fail all existing tests.
+// Review if: gateMovieGrab's call site or fakeTMDBMovieRuntime usage changes.
 func fakeTMDBMovieRuntime(t *testing.T, runtimeMinutes int) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/movie/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/release_dates") {
+			// A past type-4 US digital release so gateMovieGrab always allows.
+			json.NewEncoder(w).Encode(map[string]any{
+				"results": []map[string]any{
+					{
+						"iso_3166_1": "US",
+						"release_dates": []map[string]any{
+							{"type": 4, "release_date": "2020-01-01T00:00:00.000Z"},
+						},
+					},
+				},
+			})
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]any{
 			"id": 42, "title": "Some Movie", "imdb_id": "tt1234567", "runtime": runtimeMinutes,
 		})

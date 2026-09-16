@@ -1109,6 +1109,167 @@ func TestRearmHeldRequest_ErrNotFound(t *testing.T) {
 	}
 }
 
+// --- HoldForRelease ---
+
+// TestHoldForRelease_SetsHoldAndClearsRetryAfter is the core contract: writing
+// the new hold_until and clearing retry_after in one write moves the row from
+// the retry track to the release track.
+func TestHoldForRelease_SetsHoldAndClearsRetryAfter(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Seed a pending_retry row that has a real retry_after (on the retry track).
+	seeded := parkedWithGIDAndCount(t, s)
+	until := time.Now().Add(30 * 24 * time.Hour)
+
+	if err := s.HoldForRelease(ctx, seeded.ID, until, "awaiting release"); err != nil {
+		t.Fatalf("HoldForRelease: %v", err)
+	}
+	got, err := s.Get(ctx, seeded.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	if got.HoldUntil != FormatTime(until) {
+		t.Errorf("hold_until = %q, want %q", got.HoldUntil, FormatTime(until))
+	}
+	if got.RetryAfter != "" {
+		t.Errorf("retry_after = %q, want empty — must be cleared to move to release track", got.RetryAfter)
+	}
+	if got.RetryReason != "awaiting release" {
+		t.Errorf("retry_reason = %q, want %q", got.RetryReason, "awaiting release")
+	}
+	// Status, retry_count, and download_gid must be unchanged.
+	if got.Status != seeded.Status {
+		t.Errorf("status = %q, want %q unchanged", got.Status, seeded.Status)
+	}
+	if got.RetryCount != seeded.RetryCount {
+		t.Errorf("retry_count = %d, want %d unchanged", got.RetryCount, seeded.RetryCount)
+	}
+	if got.DownloadGID != seeded.DownloadGID {
+		t.Errorf("download_gid = %q, want %q unchanged", got.DownloadGID, seeded.DownloadGID)
+	}
+}
+
+func TestHoldForRelease_RefusesNonPendingRetryRow(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	g, err := s.Create(ctx, Grab{
+		Mode: mode.Movies, Title: "Movie", TMDBID: 1,
+		Indexer: "I", Protocol: "usenet", DownloadClient: "nntp", RootFolderPath: "/movies",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Manually move to Queued (not PendingRetry) using SetDownloadGID.
+	if err := s.SetDownloadGID(ctx, g.ID, "gid-123"); err != nil {
+		t.Fatalf("SetDownloadGID: %v", err)
+	}
+	if err := s.UpdateStatus(ctx, g.ID, Queued); err != nil {
+		t.Fatalf("UpdateStatus: %v", err)
+	}
+
+	err = s.HoldForRelease(ctx, g.ID, time.Now().Add(time.Hour), "hold")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("want ErrNotFound for non-PendingRetry row; got %v", err)
+	}
+}
+
+// TestHoldForRelease_RowBecomesDueForReleaseNotDueForRetry is the round-trip
+// proof: a row HoldForRelease touches appears in DueForRelease (not DueForRetry)
+// once its hold_until arrives.
+func TestHoldForRelease_RowBecomesDueForReleaseNotDueForRetry(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Seed a pending_retry row WITHOUT a GID so DueForRelease's download_gid=''
+	// guard is satisfiable. parkedWithGIDAndCount adds a GID, which would block it.
+	now := time.Now()
+	g, err := s.Create(ctx, Grab{
+		Mode: mode.Movies, Title: "Movie", TMDBID: 1,
+		Indexer: "I", Protocol: "usenet", DownloadClient: "nntp", RootFolderPath: "/movies",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Park it on the retry track first (non-empty retry_after).
+	if err := s.SetPendingRetry(ctx, g.ID, now.Add(24*time.Hour), "no match"); err != nil {
+		t.Fatalf("SetPendingRetry: %v", err)
+	}
+
+	past := now.Add(-time.Hour)
+	if err := s.HoldForRelease(ctx, g.ID, past, "awaiting release"); err != nil {
+		t.Fatalf("HoldForRelease: %v", err)
+	}
+
+	due, err := s.DueForRelease(ctx, time.Now())
+	if err != nil {
+		t.Fatalf("DueForRelease: %v", err)
+	}
+	found := false
+	for _, gr := range due {
+		if gr.ID == g.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected row to appear in DueForRelease after HoldForRelease with a past hold_until")
+	}
+
+	// Must NOT appear in DueForRetry (retry_after cleared → invisible there).
+	retryDue, err := s.DueForRetry(ctx, time.Now())
+	if err != nil {
+		t.Fatalf("DueForRetry: %v", err)
+	}
+	for _, gr := range retryDue {
+		if gr.ID == g.ID {
+			t.Error("row must not appear in DueForRetry after HoldForRelease cleared retry_after")
+		}
+	}
+}
+
+// TestDueForRelease_NeverReturnsSentinelHeldRows pins the safety guarantee that
+// "9999-12-31" sentinel rows never promote at a realistic now.
+func TestDueForRelease_NeverReturnsSentinelHeldRows(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Use a row without a GID so the only thing keeping it out of DueForRelease
+	// is the hold_until sentinel itself.
+	g, err := s.Create(ctx, Grab{
+		Mode: mode.Movies, Title: "Movie", TMDBID: 5,
+		Indexer: "I", Protocol: "usenet", DownloadClient: "nntp", RootFolderPath: "/movies",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := s.SetPendingRetry(ctx, g.ID, time.Now().Add(time.Hour), "no match"); err != nil {
+		t.Fatalf("SetPendingRetry: %v", err)
+	}
+
+	sentinel := "9999-12-31T00:00:00.000Z"
+	sentinelTime, err := time.Parse(time.RFC3339, sentinel)
+	if err != nil {
+		t.Fatalf("parsing sentinel: %v", err)
+	}
+	if err := s.HoldForRelease(ctx, g.ID, sentinelTime, "awaiting announced release"); err != nil {
+		t.Fatalf("HoldForRelease: %v", err)
+	}
+
+	// At a realistic "now" the sentinel must not promote.
+	now := time.Now()
+	due, err := s.DueForRelease(ctx, now)
+	if err != nil {
+		t.Fatalf("DueForRelease: %v", err)
+	}
+	for _, gr := range due {
+		if gr.ID == g.ID {
+			t.Error("sentinel hold_until (9999-12-31) must never be due at a realistic now")
+		}
+	}
+}
+
 // --- monitor_entity_key round-trip ---
 
 func TestSetMonitorEntityKey_RoundTrips(t *testing.T) {

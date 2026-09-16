@@ -1195,3 +1195,144 @@ func TestHasUSRelease_FalseWithNoUSEntry(t *testing.T) {
 		t.Error("expected false — no US entry at all")
 	}
 }
+
+// TestHasUSRelease_TrueForPastTVRelease proves the type-6 widening: a TV
+// release (type 6) in the past counts as acquirable.
+func TestHasUSRelease_TrueForPastTVRelease(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results": [
+			{"iso_3166_1": "US", "release_dates": [{"type": 6, "release_date": "2020-03-01T00:00:00.000Z"}]}
+		]}`))
+	})
+
+	has, err := c.HasUSRelease(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !has {
+		t.Error("expected true — a past TV release is acquirable")
+	}
+}
+
+func TestUSAcquirableRelease_Type6Counts(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results": [
+			{"iso_3166_1": "US", "release_dates": [{"type": 6, "release_date": "2020-03-01T00:00:00.000Z"}]}
+		]}`))
+	})
+
+	earliest, known, err := c.USAcquirableRelease(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !known {
+		t.Fatal("expected known=true for a TV release")
+	}
+	if earliest.Year() != 2020 {
+		t.Errorf("unexpected earliest year: %d", earliest.Year())
+	}
+}
+
+func TestUSAcquirableRelease_TheatricalOnlyIsUnknown(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results": [
+			{"iso_3166_1": "US", "release_dates": [{"type": 3, "release_date": "2020-01-01T00:00:00.000Z"}]}
+		]}`))
+	})
+
+	_, known, err := c.USAcquirableRelease(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if known {
+		t.Error("expected known=false — theatrical-only has no acquirable release")
+	}
+}
+
+func TestUSAcquirableRelease_EarliestOfSeveralTypedEntries(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results": [
+			{"iso_3166_1": "US", "release_dates": [
+				{"type": 5, "release_date": "2020-06-01T00:00:00.000Z"},
+				{"type": 4, "release_date": "2020-04-01T00:00:00.000Z"},
+				{"type": 6, "release_date": "2020-07-01T00:00:00.000Z"}
+			]}
+		]}`))
+	})
+
+	earliest, known, err := c.USAcquirableRelease(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !known {
+		t.Fatal("expected known=true")
+	}
+	if earliest.Month() != 4 {
+		t.Errorf("expected earliest in April (type 4), got month %d", earliest.Month())
+	}
+}
+
+func TestUSAcquirableRelease_FutureTypedDateReturnsKnownTrue(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results": [
+			{"iso_3166_1": "US", "release_dates": [{"type": 4, "release_date": "2099-01-01T00:00:00.000Z"}]}
+		]}`))
+	})
+
+	earliest, known, err := c.USAcquirableRelease(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !known {
+		t.Fatal("expected known=true — a future typed date is known, just upcoming")
+	}
+	if earliest.Year() != 2099 {
+		t.Errorf("unexpected earliest year: %d", earliest.Year())
+	}
+}
+
+func TestUSAcquirableRelease_NonUSEntriesIgnored(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results": [
+			{"iso_3166_1": "GB", "release_dates": [{"type": 4, "release_date": "2020-01-01T00:00:00.000Z"}]},
+			{"iso_3166_1": "US", "release_dates": [{"type": 3, "release_date": "2020-01-01T00:00:00.000Z"}]}
+		]}`))
+	})
+
+	_, known, err := c.USAcquirableRelease(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if known {
+		t.Error("expected known=false — GB digital entry must not count as US acquirable")
+	}
+}
+
+func TestUSAcquirableRelease_UnparseableDateSkippedNotFatal(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results": [
+			{"iso_3166_1": "US", "release_dates": [
+				{"type": 4, "release_date": "not-a-date"},
+				{"type": 5, "release_date": "2020-05-01T00:00:00.000Z"}
+			]}
+		]}`))
+	})
+
+	earliest, known, err := c.USAcquirableRelease(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !known {
+		t.Fatal("expected known=true — the parseable type-5 entry should count")
+	}
+	if earliest.Year() != 2020 {
+		t.Errorf("unexpected earliest year: %d", earliest.Year())
+	}
+}

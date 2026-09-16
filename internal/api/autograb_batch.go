@@ -332,7 +332,9 @@ func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, stor
 	if _, blocked, reason := gateMovieGrab(ctx, sess.TMDB, m, req.TMDBID); blocked {
 		return nil, false, false, nil, "", fmt.Errorf("%s", reason)
 	}
-	releases, runtimeSeconds, err := autoGrabSearch(ctx, sess, m, store, req)
+	// ScopeAll: grabOneBatchItem is operator-initiated (TriggerOperator equivalent),
+	// never two-phase; scope scoping belongs to the drain's SearchPhases loop only.
+	releases, runtimeSeconds, err := autoGrabSearch(ctx, sess, m, store, prowlarr.ScopeAll, req)
 	if err != nil {
 		return nil, false, false, nil, "", err
 	}

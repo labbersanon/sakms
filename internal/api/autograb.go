@@ -383,14 +383,22 @@ func activeGrabForGID(ctx context.Context, grabsStore *grabs.Store, m mode.Mode,
 // Claude 2026-08-11: store parameter added (A3 / M-2 fix) so internal/api
 // compiles after autoGrabSearch's signature change — all three call sites
 // must pass their available store (or nil for callers not yet wired).
-func autoGrabSearch(ctx context.Context, sess *mode.Session, m mode.Mode, store *adultnewest.ReleaseStore, req apidto.AutoGrabRequest) ([]prowlarr.Release, float64, error) {
+//
+// Claude 2026-09-16: scope parameter added for two-phase Usenet-first search.
+// Reason: RunAutoGrab loops over SearchPhases; each phase calls autoGrabSearch
+//   with its own scope sentinel (ScopeUsenet=-1, ScopeTorrent=-2, ScopeAll=0).
+// Adult ignores scope entirely: resolveAdultReleases is cache-first and
+//   free-text — it does not call SearchByID and cannot honore indexerIds.
+//   This is documented rather than silently accepted so a caller knows the
+//   field has no effect for Adult.
+// Review if: Adult gains structured id-based Prowlarr search.
+func autoGrabSearch(ctx context.Context, sess *mode.Session, m mode.Mode, store *adultnewest.ReleaseStore, scope prowlarr.Scope, req apidto.AutoGrabRequest) ([]prowlarr.Release, float64, error) {
 	switch m {
 	case mode.Adult:
-		// adultConsumerUnattended: title-filter applied before return so
-		// RunAutoGrab/grabOneBatchItem (the unattended callers of autoGrabSearch)
-		// never score title-mismatching releases. The picker path (discoverAvailabilityHandler)
-		// calls resolveAdultReleases with adultConsumerPicker directly — it gets
-		// the raw list so FilterReleases' AI escalation path can still run.
+		// scope is deliberately IGNORED for Adult: resolveAdultReleases is
+		// cache-first and free-text (Search, not SearchByID), so indexerIds has
+		// no path into it. The parameter is accepted rather than dropped at the
+		// call site to keep the signature uniform across all three modes.
 		res, err := resolveAdultReleases(ctx, sess, store, adultConsumerUnattended, req)
 		if err != nil {
 			return nil, float64(req.DurationSeconds), err
@@ -405,6 +413,7 @@ func autoGrabSearch(ctx context.Context, sess *mode.Session, m mode.Mode, store 
 			Query:  req.Title,
 			TVDBID: tvdbID, Season: req.SeasonNumber, SeasonSpecified: req.SeasonSpecified, Episode: req.EpisodeNumber,
 			Categories: categoriesForSearch(mode.Series),
+			Scope:      scope,
 		})
 		return releases, seriesEpisodeRuntimeSeconds(ctx, sess, req.TMDBID, req.SeasonNumber, req.EpisodeNumber), err
 	default: // Movies
@@ -416,6 +425,7 @@ func autoGrabSearch(ctx context.Context, sess *mode.Session, m mode.Mode, store 
 			Query:  req.Title,
 			TMDBID: req.TMDBID, IMDBID: details.IMDBID,
 			Categories: categoriesForSearch(mode.Movies),
+			Scope:      scope,
 		})
 		return releases, float64(details.Runtime) * 60, err
 	}

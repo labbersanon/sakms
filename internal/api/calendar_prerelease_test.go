@@ -20,12 +20,45 @@ import (
 // preReleaseMux wires POST /api/calendar/prerelease-request against real
 // (empty unless a test seeds them) grab and library stores, and returns both so
 // a test can seed the outstanding-work inputs and read the row back.
+//
+// The fake TMDB serves a type-4 US digital release on releaseDay ("2099-06-15")
+// for any TMDB id, so tests that use releaseDay as req.ReleaseDate get back a
+// TMDB-derived hold_until of releaseDay+24h = 2099-06-16, matching the
+// client-date+1d that the handler used to compute directly. Tests that need a
+// different TMDB response (theatrical-only, error, nil client) must wire their
+// own mux with preReleaseMuxWith.
 func preReleaseMux(t *testing.T) (*http.ServeMux, *grabs.Store, *library.Store) {
 	t.Helper()
-	_, _, _, grabsStore, libStore, _, _, _, _, _ := testStores(t)
+	connStore, _, _, grabsStore, libStore, _, _, _, _, _ := testStores(t)
+	// A type-4 release on 2099-06-15: any request with releaseDay gets back
+	// hold_until = 2099-06-16 00:00:00 UTC (day-after rule, from TMDB).
+	tmdbSrv, _ := releaseDatesServer(t, `{"results":[{"iso_3166_1":"US","release_dates":[{"type":4,"release_date":"2099-06-15T00:00:00.000Z"}]}]}`)
+	overrideFixedURL(t, "tmdb", tmdbSrv.URL)
+	ctx := context.Background()
+	if err := connStore.Upsert(ctx, "tmdb", tmdbSrv.URL, "key"); err != nil {
+		t.Fatalf("upserting fake TMDB: %v", err)
+	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/calendar/prerelease-request", preReleaseRequestHandler(grabsStore, libStore))
+	mux.HandleFunc("POST /api/calendar/prerelease-request", preReleaseRequestHandler(grabsStore, libStore, connStore, testHTTPClient()))
 	return mux, grabsStore, libStore
+}
+
+// preReleaseMuxWith wires the handler with caller-supplied grab and library
+// stores and an optional TMDB URL. Pass tmdbURL="" to simulate nil TMDB
+// (sentinel hold for every request).
+func preReleaseMuxWith(t *testing.T, grabsStore *grabs.Store, libStore *library.Store, tmdbURL string) *http.ServeMux {
+	t.Helper()
+	ctx := context.Background()
+	connStore, _, _, _, _, _, _, _, _, _ := testStores(t)
+	if tmdbURL != "" {
+		overrideFixedURL(t, "tmdb", tmdbURL)
+		if err := connStore.Upsert(ctx, "tmdb", tmdbURL, "key"); err != nil {
+			t.Fatalf("upserting fake TMDB: %v", err)
+		}
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/calendar/prerelease-request", preReleaseRequestHandler(grabsStore, libStore, connStore, testHTTPClient()))
+	return mux
 }
 
 func postPreRelease(t *testing.T, srvURL string, body apidto.PreReleaseRequestRequest) (int, apidto.PreReleaseRequestResponse) {
@@ -190,8 +223,14 @@ func TestPreReleaseRequest_DueForReleaseTimingDayAfter(t *testing.T) {
 // TestPreReleaseRequest_SecondClickRefreshesTheHold is T-3.3 + T-3.11′: a
 // re-click updates hold_until in place and creates NO second row — and it
 // leaves retry_count alone, i.e. it went through SetHoldUntil and not
-// SetPendingRetry. A corrected TMDB release date is a real case; an inflated
-// attempt count for a request that has never been searched is a lie.
+// SetPendingRetry.
+//
+// After the TMDB-derived hold change, the hold is re-resolved from TMDB on
+// each click rather than from the client-supplied date. The fake TMDB in
+// preReleaseMux always returns a 2099-06-15 type-4 release, so both clicks
+// produce hold_until = 2099-06-16, regardless of what ReleaseDate the client
+// sends. The core assertion — SetHoldUntil (not SetPendingRetry) was used, and
+// no second row was minted — remains unchanged.
 func TestPreReleaseRequest_SecondClickRefreshesTheHold(t *testing.T) {
 	ctx := context.Background()
 	mux, grabsStore, _ := preReleaseMux(t)
@@ -202,6 +241,8 @@ func TestPreReleaseRequest_SecondClickRefreshesTheHold(t *testing.T) {
 		TMDBID: 42, Title: "Unreleased Film", ReleaseDate: releaseDay,
 	})
 
+	// The client sends a different date on the second click, but hold_until
+	// comes from TMDB (always 2099-06-15 in the fake), not the client date.
 	status, second := postPreRelease(t, srv.URL, apidto.PreReleaseRequestRequest{
 		TMDBID: 42, Title: "Unreleased Film", ReleaseDate: "2099-08-01",
 	})
@@ -223,9 +264,10 @@ func TestPreReleaseRequest_SecondClickRefreshesTheHold(t *testing.T) {
 		t.Fatalf("a re-click minted a second row (%d rows) — the next cycle would dispatch a duplicate: %+v", len(list), list)
 	}
 	g := list[0]
-	// Day-after timing: the new release date is 2099-08-01, so hold_until = 2099-08-02.
-	if want := grabs.FormatTime(time.Date(2099, 8, 2, 0, 0, 0, 0, time.UTC)); g.HoldUntil != want {
-		t.Errorf("holdUntil = %q, want the refreshed %q", g.HoldUntil, want)
+	// TMDB fake returns 2099-06-15, so hold_until = 2099-06-16 (day-after rule).
+	// The client-supplied date "2099-08-01" is advisory only and is not used.
+	if want := grabs.FormatTime(time.Date(2099, 6, 16, 0, 0, 0, 0, time.UTC)); g.HoldUntil != want {
+		t.Errorf("holdUntil = %q, want TMDB-derived %q (not the client-supplied date)", g.HoldUntil, want)
 	}
 	if g.RetryCount != 0 {
 		t.Errorf("retryCount = %d, want 0 — a re-click is not an attempt, so SetHoldUntil (not SetPendingRetry) must be what wrote this", g.RetryCount)
@@ -770,5 +812,146 @@ func TestParkPreReleaseRequest_LostRaceIsATypedError(t *testing.T) {
 	_, err := parkPreReleaseRequest(ctx, grabsStore, mode.Movies, "Unreleased Film", 42, until)
 	if !errors.Is(err, grabs.ErrHeldRequestExists) {
 		t.Fatalf("a second held row for one film must fail with ErrHeldRequestExists, got %v", err)
+	}
+}
+
+// TestPreReleaseRequest_TheatricalOnlyAcceptsWithSentinelHold is locked
+// decision 2's acceptance test: a theatrical-only movie (TMDB has type-3 but
+// no type-4/5/6 entry) is accepted and held with the sentinel, never refused.
+// The operator's click is not lost over uncertainty — the refresh pass corrects
+// the hold when TMDB announces a digital/physical/TV release.
+func TestPreReleaseRequest_TheatricalOnlyAcceptsWithSentinelHold(t *testing.T) {
+	ctx := context.Background()
+	connStore, _, _, grabsStore, libStore, _, _, _, _, _ := testStores(t)
+
+	tmdbSrv, _ := releaseDatesServer(t, `{"results":[{"iso_3166_1":"US","release_dates":[{"type":3,"release_date":"2025-03-01T00:00:00.000Z"}]}]}`)
+	overrideFixedURL(t, "tmdb", tmdbSrv.URL)
+	if err := connStore.Upsert(ctx, "tmdb", tmdbSrv.URL, "key"); err != nil {
+		t.Fatalf("upserting fake TMDB: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/calendar/prerelease-request", preReleaseRequestHandler(grabsStore, libStore, connStore, testHTTPClient()))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	status, out := postPreRelease(t, srv.URL, apidto.PreReleaseRequestRequest{
+		TMDBID: 99, Title: "Theatrical Film", ReleaseDate: "2025-03-01",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — theatrical-only must be accepted, not refused", status)
+	}
+	if out.AlreadyRequested {
+		t.Error("expected a fresh request, not alreadyRequested")
+	}
+	if out.GrabID == 0 {
+		t.Fatal("no grab id returned")
+	}
+
+	g, err := grabsStore.Get(ctx, out.GrabID)
+	if err != nil {
+		t.Fatalf("reloading the held row: %v", err)
+	}
+	if g.HoldUntil != unresolvedReleaseHold {
+		t.Errorf("holdUntil = %q, want sentinel %q — no typed US release found, so hold is indefinite", g.HoldUntil, unresolvedReleaseHold)
+	}
+	if g.RetryAfter != "" {
+		t.Errorf("retryAfter = %q, want empty — a sentinel hold must not also set retry_after", g.RetryAfter)
+	}
+	if g.Status != grabs.PendingRetry {
+		t.Errorf("status = %q, want %q", g.Status, grabs.PendingRetry)
+	}
+	// The sentinel is far in the future — DueForRelease at now must not return it.
+	due, err := grabsStore.DueForRelease(ctx, time.Now())
+	if err != nil {
+		t.Fatalf("DueForRelease: %v", err)
+	}
+	for _, d := range due {
+		if d.ID == g.ID {
+			t.Error("a sentinel-held row must not be returned by DueForRelease at a realistic 'now'")
+		}
+	}
+}
+
+// TestPreReleaseRequest_IgnoresClientDateAndUsesTypedDate proves that the
+// server ignores the client-supplied req.ReleaseDate and uses the TMDB-derived
+// digital/physical/TV date instead. The client sends the theatrical date
+// (2099-06-15); TMDB's typed 4 release is on 2099-08-15 — the server must
+// store 2099-08-16 (TMDB date + 24h), not 2099-06-16 (client date + 24h).
+func TestPreReleaseRequest_IgnoresClientDateAndUsesTypedDate(t *testing.T) {
+	ctx := context.Background()
+	connStore, _, _, grabsStore, libStore, _, _, _, _, _ := testStores(t)
+
+	// TMDB returns a future type-4 release on 2099-08-15 — different from the
+	// theatrical date the client will send (2099-06-15).
+	tmdbSrv, _ := releaseDatesServer(t, `{"results":[{"iso_3166_1":"US","release_dates":[{"type":4,"release_date":"2099-08-15T00:00:00.000Z"}]}]}`)
+	overrideFixedURL(t, "tmdb", tmdbSrv.URL)
+	if err := connStore.Upsert(ctx, "tmdb", tmdbSrv.URL, "key"); err != nil {
+		t.Fatalf("upserting fake TMDB: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/calendar/prerelease-request", preReleaseRequestHandler(grabsStore, libStore, connStore, testHTTPClient()))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	status, out := postPreRelease(t, srv.URL, apidto.PreReleaseRequestRequest{
+		TMDBID: 77, Title: "Future Digital Film", ReleaseDate: "2099-06-15", // theatrical date
+	})
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if out.GrabID == 0 {
+		t.Fatal("no grab id returned")
+	}
+
+	g, err := grabsStore.Get(ctx, out.GrabID)
+	if err != nil {
+		t.Fatalf("reloading: %v", err)
+	}
+	// TMDB says 2099-08-15 → hold = 2099-08-16, NOT 2099-06-16 (client date).
+	wantHold := grabs.FormatTime(time.Date(2099, 8, 16, 0, 0, 0, 0, time.UTC))
+	if g.HoldUntil != wantHold {
+		t.Errorf("holdUntil = %q, want TMDB-derived %q — client date must not set hold_until", g.HoldUntil, wantHold)
+	}
+}
+
+// TestPreReleaseRequest_TMDBErrorStillAcceptsWithSentinel proves a TMDB outage
+// does not 502 the operator. The request is accepted with a sentinel hold, and
+// the refresh pass corrects it when TMDB becomes available again.
+func TestPreReleaseRequest_TMDBErrorStillAcceptsWithSentinel(t *testing.T) {
+	ctx := context.Background()
+	connStore, _, _, grabsStore, libStore, _, _, _, _, _ := testStores(t)
+
+	tmdbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "server error", http.StatusInternalServerError)
+	}))
+	t.Cleanup(tmdbSrv.Close)
+	overrideFixedURL(t, "tmdb", tmdbSrv.URL)
+	if err := connStore.Upsert(ctx, "tmdb", tmdbSrv.URL, "key"); err != nil {
+		t.Fatalf("upserting fake TMDB: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/calendar/prerelease-request", preReleaseRequestHandler(grabsStore, libStore, connStore, testHTTPClient()))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	status, out := postPreRelease(t, srv.URL, apidto.PreReleaseRequestRequest{
+		TMDBID: 55, Title: "TMDB Error Film", ReleaseDate: "2099-06-15",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — a TMDB error must not 502 the operator", status)
+	}
+	if out.GrabID == 0 {
+		t.Fatal("no grab id returned")
+	}
+
+	g, err := grabsStore.Get(ctx, out.GrabID)
+	if err != nil {
+		t.Fatalf("reloading: %v", err)
+	}
+	if g.HoldUntil != unresolvedReleaseHold {
+		t.Errorf("holdUntil = %q, want sentinel %q on TMDB error", g.HoldUntil, unresolvedReleaseHold)
 	}
 }

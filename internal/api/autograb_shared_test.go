@@ -14,6 +14,7 @@ import (
 	"github.com/labbersanon/sakms/internal/prowlarr"
 	"github.com/labbersanon/sakms/internal/quality"
 	"github.com/labbersanon/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/tmdb"
 	"github.com/labbersanon/sakms/internal/usenet"
 )
 
@@ -26,6 +27,30 @@ func qualifyingRelease() prowlarr.Release {
 		Protocol: prowlarr.Torrent, Size: 8_000_000_000, Seeders: 50,
 		DownloadURL: "magnet:?xt=urn:btih:ABCDEF1234567890abcdef1234567890abcdef12",
 	}
+}
+
+// releasedTMDBClient returns a tmdb.Client pointing at a minimal fake server
+// that serves a past type-4 US digital release for any /movie/{id}/release_dates
+// request — enough to let gateMovieGrab allow any Movies row through. Used by
+// tests that call RunAutoGrab directly with a mode.Session{} literal rather
+// than via mode.Build + overrideFixedURL.
+func releasedTMDBClient(t *testing.T) *tmdb.Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{
+				{
+					"iso_3166_1": "US",
+					"release_dates": []map[string]any{
+						{"type": 4, "release_date": "2020-01-01T00:00:00.000Z"},
+					},
+				},
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+	return tmdb.New(tmdb.Config{BaseURL: srv.URL, APIKey: "test-key"}, srv.Client())
 }
 
 // setAutoGrabToggle writes usenet_autograb_enabled explicitly. Passing false is
@@ -77,7 +102,7 @@ func TestRunAutoGrabTriggerOperatorIgnoresToggleOff(t *testing.T) {
 
 			out, err := RunAutoGrab(ctx,
 				AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore},
-				&mode.Session{Mode: mode.Movies, Downloader: dl},
+				&mode.Session{Mode: mode.Movies, Downloader: dl, TMDB: releasedTMDBClient(t)},
 				AutoGrabRequest{
 					Mode: mode.Movies, Title: "Some Movie", TMDBID: 42,
 					Trigger:        TriggerOperator,
@@ -160,7 +185,7 @@ func TestRunAutoGrabOperatorFallbackWritesNoRetryRow(t *testing.T) {
 
 	out, err := RunAutoGrab(ctx,
 		AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore},
-		&mode.Session{Mode: mode.Movies, Downloader: dl},
+		&mode.Session{Mode: mode.Movies, Downloader: dl, TMDB: releasedTMDBClient(t)},
 		AutoGrabRequest{
 			Mode: mode.Movies, Title: "Some Movie", TMDBID: 42,
 			Trigger:  TriggerOperator,
@@ -214,7 +239,13 @@ func TestRunAutoGrabGatedFallbackParksOneRetryRow(t *testing.T) {
 				Releases: []prowlarr.Release{qualifyingRelease()},
 			}
 			deps := AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore}
-			sess := &mode.Session{Mode: tc.m}
+			// Movies rows need a TMDB client so gateMovieGrab can confirm the
+			// release; Series and Adult are allowed unconditionally (no TMDB call).
+			var tmdbClient *tmdb.Client
+			if tc.m == mode.Movies {
+				tmdbClient = releasedTMDBClient(t)
+			}
+			sess := &mode.Session{Mode: tc.m, TMDB: tmdbClient}
 
 			first, err := RunAutoGrab(ctx, deps, sess, req)
 			if err != nil {
@@ -499,7 +530,7 @@ func TestRunAutoGrabTriggerRequestGrabsWhenRuntimeKnown(t *testing.T) {
 
 	out, err := RunAutoGrab(ctx,
 		AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore},
-		&mode.Session{Mode: mode.Movies, Downloader: dl},
+		&mode.Session{Mode: mode.Movies, Downloader: dl, TMDB: releasedTMDBClient(t)},
 		AutoGrabRequest{
 			Mode: mode.Movies, Title: "Some Movie", TMDBID: 42,
 			RootFolderPath: "/movies", Trigger: TriggerRequest,

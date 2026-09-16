@@ -715,3 +715,78 @@ func TestAutoGrabBatch_AllowsAdjacentSeasonAndEpisodeCombinations(t *testing.T) 
 		})
 	}
 }
+
+// TestAutoGrabBatch_UnreleasedMovieIsPerItemErrorAndBatchContinues — one blocked
+// movie in a batch does not abort the whole batch: the blocked item becomes an
+// error result and the next item still dispatches.
+func TestAutoGrabBatch_UnreleasedMovieIsPerItemErrorAndBatchContinues(t *testing.T) {
+	// Two TMDB ids: 1 → theatrical-only (blocked), 2 → past digital (allowed).
+	// The fake TMDB server discriminates by movie ID.
+	tmdbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/release_dates") {
+			// Parse the movie ID from the path "/movie/{id}/release_dates".
+			var relType int
+			if strings.Contains(r.URL.Path, "/movie/2/") {
+				relType = 4 // digital — allowed
+			} else {
+				relType = 3 // theatrical only — blocked
+			}
+			json.NewEncoder(w).Encode(map[string]any{
+				"results": []map[string]any{{
+					"iso_3166_1": "US",
+					"release_dates": []map[string]any{
+						{"type": relType, "release_date": "2020-01-01T00:00:00.000Z"},
+					},
+				}},
+			})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 2, "title": "Released Movie", "imdb_id": "tt0000002", "runtime": 100,
+		})
+	}))
+	defer tmdbSrv.Close()
+
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	ctx := context.Background()
+	overrideFixedURL(t, "tmdb", tmdbSrv.URL)
+	if err := connStore.Upsert(ctx, "tmdb", tmdbSrv.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	prowlarrSrv := fakeProwlarr(t, healthyMovieRelease)
+	if err := connStore.Upsert(ctx, "prowlarr", prowlarrSrv.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := settingsStore.Set(ctx, qualityTierKey(mode.Movies), string(quality.Low)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := settingsStore.Set(ctx, moviesLibraryRootFolderKey, "/movies"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	dl := newTestDownloader("gid-batch-gate", t.TempDir())
+	dl.EnableTestAutoGID()
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, dl, nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	req := apidto.AutoGrabBatchRequest{Items: []apidto.AutoGrabBatchItem{
+		{Mode: "movies", Request: apidto.AutoGrabRequest{Title: "In-Cinema Film", TMDBID: 1}},
+		{Mode: "movies", Request: apidto.AutoGrabRequest{Title: "Released Movie", TMDBID: 2}},
+	}}
+	resp, out := postBatch(t, srv.URL, req)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("batch status = %d, want 200", resp.StatusCode)
+	}
+	if len(out.Results) != 2 {
+		t.Fatalf("expected 2 results, got %d: %+v", len(out.Results), out.Results)
+	}
+	// First item (tmdbID=1, theatrical only) → error.
+	if out.Results[0].Grabbed || out.Results[0].Error == "" {
+		t.Errorf("expected first item blocked (error), got %+v", out.Results[0])
+	}
+	// Second item (tmdbID=2, past digital) → grabbed.
+	if !out.Results[1].Grabbed {
+		t.Errorf("expected second item grabbed, got %+v", out.Results[1])
+	}
+}

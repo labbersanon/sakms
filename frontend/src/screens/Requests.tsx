@@ -169,6 +169,13 @@ function retryBlurb(item: RequestItem): string | null {
 
 function scheduledBlurb(item: RequestItem): string | null {
   if (!item.holdUntil) return null;
+  // Claude 2026-09-16: sentinel hold means no typed US digital/physical/TV
+  // release is known yet. Render human copy instead of "Held until 9999-12-31".
+  // Reason: the sentinel value is an internal marker, not a real date.
+  // Review if: unresolvedReleaseHold sentinel value changes.
+  if (item.holdUntil.startsWith("9999-")) {
+    return "Held until a US digital, physical or TV release is announced";
+  }
   return `Held until ${item.holdUntil.slice(0, 10)} — the day after its release date`;
 }
 

@@ -688,6 +688,37 @@ func (s *Store) RearmHeldRequest(ctx context.Context, id int64, until time.Time,
 	return nil
 }
 
+// HoldForRelease applies a release-date hold to a pending_retry row, setting
+// hold_until and clearing retry_after in one write. It is the re-hold operation
+// releaseDueGrabs uses when the gate blocks a promoted row: the row needs to
+// return to the held track (invisible to DueForRetry, visible only to
+// DueForRelease) with an updated hold_until, which is exactly what this does.
+//
+// Only operates on status=pending_retry rows. A row in any other status is
+// untouched and ErrNotFound is returned, so callers can distinguish "already
+// terminal or in-flight" from "not found at all."
+//
+// Clearing retry_after is what moves the row from the retry track to the release
+// track: DueForRetry requires retry_after != '' (its second guard), so a row
+// with retry_after cleared is invisible to it; DueForRelease requires
+// retry_after = '' (its third guard), so the same row becomes visible to it.
+// SetHoldUntil does NOT clear retry_after, which is precisely the asymmetry
+// that makes this method necessary.
+func (s *Store) HoldForRelease(ctx context.Context, id int64, until time.Time, reason string) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE grabs SET
+			hold_until   = ?,
+			retry_after  = '',
+			retry_reason = ?,
+			updated_at   = sakms_now()
+		WHERE id = ? AND status = ?
+	`, FormatTime(until), reason, id, string(PendingRetry))
+	if err != nil {
+		return fmt.Errorf("hold-for-release grab %d: %w", id, err)
+	}
+	return dbutil.CheckAffected(res, id, ErrNotFound)
+}
+
 // Dispatch is what a successful (re-)dispatch learned about a grab: which
 // release was picked, where it came from, and the GID the download engine
 // assigned it.

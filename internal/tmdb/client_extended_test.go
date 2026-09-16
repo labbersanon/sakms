@@ -319,8 +319,8 @@ func TestDiscoverMoviesUpcoming_QueryShapes(t *testing.T) {
 	if a.Get("region") != UpcomingRegion {
 		t.Errorf("query A: expected region=%s, got %q", UpcomingRegion, a.Get("region"))
 	}
-	if a.Get("with_release_type") != "4|5" {
-		t.Errorf("query A: expected pipe-joined with_release_type=4|5, got %q", a.Get("with_release_type"))
+	if a.Get("with_release_type") != "4|5|6" {
+		t.Errorf("query A: expected pipe-joined with_release_type=4|5|6 (type 6 TV widened in Step 1 of US-release gate), got %q", a.Get("with_release_type"))
 	}
 	if a.Get("release_date.gte") != "2026-09-01" || a.Get("release_date.lte") != "2026-09-30" {
 		t.Errorf("query A: expected the release_date window, got %v", a)

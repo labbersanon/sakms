@@ -538,6 +538,31 @@ describe("Requests", () => {
     expect(screen.queryByText(/Invalid Date|NaN/)).not.toBeInTheDocument();
   });
 
+  // A sentinel holdUntil (9999-12-31) means TMDB has no typed US release yet.
+  // The UI must render the "awaiting announcement" copy and never show "9999".
+  it("renders awaiting-release copy for a sentinel holdUntil, never the literal 9999 date", async () => {
+    stubRequests({
+      items: [
+        item({
+          title: "Theatrical Film",
+          tmdbId: 99,
+          status: "Scheduled",
+          holdUntil: "9999-12-31T00:00:00.000Z",
+        }),
+      ],
+    });
+
+    render(() => <Requests />);
+    await screen.findByText("Theatrical Film");
+
+    expect(
+      screen.getByText(
+        /Held until a US digital, physical or TV release is announced/,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/9999/)).not.toBeInTheDocument();
+  });
+
   it("a Pending Retry row is still excludable via Remove", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     const calls = stubReqFetch((url) => {

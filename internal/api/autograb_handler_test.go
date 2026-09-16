@@ -18,12 +18,34 @@ import (
 // fakeTMDBMovieRuntime serves /movie/{id} with a real runtime — the autograb
 // Movies path needs it as the bitrate scorer's denominator (fakeTMDBServer in
 // availability_test.go omits runtime, which would force every candidate to
-// unknown-bitrate).
+// unknown-bitrate). Also serves /movie/{id}/release_dates with a past type-4
+// US digital entry so gateMovieGrab allows Movies rows through without
+// blocking every existing test suite.
+//
+// Claude 2026-09-16: added /release_dates branch.
+// Reason: gateMovieGrab now runs inside RunAutoGrab before any search; without
+//   a typed US release entry in the fake TMDB, every Movies auto-grab test
+//   blocks at the gate, which would fail all existing tests.
+// Review if: gateMovieGrab's call site or fakeTMDBMovieRuntime usage changes.
 func fakeTMDBMovieRuntime(t *testing.T, runtimeMinutes int) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/movie/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/release_dates") {
+			// A past type-4 US digital release so gateMovieGrab always allows.
+			json.NewEncoder(w).Encode(map[string]any{
+				"results": []map[string]any{
+					{
+						"iso_3166_1": "US",
+						"release_dates": []map[string]any{
+							{"type": 4, "release_date": "2020-01-01T00:00:00.000Z"},
+						},
+					},
+				},
+			})
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]any{
 			"id": 42, "title": "Some Movie", "imdb_id": "tt1234567", "runtime": runtimeMinutes,
 		})
@@ -682,5 +704,62 @@ func TestAutoGrabHandler_Series_PickerGatedFallback(t *testing.T) {
 	}
 	if got := len(dl.List()); got != 0 {
 		t.Errorf("expected zero download-client adds for a Series fallback, got %d", got)
+	}
+}
+
+// TestAutoGrabHandler_Movies_UnreleasedReturns409 — the auto-grab handler
+// returns 409 for a Movies row when TMDB has only a theatrical US release.
+func TestAutoGrabHandler_Movies_UnreleasedReturns409(t *testing.T) {
+	dl := newTestDownloader("gid-nr2", t.TempDir())
+
+	// Theatrical-only TMDB server.
+	theatricalSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/release_dates") {
+			json.NewEncoder(w).Encode(map[string]any{
+				"results": []map[string]any{{
+					"iso_3166_1": "US",
+					"release_dates": []map[string]any{
+						{"type": 3, "release_date": "2025-01-01T00:00:00.000Z"},
+					},
+				}},
+			})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 42, "title": "Some Movie", "imdb_id": "tt1234567", "runtime": 100,
+		})
+	}))
+	defer theatricalSrv.Close()
+
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	ctx := context.Background()
+	overrideFixedURL(t, "tmdb", theatricalSrv.URL)
+	if err := connStore.Upsert(ctx, "tmdb", theatricalSrv.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := settingsStore.Set(ctx, moviesLibraryRootFolderKey, "/movies"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	prowlarrSrv := fakeProwlarr(t, `[]`)
+	if err := connStore.Upsert(ctx, "prowlarr", prowlarrSrv.URL, "key"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, dl, nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	body, _ := json.Marshal(apidto.AutoGrabRequest{Title: "Some Movie", TMDBID: 42})
+	resp, err := http.Post(srv.URL+"/api/modes/movies/autograb", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409 for theatrical-only movie, got %d", resp.StatusCode)
+	}
+	if got := len(dl.List()); got != 0 {
+		t.Errorf("gate must prevent any download-client contact: got %d adds", got)
 	}
 }

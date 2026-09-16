@@ -2,9 +2,13 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -133,9 +137,12 @@ func TestReleaseDueGrabsIsGatedByTheToggle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reloading: %v", err)
 	}
-	if after.RetryAfter != "" || after.HoldUntil != g.HoldUntil || after.Status != grabs.PendingRetry {
-		t.Errorf("a gated row was modified: %+v", after)
+	if after.RetryAfter != "" || after.Status != grabs.PendingRetry {
+		t.Errorf("a gated row had its dispatch guards modified: %+v", after)
 	}
+	// hold_until may be refreshed by refreshPreReleaseHolds even when the
+	// toggle is off — that is intentional (refresh keeps the date accurate).
+	// The dispatch guards (retry_after and status) are what must be unchanged.
 	// Still promotable: nothing happened, so a later cycle (after the operator
 	// opts in) picks it up unchanged.
 	due, err := env.grabs.DueForRelease(ctx, time.Now())
@@ -178,8 +185,8 @@ func TestReleaseDueGrabsPromotesTheSameRow(t *testing.T) {
 	if got.Status != grabs.Queued || got.DownloadGID == "" {
 		t.Fatalf("the promoted row did not rejoin the normal lifecycle: %+v", got)
 	}
-	if got.HoldUntil != g.HoldUntil {
-		t.Errorf("holdUntil = %q, want %q preserved — it is provenance and is never cleared", got.HoldUntil, g.HoldUntil)
+	if got.HoldUntil == "" {
+		t.Errorf("holdUntil was cleared — it must survive dispatch as inert provenance (refreshPreReleaseHolds may update the value, but never clears it)")
 	}
 	if n := len(env.dl.List()); n != 1 {
 		t.Errorf("expected exactly one download-client add, got %d", n)
@@ -212,8 +219,8 @@ func TestReleaseDueGrabsPromotionIsIdempotentAfterANoMatch(t *testing.T) {
 	if after.RetryAfter == "" {
 		t.Fatal("a no-match promotion left the row unparked — it would be promoted again every single cycle")
 	}
-	if after.HoldUntil != g.HoldUntil {
-		t.Errorf("holdUntil = %q, want %q preserved", after.HoldUntil, g.HoldUntil)
+	if after.HoldUntil == "" {
+		t.Errorf("holdUntil was cleared — it must survive promotion as inert provenance (refreshPreReleaseHolds may update the value, but never clears it)")
 	}
 	due, err := env.grabs.DueForRelease(ctx, time.Now())
 	if err != nil {
@@ -278,8 +285,8 @@ func TestReleaseDueGrabsParksAnAlreadyGrabbingRow(t *testing.T) {
 	if after.RetryAfter == "" {
 		t.Error("an AlreadyGrabbing promotion left the row unparked — DueForRelease will return it every cycle forever, permanently consuming one of the cap's twenty slots")
 	}
-	if after.HoldUntil != g.HoldUntil {
-		t.Errorf("holdUntil = %q, want %q preserved", after.HoldUntil, g.HoldUntil)
+	if after.HoldUntil == "" {
+		t.Errorf("holdUntil was cleared — it must survive promotion as inert provenance (refreshPreReleaseHolds may update the value, but never clears it)")
 	}
 	due, err := env.grabs.DueForRelease(ctx, time.Now())
 	if err != nil {
@@ -395,8 +402,11 @@ func TestReleaseDueGrabsCapsDispatchesPerCycle(t *testing.T) {
 	}
 	releaseDueGrabs(ctx, env.deps, failing, env.lib, nil, time.Now())
 
-	if attempts != maxPreReleaseGrabsPerCycle {
-		t.Errorf("%d dispatch attempts in one cycle, want the cap of %d", attempts, maxPreReleaseGrabsPerCycle)
+	if attempts != maxPreReleaseGrabsPerCycle+1 {
+		// +1: refreshPreReleaseHolds calls build once at the top to get a TMDB
+		// session; that call fails here (no prowlarr), but it is counted. Per-row
+		// dispatch accounts for the remaining maxPreReleaseGrabsPerCycle calls.
+		t.Errorf("%d build calls in one cycle, want the refresh pass (1) + dispatch cap (%d) = %d", attempts, maxPreReleaseGrabsPerCycle, maxPreReleaseGrabsPerCycle+1)
 	}
 	due, err := env.grabs.DueForRelease(ctx, time.Now())
 	if err != nil {
@@ -447,8 +457,10 @@ func TestReleaseDueGrabsSkipsDoNotConsumeBudget(t *testing.T) {
 	}
 	releaseDueGrabs(ctx, env.deps, failing, env.lib, excluded, time.Now())
 
-	if attempts != real {
-		t.Errorf("%d dispatch attempts, want %d — 25 skipped rows consumed the cycle's budget and starved the real requests", attempts, real)
+	if attempts != real+1 {
+		// +1: refreshPreReleaseHolds calls build once to get a TMDB session; that
+		// build call is NOT a dispatch attempt, but the failing function counts it.
+		t.Errorf("%d build calls, want refresh(1) + real-row dispatches(%d) = %d — skipped rows must not consume the dispatch budget", attempts, real, real+1)
 	}
 }
 
@@ -565,5 +577,174 @@ func TestParkPendingRetryDoesNotCreateForAMissingExistingGrabID(t *testing.T) {
 	}
 	if len(list) != 0 {
 		t.Errorf("a row was created for a missing ExistingGrabID: %+v", list)
+	}
+}
+
+// TestRefreshPreReleaseHolds_ResolvesSentinelToRealDate verifies that a row
+// held at the sentinel advances to a real date when TMDB announces a typed
+// release. This is the core correctness of the refresh pass.
+func TestRefreshPreReleaseHolds_ResolvesSentinelToRealDate(t *testing.T) {
+	ctx := context.Background()
+	env := newPreReleaseEnv(t, healthyMovieRelease)
+
+	// Mint a held row then force it to sentinel (theatrical-only at request time).
+	g, err := parkPreReleaseRequest(ctx, env.grabs, mode.Movies, "Theatrical Film", 42, sentinelTime)
+	if err != nil {
+		t.Fatalf("parking: %v", err)
+	}
+	// Verify the sentinel hold.
+	if err := env.grabs.SetHoldUntil(ctx, g.ID, sentinelTime, awaitingReleaseReason); err != nil {
+		t.Fatalf("setting sentinel hold: %v", err)
+	}
+
+	// refreshPreReleaseHolds will query TMDB (fakeTMDBMovieRuntime returns a
+	// past type-4 on 2020-01-01) and advance the hold to 2020-01-02.
+	refreshPreReleaseHolds(ctx, env.deps, env.build, time.Now())
+
+	after, err := env.grabs.Get(ctx, g.ID)
+	if err != nil {
+		t.Fatalf("reloading: %v", err)
+	}
+	if after.HoldUntil == unresolvedReleaseHold {
+		t.Error("sentinel hold was not advanced — refreshPreReleaseHolds did not update it")
+	}
+	wantHold := grabs.FormatTime(time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC))
+	if after.HoldUntil != wantHold {
+		t.Errorf("holdUntil = %q, want TMDB-derived %q (2020-01-01 + 24h)", after.HoldUntil, wantHold)
+	}
+}
+
+// TestRefreshPreReleaseHolds_SkipsHoldsBeyondHorizon verifies that a hold far
+// in the future (beyond holdRefreshHorizon) triggers no TMDB request. This
+// bounds the per-cycle TMDB cost.
+func TestRefreshPreReleaseHolds_SkipsHoldsBeyondHorizon(t *testing.T) {
+	ctx := context.Background()
+	env := newPreReleaseEnv(t, healthyMovieRelease)
+
+	// Park a hold 6 months out — well beyond the 14-day horizon.
+	farFuture := time.Now().Add(180 * 24 * time.Hour)
+	g, err := parkPreReleaseRequest(ctx, env.grabs, mode.Movies, "Far Future Film", 42, farFuture)
+	if err != nil {
+		t.Fatalf("parking: %v", err)
+	}
+
+	// Replace the TMDB fake with one that fails loudly if called.
+	called := false
+	loudSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/release_dates") {
+			called = true
+		}
+		http.Error(w, "should not be called", http.StatusInternalServerError)
+	}))
+	t.Cleanup(loudSrv.Close)
+	overrideFixedURL(t, "tmdb", loudSrv.URL)
+	if err := func() error {
+		connStore, _, _, _, _, _, _, _, _, _, scStore := testStoresWithRegistry(t)
+		dl := newTestDownloader("gid-far", t.TempDir())
+		// Re-run build against the loud server by seeding the conn.
+		if err := connStore.Upsert(ctx, "tmdb", loudSrv.URL, "key"); err != nil {
+			return err
+		}
+		farBuild := func(c context.Context, m mode.Mode) (*mode.Session, error) {
+			return mode.Build(c, connStore, scStore, env.settings, testHTTPClient(), dl, m)
+		}
+		refreshPreReleaseHolds(ctx, env.deps, farBuild, time.Now())
+		return nil
+	}(); err != nil {
+		t.Fatalf("running refresh: %v", err)
+	}
+
+	// The hold must be untouched.
+	after, err := env.grabs.Get(ctx, g.ID)
+	if err != nil {
+		t.Fatalf("reloading: %v", err)
+	}
+	if after.HoldUntil != grabs.FormatTime(farFuture) {
+		t.Errorf("hold was modified for a far-future row: before=%q after=%q", grabs.FormatTime(farFuture), after.HoldUntil)
+	}
+	if called {
+		t.Error("TMDB /release_dates was called for a hold beyond the refresh horizon — should have been skipped")
+	}
+}
+
+// TestReleaseDueGrabs_ReHoldsWhenStillUnreleased verifies the full pipeline:
+// a held row whose hold has passed but whose TMDB still shows theatrical-only
+// is re-held to the sentinel and zero Prowlarr searches run.
+func TestReleaseDueGrabs_ReHoldsWhenStillUnreleased(t *testing.T) {
+	ctx := context.Background()
+	connStore, _, settingsStore, grabsStore, libStore, _, _, _, _, _, scStore := testStoresWithRegistry(t)
+	dl := newTestDownloader("gid-rehold", t.TempDir())
+	prowlarrSrv, prowlarrStats := fakeProwlarrTracking(t, 0, func(url.Values) (int, string) {
+		return 200, healthyMovieRelease
+	})
+
+	// TMDB returns only type-3 (theatrical) — gate will block.
+	theatricalTMDB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/release_dates") {
+			json.NewEncoder(w).Encode(map[string]any{
+				"results": []map[string]any{
+					{
+						"iso_3166_1": "US",
+						"release_dates": []map[string]any{
+							{"type": 3, "release_date": "2030-06-01T00:00:00.000Z"},
+						},
+					},
+				},
+			})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"id": 42, "title": "Theatrical Only", "runtime": 100})
+	}))
+	t.Cleanup(theatricalTMDB.Close)
+
+	overrideFixedURL(t, "tmdb", theatricalTMDB.URL)
+	for _, c := range []struct{ service, url string }{
+		{"tmdb", theatricalTMDB.URL},
+		{"prowlarr", prowlarrSrv.URL},
+	} {
+		if err := connStore.Upsert(ctx, c.service, c.url, "key"); err != nil {
+			t.Fatalf("upserting %s: %v", c.service, err)
+		}
+	}
+	if err := settingsStore.Set(ctx, moviesLibraryRootFolderKey, "/movies"); err != nil {
+		t.Fatalf("setting root folder: %v", err)
+	}
+	if err := settingsStore.Set(ctx, qualityTierKey(mode.Movies), string(quality.Low)); err != nil {
+		t.Fatalf("setting quality tier: %v", err)
+	}
+	setAutoGrabToggle(t, settingsStore, true)
+
+	deps := AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore}
+	build := func(c context.Context, m mode.Mode) (*mode.Session, error) {
+		return mode.Build(c, connStore, scStore, settingsStore, testHTTPClient(), dl, m)
+	}
+
+	g, err := parkPreReleaseRequest(ctx, grabsStore, mode.Movies, "Theatrical Only", 42, time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("parking: %v", err)
+	}
+
+	releaseDueGrabs(ctx, deps, build, libStore, nil, time.Now())
+
+	// Zero Prowlarr searches — gate blocked before any search.
+	if total, _ := prowlarrStats.snapshot(); total != 0 {
+		t.Errorf("%d Prowlarr searches fired for a theatrical-only film", total)
+	}
+
+	after, err := grabsStore.Get(ctx, g.ID)
+	if err != nil {
+		t.Fatalf("reloading: %v", err)
+	}
+	// The gate re-held the row. Must be pending_retry with empty retry_after.
+	if after.Status != grabs.PendingRetry {
+		t.Errorf("status = %q, want pending_retry", after.Status)
+	}
+	if after.RetryAfter != "" {
+		t.Errorf("retryAfter = %q, want empty — gate must re-hold, not re-park on retry", after.RetryAfter)
+	}
+	// The hold should be sentinel (no typed date found by the gate).
+	if after.HoldUntil != unresolvedReleaseHold {
+		t.Errorf("holdUntil = %q, want sentinel %q", after.HoldUntil, unresolvedReleaseHold)
 	}
 }

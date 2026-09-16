@@ -109,7 +109,7 @@ const (
 	// cannot even survive one cycle). An executor who reintroduces a
 	// `RetryReason == heldRequestReason` test has re-created that fragility
 	// class.
-	heldRequestReason = "held until its release date"
+	heldRequestReason = "held until the day after its release date"
 )
 
 // AutoGrabDeps is the fixed dependency set every trigger needs. The mode

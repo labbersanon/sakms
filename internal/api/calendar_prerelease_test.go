@@ -86,9 +86,10 @@ func TestPreReleaseRequest_CreatesAHeldRow(t *testing.T) {
 	if g.RetryAfter != "" {
 		t.Errorf("retryAfter = %q, want empty — a non-empty retry_after is exactly what makes DueForRetry return the row and search an unreleased film", g.RetryAfter)
 	}
-	wantHold := grabs.FormatTime(time.Date(2099, 6, 15, 0, 0, 0, 0, time.UTC))
+	// Day-after timing: hold_until is the day AFTER the release date (release_date+1 midnight UTC).
+	wantHold := grabs.FormatTime(time.Date(2099, 6, 16, 0, 0, 0, 0, time.UTC))
 	if g.HoldUntil != wantHold {
-		t.Errorf("holdUntil = %q, want %q (TMDB's bare date parsed as UTC midnight)", g.HoldUntil, wantHold)
+		t.Errorf("holdUntil = %q, want %q (TMDB's bare date parsed as UTC midnight, +1 day)", g.HoldUntil, wantHold)
 	}
 	if out.HeldUntil != wantHold {
 		t.Errorf("response heldUntil = %q, want %q", out.HeldUntil, wantHold)
@@ -138,6 +139,54 @@ func TestPreReleaseRequest_HeldRowIsInvisibleToDueForRetry(t *testing.T) {
 	}
 }
 
+// TestPreReleaseRequest_DueForReleaseTimingDayAfter asserts the day-after rule
+// end-to-end through DueForRelease: a request for a film released today is NOT
+// returned at now=releaseDay midnight, but IS returned at now=releaseDay+24h.
+// This distinguishes a correctly-set hold_until from a string that merely looks
+// right (DueForRelease's comparison is lexicographic, so a wrong layout would
+// silently pass a pure-string equality check).
+func TestPreReleaseRequest_DueForReleaseTimingDayAfter(t *testing.T) {
+	ctx := context.Background()
+	mux, grabsStore, _ := preReleaseMux(t)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// Request a film with today as the release date.
+	today := time.Date(2099, 6, 15, 0, 0, 0, 0, time.UTC)
+	postPreRelease(t, srv.URL, apidto.PreReleaseRequestRequest{
+		TMDBID: 42, Title: "Day-After Film", ReleaseDate: today.Format("2006-01-02"),
+	})
+
+	// On the release day itself, DueForRelease must NOT return the row.
+	dueOnRelease, err := grabsStore.DueForRelease(ctx, today)
+	if err != nil {
+		t.Fatalf("DueForRelease at release midnight: %v", err)
+	}
+	if len(dueOnRelease) != 0 {
+		t.Errorf("DueForRelease returned the row on the release day itself — want no dispatch until the day after: %+v", dueOnRelease)
+	}
+
+	// One second before day-after midnight: still not returned.
+	almostDayAfter := today.Add(24*time.Hour - time.Second)
+	dueAlmost, err := grabsStore.DueForRelease(ctx, almostDayAfter)
+	if err != nil {
+		t.Fatalf("DueForRelease almost-day-after: %v", err)
+	}
+	if len(dueAlmost) != 0 {
+		t.Errorf("DueForRelease returned the row 1s before day-after midnight: %+v", dueAlmost)
+	}
+
+	// At the day-after midnight (release+24h): must be returned.
+	dayAfter := today.Add(24 * time.Hour)
+	dueDayAfter, err := grabsStore.DueForRelease(ctx, dayAfter)
+	if err != nil {
+		t.Fatalf("DueForRelease at day-after midnight: %v", err)
+	}
+	if len(dueDayAfter) != 1 {
+		t.Fatalf("DueForRelease at day-after returned %d rows, want 1: %+v", len(dueDayAfter), dueDayAfter)
+	}
+}
+
 // TestPreReleaseRequest_SecondClickRefreshesTheHold is T-3.3 + T-3.11′: a
 // re-click updates hold_until in place and creates NO second row — and it
 // leaves retry_count alone, i.e. it went through SetHoldUntil and not
@@ -174,7 +223,8 @@ func TestPreReleaseRequest_SecondClickRefreshesTheHold(t *testing.T) {
 		t.Fatalf("a re-click minted a second row (%d rows) — the next cycle would dispatch a duplicate: %+v", len(list), list)
 	}
 	g := list[0]
-	if want := grabs.FormatTime(time.Date(2099, 8, 1, 0, 0, 0, 0, time.UTC)); g.HoldUntil != want {
+	// Day-after timing: the new release date is 2099-08-01, so hold_until = 2099-08-02.
+	if want := grabs.FormatTime(time.Date(2099, 8, 2, 0, 0, 0, 0, time.UTC)); g.HoldUntil != want {
 		t.Errorf("holdUntil = %q, want the refreshed %q", g.HoldUntil, want)
 	}
 	if g.RetryCount != 0 {

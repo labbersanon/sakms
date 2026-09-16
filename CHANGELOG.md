@@ -8335,3 +8335,54 @@ clears automatically when other filters, search, or calendar view are activated.
 monitored-flag derivation; frontend tests for Library chip (filter, intersect,
 reset, absent in Adult) and Discover chip (no discover calls while on,
 deduplication, filter clearing).
+
+## 2026-09-16 — Day-after grab timing for series air dates and Calendar pre-release movie holds
+
+**Decision:** the first eligible dispatch day is air/release date + 1, not the
+air/release date itself. Dispatching on the broadcast day races the actual
+release; the day-after rule ensures the broadcast day has ended before any
+search fires.
+
+**Series air-date monitoring** (`internal/api/airdatemonitor.go`):
+- `eligibleEpisodes` predicate changed from `AirDate <= today` to
+  `AirDate < today` (strictly before), so an episode that airs today is first
+  searchable the following UTC day.
+- Doc comments updated: predicate 3 now states "the first eligible day is
+  air date + 1"; the timezone-honesty paragraph explains that the skew now
+  lands in the safe direction.
+- `internal/api/seriesbackfill.go`: `runOnce` doc notes the inherited
+  behaviour — a monitor-on click does not grab a same-day episode.
+
+**Calendar pre-release movie holds** (`internal/api/calendar_prerelease.go`):
+- After parsing TMDB's bare YYYY-MM-DD, the parsed midnight is advanced by one
+  day (`until = until.AddDate(0, 0, 1)`). `hold_until` continues to mean
+  "first promotable instant", so `DueForRelease`, `DueForRetry`,
+  `PromoteToFront`, and the Requests chip are unmodified.
+- `heldRequestReason` copy updated to "held until the day after its release
+  date" (`internal/api/autograb_shared.go`).
+- `scheduledBlurb` in `frontend/src/screens/Requests.tsx` updated to match.
+
+**Existing movie holds** (`internal/db/migrations/0021_prerelease_hold_day_after.sql`):
+- Exactly-once goose migration advances `hold_until` by one day for still-held,
+  promotable movie rows whose date part is >= today UTC. Rows already in the
+  past and operator-promoted rows (non-empty `retry_after`) are untouched.
+- Migration is NOT idempotent by design (hold_until is the only record of the
+  release date); the goose version table is the idempotency mechanism.
+
+**Series cleanup:** no migration shipped. Analysis in the plan proves it is a
+provable no-op: every air-date-originated row has `retry_after >= air_date+1`
+already (the 24h `RetryBackoff(0)` ensures this). A forward-only push would
+affect 0 rows; the residual cost of any same-day searches that already fired
+(a higher `retry_count` rung) self-heals on the next backoff step.
+
+**Tests:**
+- `TestEligibleEpisodesPredicates`: "aired today is eligible" → "aired today is
+  NOT eligible (day-after rule)"; `want` flipped from `true` to `false`.
+- `TestAirDateSameDayEpisodeNotDispatched`: new end-to-end test seeding both a
+  same-day and a yesterday episode and asserting only yesterday's dispatches.
+- `TestPreReleaseRequest_CreatesAHeldRow`: `wantHold` updated to release+1 day
+  (2099-06-16).
+- `TestPreReleaseRequest_SecondClickRefreshesTheHold`: refreshed hold updated to
+  2099-08-02 (new release date 2099-08-01 + 1).
+- `TestPreReleaseRequest_DueForReleaseTimingDayAfter`: new behavioural test
+  asserting `DueForRelease(now)` misses on the release day and hits at now+24h.

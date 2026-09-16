@@ -552,10 +552,14 @@ func TestAirDateDiscoverySkipsSeasonZero(t *testing.T) {
 
 // TestEligibleEpisodesPredicates (T-3.2/T-3.3) pins the three predicates,
 // including the two that are easy to get subtly wrong: an EMPTY air date is not
-// "<= today" (an empty string sorts before every real date, so a naive
+// "< today" (an empty string sorts before every real date, so a naive
 // comparison would search every unannounced episode immediately), and the
 // comparison is lexicographic on TMDB's fixed YYYY-MM-DD, for which
 // lexicographic order IS chronological order.
+//
+// Day-after timing: the first eligible day is air_date+1. An episode that airs
+// TODAY is NOT eligible; the first eligible day is tomorrow (today-1 is eligible
+// because yesterday's midnight has passed the day-after threshold).
 func TestEligibleEpisodesPredicates(t *testing.T) {
 	const today = "2026-08-01"
 	monitored := map[int]bool{1: true}
@@ -565,8 +569,8 @@ func TestEligibleEpisodesPredicates(t *testing.T) {
 		episode library.Episode
 		want    bool
 	}{
-		{"aired today is eligible", library.Episode{SeasonNumber: 1, EpisodeNumber: 1, AirDate: today}, true},
-		{"aired yesterday is eligible", library.Episode{SeasonNumber: 1, EpisodeNumber: 2, AirDate: "2026-07-31"}, true},
+		{"aired today is NOT eligible (day-after rule)", library.Episode{SeasonNumber: 1, EpisodeNumber: 1, AirDate: today}, false},
+		{"aired yesterday is eligible (air_date+1 = today)", library.Episode{SeasonNumber: 1, EpisodeNumber: 2, AirDate: "2026-07-31"}, true},
 		{"airs tomorrow is not", library.Episode{SeasonNumber: 1, EpisodeNumber: 3, AirDate: "2026-08-02"}, false},
 		{"unannounced (empty air date) is not", library.Episode{SeasonNumber: 1, EpisodeNumber: 4, AirDate: ""}, false},
 		{"long-aired but unmonitored season is not", library.Episode{SeasonNumber: 2, EpisodeNumber: 1, AirDate: "2020-01-01"}, false},
@@ -578,6 +582,32 @@ func TestEligibleEpisodesPredicates(t *testing.T) {
 				t.Fatalf("eligible = %v, want %v (episode %+v)", len(got) == 1, tc.want, tc.episode)
 			}
 		})
+	}
+}
+
+// TestAirDateSameDayEpisodeNotDispatched is a same-day end-to-end check:
+// an episode whose air_date == today is NOT dispatched in the same cycle,
+// while an episode that aired yesterday IS dispatched. This gives eligibleEpisodes'
+// day-after predicate end-to-end coverage via the real runCycle path.
+func TestAirDateSameDayEpisodeNotDispatched(t *testing.T) {
+	now := time.Now()
+	env := newAirDateEnv(t, map[int][]fakeTMDBEpisode{1: {
+		{Number: 1, Name: "Airing Today", AirDate: dayOffset(now, 0)},
+		{Number: 2, Name: "Aired Yesterday", AirDate: dayOffset(now, -1)},
+	}}, qualifyingSeriesRelease(1, 2))
+	series := env.trackSeries(t)
+	env.seedMissingEpisode(t, series.ID, 1, 1, dayOffset(now, 0))
+	env.seedMissingEpisode(t, series.ID, 1, 2, dayOffset(now, -1))
+	env.monitor(t, series.ID, 1, true)
+
+	env.runCycle(t, now)
+
+	grabs := env.seriesGrabs(t)
+	if len(grabs) != 1 {
+		t.Fatalf("expected exactly 1 grab (yesterday's episode), got %d: %+v", len(grabs), grabs)
+	}
+	if grabs[0].EpisodeNumber != 2 {
+		t.Errorf("grab was for episode %d, want episode 2 (yesterday's): %+v", grabs[0].EpisodeNumber, grabs[0])
 	}
 }
 

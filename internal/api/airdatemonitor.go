@@ -166,6 +166,12 @@ func monitorAirDates(ctx context.Context, deps AutoGrabDeps, build sessionBuilde
 	airDateBackoffSweep(ctx, deps, libStore, now)
 }
 
+// Claude 2026-09-16: flip eligibility to strictly-before-today (AirDate < today).
+// Reason: day-after grab timing — first eligible day is air_date+1, never the air date itself.
+// Troubleshooting: same-day episodes dispatched on the broadcast day; now the first
+//   search fires the following UTC day.
+// Review if: locked decision on day-after timing is revisited.
+
 // eligibleEpisodes filters MissingEpisodes' output to the episodes this cycle
 // may search for. MissingEpisodes itself is CALLED, NEVER MODIFIED — Requests'
 // MissingCount is the other consumer and must keep seeing the unfiltered
@@ -177,20 +183,22 @@ func monitorAirDates(ctx context.Context, deps AutoGrabDeps, build sessionBuilde
 //     is false, which is skipped. This sits at the TOP of the filter, where it
 //     cannot be accidentally short-circuited past: an unmonitored season's
 //     episodes are never auto-searched, no matter how long ago they aired.
-//  2. The air date is KNOWN. An unknown air date is NOT "<= today". TMDB leaves
+//  2. The air date is KNOWN. An unknown air date is NOT "< today". TMDB leaves
 //     air_date empty for unannounced episodes, and an empty string sorts before
-//     every real date — so a bare `AirDate <= today` would treat every
+//     every real date — so a bare `AirDate < today` would treat every
 //     unannounced episode as already aired and search for it immediately. This
 //     guard is mandatory, not defensive.
-//  3. The air date has arrived. Plain string comparison: TMDB's air_date is a
-//     fixed YYYY-MM-DD, for which lexicographic order IS chronological order.
-//     Do not "fix" this into a time.Parse that then has to invent a policy for
-//     malformed input.
+//  3. The air date is strictly in the past: the first eligible day is air date + 1.
+//     Plain string comparison: TMDB's air_date is a fixed YYYY-MM-DD, for which
+//     lexicographic order IS chronological order. Do not "fix" this into a
+//     time.Parse that then has to invent a policy for malformed input.
 //
 // Timezone honesty, documented rather than hidden: TMDB's air_date is the
 // show's origin-country broadcast date, so comparing it against a UTC "today"
-// can be off by up to a day either direction. The requirement is same-day with
-// no grace period, so no fudge factor is added.
+// can be off by up to a day. With the day-after rule, that skew lands in the
+// safe direction — we never search before the broadcast day has ended anywhere.
+// The minimum wait is ~1 UTC day; the maximum is ~2 calendar days for a
+// late-US-Pacific broadcast that falls on the next UTC date.
 func eligibleEpisodes(missing []library.Episode, monitored map[int]bool, today string) []library.Episode {
 	out := []library.Episode{}
 	for _, ep := range missing {
@@ -200,7 +208,7 @@ func eligibleEpisodes(missing []library.Episode, monitored map[int]bool, today s
 		if ep.AirDate == "" {
 			continue
 		}
-		if ep.AirDate > today {
+		if ep.AirDate >= today {
 			continue
 		}
 		out = append(out, ep)

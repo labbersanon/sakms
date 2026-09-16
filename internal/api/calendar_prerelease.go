@@ -97,6 +97,15 @@ func preReleaseRequestHandler(grabsStore *grabs.Store, libStore *library.Store) 
 			http.Error(w, "releaseDate must be a YYYY-MM-DD date", http.StatusBadRequest)
 			return
 		}
+		// Claude 2026-09-16: day-after timing — hold_until is the first promotable
+		// instant, which is the day AFTER the release date (release midnight UTC + 24h).
+		// Reason: dispatching on the release day itself races the actual release;
+		//   adding one day here keeps hold_until's meaning as "first promotable instant"
+		//   so DueForRelease, DueForRetry, PromoteToFront, and the Requests chip are
+		//   all unmodified.
+		// Troubleshooting: pre-release requests promoted on the release day itself.
+		// Review if: day-after timing decision is revisited.
+		until = until.AddDate(0, 0, 1)
 
 		// Step 1 — outstanding work by some OTHER means. nonHeldMovieWork is
 		// deliberately blind to held rows (see its doc): a held row for this id IS

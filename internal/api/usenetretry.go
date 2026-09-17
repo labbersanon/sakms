@@ -441,6 +441,23 @@ func applyUsenetFailure(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, fa
 				return "", err
 			}
 			if !handled {
+				// Claude 2026-09-17: content failure → park for a different-release retry.
+				// Reason: PAR2/unpack/no-video are properties of THIS release; a different
+				//   NZB is the fix. contentUnusableFailure is checked first so that
+				//   ErrUnpackToolMissing (environment fault, not a release defect) falls
+				//   straight to the days ladder instead of the alternate-release path.
+				//   parkUsenetContentFailure falls through (false) when its own fail-closed
+				//   guards reject it (non-nzb- GID, empty URL, cap reached).
+				// Review if: content failures should also be cap-gated per-day.
+				if contentUnusableFailure(failure) {
+					contentHandled, contentErr := parkUsenetContentFailure(ctx, deps, g, failure, nil)
+					if contentErr != nil {
+						return "", contentErr
+					}
+					if contentHandled {
+						break // alternate park written; skip days ladder
+					}
+				}
 				if err := park(ctx, deps, g.ID, reason); err != nil {
 					return "", err
 				}
@@ -508,6 +525,11 @@ func retryDueGrabs(ctx context.Context, deps AutoGrabDeps, build sessionBuilderF
 			// Releases nil = "search for me". Unlike the Search hook, a retry
 			// row carries the TMDB id RunAutoGrab's internal search needs.
 			SearchPhases: phases,
+			// Claude 2026-09-17: pass exclusion keys for alternate-release rows.
+			// Reason: a row in an alternate-release episode must not re-grab a
+			//   release that already proved content-unusable. The daily cycle is
+			//   a safety-net that must honour the same exclusion as the drain.
+			ExcludeReleaseKeys: grabs.ParseTriedReleaseKeys(g.TriedReleaseKeys),
 		})
 		switch {
 		case err != nil:
@@ -560,8 +582,11 @@ func retryDueGrabs(ctx context.Context, deps AutoGrabDeps, build sessionBuilderF
 
 // nextSearchPhases returns the SearchPhases for the next RunAutoGrab attempt on g.
 // If g.NextSearchScope is 'torrent', returns [ScopeTorrent] (skip Usenet entirely
-// for this one attempt). Otherwise returns nil (empty = normal ScopeAll behaviour
-// for the retry cycle, matching every existing trigger's contract).
+// for this one attempt). If g.TriedReleaseKeys is non-empty, returns [ScopeUsenet]
+// — the row is in an alternate-release episode and must stay Usenet-only (never
+// widen to ScopeAll, which could grab a torrent and silently implement D).
+// Otherwise returns nil (empty = normal ScopeAll behaviour for the retry cycle,
+// matching every existing trigger's contract).
 //
 // Claude 2026-09-16: intentionally returns nil (not [ScopeUsenet, ScopeTorrent])
 // for the non-escalated case. The retry cycle predates the two-phase drain and
@@ -571,6 +596,12 @@ func retryDueGrabs(ctx context.Context, deps AutoGrabDeps, build sessionBuilderF
 func nextSearchPhases(ctx context.Context, deps AutoGrabDeps, g grabs.Grab) []prowlarr.Scope {
 	if g.NextSearchScope == "torrent" {
 		return []prowlarr.Scope{prowlarr.ScopeTorrent}
+	}
+	if g.TriedReleaseKeys != "" {
+		// Claude 2026-09-17: alternate-release episode — stay Usenet-only.
+		// Reason: ScopeAll would search torrent indexers and could grab a torrent,
+		//   silently implementing D (torrent escalation), which is out of scope.
+		return []prowlarr.Scope{prowlarr.ScopeUsenet}
 	}
 	return nil // ScopeAll (existing behaviour)
 }

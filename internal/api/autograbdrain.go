@@ -51,6 +51,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -259,6 +260,15 @@ func runAutoGrabDrainCycle(
 	// Review if: the drain should take over all due-retry handling from retryDueGrabs.
 	drainEscalatedDueRetries(ctx, deps, sess, excluded, now)
 
+	// Claude 2026-09-17: process alternate-release retries before the main loop.
+	// Reason: a content failure (PAR2/unpack/no-video) parks due-now with
+	//   tried_release_keys set. drainAlternateReleaseRetries picks these up
+	//   on the next drain tick (≤60s) instead of waiting 24h (daily retry).
+	//   Placement: after escalated retries (a 430 is higher urgency), before
+	//   the missing-episode loop (a failed download outranks a newly-noticed gap).
+	// Review if: the two passes are merged into one due-now dispatch loop.
+	drainAlternateReleaseRetries(ctx, deps, build, usenetBudget, excluded, now)
+
 	for {
 		// Gate 3: slot census — recomputed before every potential dispatch.
 		usenetFree, slotErr := freeUsenetSlots(ctx, deps.GrabsStore, deps.SettingsStore)
@@ -402,6 +412,106 @@ func drainEscalatedDueRetries(
 			return // slot consumed
 		default:
 			log.Printf("autograb drain: retry grab %d (%s) torrent escalation miss", g.ID, g.Title)
+		}
+	}
+}
+
+// drainAlternateReleaseRetries picks up pending_retry rows that are due-now
+// AND carry non-empty tried_release_keys — content-failure alternate-release
+// rows parked by parkUsenetContentFailure. These rows have empty
+// next_search_scope (they are NOT the 430-escalated torrent rows handled by
+// drainEscalatedDueRetries) and would otherwise wait up to 24 h for the daily
+// retryDueGrabs cycle.
+//
+// Per due row (exit-path rules from plan §5 — every exit must dispatch or park):
+//   - worklist-excluded: skip (unchanged)
+//   - slots full or budget exhausted: return without parking (row re-tried next tick)
+//   - RunAutoGrab error or AlreadyGrabbing: reparkFailedRetry (days ladder, keys cleared)
+//   - Grabbed: return (slot consumed)
+//   - NoMatch: RunAutoGrab already parked via parkPendingRetry → days ladder, keys cleared
+//   - Gated: return
+//
+// "Stops after one dispatch" matches drainEscalatedDueRetries' semantics: one
+// slot was consumed and a fresh slot census would be needed.
+//
+// Claude 2026-09-17: all modes, Usenet-only phases, slot- and budget-gated.
+// Reason: movie and Adult scene failures use the same content-failure path as
+//   Series; restricting to Series would leave movie/adult rows for the daily cycle.
+// Review if: a separate budget key is needed for alternate-release searches.
+func drainAlternateReleaseRetries(
+	ctx context.Context,
+	deps AutoGrabDrainDeps,
+	build sessionBuilderFunc,
+	usenetBudget *searchBudget,
+	excluded map[string]bool,
+	now time.Time,
+) {
+	due, err := deps.GrabsStore.DueForRetry(ctx, now)
+	if err != nil {
+		log.Printf("autograb drain: listing due retries for alternate-release check: %v", err)
+		return
+	}
+	for _, g := range due {
+		if g.TriedReleaseKeys == "" || g.NextSearchScope != "" {
+			continue // not an alternate-release row (drainEscalatedDueRetries handles scope ones)
+		}
+		if excluded[excludes.Key(string(g.Mode), g.TMDBID, g.Title)] {
+			continue
+		}
+		// Slot gate — honour freeUsenetSlots; do not escalate to torrent.
+		usenetFree, slotErr := freeUsenetSlots(ctx, deps.GrabsStore, deps.SettingsStore)
+		if slotErr != nil {
+			log.Printf("autograb drain: counting slots for alternate retry: %v", slotErr)
+			return
+		}
+		if usenetFree <= 0 {
+			return // wait for next tick
+		}
+		// Budget gate.
+		if !usenetBudget.allow() {
+			log.Printf("autograb drain: hourly Usenet budget exhausted — skipping alternate retries this tick")
+			return
+		}
+
+		sess, err := build(ctx, g.Mode)
+		if err != nil {
+			log.Printf("autograb drain: alternate retry grab %d (%s) — session build error (%T)", g.ID, g.Title, rootCause(err))
+			reparkFailedRetry(ctx, deps.AutoGrabDeps, g, err)
+			return
+		}
+		log.Printf("autograb drain: alternate retry grab %d (%s) — searching Usenet-only, %d keys excluded",
+			g.ID, g.Title, grabs.AlternateAttempts(grabs.ParseTriedReleaseKeys(g.TriedReleaseKeys)))
+		out, runErr := RunAutoGrab(ctx, deps.AutoGrabDeps, sess, AutoGrabRequest{
+			Mode: g.Mode, Title: g.Title, TMDBID: g.TMDBID, TVDBID: g.TVDBID,
+			Season: g.SeasonNumber, Episode: g.EpisodeNumber, SeasonSpecified: g.SeasonSpecified,
+			RootFolderPath:     g.RootFolderPath,
+			Trigger:            TriggerRetry,
+			ExistingGrabID:     g.ID,
+			SearchPhases:       []prowlarr.Scope{prowlarr.ScopeUsenet},
+			ExcludeReleaseKeys: grabs.ParseTriedReleaseKeys(g.TriedReleaseKeys),
+		})
+		switch {
+		case runErr != nil:
+			log.Printf("autograb drain: alternate retry grab %d (%s) — RunAutoGrab error (%T)", g.ID, g.Title, rootCause(runErr))
+			reparkFailedRetry(ctx, deps.AutoGrabDeps, g, runErr)
+			return
+		case out.Gated:
+			log.Printf("autograb drain: auto-grab switched off — abandoning alternate retry pass")
+			return
+		case out.AlreadyGrabbing:
+			duplicate := "another grab"
+			if out.GrabID != 0 {
+				duplicate = fmt.Sprintf("grab %d", out.GrabID)
+			}
+			log.Printf("autograb drain: alternate retry grab %d (%s) already downloading by %s", g.ID, g.Title, duplicate)
+			reparkFailedRetry(ctx, deps.AutoGrabDeps, g, fmt.Errorf("already downloading by %s", duplicate))
+			return
+		case out.Grabbed:
+			log.Printf("autograb drain: alternate retry grab %d (%s) dispatched", g.ID, g.Title)
+			return // slot consumed — stop this tick
+		default:
+			// NoMatch: RunAutoGrab already parked via parkPendingRetry → days ladder, keys cleared.
+			log.Printf("autograb drain: alternate retry grab %d (%s) — no qualifying alternate candidate, parked on days ladder", g.ID, g.Title)
 		}
 	}
 }

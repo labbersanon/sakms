@@ -322,6 +322,18 @@ func reconcileImportUsenet(ctx context.Context, deps DownloadReconcileDeps, g *g
 	}
 	changes, err := importGrabContent(ctx, deps.LibStore, g, contentPath, string(autoGrabTier(ctx, deps.SettingsStore, g.Mode)), deps.SettingsStore, sess, deps.VideoHasher, deps.Prober)
 	if err != nil {
+		// Claude 2026-09-17: content-unusable import failure → park for alternate release.
+		// Reason: same as UsenetCompleteImporter — the hollow-import bug (plan §0 row 3)
+		//   must be closed on the restart-recovery path too. reconcileImportUsenet is the
+		//   post-restart twin; leaving it log-and-return would strand the slot.
+		// Review if: reconcileImportUsenet is called for non-Usenet protocols.
+		if contentUnusableFailure(err) {
+			adeps := AutoGrabDeps{SettingsStore: deps.SettingsStore, GrabsStore: deps.GrabsStore}
+			if _, parkErr := parkUsenetContentFailure(ctx, adeps, *g, err, deps.NZB); parkErr != nil {
+				log.Printf("usenet reconcile: parking grab %d for alternate release: %v", g.ID, parkErr)
+			}
+			return err
+		}
 		return err
 	}
 	postGrabRuntimeReview(ctx, deps.Prober, deps.GrabsStore, sess, g, changes)

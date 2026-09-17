@@ -169,6 +169,23 @@ func UsenetCompleteImporter(httpClient *http.Client, connStore *connections.Stor
 
 		changes, err := importGrabContent(ctx, libStore, g, contentPath, string(autoGrabTier(ctx, settingsStore, g.Mode)), settingsStore, sess, videoHasher, prober)
 		if err != nil {
+			// Claude 2026-09-17: content-unusable import failure → park for alternate release.
+			// Reason: the hollow-import bug (plan §0 row 3) — a "complete" download with
+			//   no video holds a Usenet slot forever and never re-searches. Parking here
+			//   with the alternate-release logic frees the slot and queues a different NZB.
+			//   Non-content errors (DB/relocate) keep the log-and-return behaviour unchanged.
+			// Review if: importGrabContent gains more error categories that should park.
+			if contentUnusableFailure(err) {
+				deps := AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore}
+				handled, parkErr := parkUsenetContentFailure(ctx, deps, *g, err, nzb)
+				if parkErr != nil {
+					log.Printf("usenet import: parking grab %d for alternate release: %v", g.ID, parkErr)
+				}
+				if handled || parkErr == nil {
+					return // slot freed; alternate retry queued
+				}
+				// fall through: park rejected (cap/guard) — log-and-return as before
+			}
 			log.Printf("usenet import: grab %d (gid %s): %v", g.ID, gid, err)
 			return
 		}

@@ -104,7 +104,13 @@ func TestHandleUsenetError_ParkFailureDoesNotCrash(t *testing.T) {
 	failing := func(context.Context, AutoGrabDeps, int64, string) error {
 		return errors.New("park boom")
 	}
-	handleUsenetError(ctx, deps, "nzb-park-fail", usenet.ErrArticleNotFound, failing)
+	// Claude 2026-09-17: must use a generic (non-430, non-transport) error so
+	// the test exercises the park grabParker path. ErrArticleNotFound routes to
+	// SetPendingRetryWithScope (the 430 escalation path added later), which clears
+	// download_gid and bypasses the park param entirely — that path always succeeds
+	// and leaves the grab in pending_retry, not in-flight.
+	// Review if: the 430 path is refactored to delegate to park.
+	handleUsenetError(ctx, deps, "nzb-park-fail", errors.New("generic retrieval error"), failing)
 
 	got, err := grabsStore.GetByDownloadGID(ctx, "nzb-park-fail")
 	if err != nil {

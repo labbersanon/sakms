@@ -6,6 +6,40 @@ import (
 	"time"
 )
 
+// MaxTransportRetries is the number of times a grab may be short-parked for a
+// transport failure before it is escalated to the days-ladder re-search.
+// Cap 4 → 2m + 5m + 15m + 30m ≈ 52 minutes of short-park attempts.
+const MaxTransportRetries = 4
+
+// TransportBackoff returns how far ahead a transport-parked row's next resume
+// should be scheduled, given the transport_retry_count AFTER the current park
+// (i.e. the value ParkForTransportResume just incremented to):
+//
+//	1 → 2m, 2 → 5m, 3 → 15m, 4 → 30m, ≥5 → 0.
+//
+// Zero means "the short ladder is exhausted — escalate to the days ladder".
+// Unlike RetryBackoff, this deliberately returns 0 so callers can detect the
+// cap and fall through to ParkWithBackoff / the normal re-search path.
+//
+// Claude 2026-09-17: separate ladder from RetryBackoff.
+// Reason: a transport park must not advance retry_count (the days-ladder
+//   driver). These two counters and their ladders are deliberately separate.
+// Review if: the ladder shape gains a settings-UI control.
+func TransportBackoff(n int) time.Duration {
+	switch n {
+	case 1:
+		return 2 * time.Minute
+	case 2:
+		return 5 * time.Minute
+	case 3:
+		return 15 * time.Minute
+	case 4:
+		return 30 * time.Minute
+	default:
+		return 0 // exhausted: escalate to the days ladder
+	}
+}
+
 // RetryBackoff returns how far ahead a pending_retry row's next attempt should
 // be parked, given the retry_count the row will carry AFTER this park:
 // ≤0 (a first Create park) → 24h, 1 → 3d, 2 → 10d, 3 → 30d, 4 → 60d, ≥5 → 90d.

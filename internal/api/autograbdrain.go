@@ -237,6 +237,18 @@ func runAutoGrabDrainCycle(
 		return // TMDB or Prowlarr not configured
 	}
 
+	// Claude 2026-09-17: resume transport-parked rows before the drain proper.
+	// Reason: a transport park keeps download_gid; RelaunchNZB resumes into the
+	//   existing staging dir without a new search, consuming no indexer budget.
+	//   Running it before the drain loop avoids counting resumed grabs as "slots
+	//   already consumed" before they have actually been handed off.
+	// Review if: the resume pass gains a dedicated interval shorter than 60s.
+	var resumeEng usenetResumeEngine
+	if deps.NZBManager != nil {
+		resumeEng = deps.NZBManager
+	}
+	resumeDueTransportRetries(ctx, deps.AutoGrabDeps, resumeEng, excluded, now)
+
 	// Claude 2026-09-16: process escalated pending_retry rows first.
 	// Reason: a 430 Usenet failure sets next_search_scope='torrent' + retry_after=now
 	// so the row is immediately due. The drain handles these on the next tick (≤60s),

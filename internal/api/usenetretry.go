@@ -298,6 +298,17 @@ func RunUsenetRetry(ctx context.Context, interval time.Duration, httpClient *htt
 func runUsenetRetryCycle(ctx context.Context, deps AutoGrabDeps, build sessionBuilderFunc,
 	lookup usenetDownloadLookup, libStore *library.Store, monitoredStore *adultnewest.MonitoredStore, releaseStore *adultnewest.ReleaseStore, excluded map[string]bool, now time.Time) {
 
+	// Claude 2026-09-17: resume pass runs first so transport-parked grabs with a
+	// due retry_after are re-armed before the failure sweep might re-park them.
+	// It is also the daily safety net for rows parked just before a restart
+	// when auto-grab drain was off.
+	// Review if: the drain tick cadence (60s) makes this pass redundant.
+	var resumeEngine usenetResumeEngine
+	if deps.NZB != nil {
+		resumeEngine = deps.NZB
+	}
+	resumeDueTransportRetries(ctx, deps, resumeEngine, excluded, now)
+
 	sweepUsenetFailures(ctx, deps, lookup)
 	retryDueGrabs(ctx, deps, build, excluded, now)
 	// Claude 2026-09-16: drain worker takes over air-date dispatch when active.
@@ -311,6 +322,13 @@ func runUsenetRetryCycle(ctx context.Context, deps AutoGrabDeps, build sessionBu
 	// Claude 2026-08-24: fifth pass — Adult monitored-entity dispatch.
 	// Reads pool for scenes added since monitored_since, dispatches auto-grabs.
 	monitorAdultEntities(ctx, deps, build, libStore, monitoredStore, releaseStore, excluded, now)
+
+	// Claude 2026-09-17: park hygiene at end of every retry cycle.
+	// Reason: stranded-recovery and malformed-schedule repair run on the same
+	//   cadence as the retry cycle so no row can be invisible-forever between
+	//   restarts. The census log line also appears once per daily cycle.
+	// Review if: hygiene gains its own shorter interval.
+	runParkHygiene(ctx, deps, resumeEngine, now)
 }
 
 // sweepUsenetFailures is the AUTHORITATIVE M3 transition: it asks the usenet
@@ -397,6 +415,7 @@ func sweepUsenetFailures(ctx context.Context, deps AutoGrabDeps, lookup usenetDo
 // Review if: escalation should be conditional (e.g. only within N days of air date).
 func applyUsenetFailure(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, failure error, park grabParker) (grabs.Status, error) {
 	status := classifyDownloadState("error", failure)
+	now := time.Now()
 	switch status {
 	case grabs.PendingRetry:
 		reason := usenetRetrievalReason(failure)
@@ -407,12 +426,24 @@ func applyUsenetFailure(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, fa
 			// The escalation "costs one rung of the backoff ladder" (plan §E) because
 			// retry_count advances; a subsequent miss after the torrent attempt re-parks
 			// on the normal Usenet-first order at the new count.
-			if err := deps.GrabsStore.SetPendingRetryWithScope(ctx, g.ID, time.Now(), reason, "torrent"); err != nil {
+			if err := deps.GrabsStore.SetPendingRetryWithScope(ctx, g.ID, now, reason, "torrent"); err != nil {
 				return "", err
 			}
 		} else {
-			if err := park(ctx, deps, g.ID, reason); err != nil {
+			// Claude 2026-09-17: transport failure → short-park for resume before days ladder.
+			// Reason: a dropped socket is a network blip; the staging dir and resume
+			//   sidecar are intact. Short-parking with the GID preserved lets RelaunchNZB
+			//   continue from where the download left off. Falls through to ParkWithBackoff
+			//   when the ladder is exhausted or the failure doesn't qualify.
+			// Review if: transport park should also apply to non-usenet-prefixed GIDs.
+			handled, err := parkUsenetTransportFailure(ctx, deps, g, failure, now)
+			if err != nil {
 				return "", err
+			}
+			if !handled {
+				if err := park(ctx, deps, g.ID, reason); err != nil {
+					return "", err
+				}
 			}
 		}
 	case grabs.Failed:

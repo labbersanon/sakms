@@ -8767,3 +8767,70 @@ so the test actually exercises the path its name describes.
 | `internal/api/requests_exclude.go` | Register park-census + park-hygiene routes |
 | `internal/api/useneterror_test.go` | Fix ParkFailureDoesNotCrash test (wrong error class) |
 | `cmd/sakms/main.go` | Boot park-hygiene call |
+
+---
+
+## 2026-09-17 — Usenet alternate-release retry (C)
+
+**Feature:** When a downloaded NZB proves content-unusable (PAR2 unrepairable,
+unpack failed, or no video file found post-import), park the grab due-now and
+let the next drain/retry tick pick a **different** Usenet release. Up to 3
+alternate releases are tried before falling back to the days ladder.
+
+**Problem:** A broken archive on the primary Usenet server meant the request
+re-parked on the days ladder and retried the **same NZB** days later. A working
+copy of the same release is often available from a different indexer or segment
+combination.
+
+**Root causes fixed:**
+- `UsenetCompleteImporter` and `reconcileImportUsenet` logged "no video file"
+  and returned without parking — leaving the grab stuck queued/downloading
+  forever on the live (fast) path.
+- `applyUsenetFailure` called `parkUsenetContentFailure` without checking
+  `contentUnusableFailure(failure)` first, causing `ErrUnpackToolMissing`
+  (environment fault) to route to the alternate-release path instead of the
+  days ladder.
+- Due-now rows with `tried_release_keys` had no dedicated drain pass — they
+  waited up to 24 hours for the daily retry cycle.
+
+**Design:**
+- `ErrContentUnusable` and `ErrUnpackToolMissing` new sentinels in
+  `internal/usenet/content.go`; `ErrNoVideoFile` in `internal/library`.
+- `tried_release_keys` TEXT column (migration 0025) stores SHA-256-truncated
+  hashes of failed release URL + title; deduped on append.
+- `MaxAlternateReleaseAttempts = 3`; counter = number of `u:` entries.
+- Alternate retries stay **Usenet-only** (`nextSearchPhases` returns
+  `[ScopeUsenet]` while `tried_release_keys` is non-empty — no torrent
+  escalation).
+- `drainAlternateReleaseRetries` drain pass picks up due-now alternate rows on
+  the 60-second drain tick.
+
+**Tests:** 3 new test files (778 lines), all passing. Full `./internal/api/`
+suite green.
+
+**Docs:** `docs/usenet-alternate-release.md`; cross-link in
+`docs/usenet-transport-resilience.md`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/content.go` | New: `ErrContentUnusable`, `ErrUnpackToolMissing` |
+| `internal/library/library.go` | `ErrNoVideoFile`; wrap no-video return |
+| `internal/library/library_series.go` | Wrap no-video return with `ErrNoVideoFile` |
+| `internal/usenet/manager.go` | Wrap PAR2 + unpack errors with `ErrContentUnusable` |
+| `internal/usenet/unpack.go` | Return `ErrUnpackToolMissing` for no-unpacker + ReadDir |
+| `internal/db/migrations/0025_grabs_tried_release_keys.sql` | New migration |
+| `internal/grabs/alternate.go` | New: `MaxAlternateReleaseAttempts`, `ReleaseKeys`, `ParkForAlternateRelease` |
+| `internal/grabs/grabs.go` | `TriedReleaseKeys` field; all 9 SELECTs; clear in days-ladder parks |
+| `internal/api/usenetcontent.go` | New: `contentUnusableFailure`, `parkUsenetContentFailure` |
+| `internal/api/usenetretry.go` | Content branch in `applyUsenetFailure`; `nextSearchPhases` Usenet-only guard; exclusion keys in `retryDueGrabs` |
+| `internal/api/autograb_shared.go` | `ExcludeReleaseKeys` field; `filterExcludedReleases` |
+| `internal/api/autograbdrain.go` | `drainAlternateReleaseRetries` pass |
+| `internal/api/import.go` | `UsenetCompleteImporter` hollow-import park |
+| `internal/api/downloadreconcile.go` | `reconcileImportUsenet` hollow-import park |
+| `internal/usenet/content_test.go` | New tests |
+| `internal/grabs/alternate_test.go` | New tests |
+| `internal/api/usenetcontent_test.go` | New tests |
+| `docs/usenet-alternate-release.md` | New doc |
+| `docs/usenet-transport-resilience.md` | Cross-link to C doc |

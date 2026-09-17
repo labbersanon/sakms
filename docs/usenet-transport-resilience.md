@@ -19,8 +19,9 @@ retry budget:
 - **E — Park census + hygiene**: observability and maintenance endpoints to
   inspect the pending-retry queue, tag E2E rows, and reap test debris.
 
-C (slot-full torrent escalation) and D (UI wire-up) are explicitly **out of
-scope** for this shipment.
+C (alternate-release retry for content failures) is shipped alongside A+B+E
+on the same branch — see [usenet-alternate-release.md](usenet-alternate-release.md).
+D (UI wire-up) is explicitly **out of scope** for this shipment.
 
 ---
 

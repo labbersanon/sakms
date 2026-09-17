@@ -21,6 +21,31 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// Forget drops a TERMINAL (error/complete/removed) download from the in-memory
+// queue without touching disk. Returns false when the entry is active or paused
+// (callers must not Forget a live download).
+//
+// Claude 2026-09-17: intentionally NOT Cancel.
+// Reason: Cancel calls deleteDownloadDir → os.RemoveAll, which would destroy the
+//   staging dir and the .sakms-resume.json sidecar that resumeDueTransportRetries
+//   needs for RelaunchNZB to resume from where the failed download left off.
+// Review if: Cancel gains a "drop from queue, keep files" mode.
+func (m *Manager) Forget(gid string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	dl, ok := m.downloads[gid]
+	if !ok {
+		return false
+	}
+	switch dl.status {
+	case "error", "complete", "removed":
+		delete(m.downloads, gid)
+		return true
+	default:
+		return false
+	}
+}
+
 // Download mirrors the downloader.Download shape so the api layer can build a
 // unified queue from both torrent and usenet downloads without a shared
 // interface. Usenet has no seeder concept, so it carries neither a seed-count
@@ -1009,14 +1034,19 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 		m.mu.Lock()
 		if dl.status != "removed" && dl.status != "paused" {
 			dl.status = "error"
+			// Claude 2026-09-17: wrap PAR2 failure with ErrContentUnusable so
+			//   applyUsenetFailure can route to a different-release park.
+			// Reason: a bad PAR2 is a property of THIS release; a different NZB is the fix.
+			// Review if: PAR2-less releases should stay best-effort (they already do —
+			//   verifyAndRepair returns nil when no .par2 is present).
 			dl.errorMsg = repairErr.Error()
-			dl.err = repairErr
+			dl.err = fmt.Errorf("%w: %w", ErrContentUnusable, repairErr)
 			failed = true
 			log.Printf("usenet: par2 repair %s: %v (failing download — not marking complete)", gid, repairErr)
 		}
 		m.mu.Unlock()
 		if failed {
-			m.fireOnError(ctx, gid, repairErr)
+			m.fireOnError(ctx, gid, dl.err)
 		}
 		return
 	}
@@ -1036,13 +1066,24 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 		if dl.status != "removed" && dl.status != "paused" {
 			dl.status = "error"
 			dl.errorMsg = unpackErr.Error()
-			dl.err = unpackErr
+			// Claude 2026-09-17: wrap unpack failure with ErrContentUnusable so
+			//   applyUsenetFailure can route to a different-release park.
+			// Reason: a release that won't unpack is a property of THIS NZB.
+			// Exception: ErrUnpackToolMissing is an environment fault — a different
+			//   release cannot fix a missing unrar/7z binary — so it passes through
+			//   unwrapped and lands on the days ladder as before.
+			// Review if: password-protected archives should be treated differently.
+			if errors.Is(unpackErr, ErrUnpackToolMissing) {
+				dl.err = unpackErr
+			} else {
+				dl.err = fmt.Errorf("%w: %w", ErrContentUnusable, unpackErr)
+			}
 			failed = true
 			log.Printf("usenet: unpack %s: %v (failing download — not marking complete)", gid, unpackErr)
 		}
 		m.mu.Unlock()
 		if failed {
-			m.fireOnError(ctx, gid, unpackErr)
+			m.fireOnError(ctx, gid, dl.err)
 		}
 		return
 	}
@@ -1124,7 +1165,7 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 	}
 
 	if filename == "" || needFetch(filename, segs[0]) {
-		first, err := m.fetchSegmentAny(segs[0].MsgID)
+		first, err := m.fetchSegmentAny(ctx, segs[0].MsgID)
 		if err != nil {
 			return "", fmt.Errorf("segment 1: %w", err)
 		}
@@ -1156,7 +1197,7 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 	// Re-check first segment coverage after open (hollow-file guard).
 	if _, ok := got[segs[0].Number]; !ok {
 		if resume == nil || resume.disabled || !resume.segmentCovered(f, filename, firstMsg, fileBytes) {
-			first, err := m.fetchSegmentAny(segs[0].MsgID)
+			first, err := m.fetchSegmentAny(ctx, segs[0].MsgID)
 			if err != nil {
 				return "", fmt.Errorf("segment 1: %w", err)
 			}
@@ -1167,7 +1208,14 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 		}
 	}
 
-	var g errgroup.Group
+	// Claude 2026-09-17: errgroup.WithContext so the first hard segment failure
+	// cancels sibling fetches instead of letting all ~20 workers hammer a dead
+	// provider to completion.
+	// Reason: var g errgroup.Group allowed every worker to run to completion
+	//   even after an unrecoverable failure, wasting connections and time.
+	// Review if: partial-success semantics (continue despite one bad file) are
+	//   ever wanted — that would require a non-cancelling group again.
+	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(maxConc)
 	for _, seg := range segs[1:] {
 		seg := seg
@@ -1176,7 +1224,7 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 			continue
 		}
 		g.Go(func() error {
-			res, err := m.fetchSegmentAny(seg.MsgID)
+			res, err := m.fetchSegmentAny(gctx, seg.MsgID)
 			if err != nil {
 				return fmt.Errorf("segment %d: %w", seg.Number, err)
 			}
@@ -1243,12 +1291,17 @@ var ErrNoSubscriptions = errors.New("usenet: no Usenet subscriptions are configu
 // downloading the same article body N times — N times the bandwidth and N times
 // the per-provider connection consumption, for one usable copy.
 //
+// Each pool is tried up to maxSegmentAttemptsPerServer times before moving on.
+// A transport failure (dropped socket, broken pipe) retries on a fresh connection
+// because pool.put(conn, false) discards the bad socket and releases its live
+// token, making a new dial possible. Article-level responses (430/451) are not
+// retried within the same pool — only connection-level failures are.
+//
 // Error precedence when every pool fails:
 //   - every pool answered 430          -> ErrArticleNotFound (retryable)
 //   - only 430/451, at least one 451   -> ErrArticleRemoved (permanent)
-//   - anything else (dial, decode, …)  -> that error UNWRAPPED and
-//     unclassified, since a server we could not reach tells us nothing about
-//     whether it holds the article
+//   - anything else (dial, decode, …)  -> classifySegmentFailure(otherErr),
+//     which wraps with ErrTransport when the failure is connection-level
 //
 // A classification mistake costs a retry rather than a lost download, but only
 // because of what happens downstream: ErrArticleRemoved is the ONLY error api's
@@ -1256,7 +1309,13 @@ var ErrNoSubscriptions = errors.New("usenet: no Usenet subscriptions are configu
 // is retried, not failed — so returning the raw transport error (rather than
 // guessing 430 vs. 451) is the safe answer, including in the mixed case where
 // one provider answered 451 and another was simply unreachable.
-func (m *Manager) fetchSegmentAny(msgID string) (segmentResult, error) {
+//
+// Claude 2026-09-17: added ctx + per-server retry loop for transport failures.
+// Reason: 88% of live segment failures were "write tcp …: write: broken pipe"
+//   on stale pooled connections; they previously failed the whole NZB. A single
+//   reconnect (pool.put false + new get) recovers the segment silently.
+// Review if: maxSegmentAttemptsPerServer is exposed as a settings knob.
+func (m *Manager) fetchSegmentAny(ctx context.Context, msgID string) (segmentResult, error) {
 	pools := m.currentPools()
 	if len(pools) == 0 {
 		return segmentResult{}, ErrNoSubscriptions
@@ -1267,30 +1326,53 @@ func (m *Manager) fetchSegmentAny(msgID string) (segmentResult, error) {
 	var otherErr error
 
 	for _, p := range pools {
-		conn, err := p.get()
-		if err != nil {
-			allNotFound = false
-			if otherErr == nil {
-				otherErr = err
+		for attempt := 1; attempt <= maxSegmentAttemptsPerServer; attempt++ {
+			if ctx.Err() != nil {
+				// Context cancelled — propagate immediately without wrapping as transport.
+				return segmentResult{}, ctx.Err()
 			}
-			continue
-		}
-		res, err := fetchSegment(conn, msgID)
-		p.put(conn, err == nil)
-		if err == nil {
-			return res, nil
-		}
-		switch {
-		case errors.Is(err, ErrArticleNotFound):
-			// This provider does not carry it; try the next.
-		case errors.Is(err, ErrArticleRemoved):
-			allNotFound = false
-			sawRemoved = true
-		default:
-			allNotFound = false
-			if otherErr == nil {
-				otherErr = err
+			conn, err := p.getCtx(ctx)
+			if err != nil {
+				// Dial/auth failure for this server. If it looks like a transport
+				// issue and we have retries left, wait and try again; otherwise
+				// move to the next pool.
+				if isTransportError(err) && attempt < maxSegmentAttemptsPerServer && ctx.Err() == nil {
+					sleepWithCtx(ctx, transportRetryDelay(attempt))
+					continue
+				}
+				allNotFound = false
+				if otherErr == nil {
+					otherErr = err
+				}
+				break // next pool
 			}
+			res, ferr := fetchSegment(conn, msgID)
+			p.put(conn, ferr == nil)
+			if ferr == nil {
+				if attempt > 1 {
+					log.Printf("usenet: segment recovered after %d attempt(s) on %s", attempt, p.cfg.Host)
+				}
+				return res, nil
+			}
+			switch {
+			case errors.Is(ferr, ErrArticleNotFound):
+				// This provider does not carry it; try the next pool.
+			case errors.Is(ferr, ErrArticleRemoved):
+				allNotFound = false
+				sawRemoved = true
+			default:
+				// Transport or decode failure. Retry on a fresh connection if
+				// we have attempts left and the context is still live.
+				if isTransportError(ferr) && attempt < maxSegmentAttemptsPerServer && ctx.Err() == nil {
+					sleepWithCtx(ctx, transportRetryDelay(attempt))
+					continue
+				}
+				allNotFound = false
+				if otherErr == nil {
+					otherErr = ferr
+				}
+			}
+			break // move to next pool after any non-retry-eligible outcome
 		}
 	}
 
@@ -1298,11 +1380,19 @@ func (m *Manager) fetchSegmentAny(msgID string) (segmentResult, error) {
 	case allNotFound:
 		return segmentResult{}, ErrArticleNotFound
 	case otherErr != nil:
-		return segmentResult{}, otherErr
+		return segmentResult{}, classifySegmentFailure(otherErr)
 	case sawRemoved:
 		return segmentResult{}, ErrArticleRemoved
 	default:
 		return segmentResult{}, ErrArticleNotFound
+	}
+}
+
+// sleepWithCtx sleeps for d, returning early if ctx is cancelled.
+func sleepWithCtx(ctx context.Context, d time.Duration) {
+	select {
+	case <-ctx.Done():
+	case <-time.After(d):
 	}
 }
 

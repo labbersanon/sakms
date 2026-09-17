@@ -298,6 +298,17 @@ func RunUsenetRetry(ctx context.Context, interval time.Duration, httpClient *htt
 func runUsenetRetryCycle(ctx context.Context, deps AutoGrabDeps, build sessionBuilderFunc,
 	lookup usenetDownloadLookup, libStore *library.Store, monitoredStore *adultnewest.MonitoredStore, releaseStore *adultnewest.ReleaseStore, excluded map[string]bool, now time.Time) {
 
+	// Claude 2026-09-17: resume pass runs first so transport-parked grabs with a
+	// due retry_after are re-armed before the failure sweep might re-park them.
+	// It is also the daily safety net for rows parked just before a restart
+	// when auto-grab drain was off.
+	// Review if: the drain tick cadence (60s) makes this pass redundant.
+	var resumeEngine usenetResumeEngine
+	if deps.NZB != nil {
+		resumeEngine = deps.NZB
+	}
+	resumeDueTransportRetries(ctx, deps, resumeEngine, excluded, now)
+
 	sweepUsenetFailures(ctx, deps, lookup)
 	retryDueGrabs(ctx, deps, build, excluded, now)
 	// Claude 2026-09-16: drain worker takes over air-date dispatch when active.
@@ -311,6 +322,13 @@ func runUsenetRetryCycle(ctx context.Context, deps AutoGrabDeps, build sessionBu
 	// Claude 2026-08-24: fifth pass — Adult monitored-entity dispatch.
 	// Reads pool for scenes added since monitored_since, dispatches auto-grabs.
 	monitorAdultEntities(ctx, deps, build, libStore, monitoredStore, releaseStore, excluded, now)
+
+	// Claude 2026-09-17: park hygiene at end of every retry cycle.
+	// Reason: stranded-recovery and malformed-schedule repair run on the same
+	//   cadence as the retry cycle so no row can be invisible-forever between
+	//   restarts. The census log line also appears once per daily cycle.
+	// Review if: hygiene gains its own shorter interval.
+	runParkHygiene(ctx, deps, now)
 }
 
 // sweepUsenetFailures is the AUTHORITATIVE M3 transition: it asks the usenet
@@ -399,21 +417,8 @@ func applyUsenetFailure(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, fa
 	status := classifyDownloadState("error", failure)
 	switch status {
 	case grabs.PendingRetry:
-		reason := usenetRetrievalReason(failure)
-		if errors.Is(failure, usenet.ErrArticleNotFound) {
-			// 430: escalate — park due-now with next_search_scope='torrent'.
-			// SetPendingRetryWithScope increments retry_count and clears the GID
-			// atomically (same contract as SetPendingRetry / ParkWithBackoff).
-			// The escalation "costs one rung of the backoff ladder" (plan §E) because
-			// retry_count advances; a subsequent miss after the torrent attempt re-parks
-			// on the normal Usenet-first order at the new count.
-			if err := deps.GrabsStore.SetPendingRetryWithScope(ctx, g.ID, time.Now(), reason, "torrent"); err != nil {
-				return "", err
-			}
-		} else {
-			if err := park(ctx, deps, g.ID, reason); err != nil {
-				return "", err
-			}
+		if err := parkRetrievalFailure(ctx, deps, g, failure, park, time.Now()); err != nil {
+			return "", err
 		}
 	case grabs.Failed:
 		if err := deps.GrabsStore.UpdateStatus(ctx, g.ID, grabs.Failed); err != nil {
@@ -421,6 +426,51 @@ func applyUsenetFailure(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, fa
 		}
 	}
 	return status, nil
+}
+
+// parkRetrievalFailure routes one retrievable failure to exactly one park
+// track. The order below IS the precedence: 430 escalation, then transport
+// resume, then alternate release, then the days ladder as the catch-all. The
+// transport and content parks each decline (handled=false) when their own
+// fail-closed guards reject the failure, and the next track gets it.
+func parkRetrievalFailure(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, failure error, park grabParker, now time.Time) error {
+	reason := usenetRetrievalReason(failure)
+
+	if errors.Is(failure, usenet.ErrArticleNotFound) {
+		// 430: escalate — park due-now with next_search_scope='torrent'.
+		// SetPendingRetryWithScope increments retry_count and clears the GID
+		// atomically (same contract as SetPendingRetry / ParkWithBackoff).
+		// The escalation "costs one rung of the backoff ladder" (plan §E) because
+		// retry_count advances; a subsequent miss after the torrent attempt re-parks
+		// on the normal Usenet-first order at the new count.
+		return deps.GrabsStore.SetPendingRetryWithScope(ctx, g.ID, now, reason, "torrent")
+	}
+
+	// Claude 2026-09-17: transport failure → short-park for resume before days ladder.
+	// Reason: a dropped socket is a network blip; the staging dir and resume
+	//   sidecar are intact. Short-parking with the GID preserved lets RelaunchNZB
+	//   continue from where the download left off. Falls through to ParkWithBackoff
+	//   when the ladder is exhausted or the failure doesn't qualify.
+	// Review if: transport park should also apply to non-usenet-prefixed GIDs.
+	if handled, err := parkUsenetTransportFailure(ctx, deps, g, failure, now); err != nil || handled {
+		return err
+	}
+
+	// Claude 2026-09-17: content failure → park for a different-release retry.
+	// Reason: PAR2/unpack/no-video are properties of THIS release; a different
+	//   NZB is the fix. contentUnusableFailure gates this so that
+	//   ErrUnpackToolMissing (environment fault, not a release defect) falls
+	//   straight to the days ladder instead of the alternate-release path.
+	//   parkUsenetContentFailure falls through (false) when its own fail-closed
+	//   guards reject it (non-nzb- GID, empty URL, cap reached).
+	// Review if: content failures should also be cap-gated per-day.
+	if contentUnusableFailure(failure) {
+		if handled, err := parkUsenetContentFailure(ctx, deps, g, failure, nil); err != nil || handled {
+			return err
+		}
+	}
+
+	return park(ctx, deps, g.ID, reason)
 }
 
 // retryDueGrabs re-runs the full auto-grab pipeline for every row whose
@@ -477,6 +527,11 @@ func retryDueGrabs(ctx context.Context, deps AutoGrabDeps, build sessionBuilderF
 			// Releases nil = "search for me". Unlike the Search hook, a retry
 			// row carries the TMDB id RunAutoGrab's internal search needs.
 			SearchPhases: phases,
+			// Claude 2026-09-17: pass exclusion keys for alternate-release rows.
+			// Reason: a row in an alternate-release episode must not re-grab a
+			//   release that already proved content-unusable. The daily cycle is
+			//   a safety-net that must honour the same exclusion as the drain.
+			ExcludeReleaseKeys: grabs.ParseTriedReleaseKeys(g.TriedReleaseKeys),
 		})
 		switch {
 		case err != nil:
@@ -529,8 +584,11 @@ func retryDueGrabs(ctx context.Context, deps AutoGrabDeps, build sessionBuilderF
 
 // nextSearchPhases returns the SearchPhases for the next RunAutoGrab attempt on g.
 // If g.NextSearchScope is 'torrent', returns [ScopeTorrent] (skip Usenet entirely
-// for this one attempt). Otherwise returns nil (empty = normal ScopeAll behaviour
-// for the retry cycle, matching every existing trigger's contract).
+// for this one attempt). If g.TriedReleaseKeys is non-empty, returns [ScopeUsenet]
+// — the row is in an alternate-release episode and must stay Usenet-only (never
+// widen to ScopeAll, which could grab a torrent and silently implement D).
+// Otherwise returns nil (empty = normal ScopeAll behaviour for the retry cycle,
+// matching every existing trigger's contract).
 //
 // Claude 2026-09-16: intentionally returns nil (not [ScopeUsenet, ScopeTorrent])
 // for the non-escalated case. The retry cycle predates the two-phase drain and
@@ -540,6 +598,12 @@ func retryDueGrabs(ctx context.Context, deps AutoGrabDeps, build sessionBuilderF
 func nextSearchPhases(ctx context.Context, deps AutoGrabDeps, g grabs.Grab) []prowlarr.Scope {
 	if g.NextSearchScope == "torrent" {
 		return []prowlarr.Scope{prowlarr.ScopeTorrent}
+	}
+	if g.TriedReleaseKeys != "" {
+		// Claude 2026-09-17: alternate-release episode — stay Usenet-only.
+		// Reason: ScopeAll would search torrent indexers and could grab a torrent,
+		//   silently implementing D (torrent escalation), which is out of scope.
+		return []prowlarr.Scope{prowlarr.ScopeUsenet}
 	}
 	return nil // ScopeAll (existing behaviour)
 }

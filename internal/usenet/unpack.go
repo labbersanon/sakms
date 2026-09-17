@@ -46,7 +46,10 @@ var (
 func unpackArchives(dir string, files []string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return files, fmt.Errorf("unpack: reading %s: %w", dir, err)
+		// Claude 2026-09-17: ReadDir failure is an environment/filesystem fault.
+		// Reason: a staging dir that can't be read is not a release quality problem;
+		//   wrapping with ErrUnpackToolMissing keeps the api layer on the days ladder.
+		return files, fmt.Errorf("%w: reading %s: %v", ErrUnpackToolMissing, dir, err)
 	}
 	var names []string
 	for _, e := range entries {
@@ -63,7 +66,12 @@ func unpackArchives(dir string, files []string) ([]string, error) {
 	unrarPath, unrarErr := lookPath("unrar")
 	sevenPath, sevenErr := lookPath("7z")
 	if unrarErr != nil && sevenErr != nil {
-		return files, fmt.Errorf("unpack: no unrar or 7z on PATH (install unrar/p7zip-full in the image)")
+		// Claude 2026-09-17: return ErrUnpackToolMissing (not ErrContentUnusable).
+		// Reason: a missing unrar/7z is an environment fault — a different NZB cannot
+		//   fix it. Returning this sentinel keeps the api layer on the days ladder
+		//   instead of burning three full re-downloads on every release.
+		// Review if: the image base gains unrar/7z by default (pre-flight check elsewhere).
+		return files, ErrUnpackToolMissing
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), unpackTimeout)
@@ -76,7 +84,7 @@ func unpackArchives(dir string, files []string) ([]string, error) {
 	for pass := 0; pass < 2; pass++ {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
-			return files, fmt.Errorf("unpack: reading %s: %w", dir, err)
+			return files, fmt.Errorf("%w: reading %s: %v", ErrUnpackToolMissing, dir, err)
 		}
 		names = names[:0]
 		for _, e := range entries {

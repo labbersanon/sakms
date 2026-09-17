@@ -28,6 +28,11 @@ func NewRequestsMux(grabsStore *grabs.Store, libStore *library.Store, excludesSt
 	mux.HandleFunc("POST /api/requests/exclude", excludeTitleHandler(excludesStore))
 	mux.HandleFunc("POST /api/requests/exclude-batch", excludeTitlesBatchHandler(excludesStore))
 	mux.HandleFunc("POST /api/requests/promote", promoteRequestHandler(grabsStore, connStore, httpClient))
+	// Claude 2026-09-17: park census + hygiene routes (plan §5.2, §5.3).
+	// Classified {queue} for free by sectionlock (route prefix /api/requests/).
+	// Handler-local response structs — no apidto mirror (plan §response struct rule).
+	mux.HandleFunc("GET /api/requests/park-census", parkCensusHandler(grabsStore))
+	mux.HandleFunc("POST /api/requests/park-hygiene", parkHygieneHandler(grabsStore))
 	return mux
 }
 

@@ -8622,3 +8622,215 @@ for series-mode escalated rows.
 | `internal/db/migrations/0022_grabs_next_search_scope.sql` | New migration |
 | `cmd/sakms/main.go` | go api.RunAutoGrabDrain launch |
 
+
+## 2026-09-17 — Usenet transport resilience: segment reconnect, short-backoff park, park census + hygiene (A + B + E)
+
+Three inter-related improvements to the Usenet download path, all gated by the
+same root cause: transient network errors (broken pipe, connection reset,
+ECONNRESET) were being handled the same as permanent content failures. A dropped
+socket advanced the multi-day re-search ladder and wasted an indexer hit, despite
+the articles still being available on the provider.
+
+This entry covers commits A, B, and E. C (slot-full torrent escalation) and D
+(wait-and-retry without torrent) remain out of scope.
+
+### A. Segment reconnect — `internal/usenet/transport.go` + `manager.go` + `precheck.go`
+
+**`transport.go` (new file):** Defines `ErrTransport` sentinel and
+`isTransportError(err)` — classifies `syscall.ECONNRESET`, `syscall.EPIPE`,
+`io.EOF`, `io.ErrUnexpectedEOF`, `net.OpError`, `nntp`-level auth failures,
+and a `"broken pipe"` string match as transport errors. `classifySegmentFailure`
+wraps transport errors with `ErrTransport` so callers can use `errors.Is`.
+Constants: `maxSegmentAttemptsPerServer = 3`, `maxStatAttemptsPerServer = 2`.
+`transportRetryDelay(attempt)`: 250 ms / 750 ms ramp.
+
+**`manager.go`:** `fetchSegmentAny` now accepts a `context.Context` and runs a
+per-server retry loop (up to `maxSegmentAttemptsPerServer`). On a transport error
+it calls `sleepWithCtx`, returns the pool connection as bad, and retries on a
+fresh connection. Hard article errors (404, 451) break the loop immediately.
+`assembleFile` switches from `errgroup.Group` to `errgroup.WithContext` so the
+first hard segment failure cancels all sibling fetches rather than letting every
+worker run to completion against a dead provider.
+
+`Manager.Forget(gid)` — drops a terminal (`error`/`complete`/`removed`) download
+from the in-memory queue without touching disk. Deliberately not `Cancel`, which
+calls `os.RemoveAll` and would destroy the staging directory and
+`.sakms-resume.json` sidecar needed for RelaunchNZB resume.
+
+**`precheck.go`:** `statArticleAny` gets the same bounded reconnect (up to
+`maxStatAttemptsPerServer = 2`) for STAT requests.
+
+### B. Short-backoff transport park + RelaunchNZB resume
+
+**Migration `0023_grabs_transport_retry.sql`:** Adds
+`transport_retry_count INTEGER NOT NULL DEFAULT 0`. Separate from `retry_count`
+(the days-ladder driver) — transport parks never advance the days ladder.
+
+**`internal/grabs/grabs.go`:** Two new columns (`TransportRetryCount`, `Origin`)
+added to `Grab` struct and all SELECT lists + `scanGrab`. Three new store methods:
+- `SetOrigin(ctx, id, origin)` — writes the origin column.
+- `ParkForTransportResume(ctx, id, after, reason)` — parks without clearing
+  `download_gid` or advancing `retry_count`; increments `transport_retry_count`.
+- `DueForResume(ctx, now)` — selects `pending_retry` rows with
+  `download_gid <> ''` (structurally disjoint from `DueForRetry`).
+
+Existing store methods (`SetPendingRetry`, `SetPendingRetryWithScope`, `Relaunch`)
+reset `transport_retry_count = 0`, ending the transport-retry episode.
+
+`ParseTime(s)` exported helper — the census and hygiene pass need to distinguish
+an empty `retry_after` from a non-empty, unparseable one.
+
+**`internal/grabs/retry.go`:** `MaxTransportRetries = 4`.
+`TransportBackoff(n)` — 2m / 5m / 15m / 30m; returns 0 when exhausted (signals
+escalation to the days ladder).
+
+**`internal/api/usenettransport.go` (new):** `parkUsenetTransportFailure` is
+fail-closed: short-parks only when all four conditions hold — `ErrTransport`,
+`nzb-` GID prefix, non-empty `DownloadURL`, and `TransportRetryCount <
+MaxTransportRetries`. `usenetResumeEngine` interface (testable without a real
+NNTP server). `resumeDueTransportRetries` processes due transport-resume rows:
+slot gate → `FindByGID` → `Forget` if terminal → `RelaunchNZB`, with fallback to
+articles-unavailable escalation or the days ladder on failure.
+
+**`internal/api/usenetretry.go`:** `applyUsenetFailure` calls
+`parkUsenetTransportFailure` before the `park` fallback in the non-430
+PendingRetry path. `runUsenetRetryCycle` calls `resumeDueTransportRetries` at
+the start (before the failure sweep) and `runParkHygiene` at the end.
+
+**`internal/api/autograbdrain.go`:** `runAutoGrabDrainCycle` calls
+`resumeDueTransportRetries` before the drain loop — transport resumes consume no
+indexer budget and do not count as slots consumed before the drain dispatches.
+
+### E. Park census + hygiene
+
+**Migration `0024_grabs_origin.sql`:** Adds `origin TEXT NOT NULL DEFAULT ''`.
+Allowed values: `''` (production) and `'e2e'` (test/E2E debris). A column, not
+inferred from `retry_reason`, because a destructive reap must never key off
+operator-facing copy strings — the misclassification pattern documented in
+migration 0022 and `airdatemonitor.go`.
+
+**`internal/api/parkcensus.go` (new):** `computeParkCensus` iterates `List`
+across modes and buckets `pending_retry` rows into: `DueNow`, `DueWithin1h`,
+`ParkedWithin24h`, `ParkedWithin7d`, `ParkedFar`, `AwaitingResume`,
+`AwaitingResumeOverdue` (overdue by > `strandedResumeGrace = 6h`),
+`HeldPreRelease`, `AirDateShaped`, `TestOrigin`, `MalformedSchedule`.
+`logParkCensus` emits the structured log line. `parkCensusHandler` backs
+`GET /api/requests/park-census`.
+
+**`internal/api/parkhygiene.go` (new):** `runParkHygiene` (non-destructive
+automatic pass):
+- Rule 1: stranded transport-resume recovery — `download_gid ≠ ''` + parseable
+  `retry_after` + overdue by > 6h → `parkGrabForRetry` (clears GID, joins
+  days-ladder re-search).
+- Rule 2: malformed schedule repair — `download_gid = ''` + unparseable
+  `retry_after` → `SetRetryAfter` at `RetryBackoff(retry_count+1)` from now.
+- Rule 3: census log line (always).
+
+`RunBootParkHygiene` is the exported entry for `cmd/sakms/main.go`.
+`parkHygieneHandler` backs `POST /api/requests/park-hygiene` — `action:tag`
+sets origin (allowlist `{"","e2e"}`); `action:reap` flips to `Failed` (requires
+non-empty origin or explicit IDs list; `reasonContains` alone is dry-run-only).
+`apply:false` (default) is a dry run.
+
+**`internal/api/requests_exclude.go`:** Registers `GET /api/requests/park-census`
+and `POST /api/requests/park-hygiene`.
+
+**`cmd/sakms/main.go`:** Calls `api.RunBootParkHygiene` after
+`ReconcileInFlightDownloads` so stranded-recovery runs at least once per process
+even when the daily retry cycle is disabled.
+
+### Test fix
+
+`internal/api/useneterror_test.go`: `TestHandleUsenetError_ParkFailureDoesNotCrash`
+was passing `usenet.ErrArticleNotFound` (which routes to `SetPendingRetryWithScope`
+/ the 430 path, bypassing the `park grabParker` param). Changed to a generic error
+so the test actually exercises the path its name describes.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/transport.go` | New: ErrTransport, isTransportError, classifySegmentFailure, retry constants |
+| `internal/usenet/manager.go` | fetchSegmentAny ctx + retry loop; assembleFile errgroup.WithContext; Manager.Forget |
+| `internal/usenet/precheck.go` | statArticleAny bounded reconnect |
+| `internal/usenet/transport_test.go` | New: isTransportError + classifySegmentFailure table tests |
+| `internal/usenet/usenet_test.go` | Updated fetchSegmentAny call sites to pass context.Background() |
+| `internal/db/migrations/0023_grabs_transport_retry.sql` | New migration |
+| `internal/db/migrations/0024_grabs_origin.sql` | New migration |
+| `internal/grabs/grabs.go` | TransportRetryCount + Origin fields; ParseTime; ParkForTransportResume; DueForResume; SetOrigin; all SELECTs + scanGrab updated |
+| `internal/grabs/retry.go` | MaxTransportRetries + TransportBackoff |
+| `internal/api/usenettransport.go` | New: parkUsenetTransportFailure; usenetResumeEngine; resumeDueTransportRetries |
+| `internal/api/usenetretry.go` | applyUsenetFailure transport-park check; runUsenetRetryCycle resume + hygiene calls |
+| `internal/api/autograbdrain.go` | runAutoGrabDrainCycle resume call |
+| `internal/api/parkcensus.go` | New: census computation + handler |
+| `internal/api/parkhygiene.go` | New: hygiene pass + handler + boot entry |
+| `internal/api/requests_exclude.go` | Register park-census + park-hygiene routes |
+| `internal/api/useneterror_test.go` | Fix ParkFailureDoesNotCrash test (wrong error class) |
+| `cmd/sakms/main.go` | Boot park-hygiene call |
+
+---
+
+## 2026-09-17 — Usenet alternate-release retry (C)
+
+**Feature:** When a downloaded NZB proves content-unusable (PAR2 unrepairable,
+unpack failed, or no video file found post-import), park the grab due-now and
+let the next drain/retry tick pick a **different** Usenet release. Up to 3
+alternate releases are tried before falling back to the days ladder.
+
+**Problem:** A broken archive on the primary Usenet server meant the request
+re-parked on the days ladder and retried the **same NZB** days later. A working
+copy of the same release is often available from a different indexer or segment
+combination.
+
+**Root causes fixed:**
+- `UsenetCompleteImporter` and `reconcileImportUsenet` logged "no video file"
+  and returned without parking — leaving the grab stuck queued/downloading
+  forever on the live (fast) path.
+- `applyUsenetFailure` called `parkUsenetContentFailure` without checking
+  `contentUnusableFailure(failure)` first, causing `ErrUnpackToolMissing`
+  (environment fault) to route to the alternate-release path instead of the
+  days ladder.
+- Due-now rows with `tried_release_keys` had no dedicated drain pass — they
+  waited up to 24 hours for the daily retry cycle.
+
+**Design:**
+- `ErrContentUnusable` and `ErrUnpackToolMissing` new sentinels in
+  `internal/usenet/content.go`; `ErrNoVideoFile` in `internal/library`.
+- `tried_release_keys` TEXT column (migration 0025) stores SHA-256-truncated
+  hashes of failed release URL + title; deduped on append.
+- `MaxAlternateReleaseAttempts = 3`; counter = number of `u:` entries.
+- Alternate retries stay **Usenet-only** (`nextSearchPhases` returns
+  `[ScopeUsenet]` while `tried_release_keys` is non-empty — no torrent
+  escalation).
+- `drainAlternateReleaseRetries` drain pass picks up due-now alternate rows on
+  the 60-second drain tick.
+
+**Tests:** 3 new test files (778 lines), all passing. Full `./internal/api/`
+suite green.
+
+**Docs:** `docs/usenet-alternate-release.md`; cross-link in
+`docs/usenet-transport-resilience.md`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/content.go` | New: `ErrContentUnusable`, `ErrUnpackToolMissing` |
+| `internal/library/library.go` | `ErrNoVideoFile`; wrap no-video return |
+| `internal/library/library_series.go` | Wrap no-video return with `ErrNoVideoFile` |
+| `internal/usenet/manager.go` | Wrap PAR2 + unpack errors with `ErrContentUnusable` |
+| `internal/usenet/unpack.go` | Return `ErrUnpackToolMissing` for no-unpacker + ReadDir |
+| `internal/db/migrations/0025_grabs_tried_release_keys.sql` | New migration |
+| `internal/grabs/alternate.go` | New: `MaxAlternateReleaseAttempts`, `ReleaseKeys`, `ParkForAlternateRelease` |
+| `internal/grabs/grabs.go` | `TriedReleaseKeys` field; all 9 SELECTs; clear in days-ladder parks |
+| `internal/api/usenetcontent.go` | New: `contentUnusableFailure`, `parkUsenetContentFailure` |
+| `internal/api/usenetretry.go` | Content branch in `applyUsenetFailure`; `nextSearchPhases` Usenet-only guard; exclusion keys in `retryDueGrabs` |
+| `internal/api/autograb_shared.go` | `ExcludeReleaseKeys` field; `filterExcludedReleases` |
+| `internal/api/autograbdrain.go` | `drainAlternateReleaseRetries` pass |
+| `internal/api/import.go` | `UsenetCompleteImporter` hollow-import park |
+| `internal/api/downloadreconcile.go` | `reconcileImportUsenet` hollow-import park |
+| `internal/usenet/content_test.go` | New tests |
+| `internal/grabs/alternate_test.go` | New tests |
+| `internal/api/usenetcontent_test.go` | New tests |
+| `docs/usenet-alternate-release.md` | New doc |
+| `docs/usenet-transport-resilience.md` | Cross-link to C doc |

@@ -254,6 +254,12 @@ func (m *Manager) statBatch(ctx context.Context, segs []sampledSeg) (missing map
 
 // statArticleAny STATs msgID across pools in order. Protocol 430/451 keep the
 // socket (put ok=true) so we do not dial-thrash.
+//
+// Claude 2026-09-17: bounded reconnect (maxStatAttemptsPerServer = 2).
+// Reason: a stale-socket STAT failure (broken pipe on an idle connection)
+//   previously poisoned a precheck sample, making a healthy NZB look
+//   inconclusive. STAT is one round trip, so a single retry is cheap.
+// Review if: maxStatAttemptsPerServer is exposed as a settings knob.
 func (m *Manager) statArticleAny(ctx context.Context, msgID string) (found, removed bool, err error) {
 	pools := m.currentPools()
 	if len(pools) == 0 {
@@ -264,33 +270,47 @@ func (m *Manager) statArticleAny(ctx context.Context, msgID string) (found, remo
 	var otherErr error
 
 	for _, p := range pools {
-		conn, gerr := p.getCtx(ctx)
-		if gerr != nil {
-			allNotFound = false
-			if otherErr == nil {
-				otherErr = gerr
+		for attempt := 1; attempt <= maxStatAttemptsPerServer; attempt++ {
+			if ctx.Err() != nil {
+				return false, false, ctx.Err()
 			}
-			continue
-		}
-		_, _, serr := conn.Stat(ensureAngleMsgID(msgID))
-		mapped := mapNNTPError(serr)
-		// 430/451 are valid STAT answers — keep the connection.
-		keep := mapped == nil || errors.Is(mapped, ErrArticleNotFound) || errors.Is(mapped, ErrArticleRemoved)
-		p.put(conn, keep)
-		if mapped == nil {
-			return true, false, nil
-		}
-		switch {
-		case errors.Is(mapped, ErrArticleNotFound):
-			// try next pool
-		case errors.Is(mapped, ErrArticleRemoved):
-			allNotFound = false
-			sawRemoved = true
-		default:
-			allNotFound = false
-			if otherErr == nil {
-				otherErr = mapped
+			conn, gerr := p.getCtx(ctx)
+			if gerr != nil {
+				if isTransportError(gerr) && attempt < maxStatAttemptsPerServer && ctx.Err() == nil {
+					sleepWithCtx(ctx, transportRetryDelay(attempt))
+					continue
+				}
+				allNotFound = false
+				if otherErr == nil {
+					otherErr = gerr
+				}
+				break
 			}
+			_, _, serr := conn.Stat(ensureAngleMsgID(msgID))
+			mapped := mapNNTPError(serr)
+			// 430/451 are valid STAT answers — keep the connection.
+			keep := mapped == nil || errors.Is(mapped, ErrArticleNotFound) || errors.Is(mapped, ErrArticleRemoved)
+			p.put(conn, keep)
+			if mapped == nil {
+				return true, false, nil
+			}
+			switch {
+			case errors.Is(mapped, ErrArticleNotFound):
+				// try next pool
+			case errors.Is(mapped, ErrArticleRemoved):
+				allNotFound = false
+				sawRemoved = true
+			default:
+				if isTransportError(mapped) && attempt < maxStatAttemptsPerServer && ctx.Err() == nil {
+					sleepWithCtx(ctx, transportRetryDelay(attempt))
+					continue
+				}
+				allNotFound = false
+				if otherErr == nil {
+					otherErr = mapped
+				}
+			}
+			break
 		}
 	}
 

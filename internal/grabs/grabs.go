@@ -89,6 +89,18 @@ const sqliteTimeLayout = "2006-01-02T15:04:05.000Z"
 // FormatTime renders t the way this schema's TEXT timestamps are stored.
 func FormatTime(t time.Time) string { return t.UTC().Format(sqliteTimeLayout) }
 
+// ParseTime parses a timestamp written by FormatTime/sakms_now(). It is the
+// exported counterpart of FormatTime, used by the park census and hygiene pass
+// to distinguish "not parked" (empty string) from "parked with a garbage
+// timestamp" (non-empty, unparseable) — two distinct conditions the hygiene
+// pass handles differently. Returns an error for any non-empty, unparseable value.
+func ParseTime(s string) (time.Time, error) {
+	if s == "" {
+		return time.Time{}, fmt.Errorf("grabs: empty timestamp")
+	}
+	return time.Parse(sqliteTimeLayout, s)
+}
+
 // Grab is one release the user chose to download.
 //
 // SeasonNumber/EpisodeNumber are Series-only: season>0,episode=0 means a
@@ -176,7 +188,29 @@ type Grab struct {
 	// to '' — by whichever path (drain or retry cycle) performs the next
 	// attempt, regardless of outcome. Set via SetPendingRetryWithScope.
 	// Migration: 0022_grabs_next_search_scope.sql.
-	NextSearchScope  string `json:"nextSearchScope,omitempty"`
+	NextSearchScope string `json:"nextSearchScope,omitempty"`
+	// TransportRetryCount tracks how many times this grab has been short-parked
+	// for a transport failure (dropped socket, broken pipe). Distinct from
+	// RetryCount, which counts genuine re-search attempts. Reset to 0 by any
+	// non-transport park (SetPendingRetry, SetPendingRetryWithScope, Relaunch).
+	// Migration: 0023_grabs_transport_retry.sql.
+	TransportRetryCount int `json:"transportRetryCount,omitempty"`
+	// Origin is a provenance marker for grabs created outside the normal dispatch
+	// path. Allowed values: '' (production) and 'e2e' (test/verification debris).
+	// It is a column, not inferred from retry_reason, because a destructive reap
+	// must never key off operator-facing copy strings — that is the HIGH-severity
+	// misclassification pattern documented in migration 0022.
+	// Migration: 0024_grabs_origin.sql.
+	Origin string `json:"origin,omitempty"`
+	// TriedReleaseKeys is the newline-separated set of hashed URL+title keys for
+	// releases already tried and found content-unusable (PAR2/unpack/no-video)
+	// in the current alternate-release episode. Cleared by SetPendingRetry and
+	// SetPendingRetryWithScope (days-ladder fallback ends the episode); preserved
+	// by Relaunch (an alternate dispatch keeps the exclusion list in flight).
+	// Format: zero or more "u:<16 hex>" (URL-keyed) and "t:<16 hex>" (title-keyed)
+	// entries, one per line. Attempt count = number of "u:" entries.
+	// Migration: 0025_grabs_tried_release_keys.sql.
+	TriedReleaseKeys string `json:"triedReleaseKeys,omitempty"`
 	CreatedAt        string `json:"createdAt"`
 	UpdatedAt        string `json:"updatedAt"`
 }
@@ -280,7 +314,9 @@ func (s *Store) List(ctx context.Context, m mode.Mode) ([]Grab, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, next_search_scope, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, next_search_scope,
+		       transport_retry_count, origin, tried_release_keys,
+		       created_at, updated_at
 		FROM grabs WHERE mode = ? ORDER BY created_at DESC, id DESC
 	`, string(m))
 	if err != nil {
@@ -307,7 +343,9 @@ func (s *Store) Get(ctx context.Context, id int64) (*Grab, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, next_search_scope, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, next_search_scope,
+		       transport_retry_count, origin, tried_release_keys,
+		       created_at, updated_at
 		FROM grabs WHERE id = ?
 	`, id)
 	g, err := s.scanGrab(row)
@@ -390,7 +428,9 @@ func (s *Store) GetByDownloadGID(ctx context.Context, gid string) (*Grab, error)
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, next_search_scope, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, next_search_scope,
+		       transport_retry_count, origin, tried_release_keys,
+		       created_at, updated_at
 		FROM grabs WHERE download_gid = ?
 	`, gid)
 	g, err := s.scanGrab(row)
@@ -424,7 +464,9 @@ func (s *Store) ActiveByDownloadGID(ctx context.Context, m mode.Mode, gid string
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, next_search_scope, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, next_search_scope,
+		       transport_retry_count, origin, tried_release_keys,
+		       created_at, updated_at
 		FROM grabs WHERE mode = ? AND download_gid = ? AND status NOT IN ('imported', 'failed')
 		ORDER BY id ASC LIMIT 1
 	`, string(m), gid)
@@ -451,7 +493,9 @@ func (s *Store) scanGrab(row rowScanner) (Grab, error) {
 	var m, encryptedURL string
 	err := row.Scan(&g.ID, &m, &g.Title, &g.TMDBID, &g.TVDBID, &g.SeasonNumber, &g.EpisodeNumber, &g.SeasonSpecified, &g.QualityProfileID, &g.Indexer, &g.Protocol,
 		&g.DownloadClient, &g.ClientRef, &g.DownloadGID, &g.DownloadStatus, &g.DownloadStagingPath, &g.Status, &g.RootFolderPath, &g.FlaggedForReview, &g.FlagReason,
-		&encryptedURL, &g.RetryAfter, &g.RetryCount, &g.RetryReason, &g.HoldUntil, &g.MonitorEntityKey, &g.NextSearchScope, &g.CreatedAt, &g.UpdatedAt)
+		&encryptedURL, &g.RetryAfter, &g.RetryCount, &g.RetryReason, &g.HoldUntil, &g.MonitorEntityKey, &g.NextSearchScope,
+		&g.TransportRetryCount, &g.Origin, &g.TriedReleaseKeys,
+		&g.CreatedAt, &g.UpdatedAt)
 	g.Mode = mode.Mode(m)
 	if err != nil {
 		return g, err
@@ -494,12 +538,14 @@ func (s *Store) scanGrab(row rowScanner) (Grab, error) {
 func (s *Store) SetPendingRetry(ctx context.Context, id int64, after time.Time, reason string) error {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE grabs SET
-			retry_count  = retry_count + 1,
-			status       = 'pending_retry',
-			retry_after  = ?,
-			retry_reason = ?,
-			download_gid = '',
-			updated_at   = sakms_now()
+			retry_count           = retry_count + 1,
+			status                = 'pending_retry',
+			retry_after           = ?,
+			retry_reason          = ?,
+			download_gid          = '',
+			transport_retry_count = 0,
+			tried_release_keys    = '',
+			updated_at            = sakms_now()
 		WHERE id = ?
 	`, FormatTime(after), reason, id)
 	if err != nil {
@@ -527,13 +573,15 @@ func (s *Store) SetPendingRetry(ctx context.Context, id int64, after time.Time, 
 func (s *Store) SetPendingRetryWithScope(ctx context.Context, id int64, after time.Time, reason, scope string) error {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE grabs SET
-			retry_count       = retry_count + 1,
-			status            = 'pending_retry',
-			retry_after       = ?,
-			retry_reason      = ?,
-			next_search_scope = ?,
-			download_gid      = '',
-			updated_at        = sakms_now()
+			retry_count           = retry_count + 1,
+			status                = 'pending_retry',
+			retry_after           = ?,
+			retry_reason          = ?,
+			next_search_scope     = ?,
+			download_gid          = '',
+			transport_retry_count = 0,
+			tried_release_keys    = '',
+			updated_at            = sakms_now()
 		WHERE id = ?
 	`, FormatTime(after), reason, scope, id)
 	if err != nil {
@@ -804,6 +852,12 @@ type Dispatch struct {
 // deliberately KEPT — it is this request's attempt history (observability only,
 // since SetPendingRetry no longer caps on it), so a later failure's count
 // continues from where this request's history left off instead of restarting.
+//
+// tried_release_keys is also deliberately KEPT here. If Relaunch cleared it,
+// two bad NZBs could alternate forever: the first fails, keys saved; the second
+// dispatched (keys preserved); it fails too; keys cleared → first re-eligible.
+// The keys survive until SetPendingRetry/SetPendingRetryWithScope (days-ladder
+// fallback) ends the episode.
 func (s *Store) Relaunch(ctx context.Context, id int64, d Dispatch) error {
 	encrypted, err := s.encrypt(d.DownloadURL)
 	if err != nil {
@@ -820,6 +874,7 @@ func (s *Store) Relaunch(ctx context.Context, id int64, d Dispatch) error {
 			download_gid          = ?,
 			retry_after           = '',
 			retry_reason          = '',
+			transport_retry_count = 0,
 			updated_at            = sakms_now()
 		WHERE id = ?
 	`, d.Indexer, d.Protocol, d.DownloadClient, d.RootFolderPath, encrypted, d.GID, id)
@@ -856,7 +911,9 @@ func (s *Store) DueForRetry(ctx context.Context, now time.Time) ([]Grab, error) 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, next_search_scope, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, next_search_scope,
+		       transport_retry_count, origin, tried_release_keys,
+		       created_at, updated_at
 		FROM grabs
 		WHERE status = ? AND download_gid = '' AND retry_after != '' AND retry_after <= ?
 		  AND (hold_until = '' OR hold_until <= ?)
@@ -902,7 +959,9 @@ func (s *Store) FindPendingRetry(ctx context.Context, m mode.Mode, tmdbID int, t
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, next_search_scope, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, next_search_scope,
+		       transport_retry_count, origin, tried_release_keys,
+		       created_at, updated_at
 		FROM grabs
 		WHERE mode = ? AND status = ? AND season_number = ? AND season_specified = ? AND episode_number = ?
 		ORDER BY id ASC
@@ -963,7 +1022,9 @@ func (s *Store) FindHeldRequest(ctx context.Context, m mode.Mode, tmdbID int) (*
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, next_search_scope, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, next_search_scope,
+		       transport_retry_count, origin, tried_release_keys,
+		       created_at, updated_at
 		FROM grabs
 		WHERE mode = ? AND tmdb_id = ? AND hold_until != ''
 		ORDER BY id ASC LIMIT 1
@@ -1007,7 +1068,9 @@ func (s *Store) DueForRelease(ctx context.Context, now time.Time) ([]Grab, error
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
 		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
-		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, next_search_scope, created_at, updated_at
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, next_search_scope,
+		       transport_retry_count, origin, tried_release_keys,
+		       created_at, updated_at
 		FROM grabs
 		WHERE status = ? AND download_gid = '' AND retry_after = ''
 		  AND hold_until != '' AND hold_until <= ?
@@ -1023,6 +1086,85 @@ func (s *Store) DueForRelease(ctx context.Context, now time.Time) ([]Grab, error
 		g, err := s.scanGrab(rows)
 		if err != nil {
 			return nil, fmt.Errorf("scanning grab due for release: %w", err)
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
+// SetOrigin writes the origin column on an existing grab. The api layer enforces
+// the {"", "e2e"} allowlist; the store only writes. Returns ErrNotFound when
+// id resolves to nothing.
+func (s *Store) SetOrigin(ctx context.Context, id int64, origin string) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE grabs SET origin = ?, updated_at = sakms_now() WHERE id = ?
+	`, origin, id)
+	if err != nil {
+		return fmt.Errorf("setting origin on grab %d: %w", id, err)
+	}
+	return dbutil.CheckAffected(res, id, ErrNotFound)
+}
+
+// ParkForTransportResume parks a grab for a transport-resume retry without
+// advancing the multi-day retry_count ladder or clearing download_gid.
+//
+// Three deliberate omissions (mirroring SetRetryAfter's style):
+//   - retry_count is NOT incremented: a dropped socket is not a failed
+//     *attempt* at finding the release; advancing the chronic ladder for a
+//     network blip is the bug being fixed.
+//   - download_gid is NOT cleared: the GID names the staging dir and
+//     .sakms-resume.json sidecar that RelaunchNZB needs to resume from where
+//     the failed download left off. Clearing it would orphan the staging dir
+//     on the 7-day timer instead.
+//   - next_search_scope is NOT touched: that is D (slot-full torrent escalate),
+//     which is explicitly out of scope.
+//
+// transport_retry_count is incremented so the caller can detect when the short
+// ladder is exhausted (TransportBackoff returns 0 at the cap).
+func (s *Store) ParkForTransportResume(ctx context.Context, id int64, after time.Time, reason string) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE grabs SET
+			status                = 'pending_retry',
+			retry_after           = ?,
+			retry_reason          = ?,
+			transport_retry_count = transport_retry_count + 1,
+			updated_at            = sakms_now()
+		WHERE id = ?
+	`, FormatTime(after), reason, id)
+	if err != nil {
+		return fmt.Errorf("parking grab %d for transport resume: %w", id, err)
+	}
+	return dbutil.CheckAffected(res, id, ErrNotFound)
+}
+
+// DueForResume returns every transport-parked grab whose retry_after has arrived.
+// It is the mirror of DueForRetry for transport-resume rows: it selects on
+// download_gid <> '' (transport parks keep the GID) rather than download_gid = ''
+// (normal retry parks clear it), making the two populations structurally disjoint.
+//
+// The hold_until guard mirrors DueForRetry — an operator hold still wins.
+func (s *Store) DueForResume(ctx context.Context, now time.Time) ([]Grab, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
+		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, next_search_scope,
+		       transport_retry_count, origin, tried_release_keys,
+		       created_at, updated_at
+		FROM grabs
+		WHERE status = ? AND download_gid <> '' AND retry_after <> '' AND retry_after <= ?
+		  AND (hold_until = '' OR hold_until <= ?)
+		ORDER BY retry_after ASC, id ASC
+	`, string(PendingRetry), FormatTime(now), FormatTime(now))
+	if err != nil {
+		return nil, fmt.Errorf("listing grabs due for transport resume: %w", err)
+	}
+	defer rows.Close()
+
+	out := []Grab{}
+	for rows.Next() {
+		g, err := s.scanGrab(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning grab due for transport resume: %w", err)
 		}
 		out = append(out, g)
 	}

@@ -784,7 +784,7 @@ func TestFetchSegmentAny_ErrorPrecedence(t *testing.T) {
 
 	t.Run("no subscriptions", func(t *testing.T) {
 		m := New(Config{})
-		if _, err := m.fetchSegmentAny(id); !errors.Is(err, ErrNoSubscriptions) {
+		if _, err := m.fetchSegmentAny(context.Background(), id); !errors.Is(err, ErrNoSubscriptions) {
 			t.Errorf("got %v, want ErrNoSubscriptions", err)
 		}
 	})
@@ -794,7 +794,7 @@ func TestFetchSegmentAny_ErrorPrecedence(t *testing.T) {
 		b := newFakeNNTP(t)
 		b.addStatus(id, 451)
 		m := New(Config{Servers: []ServerConfig{a.cfg(), b.cfg()}})
-		_, err := m.fetchSegmentAny(id)
+		_, err := m.fetchSegmentAny(context.Background(), id)
 		if !errors.Is(err, ErrArticleRemoved) {
 			t.Errorf("got %v, want ErrArticleRemoved", err)
 		}
@@ -813,7 +813,7 @@ func TestFetchSegmentAny_ErrorPrecedence(t *testing.T) {
 		a.addStatus(id, 451)
 		dead := ServerConfig{Host: "127.0.0.1", Port: deadPort(t), MaxConns: 1}
 		m := New(Config{Servers: []ServerConfig{a.cfg(), dead}})
-		_, err := m.fetchSegmentAny(id)
+		_, err := m.fetchSegmentAny(context.Background(), id)
 		if err == nil {
 			t.Fatal("expected an error")
 		}
@@ -830,7 +830,7 @@ func TestFetchSegmentAny_ErrorPrecedence(t *testing.T) {
 		b := newFakeNNTP(t)
 		b.add(id, p.parts[0])
 		m := New(Config{Servers: []ServerConfig{a.cfg(), b.cfg()}})
-		res, err := m.fetchSegmentAny(id)
+		res, err := m.fetchSegmentAny(context.Background(), id)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -898,7 +898,7 @@ func TestSetSubscriptions_SwapWhileIdle(t *testing.T) {
 
 	// Dropping to zero subscriptions is legal and fails cleanly rather than hanging.
 	m.SetSubscriptions(nil)
-	if _, err := m.fetchSegmentAny(p.msgIDs[0]); !errors.Is(err, ErrNoSubscriptions) {
+	if _, err := m.fetchSegmentAny(context.Background(), p.msgIDs[0]); !errors.Is(err, ErrNoSubscriptions) {
 		t.Errorf("with no subscriptions: got %v, want ErrNoSubscriptions", err)
 	}
 }
@@ -1142,5 +1142,221 @@ func TestMaxConcurrentDownloads_DefaultAndSet(t *testing.T) {
 	m.SetMaxConcurrentDownloads(0) // clamp
 	if got, want := m.MaxConcurrentDownloads(), DefaultMaxConcurrentDownloads; got != want {
 		t.Fatalf("clamp: MaxConcurrentDownloads = %d, want %d", got, want)
+	}
+}
+
+// fakeNNTPWithDrop wraps fakeNNTP and provides a drop-first-n-commands
+// mechanism by overriding the serve loop with an atomic counter.
+
+// fakeNNTPWithDrop wraps fakeNNTP, adding a drop-first-n-commands mechanism.
+// It replaces the listener's accept loop with its own, forwarding accepted
+// connections through the modified serve logic.
+type fakeNNTPWithDrop struct {
+	*fakeNNTP
+	dropCount atomic.Int64
+}
+
+func newFakeNNTPWithDrop(t *testing.T) *fakeNNTPWithDrop {
+	t.Helper()
+	f := &fakeNNTPWithDrop{fakeNNTP: newFakeNNTP(t)}
+	return f
+}
+
+func (f *fakeNNTPWithDrop) dropNextN(n int) {
+	f.dropCount.Store(int64(n))
+}
+
+// serve overrides fakeNNTP.serve: if dropCount > 0, close the connection
+// immediately on the first BODY or STAT command.
+func (f *fakeNNTPWithDrop) serve(c net.Conn) {
+	defer c.Close()
+	r := bufio.NewReader(c)
+	w := bufio.NewWriter(c)
+	fmt.Fprint(w, "200 fake nntp ready\r\n")
+	w.Flush()
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			return
+		}
+		line = strings.TrimRight(line, "\r\n")
+		upper := strings.ToUpper(line)
+		switch {
+		case upper == "QUIT":
+			fmt.Fprint(w, "205 closing connection\r\n")
+			w.Flush()
+			return
+		case upper == "MODE READER":
+			fmt.Fprint(w, "200 reader mode\r\n")
+		case strings.HasPrefix(upper, "AUTHINFO USER"):
+			fmt.Fprint(w, "381 password required\r\n")
+		case strings.HasPrefix(upper, "AUTHINFO PASS"):
+			fmt.Fprint(w, "281 authentication accepted\r\n")
+		case strings.HasPrefix(upper, "STAT ") || strings.HasPrefix(upper, "BODY "):
+			// If we still have drops queued, close the connection to simulate a
+			// broken pipe before the response is written.
+			if f.dropCount.Load() > 0 {
+				f.dropCount.Add(-1)
+				return // close without responding → EOF / broken pipe
+			}
+			id := strings.Trim(strings.TrimSpace(line[5:]), "<>")
+			if strings.HasPrefix(upper, "STAT ") {
+				f.fakeNNTP.serveStat(w, id)
+			} else {
+				f.fakeNNTP.serveBody(w, id)
+			}
+		default:
+			fmt.Fprint(w, "500 unknown command\r\n")
+		}
+		if err := w.Flush(); err != nil {
+			return
+		}
+	}
+}
+
+// newFakeNNTPDropping builds a fakeNNTPWithDrop that drops the first n BODY/STAT
+// commands, then serves normally. The manager created from it will reconnect
+// and succeed on the retry attempts.
+func newFakeNNTPDropping(t *testing.T, n int) *fakeNNTPWithDrop {
+	t.Helper()
+	f := newFakeNNTPWithDrop(t)
+	f.dropNextN(n)
+
+	// Replace the accept loop with one that routes to f.serve (the overriding
+	// method), not fakeNNTP.serve.
+	// We need a new listener for this; the original fakeNNTP already has one.
+	// Simplest: use the existing listener but intercept new connections by closing
+	// the original goroutine and replacing it.
+	//
+	// The existing goroutine already started in newFakeNNTP. We cannot easily stop
+	// it. Instead, create a fresh fakeNNTPWithDrop that owns its own listener.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for drop server: %v", err)
+	}
+	// Close the original listener created by newFakeNNTP (its goroutine will exit).
+	f.fakeNNTP.ln.Close()
+	f.fakeNNTP.ln = ln
+
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go f.serve(c)
+		}
+	}()
+	t.Cleanup(func() { ln.Close() })
+	return f
+}
+
+// TestFetchSegmentAny_ReconnectSucceeds: server drops the first BODY command
+// (simulating a broken pipe). The per-server retry loop reconnects and succeeds
+// on the second attempt.
+func TestFetchSegmentAny_ReconnectSucceeds(t *testing.T) {
+	p := makePayload(t, 1, 512)
+	srv := newFakeNNTPDropping(t, 1) // drop exactly one BODY command
+	srv.serveAll(p)
+	nzb := nzbServer(t, p)
+
+	m := New(Config{Servers: []ServerConfig{srv.cfgWith(2)}, StagingDir: t.TempDir(), HTTPClient: nzb.Client()})
+	gid, err := m.AddNZB(context.Background(), nzb.URL, "Reconnect Test")
+	if err != nil {
+		t.Fatalf("AddNZB: %v", err)
+	}
+	d := waitTerminal(t, m, gid)
+	if d.Status != "complete" {
+		t.Fatalf("status = %q, err = %q — expected reconnect to succeed", d.Status, d.ErrorMessage)
+	}
+}
+
+// TestFetchSegmentAny_RetryBounded_ErrTransport: server drops every connection
+// (maxSegmentAttemptsPerServer times). fetchSegmentAny returns an ErrTransport-
+// wrapped error rather than ErrArticleRemoved or ErrArticleNotFound.
+func TestFetchSegmentAny_RetryBounded_ErrTransport(t *testing.T) {
+	p := makePayload(t, 1, 512)
+	srv := newFakeNNTPDropping(t, maxSegmentAttemptsPerServer+5) // always drop
+	nzb := nzbServer(t, p)
+
+	m := New(Config{Servers: []ServerConfig{srv.cfgWith(2)}, StagingDir: t.TempDir(), HTTPClient: nzb.Client()})
+	gid, err := m.AddNZB(context.Background(), nzb.URL, "Always Drop")
+	if err != nil {
+		t.Fatalf("AddNZB: %v", err)
+	}
+	d := waitTerminal(t, m, gid)
+	if d.Status != "error" {
+		t.Fatalf("status = %q, want error", d.Status)
+	}
+	if d.Err == nil {
+		t.Fatal("Err is nil, want ErrTransport-wrapped error")
+	}
+	if errors.Is(d.Err, ErrArticleRemoved) {
+		t.Errorf("a transport failure must not be classified as ErrArticleRemoved")
+	}
+	if !errors.Is(d.Err, ErrTransport) {
+		t.Errorf("expected errors.Is(Err, ErrTransport) = true, got %v", d.Err)
+	}
+}
+
+// TestFetchSegmentAny_430_NotRetried: a 430 response is a protocol answer —
+// the server is working but does not hold the article. It must NOT trigger the
+// transport retry loop (trying again against the same pool is futile; the
+// cross-pool fallback handles it).
+func TestFetchSegmentAny_430_NotRetried(t *testing.T) {
+	p := makePayload(t, 1, 512)
+	srv := newFakeNNTP(t) // knows nothing → 430
+
+	// bodyCount after one failed attempt must be exactly 1; transport retry
+	// would make it maxSegmentAttemptsPerServer.
+	m := New(Config{Servers: []ServerConfig{srv.cfg()}, StagingDir: t.TempDir()})
+	_, err := m.fetchSegmentAny(context.Background(), p.msgIDs[0])
+	if !errors.Is(err, ErrArticleNotFound) {
+		t.Fatalf("err = %v, want ErrArticleNotFound", err)
+	}
+	if got := srv.bodyCount.Load(); got != 1 {
+		t.Errorf("BODY count = %d, want 1 (430 must not trigger transport retry)", got)
+	}
+}
+
+// TestFetchSegmentAny_CrossServerFallback_WithDrop: server A drops the first
+// BODY (transport failure, not a 430). Server B holds the article. The fallback
+// should succeed after the retry on A exhausts.
+func TestFetchSegmentAny_CrossServerFallback_WithDrop(t *testing.T) {
+	p := makePayload(t, 1, 512)
+	// Server A: drop all connection attempts.
+	srvA := newFakeNNTPDropping(t, maxSegmentAttemptsPerServer+5)
+	// Server B: has the article.
+	srvB := newFakeNNTP(t)
+	srvB.serveAll(p)
+
+	m := New(Config{Servers: []ServerConfig{srvA.cfgWith(2), srvB.cfg()}, StagingDir: t.TempDir()})
+	res, err := m.fetchSegmentAny(context.Background(), p.msgIDs[0])
+	if err != nil {
+		t.Fatalf("err = %v, want nil (server B should cover)", err)
+	}
+	if int64(len(res.data)) != 512 {
+		t.Errorf("decoded %d bytes, want 512", len(res.data))
+	}
+}
+
+// TestFetchSegmentAny_ContextCancel_ReturnsContextErr: a pre-cancelled context
+// causes fetchSegmentAny to return a context error rather than ErrTransport.
+func TestFetchSegmentAny_ContextCancel_ReturnsContextErr(t *testing.T) {
+	p := makePayload(t, 1, 512)
+	srv := newFakeNNTP(t)
+	srv.serveAll(p)
+
+	m := New(Config{Servers: []ServerConfig{srv.cfg()}, StagingDir: t.TempDir()})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel
+
+	_, err := m.fetchSegmentAny(ctx, p.msgIDs[0])
+	if err == nil {
+		t.Fatal("expected an error after context cancel, got nil")
+	}
+	if errors.Is(err, ErrTransport) {
+		t.Errorf("context cancel must not produce ErrTransport, got %v", err)
 	}
 }

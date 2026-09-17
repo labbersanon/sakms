@@ -221,6 +221,23 @@ type AutoGrabRequest struct {
 	//   "torrent" → [ScopeTorrent, ScopeUsenet]. This makes the previously
 	//   inert setting live — note in PR.
 	SearchPhases []prowlarr.Scope
+
+	// ExcludeReleaseKeys, when non-empty, is the set of hashed URL+title keys
+	// derived from releases that have already been tried and found content-unusable
+	// for this grab. scoreOnePhase drops any candidate whose own ReleaseKeys
+	// intersects this set before scoring, so the same bad NZB is never
+	// re-dispatched within one alternate-release episode.
+	//
+	// Values are in the "u:<16 hex>" / "t:<16 hex>" format produced by
+	// grabs.ReleaseKeys. The filter is applied after the search (or after
+	// adopting req.Releases) and before FilterSeasonScope/buildAutoGrabCandidates.
+	// Zero survivors after filtering is not a special case: SelectBest returns
+	// Fallback, and parkPendingRetry → ParkWithBackoff parks on the days ladder,
+	// clearing the keys.
+	//
+	// Claude 2026-09-17: never written for ScopeTorrent phases or ScopeAll;
+	//   only set by the content-failure alternate-release path (Usenet-only).
+	ExcludeReleaseKeys []string
 }
 
 // AutoGrabOutcome is what happened. Exactly one of Grabbed / AlreadyGrabbing /
@@ -360,6 +377,18 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 			if err != nil {
 				return pr, err
 			}
+		}
+
+		// Claude 2026-09-17: filter out already-tried releases before scoring.
+		// Reason: ExcludeReleaseKeys carries hashed URL+title fingerprints of
+		//   releases found content-unusable (PAR2/unpack/no-video) in this episode.
+		//   Filtering here — after the search, before scoring — means the same bad
+		//   NZB is never re-dispatched within one alternate-release episode.
+		// Review if: filtering should apply to torrent phases too (currently only
+		//   set for Usenet-only alternate-release retries; ScopeAll would also work
+		//   but the overlap with torrent results is incidental).
+		if len(req.ExcludeReleaseKeys) > 0 {
+			pr.releases = filterExcludedReleases(pr.releases, req.ExcludeReleaseKeys)
 		}
 
 		// Claude 2026-08-03: apply FilterSeasonScope before scoring.
@@ -720,6 +749,33 @@ func qualifiedCandidateOrder(sel autograb.Selection) []int {
 		}
 		seen[idx] = true
 		out = append(out, idx)
+	}
+	return out
+}
+
+// filterExcludedReleases drops any candidate whose ReleaseKeys intersect
+// excludeKeys. Called by scoreOnePhase when req.ExcludeReleaseKeys is non-empty.
+func filterExcludedReleases(releases []prowlarr.Release, excludeKeys []string) []prowlarr.Release {
+	if len(excludeKeys) == 0 {
+		return releases
+	}
+	keySet := make(map[string]bool, len(excludeKeys))
+	for _, k := range excludeKeys {
+		keySet[k] = true
+	}
+	out := releases[:0:0]
+	for _, r := range releases {
+		rk := grabs.ReleaseKeys(r.DownloadURL, r.Title)
+		excluded := false
+		for _, k := range rk {
+			if keySet[k] {
+				excluded = true
+				break
+			}
+		}
+		if !excluded {
+			out = append(out, r)
+		}
 	}
 	return out
 }

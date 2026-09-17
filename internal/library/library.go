@@ -44,6 +44,16 @@ import (
 // ErrNotFound is returned by Get/GetByTMDBID when no matching item exists.
 var ErrNotFound = errors.New("library: no item found")
 
+// Claude 2026-09-17: content-unusable sentinel for the library layer.
+// Reason: ResolveVideoFile/ResolveEpisodeVideoFiles return a bare fmt.Errorf today.
+//   The api layer needs errors.Is to distinguish "no usable video in staging" (try
+//   a different release) from every other import error (log-and-return unchanged).
+//   ErrNoVideoFile is %w-wrapped at both sites so errors.Is works through the chain.
+// Troubleshooting: "no video file found under …" / "no video files found under …".
+// Review if: a third resolve site is added (wrap it the same way).
+// Related files: internal/api/usenetcontent.go (routing predicate).
+var ErrNoVideoFile = errors.New("library: no video file found")
+
 // Item is one thing SAK's own library tracks — a movie today.
 type Item struct {
 	ID             int64     `json:"id"`
@@ -621,7 +631,7 @@ func ResolveVideoFile(path string) (string, error) {
 		}
 	}
 	if best == "" {
-		return "", fmt.Errorf("no video file found under %s", path)
+		return "", fmt.Errorf("%w: no video file found under %s", ErrNoVideoFile, path)
 	}
 	return best, nil
 }

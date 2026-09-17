@@ -1181,7 +1181,7 @@ func ResolveEpisodeVideoFiles(path string) ([]string, error) {
 		out = append(out, filepath.Join(path, e.Name()))
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("no video files found under %s", path)
+		return nil, fmt.Errorf("%w: no video files found under %s", ErrNoVideoFile, path)
 	}
 	return out, nil
 }

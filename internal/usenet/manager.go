@@ -1034,14 +1034,19 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 		m.mu.Lock()
 		if dl.status != "removed" && dl.status != "paused" {
 			dl.status = "error"
+			// Claude 2026-09-17: wrap PAR2 failure with ErrContentUnusable so
+			//   applyUsenetFailure can route to a different-release park.
+			// Reason: a bad PAR2 is a property of THIS release; a different NZB is the fix.
+			// Review if: PAR2-less releases should stay best-effort (they already do —
+			//   verifyAndRepair returns nil when no .par2 is present).
 			dl.errorMsg = repairErr.Error()
-			dl.err = repairErr
+			dl.err = fmt.Errorf("%w: %w", ErrContentUnusable, repairErr)
 			failed = true
 			log.Printf("usenet: par2 repair %s: %v (failing download — not marking complete)", gid, repairErr)
 		}
 		m.mu.Unlock()
 		if failed {
-			m.fireOnError(ctx, gid, repairErr)
+			m.fireOnError(ctx, gid, dl.err)
 		}
 		return
 	}
@@ -1061,13 +1066,24 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 		if dl.status != "removed" && dl.status != "paused" {
 			dl.status = "error"
 			dl.errorMsg = unpackErr.Error()
-			dl.err = unpackErr
+			// Claude 2026-09-17: wrap unpack failure with ErrContentUnusable so
+			//   applyUsenetFailure can route to a different-release park.
+			// Reason: a release that won't unpack is a property of THIS NZB.
+			// Exception: ErrUnpackToolMissing is an environment fault — a different
+			//   release cannot fix a missing unrar/7z binary — so it passes through
+			//   unwrapped and lands on the days ladder as before.
+			// Review if: password-protected archives should be treated differently.
+			if errors.Is(unpackErr, ErrUnpackToolMissing) {
+				dl.err = unpackErr
+			} else {
+				dl.err = fmt.Errorf("%w: %w", ErrContentUnusable, unpackErr)
+			}
 			failed = true
 			log.Printf("usenet: unpack %s: %v (failing download — not marking complete)", gid, unpackErr)
 		}
 		m.mu.Unlock()
 		if failed {
-			m.fireOnError(ctx, gid, unpackErr)
+			m.fireOnError(ctx, gid, dl.err)
 		}
 		return
 	}

@@ -679,6 +679,95 @@ paths:
         "200":
           description: All grabs for this mode, newest first.
 
+  # ── Park queue ────────────────────────────────────────────────────────────
+
+  /api/requests/park-census:
+    get:
+      summary: Pending-retry queue census
+      operationId: getParkCensus
+      tags: [Requests]
+      description: |
+        Returns a point-in-time count of all `pending_retry` rows across modes,
+        bucketed by schedule distance and type. Useful for diagnosing transport-
+        park accumulation or malformed schedules without querying the database
+        directly.
+      responses:
+        "200":
+          description: Census snapshot.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total:                 {type: integer}
+                  dueNow:                {type: integer}
+                  dueWithin1h:           {type: integer}
+                  parkedWithin24h:       {type: integer}
+                  parkedWithin7d:        {type: integer}
+                  parkedFar:             {type: integer}
+                  awaitingResume:        {type: integer}
+                  awaitingResumeOverdue: {type: integer}
+                  heldPreRelease:        {type: integer}
+                  airDateShaped:         {type: integer}
+                  testOrigin:            {type: integer}
+                  malformedSchedule:     {type: integer}
+                  generatedAt:           {type: string, format: date-time}
+
+  /api/requests/park-hygiene:
+    post:
+      summary: Tag or reap test/E2E park rows
+      operationId: postParkHygiene
+      tags: [Requests]
+      description: |
+        Operator maintenance endpoint for tagging pending-retry rows with an
+        origin marker and optionally reaping them (flipping to Failed).
+
+        - `apply: false` (default) is a dry-run: matches and returns IDs, mutates nothing.
+        - `action: "tag"` sets the `origin` field; `action: "reap"` flips matched rows to Failed.
+        - Only `status = pending_retry` rows are ever matched.
+        - Allowed `origin` values: `""` or `"e2e"`.
+        - A reap requires a non-empty `origin` OR an explicit `ids` list.
+          `reasonContains` is dry-run-only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [tag, reap]
+                origin:
+                  type: string
+                  enum: ["", "e2e"]
+                  default: ""
+                ids:
+                  type: array
+                  items: {type: integer, format: int64}
+                reasonContains:
+                  type: string
+                  description: Dry-run-only substring filter on retry_reason.
+                apply:
+                  type: boolean
+                  default: false
+      responses:
+        "200":
+          description: Match result (dry-run or applied).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  matched: {type: integer}
+                  applied: {type: boolean}
+                  ids:
+                    type: array
+                    items: {type: integer, format: int64}
+        "400":
+          description: Invalid action, origin, or missing required fields.
+
   # ── OpenAPI spec ──────────────────────────────────────────────────────────
 
   /api/openapi.yaml:
@@ -710,5 +799,7 @@ tags:
     description: Shared apply/dismiss/repick actions for all three workflow proposal queues.
   - name: Search
     description: Prowlarr-backed release search and one-click grab to download client.
+  - name: Requests
+    description: Pending-retry queue management — census, hygiene, park operations.
   - name: Meta
     description: Meta endpoints (this spec, health check).

@@ -114,7 +114,6 @@ func parkUsenetContentFailure(
 	log.Printf("usenet content: grab %d (%s) parked for alternate release (attempt %d/%d) — %s",
 		g.ID, g.Title, attempts+1, grabs.MaxAlternateReleaseAttempts, reason)
 
-	// Best-effort cleanup. Failure is logged but does not undo the park.
 	if engine != nil {
 		if !engine.Forget(g.DownloadGID) {
 			log.Printf("usenet content: Forget(%s) for grab %d returned false (already absent)", g.DownloadGID, g.ID)

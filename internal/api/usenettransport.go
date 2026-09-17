@@ -59,10 +59,8 @@ func parkUsenetTransportFailure(ctx context.Context, deps AutoGrabDeps, g grabs.
 }
 
 // usenetResumeEngine is the minimal interface resumeDueTransportRetries needs
-// from the usenet.Manager. *usenet.Manager satisfies it.
-//
-// A narrow interface (not the full *usenet.Manager) is what makes the resume
-// pass unit-testable without driving a real NNTP server.
+// from the usenet.Manager, narrow enough that the resume pass is unit-testable
+// without driving a real NNTP server. *usenet.Manager satisfies it.
 type usenetResumeEngine interface {
 	FindByGID(gid string) (*usenet.Download, error)
 	Forget(gid string) bool
@@ -101,7 +99,6 @@ func resumeDueTransportRetries(ctx context.Context, deps AutoGrabDeps, engine us
 			continue
 		}
 
-		// Gate: free Usenet slots.
 		free, slotErr := freeUsenetSlots(ctx, deps.GrabsStore, deps.SettingsStore)
 		if slotErr != nil {
 			log.Printf("usenet transport: counting in-flight slots: %v", slotErr)
@@ -119,7 +116,6 @@ func resumeDueTransportRetries(ctx context.Context, deps AutoGrabDeps, engine us
 			DownloadURL: g.DownloadURL, GID: g.DownloadGID,
 		}
 
-		// Check live engine state.
 		live, findErr := engine.FindByGID(g.DownloadGID)
 		if findErr != nil {
 			log.Printf("usenet transport: FindByGID %q for grab %d: %v", g.DownloadGID, g.ID, findErr)
@@ -140,7 +136,6 @@ func resumeDueTransportRetries(ctx context.Context, deps AutoGrabDeps, engine us
 			}
 		}
 
-		// Attempt the resume.
 		if err := engine.RelaunchNZB(ctx, g.DownloadGID, g.DownloadURL, g.Title); err != nil {
 			if errors.Is(err, usenet.ErrArticlesUnavailable) {
 				// Articles are gone; clear the GID and join the days-ladder re-search.
@@ -166,7 +161,6 @@ func resumeDueTransportRetries(ctx context.Context, deps AutoGrabDeps, engine us
 			continue
 		}
 
-		// RelaunchNZB succeeded — re-arm the row.
 		if err := deps.GrabsStore.Relaunch(ctx, g.ID, dispatch); err != nil {
 			log.Printf("usenet transport: Relaunch grab %d after resume: %v", g.ID, err)
 			continue

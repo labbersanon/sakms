@@ -328,7 +328,7 @@ func runUsenetRetryCycle(ctx context.Context, deps AutoGrabDeps, build sessionBu
 	//   cadence as the retry cycle so no row can be invisible-forever between
 	//   restarts. The census log line also appears once per daily cycle.
 	// Review if: hygiene gains its own shorter interval.
-	runParkHygiene(ctx, deps, resumeEngine, now)
+	runParkHygiene(ctx, deps, now)
 }
 
 // sweepUsenetFailures is the AUTHORITATIVE M3 transition: it asks the usenet

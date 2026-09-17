@@ -40,15 +40,9 @@ func transportRetryDelay(attempt int) time.Duration {
 // warrants a single reconnect attempt (pool.put(conn, false) already discards
 // the socket and releases the live token, so a fresh dial is possible).
 //
-// Returns false for:
-//   - nil
-//   - ErrArticleNotFound / ErrArticleRemoved (protocol answer → socket alive)
-//   - context.Canceled / context.DeadlineExceeded (shutdown, not retrieval)
-//   - nntp.Error that survived mapNNTPError (protocol response → socket alive)
-//
-// Returns true for typed network errors, *net.OpError, net.Error.Timeout(),
-// and a lowercased-substring fallback for string-only errors from Tensai75/nntp
-// and rapidyenc that produce no typed value.
+// The order below is the precedence: everything that proves the socket is still
+// alive is ruled out first, then typed network errors, then a substring fallback
+// for the string-only errors Tensai75/nntp and rapidyenc produce.
 func isTransportError(err error) bool {
 	if err == nil {
 		return false
@@ -88,8 +82,6 @@ func isTransportError(err error) bool {
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		return true
 	}
-	// String fallback: Tensai75/nntp and rapidyenc produce a few string-only
-	// errors. This is a last resort, after the typed checks above.
 	msg := strings.ToLower(err.Error())
 	for _, sub := range []string{
 		"broken pipe",

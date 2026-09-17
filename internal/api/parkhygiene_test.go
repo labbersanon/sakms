@@ -82,7 +82,7 @@ func TestRunParkHygiene_StrandedResume_ClearsGID(t *testing.T) {
 		t.Fatal("pre-condition: grab should have a GID after transport park")
 	}
 
-	runParkHygiene(ctx, deps, nil, now)
+	runParkHygiene(ctx, deps, now)
 
 	got, err := grabsStore.Get(ctx, g.ID)
 	if err != nil {
@@ -109,7 +109,7 @@ func TestRunParkHygiene_MalformedRow_Repaired(t *testing.T) {
 		RetryAfter: "HH24-CORRUPT-TIMESTAMP", RetryReason: "corrupt",
 	})
 
-	runParkHygiene(ctx, deps, nil, now)
+	runParkHygiene(ctx, deps, now)
 
 	got, err := grabsStore.Get(ctx, g.ID)
 	if err != nil {
@@ -141,7 +141,7 @@ func TestRunParkHygiene_FreshTransportPark_NotTouched(t *testing.T) {
 		RetryAfter: grabs.FormatTime(fresh),
 	})
 
-	runParkHygiene(ctx, deps, nil, now)
+	runParkHygiene(ctx, deps, now)
 
 	got, err := grabsStore.Get(ctx, g.ID)
 	if err != nil {

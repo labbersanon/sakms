@@ -591,18 +591,12 @@ func run() error {
 	//   once per process, not only when the daily retry cycle fires.
 	//   An auto-grab-off instance would never see runUsenetRetryCycle.
 	// Review if: hygiene gains its own interval and runs from a scheduler.
-	{
-		var bootHygieneEngine api.UsenetResumeEngineForBoot
-		if nzbManager != nil {
-			bootHygieneEngine = nzbManager
-		}
-		api.RunBootParkHygiene(ctx, api.AutoGrabDeps{
-			SettingsStore: settingsStore,
-			NZB:           nzbManager,
-			GrabsStore:    grabsStore,
-			Webhooks:      webhookStore,
-		}, bootHygieneEngine)
-	}
+	api.RunBootParkHygiene(ctx, api.AutoGrabDeps{
+		SettingsStore: settingsStore,
+		NZB:           nzbManager,
+		GrabsStore:    grabsStore,
+		Webhooks:      webhookStore,
+	})
 	// DELIBERATE, opt-in exception to this project's "manual by default, no
 	// background pollers" rule (see internal/recheck's package doc + CLAUDE.md):
 	// one background availability-recheck loop, gated OFF by default (interval

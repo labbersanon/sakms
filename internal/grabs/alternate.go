@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/labbersanon/sakms/internal/dbutil"
 )
@@ -41,13 +40,13 @@ func ReleaseKeys(downloadURL, title string) []string {
 	var keys []string
 	if downloadURL != "" {
 		h := sha256.Sum256([]byte(downloadURL))
-		keys = append(keys, "u:"+fmt.Sprintf("%x", h[:8]))
+		keys = append(keys, fmt.Sprintf("u:%x", h[:8]))
 	}
 	if title != "" {
 		norm := normaliseTitle(title)
 		if norm != "" {
 			h := sha256.Sum256([]byte(norm))
-			keys = append(keys, "t:"+fmt.Sprintf("%x", h[:8]))
+			keys = append(keys, fmt.Sprintf("t:%x", h[:8]))
 		}
 	}
 	return keys
@@ -55,21 +54,7 @@ func ReleaseKeys(downloadURL, title string) []string {
 
 // normaliseTitle lowercases, trims, and collapses inner whitespace.
 func normaliseTitle(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	var b strings.Builder
-	prevSpace := false
-	for _, r := range s {
-		if unicode.IsSpace(r) {
-			if !prevSpace {
-				b.WriteRune(' ')
-			}
-			prevSpace = true
-		} else {
-			b.WriteRune(r)
-			prevSpace = false
-		}
-	}
-	return b.String()
+	return strings.Join(strings.Fields(strings.ToLower(s)), " ")
 }
 
 // ParseTriedReleaseKeys splits the newline-separated tried_release_keys value.

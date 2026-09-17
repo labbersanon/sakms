@@ -13,16 +13,11 @@ import (
 	"github.com/labbersanon/sakms/internal/mode"
 )
 
-// UsenetResumeEngineForBoot is an alias for usenetResumeEngine exported so that
-// cmd/sakms/main.go can pass *usenet.Manager to RunBootParkHygiene without
-// importing the internal usenetResumeEngine type directly.
-type UsenetResumeEngineForBoot = usenetResumeEngine
-
 // RunBootParkHygiene is the exported entry point that cmd/sakms/main.go calls
 // once at boot, next to ReconcileInFlightDownloads. It runs runParkHygiene with
 // the current time and logs on each stranded/malformed row it repairs.
-func RunBootParkHygiene(ctx context.Context, deps AutoGrabDeps, engine UsenetResumeEngineForBoot) {
-	runParkHygiene(ctx, deps, engine, time.Now())
+func RunBootParkHygiene(ctx context.Context, deps AutoGrabDeps) {
+	runParkHygiene(ctx, deps, time.Now())
 }
 
 // testParkReapedReason is the retry_reason written when a hygiene reap flips
@@ -34,7 +29,8 @@ const testParkReapedReason = "reaped as test/E2E park debris"
 var allowedOrigins = map[string]bool{"": true, "e2e": true}
 
 // runParkHygiene is the automatic (non-destructive) maintenance pass that runs
-// at the end of runUsenetRetryCycle and once at boot from cmd/sakms/main.go.
+// at the end of runUsenetRetryCycle and once at boot from cmd/sakms/main.go. It
+// repairs rows purely from the grabs table — it never consults the usenet engine.
 //
 // It performs three repairs, all non-destructive:
 //
@@ -54,7 +50,7 @@ var allowedOrigins = map[string]bool{"": true, "e2e": true}
 // Claude 2026-09-17: stranded-recovery ensures a transport-parked row can never
 // be invisible-forever when auto-grab drain is off (drain never calls DueForResume).
 // Review if: hygiene gains its own shorter interval separate from the retry cycle.
-func runParkHygiene(ctx context.Context, deps AutoGrabDeps, engine usenetResumeEngine, now time.Time) {
+func runParkHygiene(ctx context.Context, deps AutoGrabDeps, now time.Time) {
 	for _, m := range []mode.Mode{mode.Movies, mode.Series, mode.Adult} {
 		list, err := deps.GrabsStore.List(ctx, m)
 		if err != nil {
@@ -175,10 +171,8 @@ func parkHygieneHandler(grabsStore *grabs.Store) http.HandlerFunc {
 					continue
 				}
 				// reasonContains filter: dry-run only (cannot drive reap alone).
-				if req.ReasonContains != "" {
-					if !containsIgnoreCase(g.RetryReason, req.ReasonContains) {
-						continue
-					}
+				if req.ReasonContains != "" && !strings.Contains(strings.ToLower(g.RetryReason), strings.ToLower(req.ReasonContains)) {
+					continue
 				}
 				// Origin filter: for tag (target = what to set) and reap (target = what to reap).
 				// For tag: any origin value is a valid target.
@@ -223,13 +217,4 @@ func parkHygieneHandler(grabsStore *grabs.Store) http.HandlerFunc {
 			IDs:     ids,
 		})
 	}
-}
-
-// containsIgnoreCase reports whether s contains substr in a case-insensitive
-// comparison. Only used for the reasonContains dry-run filter.
-func containsIgnoreCase(s, substr string) bool {
-	if substr == "" {
-		return true
-	}
-	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
 }

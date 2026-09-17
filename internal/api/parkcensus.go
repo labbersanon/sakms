@@ -20,19 +20,19 @@ const strandedResumeGrace = 6 * time.Hour
 // parkCensusResponse is the handler-local response struct for GET /api/requests/park-census.
 // Handler-local deliberately — no apidto mirror (plan §response struct rule).
 type parkCensusResponse struct {
-	Total                   int    `json:"total"`
-	DueNow                  int    `json:"dueNow"`
-	DueWithin1h             int    `json:"dueWithin1h"`
-	ParkedWithin24h         int    `json:"parkedWithin24h"`
-	ParkedWithin7d          int    `json:"parkedWithin7d"`
-	ParkedFar               int    `json:"parkedFar"`
-	AwaitingResume          int    `json:"awaitingResume"`
-	AwaitingResumeOverdue   int    `json:"awaitingResumeOverdue"`
-	HeldPreRelease          int    `json:"heldPreRelease"`
-	AirDateShaped           int    `json:"airDateShaped"`
-	TestOrigin              int    `json:"testOrigin"`
-	MalformedSchedule       int    `json:"malformedSchedule"`
-	GeneratedAt             string `json:"generatedAt"`
+	Total                 int    `json:"total"`
+	DueNow                int    `json:"dueNow"`
+	DueWithin1h           int    `json:"dueWithin1h"`
+	ParkedWithin24h       int    `json:"parkedWithin24h"`
+	ParkedWithin7d        int    `json:"parkedWithin7d"`
+	ParkedFar             int    `json:"parkedFar"`
+	AwaitingResume        int    `json:"awaitingResume"`
+	AwaitingResumeOverdue int    `json:"awaitingResumeOverdue"`
+	HeldPreRelease        int    `json:"heldPreRelease"`
+	AirDateShaped         int    `json:"airDateShaped"`
+	TestOrigin            int    `json:"testOrigin"`
+	MalformedSchedule     int    `json:"malformedSchedule"`
+	GeneratedAt           string `json:"generatedAt"`
 }
 
 // computeParkCensus builds the census by iterating over all pending_retry rows

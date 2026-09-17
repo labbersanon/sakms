@@ -48,12 +48,13 @@ func parkUsenetTransportFailure(ctx context.Context, deps AutoGrabDeps, g grabs.
 	if g.TransportRetryCount >= grabs.MaxTransportRetries {
 		return false, nil
 	}
-	after := now.Add(grabs.TransportBackoff(g.TransportRetryCount + 1))
-	if err := deps.GrabsStore.ParkForTransportResume(ctx, g.ID, after, transportRetryReason); err != nil {
+	attempt := g.TransportRetryCount + 1
+	backoff := grabs.TransportBackoff(attempt)
+	if err := deps.GrabsStore.ParkForTransportResume(ctx, g.ID, now.Add(backoff), transportRetryReason); err != nil {
 		return false, fmt.Errorf("transport park grab %d: %w", g.ID, err)
 	}
 	log.Printf("usenet transport: grab %d (%s) parked for resume in %s (attempt %d/%d)",
-		g.ID, g.Title, grabs.TransportBackoff(g.TransportRetryCount+1), g.TransportRetryCount+1, grabs.MaxTransportRetries)
+		g.ID, g.Title, backoff, attempt, grabs.MaxTransportRetries)
 	return true, nil
 }
 
@@ -110,6 +111,14 @@ func resumeDueTransportRetries(ctx context.Context, deps AutoGrabDeps, engine us
 			return // wait for next tick; do not escalate to torrent (D is out of scope)
 		}
 
+		// Re-arming dispatch: identical whether the engine is already running the
+		// download or RelaunchNZB below resumes it.
+		dispatch := grabs.Dispatch{
+			Indexer: g.Indexer, Protocol: g.Protocol,
+			DownloadClient: g.DownloadClient, RootFolderPath: g.RootFolderPath,
+			DownloadURL: g.DownloadURL, GID: g.DownloadGID,
+		}
+
 		// Check live engine state.
 		live, findErr := engine.FindByGID(g.DownloadGID)
 		if findErr != nil {
@@ -124,12 +133,7 @@ func resumeDueTransportRetries(ctx context.Context, deps AutoGrabDeps, engine us
 			default:
 				// Active or paused — the engine is already running it. Re-arm the
 				// row to queued so it stops being due-for-resume.
-				d := grabs.Dispatch{
-					Indexer: g.Indexer, Protocol: g.Protocol,
-					DownloadClient: g.DownloadClient, RootFolderPath: g.RootFolderPath,
-					DownloadURL: g.DownloadURL, GID: g.DownloadGID,
-				}
-				if err := deps.GrabsStore.Relaunch(ctx, g.ID, d); err != nil {
+				if err := deps.GrabsStore.Relaunch(ctx, g.ID, dispatch); err != nil {
 					log.Printf("usenet transport: re-arming grab %d (engine active): %v", g.ID, err)
 				}
 				continue
@@ -163,12 +167,7 @@ func resumeDueTransportRetries(ctx context.Context, deps AutoGrabDeps, engine us
 		}
 
 		// RelaunchNZB succeeded — re-arm the row.
-		d := grabs.Dispatch{
-			Indexer: g.Indexer, Protocol: g.Protocol,
-			DownloadClient: g.DownloadClient, RootFolderPath: g.RootFolderPath,
-			DownloadURL: g.DownloadURL, GID: g.DownloadGID,
-		}
-		if err := deps.GrabsStore.Relaunch(ctx, g.ID, d); err != nil {
+		if err := deps.GrabsStore.Relaunch(ctx, g.ID, dispatch); err != nil {
 			log.Printf("usenet transport: Relaunch grab %d after resume: %v", g.ID, err)
 			continue
 		}

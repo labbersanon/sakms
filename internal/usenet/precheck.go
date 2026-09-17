@@ -296,7 +296,7 @@ func (m *Manager) statArticleAny(ctx context.Context, msgID string) (found, remo
 			}
 			switch {
 			case errors.Is(mapped, ErrArticleNotFound):
-				break // try next pool
+				// try next pool
 			case errors.Is(mapped, ErrArticleRemoved):
 				allNotFound = false
 				sawRemoved = true

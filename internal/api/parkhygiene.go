@@ -100,11 +100,11 @@ func runParkHygiene(ctx context.Context, deps AutoGrabDeps, engine usenetResumeE
 
 // parkHygieneRequest is the body for POST /api/requests/park-hygiene.
 type parkHygieneRequest struct {
-	Action        string  `json:"action"`        // "tag" or "reap"
-	Origin        string  `json:"origin"`        // required for tag/reap; allowlist {"","e2e"}
-	IDs           []int64 `json:"ids"`           // explicit id filter (optional)
+	Action         string  `json:"action"`         // "tag" or "reap"
+	Origin         string  `json:"origin"`         // required for tag/reap; allowlist {"","e2e"}
+	IDs            []int64 `json:"ids"`            // explicit id filter (optional)
 	ReasonContains string  `json:"reasonContains"` // dry-run-only filter
-	Apply         bool    `json:"apply"`         // false = dry run (default)
+	Apply          bool    `json:"apply"`          // false = dry run (default)
 }
 
 // parkHygieneResponse is the body for the 200 response.

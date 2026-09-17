@@ -332,7 +332,6 @@ func reconcileImportUsenet(ctx context.Context, deps DownloadReconcileDeps, g *g
 			if _, parkErr := parkUsenetContentFailure(ctx, adeps, *g, err, deps.NZB); parkErr != nil {
 				log.Printf("usenet reconcile: parking grab %d for alternate release: %v", g.ID, parkErr)
 			}
-			return err
 		}
 		return err
 	}

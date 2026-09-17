@@ -479,8 +479,9 @@ func drainAlternateReleaseRetries(
 			reparkFailedRetry(ctx, deps.AutoGrabDeps, g, err)
 			return
 		}
+		triedKeys := grabs.ParseTriedReleaseKeys(g.TriedReleaseKeys)
 		log.Printf("autograb drain: alternate retry grab %d (%s) — searching Usenet-only, %d keys excluded",
-			g.ID, g.Title, grabs.AlternateAttempts(grabs.ParseTriedReleaseKeys(g.TriedReleaseKeys)))
+			g.ID, g.Title, grabs.AlternateAttempts(triedKeys))
 		out, runErr := RunAutoGrab(ctx, deps.AutoGrabDeps, sess, AutoGrabRequest{
 			Mode: g.Mode, Title: g.Title, TMDBID: g.TMDBID, TVDBID: g.TVDBID,
 			Season: g.SeasonNumber, Episode: g.EpisodeNumber, SeasonSpecified: g.SeasonSpecified,
@@ -488,7 +489,7 @@ func drainAlternateReleaseRetries(
 			Trigger:            TriggerRetry,
 			ExistingGrabID:     g.ID,
 			SearchPhases:       []prowlarr.Scope{prowlarr.ScopeUsenet},
-			ExcludeReleaseKeys: grabs.ParseTriedReleaseKeys(g.TriedReleaseKeys),
+			ExcludeReleaseKeys: triedKeys,
 		})
 		switch {
 		case runErr != nil:

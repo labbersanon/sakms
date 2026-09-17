@@ -98,10 +98,10 @@ func parkUsenetContentFailure(
 	if strings.TrimSpace(g.DownloadURL) == "" {
 		return false, nil
 	}
-	existing := grabs.ParseTriedReleaseKeys(g.TriedReleaseKeys)
-	if grabs.AlternateAttempts(existing) >= grabs.MaxAlternateReleaseAttempts {
+	attempts := grabs.AlternateAttempts(grabs.ParseTriedReleaseKeys(g.TriedReleaseKeys))
+	if attempts >= grabs.MaxAlternateReleaseAttempts {
 		log.Printf("usenet content: grab %d (%s) cap reached (%d/%d) — falling back to days ladder",
-			g.ID, g.Title, grabs.AlternateAttempts(existing), grabs.MaxAlternateReleaseAttempts)
+			g.ID, g.Title, attempts, grabs.MaxAlternateReleaseAttempts)
 		return false, nil
 	}
 
@@ -112,7 +112,7 @@ func parkUsenetContentFailure(
 	}
 
 	log.Printf("usenet content: grab %d (%s) parked for alternate release (attempt %d/%d) — %s",
-		g.ID, g.Title, grabs.AlternateAttempts(existing)+1, grabs.MaxAlternateReleaseAttempts, reason)
+		g.ID, g.Title, attempts+1, grabs.MaxAlternateReleaseAttempts, reason)
 
 	// Best-effort cleanup. Failure is logged but does not undo the park.
 	if engine != nil {

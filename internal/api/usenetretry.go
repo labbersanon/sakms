@@ -415,53 +415,10 @@ func sweepUsenetFailures(ctx context.Context, deps AutoGrabDeps, lookup usenetDo
 // Review if: escalation should be conditional (e.g. only within N days of air date).
 func applyUsenetFailure(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, failure error, park grabParker) (grabs.Status, error) {
 	status := classifyDownloadState("error", failure)
-	now := time.Now()
 	switch status {
 	case grabs.PendingRetry:
-		reason := usenetRetrievalReason(failure)
-		if errors.Is(failure, usenet.ErrArticleNotFound) {
-			// 430: escalate — park due-now with next_search_scope='torrent'.
-			// SetPendingRetryWithScope increments retry_count and clears the GID
-			// atomically (same contract as SetPendingRetry / ParkWithBackoff).
-			// The escalation "costs one rung of the backoff ladder" (plan §E) because
-			// retry_count advances; a subsequent miss after the torrent attempt re-parks
-			// on the normal Usenet-first order at the new count.
-			if err := deps.GrabsStore.SetPendingRetryWithScope(ctx, g.ID, now, reason, "torrent"); err != nil {
-				return "", err
-			}
-		} else {
-			// Claude 2026-09-17: transport failure → short-park for resume before days ladder.
-			// Reason: a dropped socket is a network blip; the staging dir and resume
-			//   sidecar are intact. Short-parking with the GID preserved lets RelaunchNZB
-			//   continue from where the download left off. Falls through to ParkWithBackoff
-			//   when the ladder is exhausted or the failure doesn't qualify.
-			// Review if: transport park should also apply to non-usenet-prefixed GIDs.
-			handled, err := parkUsenetTransportFailure(ctx, deps, g, failure, now)
-			if err != nil {
-				return "", err
-			}
-			if !handled {
-				// Claude 2026-09-17: content failure → park for a different-release retry.
-				// Reason: PAR2/unpack/no-video are properties of THIS release; a different
-				//   NZB is the fix. contentUnusableFailure is checked first so that
-				//   ErrUnpackToolMissing (environment fault, not a release defect) falls
-				//   straight to the days ladder instead of the alternate-release path.
-				//   parkUsenetContentFailure falls through (false) when its own fail-closed
-				//   guards reject it (non-nzb- GID, empty URL, cap reached).
-				// Review if: content failures should also be cap-gated per-day.
-				if contentUnusableFailure(failure) {
-					contentHandled, contentErr := parkUsenetContentFailure(ctx, deps, g, failure, nil)
-					if contentErr != nil {
-						return "", contentErr
-					}
-					if contentHandled {
-						break // alternate park written; skip days ladder
-					}
-				}
-				if err := park(ctx, deps, g.ID, reason); err != nil {
-					return "", err
-				}
-			}
+		if err := parkRetrievalFailure(ctx, deps, g, failure, park, time.Now()); err != nil {
+			return "", err
 		}
 	case grabs.Failed:
 		if err := deps.GrabsStore.UpdateStatus(ctx, g.ID, grabs.Failed); err != nil {
@@ -469,6 +426,51 @@ func applyUsenetFailure(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, fa
 		}
 	}
 	return status, nil
+}
+
+// parkRetrievalFailure routes one retrievable failure to exactly one park
+// track. The order below IS the precedence: 430 escalation, then transport
+// resume, then alternate release, then the days ladder as the catch-all. The
+// transport and content parks each decline (handled=false) when their own
+// fail-closed guards reject the failure, and the next track gets it.
+func parkRetrievalFailure(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, failure error, park grabParker, now time.Time) error {
+	reason := usenetRetrievalReason(failure)
+
+	if errors.Is(failure, usenet.ErrArticleNotFound) {
+		// 430: escalate — park due-now with next_search_scope='torrent'.
+		// SetPendingRetryWithScope increments retry_count and clears the GID
+		// atomically (same contract as SetPendingRetry / ParkWithBackoff).
+		// The escalation "costs one rung of the backoff ladder" (plan §E) because
+		// retry_count advances; a subsequent miss after the torrent attempt re-parks
+		// on the normal Usenet-first order at the new count.
+		return deps.GrabsStore.SetPendingRetryWithScope(ctx, g.ID, now, reason, "torrent")
+	}
+
+	// Claude 2026-09-17: transport failure → short-park for resume before days ladder.
+	// Reason: a dropped socket is a network blip; the staging dir and resume
+	//   sidecar are intact. Short-parking with the GID preserved lets RelaunchNZB
+	//   continue from where the download left off. Falls through to ParkWithBackoff
+	//   when the ladder is exhausted or the failure doesn't qualify.
+	// Review if: transport park should also apply to non-usenet-prefixed GIDs.
+	if handled, err := parkUsenetTransportFailure(ctx, deps, g, failure, now); err != nil || handled {
+		return err
+	}
+
+	// Claude 2026-09-17: content failure → park for a different-release retry.
+	// Reason: PAR2/unpack/no-video are properties of THIS release; a different
+	//   NZB is the fix. contentUnusableFailure gates this so that
+	//   ErrUnpackToolMissing (environment fault, not a release defect) falls
+	//   straight to the days ladder instead of the alternate-release path.
+	//   parkUsenetContentFailure falls through (false) when its own fail-closed
+	//   guards reject it (non-nzb- GID, empty URL, cap reached).
+	// Review if: content failures should also be cap-gated per-day.
+	if contentUnusableFailure(failure) {
+		if handled, err := parkUsenetContentFailure(ctx, deps, g, failure, nil); err != nil || handled {
+			return err
+		}
+	}
+
+	return park(ctx, deps, g.ID, reason)
 }
 
 // retryDueGrabs re-runs the full auto-grab pipeline for every row whose

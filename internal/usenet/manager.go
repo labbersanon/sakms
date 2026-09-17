@@ -1357,11 +1357,9 @@ func (m *Manager) fetchSegmentAny(ctx context.Context, msgID string) (segmentRes
 			switch {
 			case errors.Is(ferr, ErrArticleNotFound):
 				// This provider does not carry it; try the next pool.
-				break
 			case errors.Is(ferr, ErrArticleRemoved):
 				allNotFound = false
 				sawRemoved = true
-				break
 			default:
 				// Transport or decode failure. Retry on a fresh connection if
 				// we have attempts left and the context is still live.

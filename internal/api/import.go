@@ -177,14 +177,11 @@ func UsenetCompleteImporter(httpClient *http.Client, connStore *connections.Stor
 			// Review if: importGrabContent gains more error categories that should park.
 			if contentUnusableFailure(err) {
 				deps := AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore}
-				handled, parkErr := parkUsenetContentFailure(ctx, deps, *g, err, nzb)
-				if parkErr != nil {
-					log.Printf("usenet import: parking grab %d for alternate release: %v", g.ID, parkErr)
+				_, parkErr := parkUsenetContentFailure(ctx, deps, *g, err, nzb)
+				if parkErr == nil {
+					return // parked for an alternate release, or a fail-closed guard declined it
 				}
-				if handled || parkErr == nil {
-					return // slot freed; alternate retry queued
-				}
-				// fall through: park rejected (cap/guard) — log-and-return as before
+				log.Printf("usenet import: parking grab %d for alternate release: %v", g.ID, parkErr)
 			}
 			log.Printf("usenet import: grab %d (gid %s): %v", g.ID, gid, err)
 			return

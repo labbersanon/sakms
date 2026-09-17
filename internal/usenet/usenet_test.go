@@ -784,7 +784,7 @@ func TestFetchSegmentAny_ErrorPrecedence(t *testing.T) {
 
 	t.Run("no subscriptions", func(t *testing.T) {
 		m := New(Config{})
-		if _, err := m.fetchSegmentAny(id); !errors.Is(err, ErrNoSubscriptions) {
+		if _, err := m.fetchSegmentAny(context.Background(), id); !errors.Is(err, ErrNoSubscriptions) {
 			t.Errorf("got %v, want ErrNoSubscriptions", err)
 		}
 	})
@@ -794,7 +794,7 @@ func TestFetchSegmentAny_ErrorPrecedence(t *testing.T) {
 		b := newFakeNNTP(t)
 		b.addStatus(id, 451)
 		m := New(Config{Servers: []ServerConfig{a.cfg(), b.cfg()}})
-		_, err := m.fetchSegmentAny(id)
+		_, err := m.fetchSegmentAny(context.Background(), id)
 		if !errors.Is(err, ErrArticleRemoved) {
 			t.Errorf("got %v, want ErrArticleRemoved", err)
 		}
@@ -813,7 +813,7 @@ func TestFetchSegmentAny_ErrorPrecedence(t *testing.T) {
 		a.addStatus(id, 451)
 		dead := ServerConfig{Host: "127.0.0.1", Port: deadPort(t), MaxConns: 1}
 		m := New(Config{Servers: []ServerConfig{a.cfg(), dead}})
-		_, err := m.fetchSegmentAny(id)
+		_, err := m.fetchSegmentAny(context.Background(), id)
 		if err == nil {
 			t.Fatal("expected an error")
 		}
@@ -830,7 +830,7 @@ func TestFetchSegmentAny_ErrorPrecedence(t *testing.T) {
 		b := newFakeNNTP(t)
 		b.add(id, p.parts[0])
 		m := New(Config{Servers: []ServerConfig{a.cfg(), b.cfg()}})
-		res, err := m.fetchSegmentAny(id)
+		res, err := m.fetchSegmentAny(context.Background(), id)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -898,7 +898,7 @@ func TestSetSubscriptions_SwapWhileIdle(t *testing.T) {
 
 	// Dropping to zero subscriptions is legal and fails cleanly rather than hanging.
 	m.SetSubscriptions(nil)
-	if _, err := m.fetchSegmentAny(p.msgIDs[0]); !errors.Is(err, ErrNoSubscriptions) {
+	if _, err := m.fetchSegmentAny(context.Background(), p.msgIDs[0]); !errors.Is(err, ErrNoSubscriptions) {
 		t.Errorf("with no subscriptions: got %v, want ErrNoSubscriptions", err)
 	}
 }

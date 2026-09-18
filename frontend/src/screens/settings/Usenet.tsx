@@ -795,50 +795,141 @@ const AutoGrabCard: Component = () => {
   );
 };
 
-const GroupMultiSelect: Component<{
-  label: string;
-  ariaLabel: string;
+// Claude 2026-09-18: dual-list toolbox (unmonitored | arrows | monitored).
+// Reason: operator moves groups between LIST ACTIVE leftovers and crawl set;
+//   inputClass truncate must not wrap these lists (overflow:hidden).
+// Troubleshooting: no scrollbar → check for truncate on the <select>.
+// Review if: drag-drop transfer is added (arrows + dblclick stay).
+const listBoxClass =
+  "h-48 w-full overflow-y-auto rounded-md border border-border bg-bg px-2 py-1 font-mono text-xs text-fg outline-none focus:border-accent";
+
+const GroupTransferToolbox: Component<{
+  title: string;
   available: string[];
-  selected: string[];
-  onChange: (groups: string[]) => void;
+  monitored: string[];
+  onChange: (monitored: string[]) => void;
 }> = (props) => {
-  const options = () => {
-    const known = new Set(props.available);
-    const stale = props.selected.filter((g) => !known.has(g));
-    return [...stale, ...props.available];
+  const [leftSel, setLeftSel] = createSignal<string[]>([]);
+  const [rightSel, setRightSel] = createSignal<string[]>([]);
+
+  const monitoredSet = () => new Set(props.monitored);
+  const unmonitored = () =>
+    props.available
+      .filter((g) => !monitoredSet().has(g))
+      .slice()
+      .sort((a, b) => a.localeCompare(b));
+  const monitored = () =>
+    props.monitored.slice().sort((a, b) => a.localeCompare(b));
+
+  const readSel = (e: Event & { currentTarget: HTMLSelectElement }) =>
+    Array.from(e.currentTarget.selectedOptions).map((o) => o.value);
+
+  const addToMonitored = (names: string[]) => {
+    if (names.length === 0) return;
+    const next = new Set(props.monitored);
+    for (const g of names) next.add(g);
+    props.onChange([...next].sort((a, b) => a.localeCompare(b)));
+    setLeftSel([]);
   };
 
-  // Claude 2026-09-18: do not reuse inputClass here.
-  // Reason: inputClass includes Tailwind `truncate` (overflow:hidden), which
-  //   disables scrolling inside <select multiple>.
-  // Troubleshooting: list longer than the box but no scrollbar → check for truncate.
-  // Review if: inputClass drops truncate or gains a multi-select variant.
+  const removeFromMonitored = (names: string[]) => {
+    if (names.length === 0) return;
+    const drop = new Set(names);
+    props.onChange(props.monitored.filter((g) => !drop.has(g)));
+    setRightSel([]);
+  };
+
   return (
-    <label class="block">
-      <span class={labelClass}>
-        {props.label} ({props.selected.length} selected)
-      </span>
-      <select
-        multiple
-        size={10}
-        class="h-48 w-full overflow-y-auto rounded-md border border-border bg-bg px-2 py-1 font-mono text-xs text-fg outline-none focus:border-accent"
-        aria-label={props.ariaLabel}
-        onChange={(e) => {
-          const next = Array.from(e.currentTarget.selectedOptions).map(
-            (o) => o.value,
-          );
-          props.onChange(next);
-        }}
-      >
-        <For each={options()}>
-          {(g) => (
-            <option value={g} selected={props.selected.includes(g)}>
-              {g}
-            </option>
-          )}
-        </For>
-      </select>
-    </label>
+    <div class="mb-4">
+      <div class={labelClass + " mb-2"}>{props.title}</div>
+      <div class="grid grid-cols-1 items-stretch gap-2 sm:grid-cols-[1fr_auto_1fr] sm:gap-3">
+        <label class="block min-w-0">
+          <span class={labelClass}>
+            Unmonitored ({unmonitored().length})
+          </span>
+          <select
+            multiple
+            size={10}
+            class={listBoxClass}
+            aria-label={`${props.title} unmonitored newsgroups`}
+            onChange={(e) => setLeftSel(readSel(e))}
+            onDblClick={(e) => {
+              const t = e.target as HTMLOptionElement;
+              if (t?.tagName === "OPTION" && t.value) addToMonitored([t.value]);
+            }}
+          >
+            <For each={unmonitored()}>
+              {(g) => (
+                <option value={g} selected={leftSel().includes(g)}>
+                  {g}
+                </option>
+              )}
+            </For>
+          </select>
+        </label>
+        <div class="flex flex-row justify-center gap-1 sm:flex-col sm:justify-center">
+          <Button
+            class="!px-2 !py-1 !text-xs"
+            disabled={leftSel().length === 0}
+            title="Monitor selected"
+            aria-label={`${props.title} monitor selected`}
+            onClick={() => addToMonitored(leftSel())}
+          >
+            &gt;
+          </Button>
+          <Button
+            class="!px-2 !py-1 !text-xs"
+            disabled={unmonitored().length === 0}
+            title="Monitor all"
+            aria-label={`${props.title} monitor all`}
+            onClick={() => addToMonitored(unmonitored())}
+          >
+            &gt;&gt;
+          </Button>
+          <Button
+            class="!px-2 !py-1 !text-xs"
+            disabled={rightSel().length === 0}
+            title="Unmonitor selected"
+            aria-label={`${props.title} unmonitor selected`}
+            onClick={() => removeFromMonitored(rightSel())}
+          >
+            &lt;
+          </Button>
+          <Button
+            class="!px-2 !py-1 !text-xs"
+            disabled={monitored().length === 0}
+            title="Unmonitor all"
+            aria-label={`${props.title} unmonitor all`}
+            onClick={() => removeFromMonitored(monitored())}
+          >
+            &lt;&lt;
+          </Button>
+        </div>
+        <label class="block min-w-0">
+          <span class={labelClass}>Monitored ({monitored().length})</span>
+          <select
+            multiple
+            size={10}
+            class={listBoxClass}
+            aria-label={`${props.title} monitored newsgroups`}
+            onChange={(e) => setRightSel(readSel(e))}
+            onDblClick={(e) => {
+              const t = e.target as HTMLOptionElement;
+              if (t?.tagName === "OPTION" && t.value)
+                removeFromMonitored([t.value]);
+            }}
+          >
+            <For each={monitored()}>
+              {(g) => (
+                <option value={g} selected={rightSel().includes(g)}>
+                  {g}
+                </option>
+              )}
+            </For>
+          </select>
+        </label>
+      </div>
+    </div>
   );
 };
 
@@ -1030,33 +1121,29 @@ const NativeSearchCard: Component = () => {
           Couldn't load available newsgroups: {groupsError()}
         </ErrorText>
       </Show>
-      <div class="mb-3 grid gap-3 lg:grid-cols-3">
-        <GroupMultiSelect
-          label="Movies groups"
-          ariaLabel="movies native search newsgroups"
-          available={availMovies()}
-          selected={moviesGroups()}
-          onChange={(g) => setGroups(setMoviesGroups, g)}
-        />
-        <GroupMultiSelect
-          label="Series groups"
-          ariaLabel="series native search newsgroups"
-          available={availSeries()}
-          selected={seriesGroups()}
-          onChange={(g) => setGroups(setSeriesGroups, g)}
-        />
-        <GroupMultiSelect
-          label="Adult groups"
-          ariaLabel="adult native search newsgroups"
-          available={availAdult()}
-          selected={adultGroups()}
-          onChange={(g) => setGroups(setAdultGroups, g)}
-        />
-      </div>
+      <GroupTransferToolbox
+        title="Movies"
+        available={availMovies()}
+        monitored={moviesGroups()}
+        onChange={(g) => setGroups(setMoviesGroups, g)}
+      />
+      <GroupTransferToolbox
+        title="Series"
+        available={availSeries()}
+        monitored={seriesGroups()}
+        onChange={(g) => setGroups(setSeriesGroups, g)}
+      />
+      <GroupTransferToolbox
+        title="Adult"
+        available={availAdult()}
+        monitored={adultGroups()}
+        onChange={(g) => setGroups(setAdultGroups, g)}
+      />
       <Muted class="mb-3">
-        Hold Ctrl/Cmd to multi-select. Lists come from the provider via LIST
-        ACTIVE (media wildmats). Crawl indexes the union of all selections;
-        search uses only the active mode's groups.
+        Unmonitored = available from the provider (LIST ACTIVE). Monitored =
+        crawled and searched for that mode. Use the arrows (or double-click a
+        group) to move. Crawl indexes the union of all monitored groups; search
+        uses only the active mode's monitored list.
       </Muted>
       <label class="mb-3 block">
         <span class={labelClass}>Index directory (unused — index is in the SAK Postgres DB)</span>

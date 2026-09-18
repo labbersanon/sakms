@@ -12,6 +12,11 @@ import (
 	"github.com/labbersanon/sakms/internal/usenetsearch"
 )
 
+// Claude 2026-09-18: per-mode group multi-select + LIST ACTIVE picker.
+// Reason: crawl = union of selections; search = active mode's list only.
+// Troubleshooting: GET .../groups empty → no subscriptions or LIST fail.
+// Review if: Discover title filter ships (groups endpoint stays).
+
 type usenetNNTPNativeResponse struct {
 	Enabled       bool   `json:"enabled"`
 	Movies        bool   `json:"movies"`

@@ -37,7 +37,7 @@ type HeaderSource interface {
 	GroupRange(ctx context.Context, group string) (GroupRange, error)
 	Overview(ctx context.Context, group string, from, to int) ([]MessageOverview, error)
 	// ListActive returns group names from LIST ACTIVE [wildmat]. wildmat empty
-	// means the full active list (avoid on large providers).
+	// means the full active list (avoid on large providers — use media wildmats).
 	ListActive(ctx context.Context, wildmat string) ([]string, error)
 }
 

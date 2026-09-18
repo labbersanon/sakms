@@ -8,6 +8,11 @@ import (
 	"github.com/labbersanon/sakms/internal/usenet"
 )
 
+// Claude 2026-09-18: mode-scoped LIST ACTIVE wildmats for settings multi-select.
+// Reason: full LIST ACTIVE on Eweka is huge; Discover title filter is future-only.
+// Troubleshooting: empty picker → no subscriptions or wildmat miss.
+// Review if: Discover titles land (keep groups API; titles are separate).
+
 // MediaWildmats returns LIST ACTIVE wildmats for mode ("movies"|"series"|"adult").
 func MediaWildmats(mode string) []string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {

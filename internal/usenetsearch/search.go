@@ -6,12 +6,16 @@ import (
 )
 
 // Search runs q against the local index. Never contacts NNTP.
+// Groups nil ⇒ search all crawled groups; empty non-nil ⇒ no matches.
 func (s *Service) Search(ctx context.Context, q Query) ([]Candidate, error) {
 	if s == nil || s.idx == nil {
 		return nil, nil
 	}
+	if q.Groups == nil {
+		q.Groups = s.cfg.AllGroups()
+	}
 	if len(q.Groups) == 0 {
-		q.Groups = append([]string(nil), s.cfg.Groups...)
+		return nil, nil
 	}
 	return s.idx.SearchReleases(ctx, q)
 }

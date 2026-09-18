@@ -88,8 +88,9 @@ func nativeAutoGrabSearch(ctx context.Context, deps AutoGrabDeps, req AutoGrabRe
 		return nil, nil
 	}
 	q := usenetsearch.Query{
-		Terms: usenetsearch.NormalizeTitleTerms(req.Title),
-		Limit: 40,
+		Terms:  usenetsearch.NormalizeTitleTerms(req.Title),
+		Limit:  40,
+		Groups: svc.Config().GroupsForMode(string(req.Mode)),
 	}
 	if req.ReleaseTitle != "" {
 		q.Terms = append(q.Terms, usenetsearch.NormalizeTitleTerms(req.ReleaseTitle)...)

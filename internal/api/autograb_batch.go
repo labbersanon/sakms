@@ -391,7 +391,7 @@ func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, stor
 	order := qualifiedCandidateOrder(sel)
 	for _, idx := range order[:min(len(order), maxDispatchAttempts)] {
 		picked = releases[idx]
-		downloadClient, gid, _, err = dispatchToDownloadClient(ctx, settingsStore, sess, m, nzb, string(picked.Protocol), picked.DownloadURL, picked.Title)
+		downloadClient, gid, _, err = dispatchToDownloadClient(ctx, settingsStore, sess, m, nzb, nil, string(picked.Protocol), picked.DownloadURL, picked.Title)
 		if err == nil {
 			sel.PickIndex = idx
 			break

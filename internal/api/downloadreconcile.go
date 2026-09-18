@@ -23,6 +23,7 @@ import (
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenet"
+	"github.com/labbersanon/sakms/internal/usenetsearch"
 )
 
 // Claude 2026-09-11: ARR-parity in-flight download reconcile (built-in engines)
@@ -244,7 +245,7 @@ func reconcileUsenetInFlight(ctx context.Context, deps DownloadReconcileDeps, g 
 	// otherwise let one pass blow past MaxConcurrentDownloads.
 	*usenetBudget--
 
-	if err := deps.NZB.RelaunchNZB(ctx, g.DownloadGID, g.DownloadURL, g.Title); err != nil {
+	if err := relaunchUsenetGrab(ctx, deps, g); err != nil {
 		// Claude 2026-09-15: precheck miss on relaunch → park for re-search.
 		// Reason: aged NZB has no candidate list; park clears GID for retry cycle.
 		// Troubleshooting: reconcile parks with articlesUnavailableReason.
@@ -379,4 +380,29 @@ func usenetStagingReadyForImport(stagingRoot, stagingPath string) (ok bool, reas
 		return false, "video too small"
 	}
 	return true, ""
+}
+
+// relaunchUsenetGrab re-arms a usenet grab into its existing GID. sakms-nntp:
+// locators resolve through the native index → RelaunchArticleSet; HTTP NZB URLs
+// keep RelaunchNZB.
+func relaunchUsenetGrab(ctx context.Context, deps DownloadReconcileDeps, g *grabs.Grab) error {
+	if deps.NZB == nil {
+		return fmt.Errorf("usenet manager not configured")
+	}
+	if usenetsearch.IsLocator(g.DownloadURL) {
+		native := getNNTPNativeService()
+		if native == nil {
+			return fmt.Errorf("native usenet search is not available")
+		}
+		cand, err := native.ResolveLocator(ctx, g.DownloadURL)
+		if err != nil {
+			return err
+		}
+		nzb, err := usenetsearch.ToNZB(cand)
+		if err != nil {
+			return err
+		}
+		return deps.NZB.RelaunchArticleSet(ctx, g.DownloadGID, nzb, g.Title)
+	}
+	return deps.NZB.RelaunchNZB(ctx, g.DownloadGID, g.DownloadURL, g.Title)
 }

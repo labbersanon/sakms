@@ -281,7 +281,7 @@ func grabDirectEnclosure(ctx context.Context, sess *mode.Session, m mode.Mode, s
 	if err != nil {
 		return nil, false, http.StatusBadRequest, err
 	}
-	downloadClient, gid, status, err := dispatchToDownloadClient(ctx, settingsStore, sess, m, nzb, req.DownloadProtocol, req.DownloadURL, req.Title)
+	downloadClient, gid, status, err := dispatchToDownloadClient(ctx, settingsStore, sess, m, nzb, nil, req.DownloadProtocol, req.DownloadURL, req.Title)
 	if err != nil {
 		return nil, false, status, err
 	}

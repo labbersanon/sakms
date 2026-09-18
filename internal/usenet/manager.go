@@ -607,6 +607,21 @@ func (m *Manager) AddNZB(ctx context.Context, url, name string) (string, error) 
 	if name == "" {
 		name = dnzb.Name
 	}
+	return m.AddArticleSet(ctx, nzb, name)
+}
+
+// AddArticleSet starts a download from an already-parsed (or synthesized) NZB
+// article set — same path as AddNZB after fetch. Used by the native NNTP
+// discovery backend so sakms-nntp: locators never hit fetchNZB.
+//
+// Claude 2026-09-17: split from AddNZB for native discovery.
+// Reason: engine is NZB-struct-driven; native candidates synthesize *NZB in-memory.
+// Troubleshooting: dispatch of sakms-nntp: URLs must call this, not AddNZB.
+// Review if: AddNZB gains non-HTTP sources beyond native search.
+func (m *Manager) AddArticleSet(ctx context.Context, nzb *NZB, name string) (string, error) {
+	if nzb == nil {
+		return "", errors.New("usenet: nil article set")
+	}
 	if name == "" {
 		name = "usenet-download"
 	}
@@ -679,6 +694,24 @@ func (m *Manager) AddNZB(ctx context.Context, url, name string) (string, error) 
 // fresh GID). assembleFile skips segments already recorded in .sakms-resume.json.
 // Returns nil when gid is already in flight.
 func (m *Manager) RelaunchNZB(ctx context.Context, gid, url, name string) error {
+	nzb, dnzb, err := fetchNZB(m.httpClient, url)
+	if err != nil {
+		return err
+	}
+	if name == "" {
+		name = dnzb.Name
+	}
+	return m.RelaunchArticleSet(ctx, gid, nzb, name)
+}
+
+// RelaunchArticleSet is RelaunchNZB without the HTTP fetch — used when the
+// article set was synthesized from the native header index (sakms-nntp:).
+//
+// Claude 2026-09-17: split from RelaunchNZB for native discovery resume.
+// Reason: transport-resume and reconcile must re-arm without fetchNZB on locators.
+// Troubleshooting: relaunch of sakms-nntp: must call this path.
+// Review if: locator re-resolution moves entirely into the API layer.
+func (m *Manager) RelaunchArticleSet(ctx context.Context, gid string, nzb *NZB, name string) error {
 	if !IsOwnedStagingName(gid) {
 		return fmt.Errorf("usenet: refusing relaunch into non-owned gid %q", gid)
 	}
@@ -687,13 +720,8 @@ func (m *Manager) RelaunchNZB(ctx context.Context, gid, url, name string) error 
 	} else if existing != nil {
 		return nil
 	}
-
-	nzb, dnzb, err := fetchNZB(m.httpClient, url)
-	if err != nil {
-		return err
-	}
-	if name == "" {
-		name = dnzb.Name
+	if nzb == nil {
+		return errors.New("usenet: nil article set")
 	}
 	if name == "" {
 		name = "usenet-download"

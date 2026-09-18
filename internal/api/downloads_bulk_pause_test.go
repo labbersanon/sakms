@@ -89,7 +89,7 @@ func TestPauseGate_BlocksAndAllows(t *testing.T) {
 	sess := &mode.Session{Downloader: dl}
 
 	// Unpaused (default): a torrent dispatch succeeds.
-	_, gid, status, err := dispatchToDownloadClient(ctx, settingsStore, sess, mode.Movies, nil, "torrent", "magnet:x", "Title")
+	_, gid, status, err := dispatchToDownloadClient(ctx, settingsStore, sess, mode.Movies, nil, nil, "torrent", "magnet:x", "Title")
 	if err != nil || status != http.StatusOK || gid == "" {
 		t.Fatalf("unpaused dispatch should succeed, got gid=%q status=%d err=%v", gid, status, err)
 	}
@@ -99,7 +99,7 @@ func TestPauseGate_BlocksAndAllows(t *testing.T) {
 	if err := settingsStore.SetBool(ctx, downloadsGlobalPausedKey, true); err != nil {
 		t.Fatalf("set paused: %v", err)
 	}
-	_, _, status, err = dispatchToDownloadClient(ctx, settingsStore, sess, mode.Movies, nil, "torrent", "magnet:y", "Title2")
+	_, _, status, err = dispatchToDownloadClient(ctx, settingsStore, sess, mode.Movies, nil, nil, "torrent", "magnet:y", "Title2")
 	if err != errDownloadsPaused {
 		t.Errorf("paused dispatch should return errDownloadsPaused, got %v", err)
 	}
@@ -114,7 +114,7 @@ func TestPauseGate_BlocksAndAllows(t *testing.T) {
 	if err := settingsStore.SetBool(ctx, downloadsGlobalPausedKey, false); err != nil {
 		t.Fatalf("clear paused: %v", err)
 	}
-	_, _, status, err = dispatchToDownloadClient(ctx, settingsStore, sess, mode.Movies, nil, "torrent", "magnet:z", "Title3")
+	_, _, status, err = dispatchToDownloadClient(ctx, settingsStore, sess, mode.Movies, nil, nil, "torrent", "magnet:z", "Title3")
 	if err != nil || status != http.StatusOK {
 		t.Errorf("un-paused dispatch should succeed again, got status=%d err=%v", status, err)
 	}

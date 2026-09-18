@@ -50,6 +50,7 @@ import (
 	"github.com/labbersanon/sakms/internal/stagingsweep"
 	"github.com/labbersanon/sakms/internal/trakt"
 	"github.com/labbersanon/sakms/internal/usenet"
+	"github.com/labbersanon/sakms/internal/usenetsearch"
 	"github.com/labbersanon/sakms/internal/videophash"
 	"github.com/labbersanon/sakms/internal/web"
 	"github.com/labbersanon/sakms/internal/webhooks"
@@ -214,6 +215,18 @@ func run() error {
 		// HasSubscriptions() on a nil receiver panics.
 		log.Printf("usenet: starting with no subscriptions loaded (%v) — NZB grabbing unavailable until fixed", err)
 	}
+	// Claude 2026-09-17: native NNTP discovery service (OVER index). Default off.
+	// Reason: feature-flagged; Apply opens index + starts crawl only when enabled.
+	// Troubleshooting: settings → Usenet → Native search; probe_state/detail.
+	// Review if: NewMux takes the service as an explicit param.
+	nntpSearch := usenetsearch.NewService(nzbManager.HeaderSource(), sqlDB)
+	if cfgNative, err := api.LoadUsenetSearchConfig(context.Background(), settingsStore); err != nil {
+		log.Printf("usenetsearch: loading config: %v", err)
+	} else if err := nntpSearch.Apply(cfgNative); err != nil {
+		log.Printf("usenetsearch: apply: %v", err)
+	}
+	api.SetNNTPNativeService(nntpSearch)
+	defer nntpSearch.Close()
 	// traktStore persists Trakt's single application connection + linked
 	// account tokens (its own table, not connections.Store — see
 	// internal/trakt's package doc for why); secretStore encrypts the same
@@ -703,6 +716,7 @@ func run() error {
 			SettingsStore: settingsStore,
 			NZB:           nzbManager,
 			GrabsStore:    grabsStore,
+			UsenetSearch:  nntpSearch,
 		},
 		HTTPClient:   &http.Client{Timeout: outboundTimeout},
 		ConnStore:    connStore,

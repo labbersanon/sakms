@@ -58,7 +58,18 @@ const (
 	ScopeUsenet Scope = -1
 	// ScopeTorrent restricts the search to Prowlarr's torrent indexers (indexerIds=-2).
 	ScopeTorrent Scope = -2
+	// ScopeNative is sakms-internal only (native OVER-index search). Never emit
+	// on the Prowlarr wire — see addIndexerScope.
+	//
+	// Claude 2026-09-17: native NNTP discovery phase sentinel.
+	// Reason: plan §5 minimal-diff alternative to SearchPhase struct.
+	// Troubleshooting: Prowlarr 400 on indexerIds=-3 means a leak.
+	// Review if: SearchPhases widens to a struct.
+	ScopeNative Scope = -3
 )
+
+// IsNative reports whether s is the sakms-native NNTP search phase.
+func (s Scope) IsNative() bool { return s == ScopeNative }
 
 // Config parameterizes the client for one Prowlarr instance.
 type Config struct {
@@ -304,6 +315,10 @@ func addIndexerScope(q url.Values, scope Scope, indexerIDs []int) {
 		for _, id := range indexerIDs {
 			q.Add("indexerIds", strconv.Itoa(id))
 		}
+		return
+	}
+	if scope.IsNative() {
+		// Claude 2026-09-17: never send ScopeNative to Prowlarr.
 		return
 	}
 	if scope != ScopeAll {

@@ -129,6 +129,9 @@ func parkUsenetContentFailure(
 // when a fail-closed guard declines it (cap reached, empty URL, …) fall through
 // to the days ladder so the grab does not stay queued forever holding a slot.
 //
+// On BOTH outcomes the hollow staging dir is cleaned when engine != nil — the
+// delivered bytes are proven useless either way.
+//
 // Claude 2026-09-17: closes the live Love Is Blind stuck-queued bug.
 // Reason: UsenetCompleteImporter treated (false, nil) from parkUsenetContentFailure
 //   as "done" and returned without parking — grab stayed queued with a hollow GID.
@@ -143,7 +146,14 @@ func parkContentFailureOrDaysLadder(ctx context.Context, deps AutoGrabDeps, g gr
 	if handled {
 		return nil
 	}
-	// Same reason string parkRetrievalFailure uses on its days-ladder fallthrough.
+	// Cap / fail-closed decline: parkUsenetContentFailure skipped Forget+wipe.
+	// The staging is still hollow — clean it before the days-ladder park.
+	if engine != nil && strings.HasPrefix(g.DownloadGID, usenetGIDPrefix) {
+		if !engine.Forget(g.DownloadGID) {
+			log.Printf("usenet content: Forget(%s) on days-ladder fallthrough for grab %d returned false", g.DownloadGID, g.ID)
+		}
+		clearOwnedUsenetStagingEngine(engine, g.DownloadGID)
+	}
 	return parkGrabForRetry(ctx, deps, g.ID, usenetRetrievalReason(failure))
 }
 

@@ -473,8 +473,19 @@ func parkRetrievalFailure(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, 
 		if deps.NZB != nil {
 			engine = deps.NZB
 		}
-		if handled, err := parkUsenetContentFailure(ctx, deps, g, failure, engine); err != nil || handled {
+		handled, err := parkUsenetContentFailure(ctx, deps, g, failure, engine)
+		if err != nil {
 			return err
+		}
+		if handled {
+			return nil
+		}
+		// Cap / fail-closed: still wipe hollow staging before days-ladder park.
+		if engine != nil && strings.HasPrefix(g.DownloadGID, usenetGIDPrefix) {
+			if !engine.Forget(g.DownloadGID) {
+				log.Printf("usenet content: Forget(%s) on days-ladder fallthrough for grab %d returned false", g.DownloadGID, g.ID)
+			}
+			clearOwnedUsenetStagingEngine(engine, g.DownloadGID)
 		}
 	}
 

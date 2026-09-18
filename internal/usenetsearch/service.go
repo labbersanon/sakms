@@ -17,7 +17,10 @@ const (
 	KeyMoviesEnabled   = "movies_nntp_native_enabled"
 	KeySeriesEnabled   = "series_nntp_native_enabled"
 	KeyAdultEnabled    = "adult_nntp_native_enabled"
-	KeyGroups          = "usenet_nntp_groups"
+	KeyGroups          = "usenet_nntp_groups" // legacy shared list; soft-migrated
+	KeyMoviesGroups    = "usenet_nntp_groups_movies"
+	KeySeriesGroups    = "usenet_nntp_groups_series"
+	KeyAdultGroups     = "usenet_nntp_groups_adult"
 	KeyIndexDir        = "usenet_nntp_index_dir"
 	KeyIndexMaxGB      = "usenet_nntp_index_max_gb"
 	KeyWindowDays      = "usenet_nntp_index_window_days"
@@ -34,11 +37,32 @@ type Config struct {
 	Movies        bool
 	Series        bool
 	Adult         bool
-	Groups        []string
+	MoviesGroups  []string
+	SeriesGroups  []string
+	AdultGroups   []string
 	IndexDir      string
 	IndexMaxGB    int
 	WindowDays    int
 	CrawlInterval time.Duration
+}
+
+// AllGroups is the deduped union of per-mode selections — what the crawler indexes.
+func (c Config) AllGroups() []string {
+	return MergeGroups(c.MoviesGroups, c.SeriesGroups, c.AdultGroups)
+}
+
+// GroupsForMode returns the operator-selected groups for mode (never nil).
+func (c Config) GroupsForMode(mode string) []string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "movies":
+		return append([]string{}, c.MoviesGroups...)
+	case "series":
+		return append([]string{}, c.SeriesGroups...)
+	case "adult":
+		return append([]string{}, c.AdultGroups...)
+	default:
+		return []string{}
+	}
 }
 
 // ModeEnabled reports whether native search is on for the given mode name
@@ -75,11 +99,7 @@ func ParseGroups(raw string) []string {
 	return out
 }
 
-// ValidateIndexDir is retained for settings API compatibility. The index now
-// lives in Postgres (migration 0026); a path is never required.
-//
-// Claude 2026-09-18: no longer fail-closed on blank path.
-// Reason: modernc SQLite banned from cmd/sakms; index moved to app DB.
+// ValidateIndexDir is a no-op; the index lives in Postgres (migration 0026).
 func ValidateIndexDir(dir string) string {
 	_ = dir
 	return ""
@@ -125,7 +145,7 @@ func (s *Service) Apply(cfg Config) error {
 		s.probe = Readiness{Ready: false, State: "unknown", Detail: "native backend disabled"}
 		return nil
 	}
-	if len(cfg.Groups) == 0 {
+	if len(cfg.AllGroups()) == 0 {
 		s.probe = Readiness{Ready: false, State: "degraded", Detail: "no groups configured"}
 		return nil
 	}
@@ -169,7 +189,7 @@ func (s *Service) runProbeAndCrawl(ctx context.Context) {
 	cfg := s.cfg
 	idx := s.idx
 	s.mu.Unlock()
-	r := Probe(ctx, src, cfg.Groups)
+	r := Probe(ctx, src, cfg.AllGroups())
 	s.mu.Lock()
 	s.probe = r
 	s.mu.Unlock()
@@ -184,7 +204,7 @@ func (s *Service) runProbeAndCrawl(ctx context.Context) {
 	if maxGB <= 0 {
 		maxGB = DefaultIndexMaxGB
 	}
-	c := &Crawler{Src: src, Index: idx, Groups: cfg.Groups, Window: window, MaxGB: maxGB}
+	c := &Crawler{Src: src, Index: idx, Groups: cfg.AllGroups(), Window: window, MaxGB: maxGB}
 	if err := c.CrawlOnce(ctx); err != nil {
 		log.Printf("usenetsearch: crawl: %v", err)
 	}
@@ -198,7 +218,7 @@ func (s *Service) Ready(ctx context.Context) (Readiness, error) {
 	if !s.cfg.Enabled {
 		return Readiness{Ready: false, State: "unknown", Detail: "disabled"}, nil
 	}
-	if len(s.cfg.Groups) == 0 {
+	if len(s.cfg.AllGroups()) == 0 {
 		return Readiness{Ready: false, State: "degraded", Detail: "no groups"}, nil
 	}
 	if s.idx == nil {
@@ -252,6 +272,14 @@ func (s *Service) ResolveLocator(ctx context.Context, raw string) (Candidate, er
 		return Candidate{}, ErrIndexClosed
 	}
 	return idx.LoadBySeed(ctx, parts.Group, parts.SeedMsgID)
+}
+
+// ListAvailableGroups returns LIST ACTIVE media groups for mode (settings picker).
+func (s *Service) ListAvailableGroups(ctx context.Context, mode string) ([]string, error) {
+	s.mu.Lock()
+	src := s.src
+	s.mu.Unlock()
+	return ListMediaGroups(ctx, src, mode)
 }
 
 // Close stops the crawler and closes the index.

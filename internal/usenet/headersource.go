@@ -9,14 +9,6 @@ import (
 	"github.com/Tensai75/nntp"
 )
 
-// Claude 2026-09-17: HeaderSource — read-only OVER/GROUP/CAPABILITIES via shared pools.
-// Reason: native discovery crawler must not open a second NNTP pool (would double
-//   MaxConns against Eweka). Overview rows feed the local header index.
-// Troubleshooting: crawler stalls → check ErrBusy (yields to downloads); probe
-//   unsupported → CAPABILITIES missing OVER/XOVER.
-// Review if: vendored nntp client is swapped (MessageOverview mapping lives here).
-// Related: internal/usenetsearch, .omc/plans/usenet-nntp-native-backend.md §3.2
-
 // ErrBusy is returned by Overview when no pool connection is free. The crawler
 // must yield rather than block ahead of segment downloads.
 var ErrBusy = errors.New("usenet: no free connection")
@@ -44,6 +36,9 @@ type HeaderSource interface {
 	Capabilities(ctx context.Context) ([]string, error)
 	GroupRange(ctx context.Context, group string) (GroupRange, error)
 	Overview(ctx context.Context, group string, from, to int) ([]MessageOverview, error)
+	// ListActive returns group names from LIST ACTIVE [wildmat]. wildmat empty
+	// means the full active list (avoid on large providers).
+	ListActive(ctx context.Context, wildmat string) ([]string, error)
 }
 
 // HeaderSource returns a HeaderSource bound to this Manager's pools, or nil
@@ -107,6 +102,45 @@ func (h *managerHeaderSource) Overview(ctx context.Context, group string, from, 
 		out = append(out, mapOverview(r))
 	}
 	return out, nil
+}
+
+func (h *managerHeaderSource) ListActive(ctx context.Context, wildmat string) ([]string, error) {
+	c, p, err := h.borrow(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	var lines []string
+	if strings.TrimSpace(wildmat) == "" {
+		lines, err = c.List("ACTIVE")
+	} else {
+		lines, err = c.List("ACTIVE", wildmat)
+	}
+	if err != nil {
+		p.put(c, false)
+		return nil, err
+	}
+	p.put(c, true)
+	out := make([]string, 0, len(lines))
+	seen := map[string]bool{}
+	for _, line := range lines {
+		name := ParseListActiveName(line)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out, nil
+}
+
+// ParseListActiveName extracts the group name from one LIST ACTIVE line
+// ("name high low status"). Returns "" for blank/malformed lines.
+func ParseListActiveName(line string) string {
+	fields := strings.Fields(strings.TrimSpace(line))
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
 }
 
 func mapOverview(r nntp.MessageOverview) MessageOverview {

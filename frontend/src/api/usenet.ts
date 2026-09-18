@@ -92,19 +92,25 @@ export function putUsenetSegmentResume(body: {
   );
 }
 
-/** Native NNTP discovery settings — GET/PUT /api/settings/usenet-nntp-native. Default off. */
 export type UsenetNNTPNativeSettings = {
   enabled: boolean;
   movies: boolean;
   series: boolean;
   adult: boolean;
-  groups: string;
+  moviesGroups: string;
+  seriesGroups: string;
+  adultGroups: string;
   indexDir: string;
   indexMaxGb: number;
   windowDays: number;
   crawlIntervalSeconds: number;
   probeState: string;
   probeDetail: string;
+};
+
+export type UsenetNNTPAvailableGroups = {
+  mode: "movies" | "series" | "adult";
+  groups: string[];
 };
 
 export function fetchUsenetNNTPNative(): Promise<UsenetNNTPNativeSettings> {
@@ -118,5 +124,13 @@ export function putUsenetNNTPNative(
     method: "PUT",
     body: JSON.stringify(body),
   });
+}
+
+export function fetchUsenetNNTPGroups(
+  mode: "movies" | "series" | "adult",
+): Promise<UsenetNNTPAvailableGroups> {
+  return api<UsenetNNTPAvailableGroups>(
+    `/api/settings/usenet-nntp-native/groups?mode=${encodeURIComponent(mode)}`,
+  );
 }
 

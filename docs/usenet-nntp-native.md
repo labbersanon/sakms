@@ -1,6 +1,6 @@
 # Native NNTP discovery (feature-flagged)
 
-Built-in Usenet search via an incremental `OVER` crawler over **manually listed**
+Built-in Usenet search via an incremental `OVER` crawler over operator-selected
 newsgroups, a local header index in **dedicated Postgres tables**
 (`usenet_nntp_headers` / `usenet_nntp_watermarks`), and in-memory NZB synthesis
 for the existing download engine.
@@ -18,7 +18,7 @@ and prune passes (window days + max GiB).
 | Setting | Notes |
 |---|---|
 | Master + per-mode toggles | Movies / Series / Adult AND-ed with master |
-| Newsgroups | One per line; no auto-discovery |
+| Per-mode newsgroups | Multi-select from provider `LIST ACTIVE` (media wildmats); crawl indexes the union; search uses the active mode's list |
 | Max GiB / window days / crawl interval | Soft size budget, retention, 0 = crawler off |
 | Probe state/detail | Read-only |
 
@@ -28,6 +28,7 @@ and prune passes (window days + max GiB).
 - Obfuscated subjects are not recoverable from headers alone.
 - Crawl shares the subscription connection pool and yields under download load.
 - Eweka account ceiling may be 50; live `max_conns` is independent.
+- Full `LIST ACTIVE` without wildmats is impractical on large providers — the picker uses mode-scoped wildmats.
 
 ## Spike numbers
 

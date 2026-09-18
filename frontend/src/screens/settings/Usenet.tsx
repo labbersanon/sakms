@@ -41,6 +41,7 @@ import {
 import {
   fetchUsenetAutoGrabEnabled,
   fetchUsenetMaxConcurrentDownloads,
+  fetchUsenetNNTPGroups,
   fetchUsenetNNTPNative,
   fetchUsenetSegmentResume,
   putUsenetAutoGrabEnabled,
@@ -794,14 +795,60 @@ const AutoGrabCard: Component = () => {
   );
 };
 
-// Claude 2026-09-17: native NNTP discovery settings card.
-// Reason: manual groups + required index dir; default off; probe read-only.
+const GroupMultiSelect: Component<{
+  label: string;
+  ariaLabel: string;
+  available: string[];
+  selected: string[];
+  onChange: (groups: string[]) => void;
+}> = (props) => {
+  const options = () => {
+    const known = new Set(props.available);
+    const stale = props.selected.filter((g) => !known.has(g));
+    return [...stale, ...props.available];
+  };
+
+  return (
+    <label class="block">
+      <span class={labelClass}>
+        {props.label} ({props.selected.length} selected)
+      </span>
+      <select
+        multiple
+        size={8}
+        class={inputClass + " min-h-[10rem] font-mono text-xs"}
+        aria-label={props.ariaLabel}
+        onChange={(e) => {
+          const next = Array.from(e.currentTarget.selectedOptions).map(
+            (o) => o.value,
+          );
+          props.onChange(next);
+        }}
+      >
+        <For each={options()}>
+          {(g) => (
+            <option value={g} selected={props.selected.includes(g)}>
+              {g}
+            </option>
+          )}
+        </For>
+      </select>
+    </label>
+  );
+};
+
 const NativeSearchCard: Component = () => {
   const [enabled, setEnabled] = createSignal(false);
   const [movies, setMovies] = createSignal(false);
   const [series, setSeries] = createSignal(false);
   const [adult, setAdult] = createSignal(false);
-  const [groups, setGroups] = createSignal("");
+  const [moviesGroups, setMoviesGroups] = createSignal<string[]>([]);
+  const [seriesGroups, setSeriesGroups] = createSignal<string[]>([]);
+  const [adultGroups, setAdultGroups] = createSignal<string[]>([]);
+  const [availMovies, setAvailMovies] = createSignal<string[]>([]);
+  const [availSeries, setAvailSeries] = createSignal<string[]>([]);
+  const [availAdult, setAvailAdult] = createSignal<string[]>([]);
+  const [groupsError, setGroupsError] = createSignal("");
   const [indexDir, setIndexDir] = createSignal("");
   const [indexMaxGb, setIndexMaxGb] = createSignal(20);
   const [windowDays, setWindowDays] = createSignal(14);
@@ -812,12 +859,20 @@ const NativeSearchCard: Component = () => {
   const [loadError, setLoadError] = createSignal<Error | null>(null);
   const status = useSaveStatus();
 
+  const parseStored = (raw: string | undefined) =>
+    (raw ?? "")
+      .split(/[\n,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
   const apply = (r: UsenetNNTPNativeSettings) => {
     setEnabled(r.enabled);
     setMovies(r.movies);
     setSeries(r.series);
     setAdult(r.adult);
-    setGroups(r.groups ?? "");
+    setMoviesGroups(parseStored(r.moviesGroups));
+    setSeriesGroups(parseStored(r.seriesGroups));
+    setAdultGroups(parseStored(r.adultGroups));
     setIndexDir(r.indexDir ?? "");
     setIndexMaxGb(r.indexMaxGb || 20);
     setWindowDays(r.windowDays || 14);
@@ -826,15 +881,36 @@ const NativeSearchCard: Component = () => {
     setProbeDetail(r.probeDetail || "");
   };
 
+  const loadAvailable = async () => {
+    setGroupsError("");
+    try {
+      const [m, s, a] = await Promise.all([
+        fetchUsenetNNTPGroups("movies"),
+        fetchUsenetNNTPGroups("series"),
+        fetchUsenetNNTPGroups("adult"),
+      ]);
+      setAvailMovies(m.groups ?? []);
+      setAvailSeries(s.groups ?? []);
+      setAvailAdult(a.groups ?? []);
+    } catch (e) {
+      setGroupsError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   onMount(() => {
     void fetchUsenetNNTPNative()
-      .then(apply)
+      .then(async (r) => {
+        apply(r);
+        await loadAvailable();
+      })
       .catch((e) => setLoadError(e instanceof Error ? e : new Error(String(e))));
   });
 
   const valid = () => {
     if (!enabled()) return true;
-    if (!groups().trim()) return false;
+    if (movies() && moviesGroups().length === 0) return false;
+    if (series() && seriesGroups().length === 0) return false;
+    if (adult() && adultGroups().length === 0) return false;
     return indexMaxGb() > 0 && windowDays() > 0 && crawlInterval() >= 0;
   };
 
@@ -845,7 +921,9 @@ const NativeSearchCard: Component = () => {
         movies: movies(),
         series: series(),
         adult: adult(),
-        groups: groups(),
+        moviesGroups: moviesGroups().join("\n"),
+        seriesGroups: seriesGroups().join("\n"),
+        adultGroups: adultGroups().join("\n"),
         indexDir: indexDir().trim(),
         indexMaxGb: indexMaxGb(),
         windowDays: windowDays(),
@@ -873,11 +951,19 @@ const NativeSearchCard: Component = () => {
     status.set("");
   };
 
+  const setGroups = (
+    setter: (v: string[]) => void,
+    groups: string[],
+  ) => {
+    setter(groups);
+    mark();
+  };
+
   return (
     <Card title="Native NNTP search">
       <Muted class="mb-3">
-        Optional built-in Usenet discovery: crawl only the newsgroups you list,
-        store headers under an absolute index directory, and search that index
+        Optional built-in Usenet discovery: crawl only the newsgroups you select
+        per mode, store headers in the SAK Postgres DB, and search that index
         before Prowlarr. Off by default. Does not replace NZB/Prowlarr — they
         remain the fallback. Obfuscated posts are not discoverable from headers
         alone.
@@ -894,6 +980,7 @@ const NativeSearchCard: Component = () => {
           onChange={(e) => {
             setEnabled(e.currentTarget.checked);
             mark();
+            if (e.currentTarget.checked) void loadAvailable();
           }}
         />
         <span>Enable native NNTP search</span>
@@ -933,19 +1020,39 @@ const NativeSearchCard: Component = () => {
           Adult
         </label>
       </div>
-      <label class="mb-3 block">
-        <span class={labelClass}>Newsgroups (one per line)</span>
-        <textarea
-          class={inputClass + " min-h-[5rem] font-mono text-sm"}
-          aria-label="native search newsgroups"
-          value={groups()}
-          onInput={(e) => {
-            setGroups(e.currentTarget.value);
-            mark();
-          }}
-          placeholder={"alt.binaries.movies\nalt.binaries.tv"}
+      <Show when={groupsError()}>
+        <ErrorText>
+          Couldn't load available newsgroups: {groupsError()}
+        </ErrorText>
+      </Show>
+      <div class="mb-3 grid gap-3 lg:grid-cols-3">
+        <GroupMultiSelect
+          label="Movies groups"
+          ariaLabel="movies native search newsgroups"
+          available={availMovies()}
+          selected={moviesGroups()}
+          onChange={(g) => setGroups(setMoviesGroups, g)}
         />
-      </label>
+        <GroupMultiSelect
+          label="Series groups"
+          ariaLabel="series native search newsgroups"
+          available={availSeries()}
+          selected={seriesGroups()}
+          onChange={(g) => setGroups(setSeriesGroups, g)}
+        />
+        <GroupMultiSelect
+          label="Adult groups"
+          ariaLabel="adult native search newsgroups"
+          available={availAdult()}
+          selected={adultGroups()}
+          onChange={(g) => setGroups(setAdultGroups, g)}
+        />
+      </div>
+      <Muted class="mb-3">
+        Hold Ctrl/Cmd to multi-select. Lists come from the provider via LIST
+        ACTIVE (media wildmats). Crawl indexes the union of all selections;
+        search uses only the active mode's groups.
+      </Muted>
       <label class="mb-3 block">
         <span class={labelClass}>Index directory (unused — index is in the SAK Postgres DB)</span>
         <input

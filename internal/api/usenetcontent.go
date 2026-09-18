@@ -124,6 +124,29 @@ func parkUsenetContentFailure(
 	return true, nil
 }
 
+// parkContentFailureOrDaysLadder is the import/reconcile twin of
+// parkRetrievalFailure's content branch: try the alternate-release park, and
+// when a fail-closed guard declines it (cap reached, empty URL, …) fall through
+// to the days ladder so the grab does not stay queued forever holding a slot.
+//
+// Claude 2026-09-17: closes the live Love Is Blind stuck-queued bug.
+// Reason: UsenetCompleteImporter treated (false, nil) from parkUsenetContentFailure
+//   as "done" and returned without parking — grab stayed queued with a hollow GID.
+// Troubleshooting: journal "cap reached … falling back to days ladder" with the
+//   grab still status=queued → this helper was missing on the import path.
+// Review if: import/reconcile share applyUsenetFailure directly instead.
+func parkContentFailureOrDaysLadder(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, failure error, engine contentForgetEngine) error {
+	handled, err := parkUsenetContentFailure(ctx, deps, g, failure, engine)
+	if err != nil {
+		return err
+	}
+	if handled {
+		return nil
+	}
+	// Same reason string parkRetrievalFailure uses on its days-ladder fallthrough.
+	return parkGrabForRetry(ctx, deps, g.ID, usenetRetrievalReason(failure))
+}
+
 // clearOwnedUsenetStagingEngine is clearOwnedUsenetStaging using the narrow
 // contentForgetEngine interface. Called from parkUsenetContentFailure so tests
 // can inject a fake engine without needing a real *usenet.Manager.

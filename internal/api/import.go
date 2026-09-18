@@ -176,12 +176,17 @@ func UsenetCompleteImporter(httpClient *http.Client, connStore *connections.Stor
 			//   Non-content errors (DB/relocate) keep the log-and-return behaviour unchanged.
 			// Review if: importGrabContent gains more error categories that should park.
 			if contentUnusableFailure(err) {
-				deps := AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore}
-				_, parkErr := parkUsenetContentFailure(ctx, deps, *g, err, nzb)
-				if parkErr == nil {
-					return // parked for an alternate release, or a fail-closed guard declined it
+				// Claude 2026-09-17: must fall through to days ladder when handled=false.
+				// Reason: parkUsenetContentFailure returns (false, nil) at the 3/3 cap —
+				//   treating that as "done" left Love Is Blind queued forever with a
+				//   hollow GID (live bug 2026-09-17). parkContentFailureOrDaysLadder
+				//   parks for an alternate when budget remains, else ParkWithBackoff.
+				// Review if: import path is folded into applyUsenetFailure.
+				deps := AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore, NZB: nzb}
+				if parkErr := parkContentFailureOrDaysLadder(ctx, deps, *g, err, nzb); parkErr != nil {
+					log.Printf("usenet import: parking grab %d after content failure: %v", g.ID, parkErr)
 				}
-				log.Printf("usenet import: parking grab %d for alternate release: %v", g.ID, parkErr)
+				return
 			}
 			log.Printf("usenet import: grab %d (gid %s): %v", g.ID, gid, err)
 			return

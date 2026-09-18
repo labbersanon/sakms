@@ -328,9 +328,13 @@ func reconcileImportUsenet(ctx context.Context, deps DownloadReconcileDeps, g *g
 		//   post-restart twin; leaving it log-and-return would strand the slot.
 		// Review if: reconcileImportUsenet is called for non-Usenet protocols.
 		if contentUnusableFailure(err) {
-			adeps := AutoGrabDeps{SettingsStore: deps.SettingsStore, GrabsStore: deps.GrabsStore}
-			if _, parkErr := parkUsenetContentFailure(ctx, adeps, *g, err, deps.NZB); parkErr != nil {
-				log.Printf("usenet reconcile: parking grab %d for alternate release: %v", g.ID, parkErr)
+			// Claude 2026-09-17: fall through to days ladder when alternate park declines.
+			// Reason: same stuck-queued bug as UsenetCompleteImporter — (false, nil) at
+			//   the 3/3 cap must not leave the grab queued. See parkContentFailureOrDaysLadder.
+			// Review if: reconcileImportUsenet shares applyUsenetFailure.
+			adeps := AutoGrabDeps{SettingsStore: deps.SettingsStore, GrabsStore: deps.GrabsStore, NZB: deps.NZB}
+			if parkErr := parkContentFailureOrDaysLadder(ctx, adeps, *g, err, deps.NZB); parkErr != nil {
+				log.Printf("usenet reconcile: parking grab %d after content failure: %v", g.ID, parkErr)
 			}
 		}
 		return err

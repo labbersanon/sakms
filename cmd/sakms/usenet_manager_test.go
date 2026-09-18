@@ -33,7 +33,7 @@ func TestBuildUsenetManager_ZeroSubscriptions(t *testing.T) {
 	serviceConnStore, settingsStore, closeDB := newUsenetTestStores(t)
 	t.Cleanup(closeDB)
 
-	m, err := buildUsenetManager(context.Background(), t.TempDir(), serviceConnStore, settingsStore, &http.Client{}, nil)
+	m, err := buildUsenetManager(context.Background(), t.TempDir(), serviceConnStore, settingsStore, &http.Client{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error with zero subscriptions: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestBuildUsenetManager_NeverNil(t *testing.T) {
 	serviceConnStore, settingsStore, closeDB := newUsenetTestStores(t)
 	closeDB() // force ListByKind to fail
 
-	m, err := buildUsenetManager(context.Background(), t.TempDir(), serviceConnStore, settingsStore, &http.Client{}, nil)
+	m, err := buildUsenetManager(context.Background(), t.TempDir(), serviceConnStore, settingsStore, &http.Client{}, nil, nil)
 	if err == nil {
 		t.Fatal("expected an error from a closed DB")
 	}

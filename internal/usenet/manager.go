@@ -18,6 +18,7 @@ import (
 	"time"
 
 	par2lib "github.com/go-newsgroups/par2"
+	"github.com/labbersanon/sakms/internal/xferlimit"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -139,6 +140,7 @@ type Manager struct {
 	// Related: SetMaxConcurrentDownloads; runDownload releases before PAR2.
 	maxConcurrentDownloads int
 	semaphore              chan struct{}
+	rateCap                *xferlimit.Cap
 }
 
 // DefaultMaxConcurrentDownloads is used when Config.MaxConcurrentDownloads is
@@ -167,6 +169,9 @@ type Config struct {
 	ForceFullDownload bool
 	// ResumeMirror optionally persists a copy of the sidecar for UI/debug.
 	ResumeMirror ResumeMirror
+	// RateCap is the shared global download bandwidth limiter (torrent + Usenet).
+	// Nil means unlimited.
+	RateCap *xferlimit.Cap
 }
 
 // New constructs a Manager for the given NNTP server configuration(s).
@@ -194,6 +199,7 @@ func New(cfg Config) *Manager {
 		downloads:              map[string]*dlState{},
 		subscribers:            map[int]chan []Download{},
 		maxConcurrentDownloads: maxDL,
+		rateCap:                cfg.RateCap,
 	}
 	m.pools = newPools(servers)
 	m.semaphore = make(chan struct{}, maxDL)
@@ -286,6 +292,16 @@ func (m *Manager) SetMaxConcurrentDownloads(n int) {
 	m.mu.Lock()
 	m.maxConcurrentDownloads = n
 	m.semaphore = make(chan struct{}, n)
+	m.mu.Unlock()
+}
+
+// SetRateCap replaces the shared download bandwidth cap (may be nil = unlimited).
+func (m *Manager) SetRateCap(c *xferlimit.Cap) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.rateCap = c
 	m.mu.Unlock()
 }
 
@@ -1379,6 +1395,14 @@ func (m *Manager) fetchSegmentAny(ctx context.Context, msgID string) (segmentRes
 			if ferr == nil {
 				if attempt > 1 {
 					log.Printf("usenet: segment recovered after %d attempt(s) on %s", attempt, p.cfg.Host)
+				}
+				// Account bytes against the shared global cap after a successful
+				// BODY so torrent + Usenet share one Mbps budget.
+				m.mu.Lock()
+				cap := m.rateCap
+				m.mu.Unlock()
+				if err := cap.WaitN(ctx, len(res.data)); err != nil {
+					return segmentResult{}, err
 				}
 				return res, nil
 			}

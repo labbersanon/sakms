@@ -633,9 +633,16 @@ func readDownloaderConfig(ctx context.Context, settingsStore *settings.Store) (a
 	if err != nil {
 		return zero, err
 	}
-	rate, err := getSettingInt(ctx, settingsStore, TorrentDownloadRateLimitKey, TorrentDefaultDownloadRateLimit)
-	if err != nil {
-		return zero, err
+	// Prefer the live global Cap; otherwise the legacy torrent bytes/sec key
+	// (round-trip compatible). Do not route through Mbps here — that truncates.
+	var rateBytes int
+	if c := getGlobalRateCap(); c != nil {
+		rateBytes = c.BytesPerSec()
+	} else {
+		rateBytes, err = getSettingInt(ctx, settingsStore, TorrentDownloadRateLimitKey, TorrentDefaultDownloadRateLimit)
+		if err != nil {
+			return zero, err
+		}
 	}
 	dht, err := getSettingBool(ctx, settingsStore, TorrentDHTEnabledKey, TorrentDefaultDHTEnabled)
 	if err != nil {
@@ -676,7 +683,7 @@ func readDownloaderConfig(ctx context.Context, settingsStore *settings.Store) (a
 		StagingDir:             staging,
 		MaxConcurrent:          conc,
 		MaxConnections:         conn,
-		DownloadRateLimitBytes: rate,
+		DownloadRateLimitBytes: rateBytes,
 		DHTEnabled:             dht,
 		PEXEnabled:             pex,
 		ListenPort:             port,
@@ -838,6 +845,13 @@ func putDownloaderConfigHandler(settingsStore *settings.Store, dl *downloader.Ma
 				SeedDurationMinutes:   next.SeedDurationMinutes,
 				StaleThresholdMinutes: next.StaleThresholdMinutes,
 			}
+			rateToStore := req.DownloadRateLimitBytes
+			// Live Cap owns the limiter; torrent PUT must not override Mbps.
+			if c := getGlobalRateCap(); c != nil {
+				applied.DownloadRateLimit = c.BytesPerSec()
+				applied.SharedRateLimiter = c.Limiter()
+				rateToStore = c.BytesPerSec()
+			}
 			if err := dl.Reconfigure(ctx, applied); err != nil {
 				if errors.Is(err, downloader.ErrRebuildRefused) {
 					// Not a failure to save — a "not right now". The message
@@ -850,6 +864,7 @@ func putDownloaderConfigHandler(settingsStore *settings.Store, dl *downloader.Ma
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			req.DownloadRateLimitBytes = rateToStore
 		}
 
 		for _, kv := range []struct{ key, value string }{

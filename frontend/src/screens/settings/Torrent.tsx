@@ -63,9 +63,7 @@ import {
 const LISTEN_PORT_MIN = 1024;
 const LISTEN_PORT_MAX = 65535;
 
-// Rate-limit units. The wire value is bytes/sec; these are display only.
-const RATE_UNITS = { "KB/s": 1024, "MB/s": 1024 * 1024 };
-
+// Rate-limit units removed — global Mbps cap lives under Advanced → Global.
 // Seed-duration units. The wire value is minutes; these are display only.
 const DURATION_UNITS = { hours: 60, days: 1440 };
 
@@ -237,7 +235,6 @@ const TorrentSettingsCard: Component = () => {
       c.listenPort <= LISTEN_PORT_MAX &&
       c.maxConnections >= 1 &&
       c.maxConcurrent >= 1 &&
-      c.downloadRateLimitBytes >= 0 &&
       c.seedRatioLimit >= 0 &&
       c.seedDurationMinutes >= 0 &&
       c.staleThresholdMinutes >= 0
@@ -437,16 +434,10 @@ const TorrentSettingsCard: Component = () => {
               }}
             />
             <Muted class="mt-1">
-              At least 1. Applies immediately — no engine restart.
+              At least 1. Applies immediately — no engine restart. Global
+              download rate cap lives under Settings → Advanced.
             </Muted>
           </label>
-          <UnitAmount
-            label="Download rate limit"
-            help="0 is unlimited. Applies immediately — no engine restart."
-            units={RATE_UNITS}
-            initial={config()!.downloadRateLimitBytes}
-            onChange={(v) => patch("downloadRateLimitBytes", v)}
-          />
         </Group>
 
         <Group title="Seeding">

@@ -54,6 +54,8 @@ import (
 	"github.com/labbersanon/sakms/internal/videophash"
 	"github.com/labbersanon/sakms/internal/web"
 	"github.com/labbersanon/sakms/internal/webhooks"
+	"github.com/labbersanon/sakms/internal/xferlimit"
+	"golang.org/x/time/rate"
 )
 
 // sectionLockDisabledByEnv reports whether SAKMS_SECTION_LOCK_DISABLE asks
@@ -166,7 +168,15 @@ func run() error {
 	// (it owns a torrent client + a poll goroutine — never per-request like
 	// mode.Session's cheap clients) and injected as the same pointer into every
 	// mode.Build call that needs it.
-	dlManager, err := buildDownloader(context.Background(), cfg.DataDir, settingsStore, &http.Client{Timeout: outboundTimeout}, downloadStateStore)
+	rateMbps, err := api.LoadDownloadRateLimitMbps(context.Background(), settingsStore)
+	if err != nil {
+		log.Printf("download rate limit: loading: %v", err)
+		rateMbps = 0
+	}
+	rateCap := xferlimit.New(rateMbps)
+	api.SetGlobalRateCap(rateCap)
+
+	dlManager, err := buildDownloader(context.Background(), cfg.DataDir, settingsStore, &http.Client{Timeout: outboundTimeout}, downloadStateStore, rateCap)
 	if err != nil {
 		log.Printf("downloader: not starting (%v) — torrent grabbing will be unavailable until fixed", err)
 		dlManager = nil
@@ -205,7 +215,7 @@ func run() error {
 	// Constructed unconditionally (even with zero subscriptions configured),
 	// so nzbManager is never nil; must run after BackfillUsenetURL above, since
 	// a freshly migrated legacy row has no host/port until that normalizes it.
-	nzbManager, err := buildUsenetManager(context.Background(), cfg.DataDir, serviceConnStore, settingsStore, &http.Client{Timeout: outboundTimeout}, downloadStateStore)
+	nzbManager, err := buildUsenetManager(context.Background(), cfg.DataDir, serviceConnStore, settingsStore, &http.Client{Timeout: outboundTimeout}, downloadStateStore, rateCap)
 	if err != nil {
 		// buildUsenetManager always returns a non-nil Manager (see its doc
 		// comment) — an error here means a subscription/settings read failed,
@@ -867,7 +877,7 @@ func seedBundledOllamaDefaults(ctx context.Context, connStore *connections.Store
 // their documented defaults) and constructs the process-lifetime download
 // Manager. It does NOT start the engine — the caller does that with
 // `go m.Start(ctx)`.
-func buildDownloader(ctx context.Context, dataDir string, settingsStore *settings.Store, httpClient *http.Client, seedStore downloader.SeedStore) (*downloader.Manager, error) {
+func buildDownloader(ctx context.Context, dataDir string, settingsStore *settings.Store, httpClient *http.Client, seedStore downloader.SeedStore, rateCap *xferlimit.Cap) (*downloader.Manager, error) {
 	staging, err := settingsStore.Get(ctx, api.DownloaderStagingDirKey)
 	if err != nil && !errors.Is(err, settings.ErrNotFound) {
 		return nil, err
@@ -887,12 +897,21 @@ func buildDownloader(ctx context.Context, dataDir string, settingsStore *setting
 		obfuscation = api.TorrentDefaultObfuscationMode
 	}
 
+	bps := 0
+	var shared *rate.Limiter
+	if rateCap != nil {
+		bps = rateCap.BytesPerSec()
+		shared = rateCap.Limiter()
+	} else {
+		bps = settingInt(ctx, settingsStore, api.TorrentDownloadRateLimitKey, api.TorrentDefaultDownloadRateLimit)
+	}
 	return downloader.New(downloader.Config{
 		StagingDir: staging,
 		MaxConc:    maxConc,
 		MaxConn:    maxConn,
 
-		DownloadRateLimit:     settingInt(ctx, settingsStore, api.TorrentDownloadRateLimitKey, api.TorrentDefaultDownloadRateLimit),
+		DownloadRateLimit:     bps,
+		SharedRateLimiter:     shared,
 		DHTEnabled:            settingBool(ctx, settingsStore, api.TorrentDHTEnabledKey, api.TorrentDefaultDHTEnabled),
 		PEXEnabled:            settingBool(ctx, settingsStore, api.TorrentPEXEnabledKey, api.TorrentDefaultPEXEnabled),
 		ListenPort:            settingInt(ctx, settingsStore, api.TorrentListenPortKey, api.TorrentDefaultListenPort),
@@ -924,7 +943,7 @@ func buildDownloader(ctx context.Context, dataDir string, settingsStore *setting
 // read here — see DownloaderMaxConnectionsKey's doc comment: it is
 // torrent-only now. Each subscription carries its own MaxConns, with
 // usenet.defaultMaxConnsPerServer covering an unset (<=0) value.
-func buildUsenetManager(ctx context.Context, dataDir string, serviceConnStore *serviceconn.Store, settingsStore *settings.Store, httpClient *http.Client, resumeMirror usenet.ResumeMirror) (*usenet.Manager, error) {
+func buildUsenetManager(ctx context.Context, dataDir string, serviceConnStore *serviceconn.Store, settingsStore *settings.Store, httpClient *http.Client, resumeMirror usenet.ResumeMirror, rateCap *xferlimit.Cap) (*usenet.Manager, error) {
 	var servers []usenet.ServerConfig
 	subs, err := serviceConnStore.ListByKind(ctx, serviceconn.KindUsenet)
 	if err != nil {
@@ -969,6 +988,7 @@ func buildUsenetManager(ctx context.Context, dataDir string, serviceConnStore *s
 		SegmentResume:          resumeEnabled,
 		ForceFullDownload:      forceFull,
 		ResumeMirror:           resumeMirror,
+		RateCap:                rateCap,
 	})
 	return m, err
 }

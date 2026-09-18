@@ -864,7 +864,6 @@ func putDownloaderConfigHandler(settingsStore *settings.Store, dl *downloader.Ma
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			_ = rateToStore // used below in persistence
 			req.DownloadRateLimitBytes = rateToStore
 		}
 

@@ -42,22 +42,19 @@ func TestPriorFile_RequiresFirstMsgMatch(t *testing.T) {
 	}
 }
 
-// TestDownloadAll_UniquifiesCollidingYencNames is the Love Is Blind / RiPER
-// obfuscation regression: every NZB file shares one yEnc =ybegin name. Without
-// uniquify, parts smash one path and PAR2 reports thousands of missing slices.
+// Shared yEnc =ybegin name across NZB files must land on distinct subject names.
 func TestDownloadAll_UniquifiesCollidingYencNames(t *testing.T) {
 	const sharedName = "316cef87b8ef42dc840681b2b2cf2c37.par2"
 	partSize := 512
 	segCount := 2
 
 	type part struct {
-		label string
 		full  []byte
 		ids   []string
 		parts [][]byte
 	}
 	mk := func(label string, fill byte) part {
-		p := part{label: label, full: make([]byte, segCount*partSize)}
+		p := part{full: make([]byte, segCount*partSize)}
 		for i := range p.full {
 			p.full[i] = fill
 		}
@@ -132,7 +129,6 @@ func TestDownloadAll_UniquifiesCollidingYencNames(t *testing.T) {
 		t.Fatalf("part2 bytes mismatch")
 	}
 
-	// Resume keys must stay separate — no merged Done map with duplicate n values.
 	tr := loadResumeTracker(dir, gid, nil, false)
 	if len(tr.snap.Files) != 2 {
 		t.Fatalf("resume files = %d, want 2: %#v", len(tr.snap.Files), tr.snap.Files)
@@ -153,12 +149,9 @@ func TestDownloadAll_UniquifiesCollidingYencNames(t *testing.T) {
 	}
 }
 
-// When subject quotes the same hash.par2 for every file, uniqueOutputName still
-// separates staging paths (safety net when subject offers no distinct part name).
 func TestDownloadAll_UniquifiesWhenSubjectAlsoCollides(t *testing.T) {
 	const sharedName = "316cef87b8ef42dc840681b2b2cf2c37.par2"
 	partSize := 256
-	segCount := 1
 
 	mkBody := func(label string, fill byte) (id string, body []byte, full []byte) {
 		full = bytes.Repeat([]byte{fill}, partSize)
@@ -215,7 +208,6 @@ func TestDownloadAll_UniquifiesWhenSubjectAlsoCollides(t *testing.T) {
 	if !bytes.Equal(gotA, fullA) || !bytes.Equal(gotB, fullB) {
 		t.Fatal("assembled bytes mismatch")
 	}
-	_ = segCount
 }
 
 func listNames(t *testing.T, dir string) []string {

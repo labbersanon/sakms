@@ -1149,13 +1149,11 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 // downloadAll downloads every file in the NZB and returns the assembled paths.
 func (m *Manager) downloadAll(ctx context.Context, gid string, dl *dlState, nzb *NZB) ([]string, error) {
 	maxConc := concurrencyBudget(m.currentPools())
-	// Claude 2026-09-18: track claimed output names across NZB files.
-	// Reason: obfuscated multi-part releases reuse one yEnc filename for every
-	//   RAR/PAR2 part; without uniquify, assembleFile smashed them into one path
-	//   and merged resume Done maps (many MsgIDs at n:1/off:0) → PAR2
-	//   "thousands of damaged/missing slices".
-	// Troubleshooting: resume unique_n << done count; staging ~one-part size.
-	// Review if: posters start emitting distinct yEnc names per part again.
+	// Claude 2026-09-18: claim output names across NZB files (uniqueOutputName).
+	// Reason: obfuscated multi-part releases reuse one yEnc name; without this,
+	//   parts smash one staging path and merge resume Done maps.
+	// Troubleshooting: PAR2 "thousands of damaged/missing slices"; unique_n << done.
+	// Review if: posters emit distinct yEnc names per part again.
 	usedNames := map[string]struct{}{}
 	var paths []string
 	for _, nzbFile := range nzb.Files {
@@ -1194,11 +1192,6 @@ func (m *Manager) downloadAll(ctx context.Context, gid string, dl *dlState, nzb 
 // Troubleshooting: high eth0 RX with flat staging size mid-file → expected until
 //   the ordered writer commits; after this change staging should grow steadily.
 // Review if: markSegment persist rate needs batching for very large NZBs.
-//
-// Claude 2026-09-18: uniquify output names via usedNames (see downloadAll).
-// Reason: same yEnc name across NZB files must not share one staging path/resume key.
-// Troubleshooting: PAR2 not repairable after "complete" obfuscated RAR set.
-// Review if: uniqueOutputName scheme (.partNNN) conflicts with a poster convention.
 func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzbFile NZBFile, maxConc int, usedNames map[string]struct{}) (string, error) {
 	if len(nzbFile.Segs) == 0 {
 		return "", fmt.Errorf("no segments")
@@ -1408,10 +1401,9 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 		gotCond.Broadcast()
 	}
 	fetchErr := g.Wait()
-	// Claude 2026-09-18: prefer real fetch failure over writer cancel mask.
-	// Reason: errgroup cancels siblings on the first fetch error; the ordered
-	//   writer then surfaces segment N: context.Canceled and previously won
-	//   over fetchErr — UI/logs showed only "context canceled".
+	// Claude 2026-09-18: prefer fetchErr over writer context.Canceled.
+	// Reason: errgroup cancel makes the ordered writer surface Canceled and
+	//   previously hid the real fetch failure.
 	// Troubleshooting: "segment N: context canceled" with no underlying cause.
 	// Review if: errgroup is replaced with a model that preserves primary errors.
 	if writeErr != nil {
@@ -1699,11 +1691,10 @@ func filenameFromSubject(subject string) string {
 // Review if: import gains content-sniffing for extensionless files.
 // Related: NZBGet subject-filename handling / NzbLog diagnostics.
 //
-// Claude 2026-09-18: prefer subject when yEnc is an obfuscated hex+.par2 hash.
-// Reason: RiPER-style posts put the SAME hash.par2 in =ybegin for every RAR
-//   part while the subject quotes distinct Show.part05.rar names. Using yEnc
-//   first made uniqueOutputName invent hash.part002.par2 names that unrar
-//   cannot join as a multi-volume set.
+// Claude 2026-09-18: prefer subject when yEnc is an obfuscated hex hash (.par2).
+// Reason: RiPER-style posts reuse one hash.par2 in =ybegin; subjects quote
+//   distinct Show.partNN.rar names that unrar can join. yEnc-first produced
+//   hash.part00N names uniqueOutputName invented.
 // Troubleshooting: staging has hash.part00N.rar instead of Show.partNN.rar.
 // Review if: a poster uses hex yEnc names that must win over a bad subject.
 func preferredOutputName(yencName, subject string) string {
@@ -1735,9 +1726,6 @@ func yencLooksObfuscated(name string) bool {
 		return false
 	}
 	stem := strings.TrimSuffix(name, filepath.Ext(name))
-	if stem == "" {
-		stem = name
-	}
 	if len(stem) < 32 {
 		return false
 	}

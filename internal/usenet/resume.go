@@ -172,11 +172,11 @@ func (t *resumeTracker) priorFile(firstMsg string) (name string, size int64, don
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	// Claude 2026-09-18: only match on firstMsg — drop "single file" fallback.
-	// Reason: with colliding yEnc names, len(Files)==1 could still be the wrong
-	//   merged resume key; returning it skipped TRUNC and corrupted the next part.
+	// Claude 2026-09-18: match only on firstMsg — no len(Files)==1 fallback.
+	// Reason: a colliding yEnc resume key can be the wrong file; returning it
+	//   skipped TRUNC and corrupted the next part.
 	// Troubleshooting: priorDone>0 but hasSegment(firstMsg)=false on a new part.
-	// Review if: a legitimate single-file resume needs filename without firstMsg.
+	// Review if: a legitimate single-file resume needs a name without firstMsg.
 	for name, rf := range t.snap.Files {
 		if rf == nil || len(rf.Done) == 0 {
 			continue

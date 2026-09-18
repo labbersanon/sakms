@@ -25,13 +25,14 @@ const ResumeFileName = ".sakms-resume.json"
 const resumeTmpName = ".sakms-resume.json.tmp"
 
 // resumeSchemaVersion is the durable resume sidecar format.
-// v1 wrote segments at yEnc begin offsets (leaving NUL gaps when decoded
-// length < begin stride). v2 writes contiguously by decoded length.
-// Claude 2026-09-15: bump for contiguous assembly fix.
-// Reason: gap-polluted v1 resumes must not be reused after the offset change.
+// v1 wrote at yEnc begin offsets (NUL windows when decoded length < stride).
+// v2 packed by decoded length (wrong for stride posters — truncated short of PAR2 FileDesc).
+// v3 restores yEnc-begin WriteAt + Truncate to =ybegin FileSize (DirectWrite-style).
+// Claude 2026-09-18: bump for yEnc-begin assembly.
+// Reason: packed v2 resumes encode the wrong layout; v1 and v2 must not be reused.
 // Troubleshooting: journal "discarding legacy resume"; staging wiped + relaunch.
 // Review if: a future schema needs another wipe policy.
-const resumeSchemaVersion = 2
+const resumeSchemaVersion = 3
 
 type ResumeSnapshot struct {
 	Version int                    `json:"v"`
@@ -92,12 +93,13 @@ func loadResumeTracker(dir, gid string, mirror ResumeMirror, disabled bool) *res
 	if loaded.Files == nil {
 		loaded.Files = map[string]*ResumeFile{}
 	}
-	// Claude 2026-09-15: refuse v1 (yEnc-offset) resumes — they encode gaps.
-	// Reason: contiguous assembly (v2) cannot safely skip v1 ranges; leftover
-	//         NUL holes fail PAR2 / unrar. Wipe sidecar + payloads so the
-	//         next assemble is a clean contiguous write.
-	// Troubleshooting: "discarding legacy resume"; hollow rar after upgrade.
-	// Review if: resumeSchemaVersion bumps again and needs the same wipe.
+	// Claude 2026-09-18: refuse non-current resumes (v1 yEnc-gap AND v2 packed).
+	// Reason: v3 writes at yEnc begin offsets and truncates to FileSize; packed
+	//         v2 ranges and gap-polluted v1 ranges cannot be skipped safely.
+	//         loadResumeTracker and InvalidateLegacyResumes already wipe any
+	//         sidecar whose version != resumeSchemaVersion.
+	// Troubleshooting: "discarding legacy resume"; hollow/short rar after upgrade.
+	// Review if: resumeSchemaVersion bumps again — same wipe-non-current policy.
 	if loaded.Version != resumeSchemaVersion {
 		log.Printf("usenet: discarding legacy resume v%d in %s (need v%d) — wiping staging payloads",
 			loaded.Version, dir, resumeSchemaVersion)
@@ -206,6 +208,18 @@ func (t *resumeTracker) skippedBytes(filename, msgID string, fallback int) int {
 	return n
 }
 
+func (t *resumeTracker) skippedOffset(filename, msgID string) int64 {
+	if t == nil {
+		return 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if rf := t.snap.Files[filename]; rf != nil {
+		return rf.Done[msgID].Offset
+	}
+	return 0
+}
+
 func (t *resumeTracker) setFileSize(filename string, size int64) {
 	if t == nil || t.disabled || filename == "" || size <= 0 {
 		return
@@ -301,9 +315,10 @@ func resumeFileVersion(dir string) int {
 	return loaded.Version
 }
 
-// StagingHasLegacyOrOrphanPayloads reports whether dir has a pre-v2 resume sidecar (or
-// payload files without a current-schema resume). Used at startup to wipe
-// gap-damaged staging so reconcile can relaunch cleanly.
+// StagingHasLegacyOrOrphanPayloads reports whether dir has a non-current resume
+// sidecar (v1 or v2, or any version != resumeSchemaVersion) or payload files
+// without a current-schema resume. Used at startup to wipe incompatible
+// staging so reconcile can relaunch cleanly.
 func StagingHasLegacyOrOrphanPayloads(dir string) bool {
 	ver := resumeFileVersion(dir)
 	if ver != 0 && ver != resumeSchemaVersion {

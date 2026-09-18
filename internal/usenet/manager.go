@@ -28,8 +28,10 @@ import (
 //
 // Claude 2026-09-17: intentionally NOT Cancel.
 // Reason: Cancel calls deleteDownloadDir → os.RemoveAll, which would destroy the
-//   staging dir and the .sakms-resume.json sidecar that resumeDueTransportRetries
-//   needs for RelaunchNZB to resume from where the failed download left off.
+//
+//	staging dir and the .sakms-resume.json sidecar that resumeDueTransportRetries
+//	needs for RelaunchNZB to resume from where the failed download left off.
+//
 // Review if: Cancel gains a "drop from queue, keep files" mode.
 func (m *Manager) Forget(gid string) bool {
 	m.mu.Lock()
@@ -479,15 +481,15 @@ func (m *Manager) SweepForceFull() int {
 	return m.sweepOwnedStaging(true)
 }
 
-// InvalidateLegacyResumes wipes staging dirs that still carry pre-v2 (gap-offset)
-// resume sidecars or orphan payloads without a current resume. Call once at
-// process start before ReconcileInFlightDownloads so damaged assemblies are
-// discarded and relaunched with contiguous writes.
+// InvalidateLegacyResumes wipes staging dirs that still carry a non-current
+// resume sidecar (v1 yEnc-gap or v2 packed) or orphan payloads without a
+// current resume. Call once at process start before ReconcileInFlightDownloads
+// so damaged assemblies are discarded and relaunched with yEnc-begin writes.
 //
-// Claude 2026-09-15: upgrade wipe for yEnc-gap fix.
-// Reason: operator chose auto-wipe of gap-damaged staging on upgrade.
+// Claude 2026-09-18: upgrade wipe for yEnc-begin (v3) assembly.
+// Reason: packed v2 and gap-polluted v1 staging must not resume after the layout change.
 // Troubleshooting: journal "invalidated legacy usenet staging"; empty nzb-* dirs.
-// Review if: resumeSchemaVersion bumps again — same wipe policy applies.
+// Review if: resumeSchemaVersion bumps again — same wipe-non-current policy applies.
 func (m *Manager) InvalidateLegacyResumes() int {
 	if m == nil {
 		return 0
@@ -524,11 +526,10 @@ func (m *Manager) InvalidateLegacyResumes() int {
 		n++
 	}
 	if n > 0 {
-		log.Printf("usenet: invalidated %d legacy usenet staging dir(s) for contiguous reassemble", n)
+		log.Printf("usenet: invalidated %d legacy usenet staging dir(s) for yEnc-begin reassemble", n)
 	}
 	return n
 }
-
 
 func (m *Manager) sweepOwnedStaging(wipePayloads bool) int {
 	if m == nil {
@@ -1072,15 +1073,22 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 // without NNTP.
 //
 // Claude 2026-09-18: PAR2 failure is a warning; unpack (or a flat video) is the
-//   delivery gate.
-// Reason: contiguous decoded-length assembly leaves RAR5 ~1.5KB short of PAR2
-//   FileDesc (yEnc stride 768000×N). go-newsgroups/par2 then marks all slices
-//   missing. Fail-closing before unrar skipped archives NZBGet still extracts.
-// Troubleshooting: "par2: not repairable (N damaged/missing slices)" with
-//   healthy .part01.rar in staging and no unpack attempt in the journal.
-// Review if: go-newsgroups/par2 treats FileDesc length mismatch as trim/pad, or
-//   assembly can match FileDesc size without yEnc-offset NUL gaps
-//   (docs/usenet-contiguous-assembly.md).
+//
+//	delivery gate (#62).
+//
+// Reason: even with yEnc-begin + FileSize truncate, go-newsgroups/par2 can still
+//
+//	report missing slices; fail-closing before unrar skipped archives NZBGet
+//	still extracts. Naming uniquify (#59/#60) is independent of this gate.
+//
+// Troubleshooting: "par2: not repairable" with a healthy .part01.rar in staging
+//
+//	and no unpack attempt in the journal.
+//
+// Review if: go-newsgroups/par2 treats FileDesc-sized yEnc NUL windows as complete
+//
+//	so this warning path is unused.
+//
 // Related: verifyAndRepair; unpackArchives; docs/usenet-contiguous-assembly.md.
 func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState, files []string) {
 	repaired, repairErr := verifyAndRepair(dl.stagingDir, files)
@@ -1182,31 +1190,39 @@ func (m *Manager) downloadAll(ctx context.Context, gid string, dl *dlState, nzb 
 	return paths, nil
 }
 
-// assembleFile downloads every segment of one NZB file and writes a contiguous
-// on-disk file under dl.stagingDir.
+// assembleFile downloads every segment of one NZB file and writes it at yEnc
+// begin offsets under dl.stagingDir, then Truncates to =ybegin FileSize.
 //
 // Claude 2026-09-11: skip segments recorded in .sakms-resume.json (Phase 2).
 // Reason: RelaunchNZB after restart re-fetched every segment; ARR-parity needs durable skip of completed MsgIDs while keeping the same nzb-* dir.
 // Troubleshooting: journal "resuming — N segment(s)"; force-full clears sidecar.
 // Review if: PAR2 repair requires invalidating specific MsgIDs after a bad write.
 //
-// Claude 2026-09-15: write at cumulative decoded lengths, NOT yEnc begin offsets.
-// Reason: many posters advance =ypart begin by a round stride (e.g. 768000) while
-//         rapidyenc decodes fewer bytes; WriteAt(yencOffset) left 14–40 byte NUL
-//         gaps that made PAR2 report thousands of damaged slices and unrar fail,
-//         while NZBGet DirectWrite lays out by article/decoded sizes without gaps.
-// Troubleshooting: PAR2 "not repairable" with damage ≈ segment-boundary count;
-//         resume v1 sidecars are wiped (resumeSchemaVersion).
-// Review if: a poster emits overlapping yEnc ranges that require sparse WriteAt.
-// Related: docs plan; resume.go resumeSchemaVersion; NZBGet DirectWrite.
+// Claude 2026-09-18: write at yEnc begin offsets; Truncate to =ybegin FileSize.
+// Reason: stride posters (e.g. 768000) decode fewer bytes than the begin step;
+//
+//	packing by decoded length truncated ~1.5KB short of PAR2 FileDesc.
+//	NZBGet DirectWrite uses WriteAt(yEnc Offset) and sizes to FileSize;
+//	the 14–40 byte windows between parts are expected (not RAR damage).
+//
+// Troubleshooting: PAR2 "not repairable" with damage ≈ segment-boundary count
+//
+//	after a packed (v2) assemble; v1/v2 sidecars are wiped (resume v3).
+//
+// Review if: a poster emits overlapping yEnc ranges that need a different merge.
+// Related: docs/usenet-contiguous-assembly.md; resume.go resumeSchemaVersion; NZBGet DirectWrite.
 //
 // Claude 2026-09-18: ordered pipeline write (concurrent fetch, serial commit).
 // Reason: the previous "fetch-all into got[], then write" held an entire multi-GB
-//   file in RAM and only markSegment'd at the end — restart lost mid-file progress
-//   and drove sakms RSS to multi-GB. Fetchers take a slot before BODY; the writer
-//   frees it after WriteAt+markSegment so peak buffered bodies ≤ maxConc.
+//
+//	file in RAM and only markSegment'd at the end — restart lost mid-file progress
+//	and drove sakms RSS to multi-GB. Fetchers take a slot before BODY; the writer
+//	frees it after WriteAt+markSegment so peak buffered bodies ≤ maxConc.
+//
 // Troubleshooting: high eth0 RX with flat staging size mid-file → expected until
-//   the ordered writer commits; after this change staging should grow steadily.
+//
+//	the ordered writer commits; after this change staging should grow steadily.
+//
 // Review if: markSegment persist rate needs batching for very large NZBs.
 //
 // Claude 2026-09-18: uniquify output names via usedNames (see downloadAll).
@@ -1228,12 +1244,20 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 	copy(segs, nzbFile.Segs)
 	sort.Slice(segs, func(i, j int) bool { return segs[i].Number < segs[j].Number })
 
+	type fetched struct {
+		data     []byte
+		offset   int64
+		partSize int64
+		fileSize int64
+	}
+
 	resume := dl.resume
 	firstMsg := strings.TrimSpace(segs[0].MsgID)
 	var filename string
 	var priorDone int
+	var yencSize int64
 	if resume != nil {
-		filename, _, priorDone = resume.priorFile(firstMsg)
+		filename, yencSize, priorDone = resume.priorFile(firstMsg)
 	}
 	if filename != "" {
 		// Resume hit — claim so a later NZB file cannot reuse this path.
@@ -1241,7 +1265,7 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 	}
 
 	// Seed filename (+ optional first body) before open so the output path exists.
-	var seedData []byte
+	var seed fetched
 	var seedNum int
 	if filename == "" || resume == nil || resume.disabled || !resume.hasSegment(filename, firstMsg) {
 		first, err := m.fetchSegmentAny(ctx, segs[0].MsgID)
@@ -1251,7 +1275,7 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 		if filename == "" {
 			filename = uniqueOutputName(preferredOutputName(first.filename, nzbFile.Subject), usedNames)
 		}
-		seedData = first.data
+		seed = fetched{data: first.data, offset: first.offset, partSize: first.partSize, fileSize: first.fileSize}
 		seedNum = segs[0].Number
 	}
 
@@ -1272,13 +1296,13 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 	}
 
 	// Hollow-file guard: sidecar said done but on-disk range is empty → re-fetch.
-	if seedData == nil {
+	if seed.data == nil {
 		if resume == nil || resume.disabled || !resume.segmentCovered(f, filename, firstMsg, fileBytes) {
 			first, err := m.fetchSegmentAny(ctx, segs[0].MsgID)
 			if err != nil {
 				return "", fmt.Errorf("segment 1: %w", err)
 			}
-			seedData = first.data
+			seed = fetched{data: first.data, offset: first.offset, partSize: first.partSize, fileSize: first.fileSize}
 			seedNum = segs[0].Number
 		}
 	}
@@ -1286,7 +1310,7 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 	covered := make([]bool, len(segs))
 	for i, seg := range segs {
 		msgID := strings.TrimSpace(seg.MsgID)
-		if seedData != nil && seg.Number == seedNum {
+		if seed.data != nil && seg.Number == seedNum {
 			covered[i] = false
 			continue
 		}
@@ -1295,9 +1319,6 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 		}
 	}
 
-	type fetched struct {
-		data []byte
-	}
 	got := make(map[int]fetched)
 	var gotMu sync.Mutex
 	gotCond := sync.NewCond(&gotMu)
@@ -1319,9 +1340,9 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 	defer close(doneWake)
 
 	// Seed first body into the pipeline.
-	if seedData != nil {
+	if seed.data != nil {
 		gotMu.Lock()
-		got[seedNum] = fetched{data: seedData}
+		got[seedNum] = seed
 		gotMu.Unlock()
 	}
 
@@ -1332,7 +1353,7 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 		if covered[i] {
 			continue
 		}
-		if seedData != nil && seg.Number == seedNum {
+		if seed.data != nil && seg.Number == seedNum {
 			continue
 		}
 		seg := seg
@@ -1354,7 +1375,12 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 				return fmt.Errorf("segment %d: %w", seg.Number, err)
 			}
 			gotMu.Lock()
-			got[seg.Number] = fetched{data: res.data}
+			got[seg.Number] = fetched{
+				data:     res.data,
+				offset:   res.offset,
+				partSize: res.partSize,
+				fileSize: res.fileSize,
+			}
 			gotMu.Unlock()
 			gotCond.Broadcast()
 			return nil
@@ -1362,20 +1388,24 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 	}
 
 	var writeErr error
-	var cursor int64
+	var maxEnd int64
 	for i, seg := range segs {
 		msgID := strings.TrimSpace(seg.MsgID)
 		if covered[i] {
 			n := 0
+			var off int64
 			if resume != nil {
 				n = resume.skippedBytes(filename, msgID, int(seg.Bytes))
+				off = resume.skippedOffset(filename, msgID)
 			}
 			if n <= 0 {
 				writeErr = fmt.Errorf("segment %d: missing decoded length for resume skip", seg.Number)
 				break
 			}
 			m.addCompleted(gid, int64(n))
-			cursor += int64(n)
+			if end := off + int64(n); end > maxEnd {
+				maxEnd = end
+			}
 			gotMu.Lock()
 			nextWrite = i + 1
 			gotMu.Unlock()
@@ -1398,23 +1428,28 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 		if writeErr != nil {
 			break
 		}
-		data := got[seg.Number].data
+		item := got[seg.Number]
 		delete(got, seg.Number)
 		nextWrite = i + 1
 		gotMu.Unlock()
 		gotCond.Broadcast()
 
-		if _, err := f.WriteAt(data, cursor); err != nil {
+		if item.fileSize > yencSize {
+			yencSize = item.fileSize
+		}
+		if _, err := f.WriteAt(item.data, item.offset); err != nil {
 			writeErr = fmt.Errorf("writing segment %d: %w", seg.Number, err)
 			break
 		}
-		m.addCompleted(gid, int64(len(data)))
+		m.addCompleted(gid, int64(len(item.data)))
 		if resume != nil {
-			if err := resume.markSegment(filename, msgID, seg.Number, cursor, len(data), 0); err != nil {
+			if err := resume.markSegment(filename, msgID, seg.Number, item.offset, len(item.data), item.fileSize); err != nil {
 				log.Printf("usenet: resume persist %s seg %d: %v", gid, seg.Number, err)
 			}
 		}
-		cursor += int64(len(data))
+		if end := item.offset + int64(len(item.data)); end > maxEnd {
+			maxEnd = end
+		}
 	}
 
 	if writeErr != nil {
@@ -1438,11 +1473,15 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 		return "", fetchErr
 	}
 
-	if err := f.Truncate(cursor); err != nil {
-		return "", fmt.Errorf("truncating %s to contiguous size %d: %w", outPath, cursor, err)
+	finalSize := maxEnd
+	if yencSize > finalSize {
+		finalSize = yencSize
+	}
+	if err := f.Truncate(finalSize); err != nil {
+		return "", fmt.Errorf("truncating %s to yEnc size %d: %w", outPath, finalSize, err)
 	}
 	if resume != nil {
-		resume.setFileSize(filename, cursor)
+		resume.setFileSize(filename, finalSize)
 	}
 	return outPath, nil
 }
@@ -1482,10 +1521,14 @@ var ErrNoSubscriptions = errors.New("usenet: no Usenet subscriptions are configu
 //
 // Claude 2026-09-17: ctx + per-server retry loop for transport failures.
 // Reason: stale pooled connections failed whole NZBs on broken pipe; reconnect
-//   (pool.put false + new get) recovers most segments.
+//
+//	(pool.put false + new get) recovers most segments.
+//
 // Claude 2026-09-18: invalidateIdle() on transport error — get() prefers idle,
-//   so retries can exhaust maxSegmentAttemptsPerServer on stale siblings when
-//   MaxConns exceeds that limit, never dialing fresh.
+//
+//	so retries can exhaust maxSegmentAttemptsPerServer on stale siblings when
+//	MaxConns exceeds that limit, never dialing fresh.
+//
 // Review if: maxSegmentAttemptsPerServer is exposed as a settings knob.
 func (m *Manager) fetchSegmentAny(ctx context.Context, msgID string) (segmentResult, error) {
 	pools := m.currentPools()
@@ -1715,9 +1758,11 @@ func filenameFromSubject(subject string) string {
 //
 // Claude 2026-09-18: prefer subject when yEnc is an obfuscated hex+.par2 hash.
 // Reason: RiPER-style posts put the SAME hash.par2 in =ybegin for every RAR
-//   part while the subject quotes distinct Show.part05.rar names. Using yEnc
-//   first made uniqueOutputName invent hash.part002.par2 names that unrar
-//   cannot join as a multi-volume set.
+//
+//	part while the subject quotes distinct Show.part05.rar names. Using yEnc
+//	first made uniqueOutputName invent hash.part002.par2 names that unrar
+//	cannot join as a multi-volume set.
+//
 // Troubleshooting: staging has hash.part00N.rar instead of Show.partNN.rar.
 // Review if: a poster uses hex yEnc names that must win over a bad subject.
 func preferredOutputName(yencName, subject string) string {
@@ -1898,12 +1943,15 @@ func isPar2Payload(path string) bool {
 //
 // Claude 2026-09-15: dedupe + remap after rename
 // Reason: assembleFile can emit the same outPath multiple times; after the
-//   first rename, later copies hit a gone .par2 and logged "skipping non-PAR2"
-//   ~N times. Stale paths left in the slice also poison verifyAndRepair's
-//   dataPaths ReadFile when a real PAR2 set exists.
+//
+//	first rename, later copies hit a gone .par2 and logged "skipping non-PAR2"
+//	~N times. Stale paths left in the slice also poison verifyAndRepair's
+//	dataPaths ReadFile when a real PAR2 set exists.
+//
 // Troubleshooting: journal spam "skipping non-PAR2"; par2: reading data file …
 // Claude 2026-09-18: assembleFile now uniquifies colliding yEnc names (.partNNN);
-//   keep dedupe here for resume/legacy staging that still lists duplicates.
+//
+//	keep dedupe here for resume/legacy staging that still lists duplicates.
 func normalizeObfuscatedPar2Names(files []string) []string {
 	renamed := make(map[string]string)
 	emitted := make(map[string]bool)

@@ -18,7 +18,7 @@ and prune passes (window days + max GiB).
 | Setting | Notes |
 |---|---|
 | Master + per-mode toggles | Movies / Series / Adult AND-ed with master |
-| Per-mode newsgroups | Multi-select from provider `LIST ACTIVE` (media wildmats); crawl indexes the union; search uses the active mode's list |
+| Per-mode newsgroups | Dual-list toolbox (Unmonitored → Monitored) from provider `LIST ACTIVE`; crawl indexes the union; search uses the active mode's monitored list |
 | Max GiB / window days / crawl interval | Soft size budget, retention, 0 = crawler off |
 | Probe state/detail | Read-only |
 

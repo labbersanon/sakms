@@ -20,7 +20,6 @@ import (
 	"github.com/labbersanon/sakms/internal/sectionlock"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenet"
-	"github.com/labbersanon/sakms/internal/xferlimit"
 )
 
 // Settings keys for the unified downloader's operator-tunable knobs.
@@ -634,13 +633,16 @@ func readDownloaderConfig(ctx context.Context, settingsStore *settings.Store) (a
 	if err != nil {
 		return zero, err
 	}
-	rate, err := LoadDownloadRateLimitMbps(ctx, settingsStore)
-	if err != nil {
-		return zero, err
-	}
-	rateBytes := xferlimit.MbpsToBytesPerSec(rate)
+	// Prefer the live global Cap; otherwise the legacy torrent bytes/sec key
+	// (round-trip compatible). Do not route through Mbps here — that truncates.
+	var rateBytes int
 	if c := getGlobalRateCap(); c != nil {
 		rateBytes = c.BytesPerSec()
+	} else {
+		rateBytes, err = getSettingInt(ctx, settingsStore, TorrentDownloadRateLimitKey, TorrentDefaultDownloadRateLimit)
+		if err != nil {
+			return zero, err
+		}
 	}
 	dht, err := getSettingBool(ctx, settingsStore, TorrentDHTEnabledKey, TorrentDefaultDHTEnabled)
 	if err != nil {
@@ -843,10 +845,12 @@ func putDownloaderConfigHandler(settingsStore *settings.Store, dl *downloader.Ma
 				SeedDurationMinutes:   next.SeedDurationMinutes,
 				StaleThresholdMinutes: next.StaleThresholdMinutes,
 			}
-			// Rate belongs to the global Cap; torrent PUT must not override it.
+			rateToStore := req.DownloadRateLimitBytes
+			// Live Cap owns the limiter; torrent PUT must not override Mbps.
 			if c := getGlobalRateCap(); c != nil {
 				applied.DownloadRateLimit = c.BytesPerSec()
 				applied.SharedRateLimiter = c.Limiter()
+				rateToStore = c.BytesPerSec()
 			}
 			if err := dl.Reconfigure(ctx, applied); err != nil {
 				if errors.Is(err, downloader.ErrRebuildRefused) {
@@ -860,13 +864,15 @@ func putDownloaderConfigHandler(settingsStore *settings.Store, dl *downloader.Ma
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			_ = rateToStore // used below in persistence
+			req.DownloadRateLimitBytes = rateToStore
 		}
 
 		for _, kv := range []struct{ key, value string }{
 			{DownloaderStagingDirKey, req.StagingDir},
 			{DownloaderMaxConcurrentKey, strconv.Itoa(req.MaxConcurrent)},
 			{DownloaderMaxConnectionsKey, strconv.Itoa(req.MaxConnections)},
-			// TorrentDownloadRateLimitKey is owned by PUT /download-rate-limit-mbps.
+			{TorrentDownloadRateLimitKey, strconv.Itoa(req.DownloadRateLimitBytes)},
 			{TorrentDHTEnabledKey, strconv.FormatBool(req.DHTEnabled)},
 			{TorrentPEXEnabledKey, strconv.FormatBool(req.PEXEnabled)},
 			{TorrentListenPortKey, strconv.Itoa(req.ListenPort)},

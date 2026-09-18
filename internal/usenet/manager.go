@@ -1698,21 +1698,59 @@ func filenameFromSubject(subject string) string {
 // Troubleshooting: usenet download status=complete but import finds no video.
 // Review if: import gains content-sniffing for extensionless files.
 // Related: NZBGet subject-filename handling / NzbLog diagnostics.
+//
+// Claude 2026-09-18: prefer subject when yEnc is an obfuscated hex+.par2 hash.
+// Reason: RiPER-style posts put the SAME hash.par2 in =ybegin for every RAR
+//   part while the subject quotes distinct Show.part05.rar names. Using yEnc
+//   first made uniqueOutputName invent hash.part002.par2 names that unrar
+//   cannot join as a multi-volume set.
+// Troubleshooting: staging has hash.part00N.rar instead of Show.partNN.rar.
+// Review if: a poster uses hex yEnc names that must win over a bad subject.
 func preferredOutputName(yencName, subject string) string {
 	yencName = sanitizeName(yencName)
+	fromSub := filenameFromSubject(subject)
+	if fromSub != "" && knownOutputExt(fromSub) && yencLooksObfuscated(yencName) {
+		return fromSub
+	}
 	if yencName != "" && knownOutputExt(yencName) {
 		return yencName
 	}
-	if fromSub := filenameFromSubject(subject); fromSub != "" && knownOutputExt(fromSub) {
+	if fromSub != "" && knownOutputExt(fromSub) {
 		return fromSub
 	}
 	if yencName != "" {
 		return yencName
 	}
-	if fromSub := filenameFromSubject(subject); fromSub != "" {
+	if fromSub != "" {
 		return fromSub
 	}
 	return sanitizeName(subject)
+}
+
+// yencLooksObfuscated reports a bare hex stem (32+ chars), with or without a
+// known output extension — the usual obfuscated =ybegin pattern.
+func yencLooksObfuscated(name string) bool {
+	name = sanitizeName(name)
+	if name == "" {
+		return false
+	}
+	stem := strings.TrimSuffix(name, filepath.Ext(name))
+	if stem == "" {
+		stem = name
+	}
+	if len(stem) < 32 {
+		return false
+	}
+	for _, c := range stem {
+		switch {
+		case c >= '0' && c <= '9':
+		case c >= 'a' && c <= 'f':
+		case c >= 'A' && c <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // uniqueOutputName claims base in used (or base.part002, .part003, …) so each

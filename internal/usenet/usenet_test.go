@@ -247,6 +247,28 @@ func TestPreferredOutputName_KeepsYencWhenExtPresent(t *testing.T) {
 	}
 }
 
+func TestPreferredOutputName_PrefersSubjectWhenYencIsHashPar2(t *testing.T) {
+	hash := "316cef87b8ef42dc840681b2b2cf2c37.par2"
+	subj := `[3/25] "Love.Is.Blind.S06E06.Feeling.Uncomfy.1080p.NF.WEB-DL.DDP5.1.H.264.DUAL-RiPER.part05.rar" yEnc (1/92)`
+	got := preferredOutputName(hash, subj)
+	want := "Love.Is.Blind.S06E06.Feeling.Uncomfy.1080p.NF.WEB-DL.DDP5.1.H.264.DUAL-RiPER.part05.rar"
+	if got != want {
+		t.Fatalf("got %q, want subject part name %q", got, want)
+	}
+}
+
+func TestYencLooksObfuscated(t *testing.T) {
+	if !yencLooksObfuscated("316cef87b8ef42dc840681b2b2cf2c37.par2") {
+		t.Fatal("hash.par2 should look obfuscated")
+	}
+	if !yencLooksObfuscated("358657cf85216d96aa33ea5cfe210d9239860178c68722852e5ef03792eb") {
+		t.Fatal("bare hash should look obfuscated")
+	}
+	if yencLooksObfuscated("real.vol001+02.par2") {
+		t.Fatal("named par2 should not look obfuscated")
+	}
+}
+
 // -- parseDNZBHeaders --
 
 func TestParseDNZBHeaders_AllPresent(t *testing.T) {

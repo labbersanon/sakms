@@ -7,8 +7,9 @@ import (
 )
 
 // TestContentClassification is the "classification at source" acceptance test:
-// PAR2 failures and unpack failures wrap ErrContentUnusable; ErrUnpackToolMissing
-// does not; ErrTransport does not.
+// unpack failures (and PAR2-fail with no resulting video) wrap ErrContentUnusable;
+// ErrUnpackToolMissing does not; ErrTransport does not.
+// PAR2-alone no longer wraps at the PAR2 site when unpack extracts a video.
 func TestContentClassification(t *testing.T) {
 	someRepairErr := fmt.Errorf("par2: file corrupt")
 	someUnpackErr := fmt.Errorf("unrar: bad archive")
@@ -67,12 +68,9 @@ func TestContentClassification(t *testing.T) {
 	}
 }
 
-// TestManagerWrapsPAR2WithContentUnusable asserts the two manager wrap sites
-// in runDownload reach the onError callback with errors.Is(ErrContentUnusable).
-// The test uses onerror_test.go's helpers (injecting a fake NZB that triggers
-// the PAR2 path is not straightforward without a real download; this unit test
-// tests the error produced by verifyAndRepair through a fake par2 library).
-// See onerror_test.go for the integration-level test.
+// TestErrUnpackToolMissingIsNotContent asserts ErrUnpackToolMissing is not
+// content-classified (a missing unrar/7z must not burn alternate-release slots).
+// Gate-order coverage for PAR2→unpack lives in finalize_assembled_test.go.
 func TestErrUnpackToolMissingIsNotContent(t *testing.T) {
 	// Regression: if ErrUnpackToolMissing were wrapped with ErrContentUnusable,
 	// a missing unrar/7z would burn 3 downloads per request. It must NOT be

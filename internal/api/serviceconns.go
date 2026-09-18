@@ -484,4 +484,7 @@ func refreshUsenetSubscriptions(ctx context.Context, store *serviceconn.Store, n
 		})
 	}
 	nzb.SetSubscriptions(cfgs)
+	if svc := getNNTPNativeService(); svc != nil {
+		svc.SetHeaderSource(nzb.HeaderSource())
+	}
 }

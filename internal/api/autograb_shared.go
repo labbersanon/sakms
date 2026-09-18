@@ -15,6 +15,7 @@ import (
 	"github.com/labbersanon/sakms/internal/prowlarr"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenet"
+	"github.com/labbersanon/sakms/internal/usenetsearch"
 	"github.com/labbersanon/sakms/internal/webhooks"
 )
 
@@ -136,6 +137,9 @@ type AutoGrabDeps struct {
 	// ReleaseStore is the Adult release cache store; nil degrades to a live
 	// Prowlarr search on every call.
 	ReleaseStore *adultnewest.ReleaseStore
+	// UsenetSearch is the optional native NNTP discovery backend. Nil = inert
+	// (flag-off / not wired). Never errors a grab when unset or not ready.
+	UsenetSearch *usenetsearch.Service
 }
 
 // AutoGrabRequest is the mode-agnostic description of what to auto-grab.
@@ -238,6 +242,10 @@ type AutoGrabRequest struct {
 	// Claude 2026-09-17: never written for ScopeTorrent phases or ScopeAll;
 	//   only set by the content-failure alternate-release path (Usenet-only).
 	ExcludeReleaseKeys []string
+
+	// SkipNativePhase prevents re-prepending ScopeNative. Set when falling
+	// back from native precheck exhaustion to remaining Prowlarr phases (§7.3).
+	SkipNativePhase bool
 }
 
 // AutoGrabOutcome is what happened. Exactly one of Grabbed / AlreadyGrabbing /
@@ -302,6 +310,7 @@ type AutoGrabOutcome struct {
 // sess is separate from deps because one Session is mode-scoped while deps are
 // not, and because runToggleGatedSearch's own signature takes it separately.
 func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req AutoGrabRequest) (AutoGrabOutcome, error) {
+	deps = WithUsenetSearch(deps)
 	if req.Trigger != TriggerOperator {
 		enabled, err := deps.SettingsStore.GetBool(ctx, usenetAutoGrabEnabledKey, false)
 		if err != nil {
@@ -347,6 +356,13 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 	if len(phases) == 0 {
 		phases = []prowlarr.Scope{prowlarr.ScopeAll}
 	}
+	// Claude 2026-09-17: prepend native NNTP phase when flags allow.
+	// Reason: native-first, Prowlarr fallback on miss; never change flag-off behaviour.
+	// Troubleshooting: native miss should log and continue; never 502.
+	// Review if: SearchPhases becomes a struct with Native bool.
+	if nativePhaseWanted(ctx, deps, req.Mode) && !req.SkipNativePhase {
+		phases = prependNativePhase(phases)
+	}
 
 	// scoreOnePhase runs one phase's search → filter → score and returns the
 	// releases and Selection for that phase. Extracted here rather than as a
@@ -356,13 +372,26 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 		releases       []prowlarr.Release
 		runtimeSeconds float64
 		sel            autograb.Selection
+		native         bool
 	}
 	scoreOnePhase := func(scope prowlarr.Scope) (phaseResult, error) {
 		var pr phaseResult
+		pr.native = scope.IsNative()
 
-		// Pre-fetched releases bypass the phase search entirely (Search hook path
-		// or Adult cache-hit). Use them as-is on the first (and only) phase.
-		if req.Releases != nil {
+		if scope.IsNative() {
+			// Pre-fetched releases skip native (Search hook already has a list).
+			if req.Releases != nil {
+				pr.releases = req.Releases
+				pr.runtimeSeconds = req.RuntimeSeconds
+			} else {
+				rels, err := nativeAutoGrabSearch(ctx, deps, req)
+				if err != nil {
+					return pr, err
+				}
+				pr.releases = rels
+				pr.runtimeSeconds = req.RuntimeSeconds
+			}
+		} else if req.Releases != nil {
 			pr.releases = req.Releases
 			pr.runtimeSeconds = req.RuntimeSeconds
 		} else {
@@ -379,19 +408,10 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 			}
 		}
 
-		// Claude 2026-09-17: filter out already-tried releases before scoring.
-		// Reason: ExcludeReleaseKeys carries hashed URL+title fingerprints of
-		//   releases found content-unusable (PAR2/unpack/no-video) in this episode.
-		//   Filtering here — after the search, before scoring — means the same bad
-		//   NZB is never re-dispatched within one alternate-release episode.
-		// Review if: filtering should apply to torrent phases too (currently only
-		//   set for Usenet-only alternate-release retries; ScopeAll would also work
-		//   but the overlap with torrent results is incidental).
 		if len(req.ExcludeReleaseKeys) > 0 {
 			pr.releases = filterExcludedReleases(pr.releases, req.ExcludeReleaseKeys)
 		}
 
-		// Claude 2026-08-03: apply FilterSeasonScope before scoring.
 		if req.Mode == mode.Series {
 			pr.releases = FilterSeasonScope(pr.releases, req.Season, req.Episode, req.SeasonSpecified)
 		}
@@ -409,18 +429,22 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 		releases       []prowlarr.Release
 		runtimeSeconds float64
 		sel            autograb.Selection
+		nativePhase    bool
 	)
 	for i, phase := range phases {
 		pr, err := scoreOnePhase(phase)
 		if err != nil {
+			// Claude 2026-09-17: native phase errors degrade to next phase (§7.2).
+			if phase.IsNative() {
+				log.Printf("auto-grab: native phase error for %q: %v — continuing", req.Title, err)
+				continue
+			}
 			return AutoGrabOutcome{Status: http.StatusBadGateway, Err: err}, err
 		}
 		releases = pr.releases
 		runtimeSeconds = pr.runtimeSeconds
 		sel = pr.sel
-		// A qualifying candidate in any phase ends the search. Pre-fetched
-		// releases (req.Releases != nil) are only ever used on the first iteration
-		// and bypass all subsequent phases — the caller supplied one list.
+		nativePhase = pr.native
 		if !sel.Fallback || req.Releases != nil || i == len(phases)-1 {
 			break
 		}
@@ -432,10 +456,6 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 
 	if sel.Fallback {
 		out.NoMatch = true
-		// TriggerOperator's fallback is a MANUAL PICK LIST, not a retry row:
-		// a human is sitting in front of it and picks one. Writing a
-		// pending_retry row here would queue a phantom unattended retry behind
-		// every one-click that missed the floor.
 		if req.Trigger == TriggerOperator {
 			return out, nil
 		}
@@ -448,20 +468,6 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 		return out, nil
 	}
 
-	// A6: Weak-identity staging for Adult. A scorer pick (sel.PickIndex >= 0,
-	// guaranteed here because sel.Fallback is false) does not mean dispatch is
-	// safe when studio/performer identity signals are thin.
-	//
-	// Do NOT set sel.Fallback = true: Fallback means "no candidate cleared the
-	// quality floor"; here a candidate DID score. Keeping the two failure modes
-	// distinguishable is what lets call sites tell them apart.
-	//
-	// A4: TriggerRetry is ALWAYS weak for Adult — the grabs row stores no
-	// studio or performers (neither was available at dispatch time), so
-	// adultIdentityWeak returns true unconditionally for every retry attempt.
-	// A5: TriggerOperator also parks (no approve-and-dispatch on Requests view
-	// for an identity-weak row — operator re-grabs manually from Requests or
-	// Discover). Both triggers park via parkPendingRetry; no dispatch fires.
 	if req.Mode == mode.Adult && adultIdentityWeak(req.Studio, req.Performers, releases[sel.PickIndex].Title) {
 		out.NoMatch = true
 		g, err := parkPendingRetry(ctx, deps, req, weakIdentityReason)
@@ -482,10 +488,6 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 			return out, err
 		}
 	}
-	// Claude 2026-09-15: try the next qualified candidate when usenet precheck rejects.
-	// Reason: a single dead NZB must not end the cycle when runners-up exist.
-	// Troubleshooting: journal "usenet precheck: abort"; Selection.PickIndex is
-	//   rewritten to the candidate that actually dispatched.
 	var (
 		picked         = releases[sel.PickIndex]
 		downloadClient string
@@ -496,7 +498,7 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 	for _, idx := range order[:min(len(order), maxDispatchAttempts)] {
 		picked = releases[idx]
 		var status int
-		downloadClient, gid, status, err = dispatchToDownloadClient(ctx, deps.SettingsStore, sess, req.Mode, deps.NZB, string(picked.Protocol), picked.DownloadURL, picked.Title)
+		downloadClient, gid, status, err = dispatchToDownloadClient(ctx, deps.SettingsStore, sess, req.Mode, deps.NZB, deps.UsenetSearch, string(picked.Protocol), picked.DownloadURL, picked.Title)
 		if err == nil {
 			sel.PickIndex = idx
 			out.Selection = sel
@@ -508,7 +510,17 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 		}
 		log.Printf("usenet precheck: candidate %d (%s) unavailable — trying next", idx, picked.Title)
 	}
-	// Only ErrArticlesUnavailable survives the loop; every other error returned above.
+	// Claude 2026-09-17: native precheck exhaustion → remaining Prowlarr phases (§7.3).
+	if err != nil && nativePhase && errors.Is(err, usenet.ErrArticlesUnavailable) {
+		rest := phasesAfterNative(phases)
+		if len(rest) > 0 && req.Releases == nil {
+			log.Printf("auto-grab: native candidates exhausted for %q — falling back to Prowlarr phases", req.Title)
+			req2 := req
+			req2.SearchPhases = stripNativePhase(rest)
+			req2.SkipNativePhase = true
+			return RunAutoGrab(ctx, deps, sess, req2)
+		}
+	}
 	if err != nil {
 		out.NoMatch = true
 		if req.Trigger == TriggerOperator {

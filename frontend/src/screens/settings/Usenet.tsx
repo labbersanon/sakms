@@ -41,10 +41,13 @@ import {
 import {
   fetchUsenetAutoGrabEnabled,
   fetchUsenetMaxConcurrentDownloads,
+  fetchUsenetNNTPNative,
   fetchUsenetSegmentResume,
   putUsenetAutoGrabEnabled,
   putUsenetMaxConcurrentDownloads,
+  putUsenetNNTPNative,
   putUsenetSegmentResume,
+  type UsenetNNTPNativeSettings,
 } from "../../api/usenet";
 import { fetchAutoGrabSlots, putAutoGrabSlots } from "../../api/autograbSlots";
 import {
@@ -75,6 +78,7 @@ export const UsenetSection: Component = () => (
       <DownloadsCard />
       <ResumeCard />
       <AutoGrabCard />
+      <NativeSearchCard />
     </SectionSave>
   </div>
 );
@@ -774,6 +778,237 @@ const AutoGrabCard: Component = () => {
             variant="primary"
             class="!px-2 !py-1 !text-xs"
             disabled={!dirty()}
+            onClick={() => void save().catch(() => {})}
+          >
+            Save
+          </Button>
+          <SaveStatus text={status.status().text} error={status.status().error} />
+        </div>
+      </Show>
+      <Show when={batched()}>
+        <div class="mt-3">
+          <SaveStatus text={status.status().text} error={status.status().error} />
+        </div>
+      </Show>
+    </Card>
+  );
+};
+
+// Claude 2026-09-17: native NNTP discovery settings card.
+// Reason: manual groups + required index dir; default off; probe read-only.
+const NativeSearchCard: Component = () => {
+  const [enabled, setEnabled] = createSignal(false);
+  const [movies, setMovies] = createSignal(false);
+  const [series, setSeries] = createSignal(false);
+  const [adult, setAdult] = createSignal(false);
+  const [groups, setGroups] = createSignal("");
+  const [indexDir, setIndexDir] = createSignal("");
+  const [indexMaxGb, setIndexMaxGb] = createSignal(20);
+  const [windowDays, setWindowDays] = createSignal(14);
+  const [crawlInterval, setCrawlInterval] = createSignal(0);
+  const [probeState, setProbeState] = createSignal("unknown");
+  const [probeDetail, setProbeDetail] = createSignal("");
+  const [dirty, setDirty] = createSignal(false);
+  const [loadError, setLoadError] = createSignal<Error | null>(null);
+  const status = useSaveStatus();
+
+  const apply = (r: UsenetNNTPNativeSettings) => {
+    setEnabled(r.enabled);
+    setMovies(r.movies);
+    setSeries(r.series);
+    setAdult(r.adult);
+    setGroups(r.groups ?? "");
+    setIndexDir(r.indexDir ?? "");
+    setIndexMaxGb(r.indexMaxGb || 20);
+    setWindowDays(r.windowDays || 14);
+    setCrawlInterval(r.crawlIntervalSeconds || 0);
+    setProbeState(r.probeState || "unknown");
+    setProbeDetail(r.probeDetail || "");
+  };
+
+  onMount(() => {
+    void fetchUsenetNNTPNative()
+      .then(apply)
+      .catch((e) => setLoadError(e instanceof Error ? e : new Error(String(e))));
+  });
+
+  const valid = () => {
+    if (!enabled()) return true;
+    if (!indexDir().trim().startsWith("/")) return false;
+    if (!groups().trim()) return false;
+    return indexMaxGb() > 0 && windowDays() > 0 && crawlInterval() >= 0;
+  };
+
+  const save = async () => {
+    try {
+      const r = await putUsenetNNTPNative({
+        enabled: enabled(),
+        movies: movies(),
+        series: series(),
+        adult: adult(),
+        groups: groups(),
+        indexDir: indexDir().trim(),
+        indexMaxGb: indexMaxGb(),
+        windowDays: windowDays(),
+        crawlIntervalSeconds: crawlInterval(),
+      });
+      apply(r);
+      setDirty(false);
+      status.set("✓ saved");
+    } catch (e) {
+      status.failed(e);
+      throw e;
+    }
+  };
+
+  const batched = useSectionSaveItem({
+    id: "usenet-nntp-native",
+    label: "native search",
+    dirty,
+    valid,
+    save,
+  });
+
+  const mark = () => {
+    setDirty(true);
+    status.set("");
+  };
+
+  return (
+    <Card title="Native NNTP search">
+      <Muted class="mb-3">
+        Optional built-in Usenet discovery: crawl only the newsgroups you list,
+        store headers under an absolute index directory, and search that index
+        before Prowlarr. Off by default. Does not replace NZB/Prowlarr — they
+        remain the fallback. Obfuscated posts are not discoverable from headers
+        alone.
+      </Muted>
+      <Show when={loadError()}>
+        <ErrorText>
+          Couldn't load native search settings: {loadError()?.message}
+        </ErrorText>
+      </Show>
+      <label class="mb-3 flex items-center gap-2">
+        <input
+          type="checkbox"
+          checked={enabled()}
+          onChange={(e) => {
+            setEnabled(e.currentTarget.checked);
+            mark();
+          }}
+        />
+        <span>Enable native NNTP search</span>
+      </label>
+      <div class="mb-3 flex flex-wrap gap-4">
+        <label class="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={movies()}
+            onChange={(e) => {
+              setMovies(e.currentTarget.checked);
+              mark();
+            }}
+          />
+          Movies
+        </label>
+        <label class="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={series()}
+            onChange={(e) => {
+              setSeries(e.currentTarget.checked);
+              mark();
+            }}
+          />
+          Series
+        </label>
+        <label class="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={adult()}
+            onChange={(e) => {
+              setAdult(e.currentTarget.checked);
+              mark();
+            }}
+          />
+          Adult
+        </label>
+      </div>
+      <label class="mb-3 block">
+        <span class={labelClass}>Newsgroups (one per line)</span>
+        <textarea
+          class={inputClass + " min-h-[5rem] font-mono text-sm"}
+          aria-label="native search newsgroups"
+          value={groups()}
+          onInput={(e) => {
+            setGroups(e.currentTarget.value);
+            mark();
+          }}
+          placeholder={"alt.binaries.movies\nalt.binaries.tv"}
+        />
+      </label>
+      <label class="mb-3 block">
+        <span class={labelClass}>Index directory (absolute path, required when enabled)</span>
+        <input
+          type="text"
+          class={inputClass + " font-mono text-sm"}
+          aria-label="native search index directory"
+          value={indexDir()}
+          onInput={(e) => {
+            setIndexDir(e.currentTarget.value);
+            mark();
+          }}
+          placeholder="/mnt/iscsi/sakms/nntp-index"
+        />
+      </label>
+      <div class="mb-3 grid gap-3 sm:grid-cols-3">
+        <label class="block">
+          <span class={labelClass}>Max index size (GiB)</span>
+          <input
+            type="number"
+            class={inputClass}
+            value={indexMaxGb()}
+            onInput={(e) => {
+              setIndexMaxGb(Number(e.currentTarget.value) || 0);
+              mark();
+            }}
+          />
+        </label>
+        <label class="block">
+          <span class={labelClass}>Retention window (days)</span>
+          <input
+            type="number"
+            class={inputClass}
+            value={windowDays()}
+            onInput={(e) => {
+              setWindowDays(Number(e.currentTarget.value) || 0);
+              mark();
+            }}
+          />
+        </label>
+        <label class="block">
+          <span class={labelClass}>Crawl interval (seconds, 0=off)</span>
+          <input
+            type="number"
+            class={inputClass}
+            value={crawlInterval()}
+            onInput={(e) => {
+              setCrawlInterval(Number(e.currentTarget.value) || 0);
+              mark();
+            }}
+          />
+        </label>
+      </div>
+      <Muted>
+        Probe: {probeState()}
+        {probeDetail() ? ` — ${probeDetail()}` : ""}
+      </Muted>
+      <Show when={!batched()}>
+        <div class="mt-3 flex items-center gap-2">
+          <Button
+            variant="primary"
+            class="!px-2 !py-1 !text-xs"
+            disabled={!dirty() || !valid()}
             onClick={() => void save().catch(() => {})}
           >
             Save

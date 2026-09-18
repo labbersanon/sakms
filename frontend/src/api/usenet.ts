@@ -91,3 +91,32 @@ export function putUsenetSegmentResume(body: {
     },
   );
 }
+
+/** Native NNTP discovery settings — GET/PUT /api/settings/usenet-nntp-native. Default off. */
+export type UsenetNNTPNativeSettings = {
+  enabled: boolean;
+  movies: boolean;
+  series: boolean;
+  adult: boolean;
+  groups: string;
+  indexDir: string;
+  indexMaxGb: number;
+  windowDays: number;
+  crawlIntervalSeconds: number;
+  probeState: string;
+  probeDetail: string;
+};
+
+export function fetchUsenetNNTPNative(): Promise<UsenetNNTPNativeSettings> {
+  return api<UsenetNNTPNativeSettings>("/api/settings/usenet-nntp-native");
+}
+
+export function putUsenetNNTPNative(
+  body: Partial<UsenetNNTPNativeSettings>,
+): Promise<UsenetNNTPNativeSettings> {
+  return api<UsenetNNTPNativeSettings>("/api/settings/usenet-nntp-native", {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+

@@ -403,7 +403,7 @@ func TestGlobalPause_ShieldsEveryTorrentFromTheStaleReaper(t *testing.T) {
 	// And nothing new can join the queue in an unshielded status.
 	before := len(dl.List())
 	sess := &mode.Session{Downloader: dl}
-	_, gid, status, err := dispatchToDownloadClient(ctx, s.settings, sess, mode.Movies, nil, "torrent", "magnet:x", "New Title")
+	_, gid, status, err := dispatchToDownloadClient(ctx, s.settings, sess, mode.Movies, nil, nil, "torrent", "magnet:x", "New Title")
 	if status != http.StatusLocked || !errors.Is(err, errDownloadsPaused) {
 		t.Fatalf("a dispatch under global pause returned status %d, err %v — want 423 and errDownloadsPaused", status, err)
 	}

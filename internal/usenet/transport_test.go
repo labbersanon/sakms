@@ -72,6 +72,7 @@ func TestIsTransportError_StringFallback(t *testing.T) {
 	}{
 		{"write tcp 1.2.3.4:1->5.6.7.8:563: write: broken pipe", true},
 		{"connection reset by peer", true},
+		{"connection closed", true},
 		{"use of closed network connection", true},
 		{"i/o timeout", true},
 		{"unexpected eof", true},

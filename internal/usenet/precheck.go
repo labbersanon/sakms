@@ -301,9 +301,12 @@ func (m *Manager) statArticleAny(ctx context.Context, msgID string) (found, remo
 				allNotFound = false
 				sawRemoved = true
 			default:
-				if isTransportError(mapped) && attempt < maxStatAttemptsPerServer && ctx.Err() == nil {
-					sleepWithCtx(ctx, transportRetryDelay(attempt))
-					continue
+				if isTransportError(mapped) {
+					p.invalidateIdle()
+					if attempt < maxStatAttemptsPerServer && ctx.Err() == nil {
+						sleepWithCtx(ctx, transportRetryDelay(attempt))
+						continue
+					}
 				}
 				allNotFound = false
 				if otherErr == nil {

@@ -808,6 +808,11 @@ const GroupMultiSelect: Component<{
     return [...stale, ...props.available];
   };
 
+  // Claude 2026-09-18: do not reuse inputClass here.
+  // Reason: inputClass includes Tailwind `truncate` (overflow:hidden), which
+  //   disables scrolling inside <select multiple>.
+  // Troubleshooting: list longer than the box but no scrollbar → check for truncate.
+  // Review if: inputClass drops truncate or gains a multi-select variant.
   return (
     <label class="block">
       <span class={labelClass}>
@@ -815,8 +820,8 @@ const GroupMultiSelect: Component<{
       </span>
       <select
         multiple
-        size={8}
-        class={inputClass + " min-h-[10rem] font-mono text-xs"}
+        size={10}
+        class="h-48 w-full overflow-y-auto rounded-md border border-border bg-bg px-2 py-1 font-mono text-xs text-fg outline-none focus:border-accent"
         aria-label={props.ariaLabel}
         onChange={(e) => {
           const next = Array.from(e.currentTarget.selectedOptions).map(

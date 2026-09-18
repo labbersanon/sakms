@@ -474,21 +474,19 @@ func (m *Manager) buildClient() (*torrentlib.Client, *rate.Limiter, error) {
 	// ephemeral port", not be rewritten to the 42069 default.
 	cfg.ListenPort = mc.ListenPort
 	cfg.HeaderObfuscationPolicy = obfuscationPolicy(mc.ObfuscationMode)
-	var limiter *rate.Limiter
 	if mc.SharedRateLimiter != nil {
 		applyRateLimit(mc.SharedRateLimiter, mc.DownloadRateLimit)
-		limiter = mc.SharedRateLimiter
+		cfg.DownloadRateLimiter = mc.SharedRateLimiter
 	} else {
-		limiter = newDownloadRateLimiter(mc.DownloadRateLimit)
+		cfg.DownloadRateLimiter = newDownloadRateLimiter(mc.DownloadRateLimit)
 	}
-	cfg.DownloadRateLimiter = limiter
 	cfg.NoDefaultPortForwarding = mc.noPortForwarding
 
 	tc, err := torrentlib.NewClient(cfg)
 	if err != nil {
 		return nil, nil, err
 	}
-	return tc, limiter, nil
+	return tc, cfg.DownloadRateLimiter, nil
 }
 
 // Start creates the anacrolix torrent client, starts the poll loop, and blocks

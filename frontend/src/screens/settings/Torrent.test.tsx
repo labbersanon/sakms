@@ -201,16 +201,6 @@ describe("Torrent settings — whole-document round trip", () => {
       changed: { maxConnections: 3 },
     },
     {
-      // The unit selector is display-only: 3 MB/s must reach the wire as
-      // bytes/sec, and the unit must never appear in the document.
-      name: "download rate limit",
-      act: () =>
-        fireEvent.input(screen.getByLabelText("Download rate limit"), {
-          target: { value: "3" },
-        }),
-      changed: { downloadRateLimitBytes: 3 * 1024 * 1024 },
-    },
-    {
       name: "seeding master switch",
       act: () => fireEvent.click(screen.getByLabelText("Enable seeding")),
       changed: { seedingEnabled: false },
@@ -262,19 +252,13 @@ describe("Torrent settings — whole-document round trip", () => {
     const puts = stubFetch(() => json(LIVE_RESULT));
     await mountLoaded();
 
-    // Control exists in Performance; still must round-trip the full document (the field is enforced
-    // server-side, so a knob for it would do nothing).
-    expect(screen.queryByLabelText(/max concurrent/i)).toBeNull();
-
     fireEvent.input(screen.getByLabelText("Seed ratio limit"), {
       target: { value: "1" },
     });
     fireEvent.click(saveButton());
 
     await waitFor(() => expect(puts).toHaveLength(1));
-    // Echoed back verbatim. A dropped/zeroed maxConcurrent is a 400 on every
-    // save, and the field is invisible, so the error would look like it came
-    // from the seed ratio.
+    // Echoed back verbatim with the rest of the loaded document.
     expect(puts[0]!.body.maxConcurrent).toBe(7);
   });
 

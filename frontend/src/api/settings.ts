@@ -614,6 +614,20 @@ export function putRecheckInterval(intervalSeconds: number): Promise<void> {
   });
 }
 
+/** Global download bandwidth cap for torrent + Usenet. Mbps; 0 = unlimited. */
+export function fetchDownloadRateLimitMbps(): Promise<number> {
+  return api<{ mbps: number }>("/api/settings/download-rate-limit-mbps").then(
+    (r) => r.mbps,
+  );
+}
+
+export function putDownloadRateLimitMbps(mbps: number): Promise<void> {
+  return api<void>("/api/settings/download-rate-limit-mbps", {
+    method: "PUT",
+    body: JSON.stringify({ mbps }),
+  });
+}
+
 // Manual "Refresh now" trigger for the recheck job — runs one pass over
 // every watched title immediately, regardless of the configured interval.
 // Fires in the background server-side; the request returns as soon as it's

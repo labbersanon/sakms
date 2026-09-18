@@ -75,6 +75,11 @@ type Config struct {
 	// issue no tokens at all and stall every download).
 	DownloadRateLimit int
 
+	// SharedRateLimiter, when non-nil, is used as the torrent client's download
+	// limiter instead of creating a private one. Cap ownership lives outside
+	// (global Mbps setting shared with Usenet).
+	SharedRateLimiter *rate.Limiter
+
 	// DHTEnabled / PEXEnabled default to TRUE — the library's own defaults.
 	// Read them from settings with an unset-means-true idiom; a plain
 	// zero-value read turns peer discovery off on every fresh install.
@@ -469,14 +474,21 @@ func (m *Manager) buildClient() (*torrentlib.Client, *rate.Limiter, error) {
 	// ephemeral port", not be rewritten to the 42069 default.
 	cfg.ListenPort = mc.ListenPort
 	cfg.HeaderObfuscationPolicy = obfuscationPolicy(mc.ObfuscationMode)
-	cfg.DownloadRateLimiter = newDownloadRateLimiter(mc.DownloadRateLimit)
+	var limiter *rate.Limiter
+	if mc.SharedRateLimiter != nil {
+		applyRateLimit(mc.SharedRateLimiter, mc.DownloadRateLimit)
+		limiter = mc.SharedRateLimiter
+	} else {
+		limiter = newDownloadRateLimiter(mc.DownloadRateLimit)
+	}
+	cfg.DownloadRateLimiter = limiter
 	cfg.NoDefaultPortForwarding = mc.noPortForwarding
 
 	tc, err := torrentlib.NewClient(cfg)
 	if err != nil {
 		return nil, nil, err
 	}
-	return tc, cfg.DownloadRateLimiter, nil
+	return tc, limiter, nil
 }
 
 // Start creates the anacrolix torrent client, starts the poll loop, and blocks
@@ -608,6 +620,11 @@ func (m *Manager) WaitForEngine(ctx context.Context) error {
 func (m *Manager) Reconfigure(ctx context.Context, next Config) error {
 	m.mu.Lock()
 	old := m.cfg
+	// Preserve the process-wide shared limiter when callers omit it (torrent
+	// settings PUT must not detach Cap ownership).
+	if next.SharedRateLimiter == nil {
+		next.SharedRateLimiter = old.SharedRateLimiter
+	}
 	rebuild := rebuildRequired(old, next)
 	if rebuild {
 		if refusal := m.rebuildRefusalLocked(old, next); refusal != nil {

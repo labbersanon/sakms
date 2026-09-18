@@ -19,6 +19,7 @@ import {
 } from "solid-js";
 import {
   fetchDiscoverRefreshInterval,
+  fetchDownloadRateLimitMbps,
   fetchEntitySyncInterval,
   fetchEntitySyncStatus,
   fetchRecheckInterval,
@@ -27,6 +28,7 @@ import {
   putAdultModeEnabled,
   putAdultNewestScanInterval,
   putDiscoverRefreshInterval,
+  putDownloadRateLimitMbps,
   putEntitySyncInterval,
   putRecheckInterval,
   putWatchFoldersEnabled,
@@ -37,8 +39,8 @@ import {
   type EntitySyncSource,
 } from "../../api/settings";
 import { ApiError } from "../../api/client";
-import { AdultModeContext, Button, Muted } from "../../components/ui";
-import { Card, SaveStatus, useSaveStatus } from "./shared";
+import { AdultModeContext, Button, Muted, inputClass, labelClass } from "../../components/ui";
+import { Card, SaveStatus, useSaveStatus, useSectionSaveItem } from "./shared";
 import { DurationSetting } from "./Advanced";
 import { APISection } from "./APISection";
 import { SectionLockSection } from "./SectionLock";
@@ -110,6 +112,93 @@ const RecheckSection: Component = () => {
         onSave={(v) => putRecheckInterval(v)}
       />
       <RecheckTriggerButton />
+    </Card>
+  );
+};
+
+// Claude 2026-09-18: global Mbps cap shared by torrent + Usenet.
+// Reason: Advanced → Global is mode-independent; 0 = unlimited.
+// Troubleshooting: slow downloads → check this value (not Torrent card).
+// Review if: per-engine caps return.
+const DownloadRateLimitSection: Component = () => {
+  const [mbps, setMbps] = createSignal(0);
+  const [dirty, setDirty] = createSignal(false);
+  const [loadError, setLoadError] = createSignal<string | null>(null);
+  const status = useSaveStatus();
+
+  createResource(async () => {
+    try {
+      const v = await fetchDownloadRateLimitMbps();
+      setMbps(v);
+      return v;
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : String(e));
+      throw e;
+    }
+  });
+
+  const valid = () => mbps() >= 0;
+
+  const save = async () => {
+    try {
+      await putDownloadRateLimitMbps(mbps());
+      setDirty(false);
+      status.set("✓ saved");
+    } catch (e) {
+      status.failed(e);
+      throw e;
+    }
+  };
+
+  const batched = useSectionSaveItem({
+    id: "download-rate-limit-mbps",
+    label: "download rate limit",
+    dirty,
+    valid,
+    save,
+  });
+
+  return (
+    <Card title="Download rate limit — global">
+      <Muted class="mb-3">
+        Caps aggregate download throughput for torrent and Usenet together.
+        Enter megabits per second (Mbps). 0 is unlimited. Applies immediately.
+      </Muted>
+      <Show when={loadError()}>
+        <span class="mb-2 block text-sm text-danger">{loadError()}</span>
+      </Show>
+      <label class="mb-3 block">
+        <span class={labelClass}>Rate limit (Mbps)</span>
+        <input
+          type="number"
+          min={0}
+          class={`${inputClass} mt-1 !w-40`}
+          aria-label="Global download rate limit Mbps"
+          value={mbps()}
+          onInput={(e) => {
+            const n = Number(e.currentTarget.value);
+            if (Number.isNaN(n)) return;
+            setMbps(n);
+            setDirty(true);
+            status.set("");
+          }}
+        />
+      </label>
+      <Show when={!batched()}>
+        <div class="flex items-center gap-2">
+          <Button
+            variant="primary"
+            disabled={!dirty() || !valid()}
+            onClick={() => void save().catch(() => {})}
+          >
+            Save
+          </Button>
+          <SaveStatus text={status.status().text} error={status.status().error} />
+        </div>
+      </Show>
+      <Show when={batched()}>
+        <SaveStatus text={status.status().text} error={status.status().error} />
+      </Show>
     </Card>
   );
 };
@@ -573,6 +662,7 @@ export const GlobalSection: Component = () => (
     <APISection />
     <AdultModeSection />
     <SectionLockSection />
+    <DownloadRateLimitSection />
     <RecheckSection />
     <DiscoverRefreshSection />
     <EntityDatabaseSection />

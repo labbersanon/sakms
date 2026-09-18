@@ -20,6 +20,7 @@ import (
 	"github.com/labbersanon/sakms/internal/sectionlock"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenet"
+	"github.com/labbersanon/sakms/internal/xferlimit"
 )
 
 // Settings keys for the unified downloader's operator-tunable knobs.
@@ -633,9 +634,13 @@ func readDownloaderConfig(ctx context.Context, settingsStore *settings.Store) (a
 	if err != nil {
 		return zero, err
 	}
-	rate, err := getSettingInt(ctx, settingsStore, TorrentDownloadRateLimitKey, TorrentDefaultDownloadRateLimit)
+	rate, err := LoadDownloadRateLimitMbps(ctx, settingsStore)
 	if err != nil {
 		return zero, err
+	}
+	rateBytes := xferlimit.MbpsToBytesPerSec(rate)
+	if c := getGlobalRateCap(); c != nil {
+		rateBytes = c.BytesPerSec()
 	}
 	dht, err := getSettingBool(ctx, settingsStore, TorrentDHTEnabledKey, TorrentDefaultDHTEnabled)
 	if err != nil {
@@ -676,7 +681,7 @@ func readDownloaderConfig(ctx context.Context, settingsStore *settings.Store) (a
 		StagingDir:             staging,
 		MaxConcurrent:          conc,
 		MaxConnections:         conn,
-		DownloadRateLimitBytes: rate,
+		DownloadRateLimitBytes: rateBytes,
 		DHTEnabled:             dht,
 		PEXEnabled:             pex,
 		ListenPort:             port,
@@ -838,6 +843,11 @@ func putDownloaderConfigHandler(settingsStore *settings.Store, dl *downloader.Ma
 				SeedDurationMinutes:   next.SeedDurationMinutes,
 				StaleThresholdMinutes: next.StaleThresholdMinutes,
 			}
+			// Rate belongs to the global Cap; torrent PUT must not override it.
+			if c := getGlobalRateCap(); c != nil {
+				applied.DownloadRateLimit = c.BytesPerSec()
+				applied.SharedRateLimiter = c.Limiter()
+			}
 			if err := dl.Reconfigure(ctx, applied); err != nil {
 				if errors.Is(err, downloader.ErrRebuildRefused) {
 					// Not a failure to save — a "not right now". The message
@@ -856,7 +866,7 @@ func putDownloaderConfigHandler(settingsStore *settings.Store, dl *downloader.Ma
 			{DownloaderStagingDirKey, req.StagingDir},
 			{DownloaderMaxConcurrentKey, strconv.Itoa(req.MaxConcurrent)},
 			{DownloaderMaxConnectionsKey, strconv.Itoa(req.MaxConnections)},
-			{TorrentDownloadRateLimitKey, strconv.Itoa(req.DownloadRateLimitBytes)},
+			// TorrentDownloadRateLimitKey is owned by PUT /download-rate-limit-mbps.
 			{TorrentDHTEnabledKey, strconv.FormatBool(req.DHTEnabled)},
 			{TorrentPEXEnabledKey, strconv.FormatBool(req.PEXEnabled)},
 			{TorrentListenPortKey, strconv.Itoa(req.ListenPort)},

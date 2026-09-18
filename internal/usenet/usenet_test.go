@@ -322,6 +322,8 @@ type fakeNNTP struct {
 	// blocked request first signals on blocked (best-effort, never blocking).
 	gate    chan struct{}
 	blocked chan struct{}
+	// bodyAllow, when non-nil, requires one receive per BODY (test-paced).
+	bodyAllow chan struct{}
 }
 
 func newFakeNNTP(t *testing.T) *fakeNNTP {
@@ -371,6 +373,13 @@ func (f *fakeNNTP) gateOn() {
 }
 
 func (f *fakeNNTP) releaseGate() { close(f.gate) }
+
+// paceBodies requires the test to send on bodyAllow once per BODY before the
+// article is served. Closing bodyAllow unblocks waiters (they proceed and may
+// fail if the listener is already closed).
+func (f *fakeNNTP) paceBodies() {
+	f.bodyAllow = make(chan struct{})
+}
 
 // serveAll registers every segment of p on this server.
 func (f *fakeNNTP) serveAll(p testPayload) {
@@ -442,6 +451,13 @@ func (f *fakeNNTP) serveStat(w *bufio.Writer, id string) {
 }
 
 func (f *fakeNNTP) serveBody(w *bufio.Writer, id string) {
+	if f.bodyAllow != nil {
+		_, ok := <-f.bodyAllow
+		if !ok {
+			// Pacing channel closed — abort without serving so the client sees EOF.
+			return
+		}
+	}
 	if f.gate != nil {
 		select {
 		case f.blocked <- struct{}{}:

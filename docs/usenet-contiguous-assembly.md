@@ -23,8 +23,8 @@ sakms failed Usenet downloads NZBGet completed on the same Eweka account:
 | Assembly | Contiguous write by cumulative **decoded** length; truncate to packed size |
 | Resume | Schema **v2**; v1 sidecars discarded + staging payloads wiped |
 | Upgrade | `InvalidateLegacyResumes()` at boot before reconcile (auto-wipe) |
-| PAR2 | Repair failure → download **error** (not complete) |
-| Unpack | Rank complete RAR sets first; try every leader on failure |
+| PAR2 | Verify/repair still runs; failure is a **warning** then unpack |
+| Unpack | Rank complete RAR sets first; try every leader on failure; unpack (or flat video) is the delivery gate |
 
 ## Not in this PR (deferred)
 

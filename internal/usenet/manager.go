@@ -1064,35 +1064,28 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 		return
 	}
 
-	// Claude 2026-09-15: PAR2 fail-closed — do NOT mark complete when repair fails.
-	// Reason: gap-damaged assemblies were marked complete with unrepaired RARs,
-	//         then unpack/import reported "no video files". NZBGet ParRepair
-	//         treats unrepairable as failure; match that.
-	// Troubleshooting: journal "par2 repair ... failing download"; status=error.
-	// Review if: releases without PAR2 should stay best-effort (still do — no
-	//         .par2 means verifyAndRepair returns nil).
-	// Related: verifyAndRepair; assembleFile contiguous write.
+	m.finalizeAssembled(ctx, gid, dl, files)
+}
+
+// finalizeAssembled runs PAR2 then unpack on assembled staging files and marks
+// the download complete or error. Extracted so tests can exercise the gate
+// without NNTP.
+//
+// Claude 2026-09-18: PAR2 failure is a warning; unpack (or a flat video) is the
+//   delivery gate.
+// Reason: contiguous decoded-length assembly leaves RAR5 ~1.5KB short of PAR2
+//   FileDesc (yEnc stride 768000×N). go-newsgroups/par2 then marks all slices
+//   missing. Fail-closing before unrar skipped archives NZBGet still extracts.
+// Troubleshooting: "par2: not repairable (N damaged/missing slices)" with
+//   healthy .part01.rar in staging and no unpack attempt in the journal.
+// Review if: go-newsgroups/par2 treats FileDesc length mismatch as trim/pad, or
+//   assembly can match FileDesc size without yEnc-offset NUL gaps
+//   (docs/usenet-contiguous-assembly.md).
+// Related: verifyAndRepair; unpackArchives; docs/usenet-contiguous-assembly.md.
+func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState, files []string) {
 	repaired, repairErr := verifyAndRepair(dl.stagingDir, files)
 	if repairErr != nil {
-		failed := false
-		m.mu.Lock()
-		if dl.status != "removed" && dl.status != "paused" {
-			dl.status = "error"
-			// Claude 2026-09-17: wrap PAR2 failure with ErrContentUnusable so
-			//   applyUsenetFailure can route to a different-release park.
-			// Reason: a bad PAR2 is a property of THIS release; a different NZB is the fix.
-			// Review if: PAR2-less releases should stay best-effort (they already do —
-			//   verifyAndRepair returns nil when no .par2 is present).
-			dl.errorMsg = repairErr.Error()
-			dl.err = fmt.Errorf("%w: %w", ErrContentUnusable, repairErr)
-			failed = true
-			log.Printf("usenet: par2 repair %s: %v (failing download — not marking complete)", gid, repairErr)
-		}
-		m.mu.Unlock()
-		if failed {
-			m.fireOnError(ctx, gid, dl.err)
-		}
-		return
+		log.Printf("usenet: par2 repair %s: %v — continuing to unpack", gid, repairErr)
 	}
 	files = repaired
 
@@ -1132,6 +1125,27 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 		return
 	}
 	files = unpacked
+
+	// Claude 2026-09-18: PAR2-fail + no video still fail-closed.
+	// Reason: without archives, unpack returns nil and would soft-complete a
+	//   PAR2-only staging dir (the 2026-09-15 soft-complete regression).
+	// Review if: flat non-archive payloads that are not videos need a path.
+	if repairErr != nil && len(videoNamesInDir(dl.stagingDir)) == 0 {
+		failed := false
+		m.mu.Lock()
+		if dl.status != "removed" && dl.status != "paused" {
+			dl.status = "error"
+			dl.errorMsg = repairErr.Error()
+			dl.err = fmt.Errorf("%w: %w", ErrContentUnusable, repairErr)
+			failed = true
+			log.Printf("usenet: par2 repair %s: %v (no video after unpack — not marking complete)", gid, repairErr)
+		}
+		m.mu.Unlock()
+		if failed {
+			m.fireOnError(ctx, gid, dl.err)
+		}
+		return
+	}
 
 	m.mu.Lock()
 	if dl.status != "removed" && dl.status != "paused" {
@@ -1791,7 +1805,10 @@ func uniqueOutputName(base string, used map[string]struct{}) string {
 // Files whose names end in .par2 but whose contents are not PAR2 packets are
 // reclassified (and renamed when a video/archive magic matches) so obfuscated
 // releases are not rejected. If no real .par2 sets remain, files is returned
-// unchanged. Real PAR2 repair failure stays fatal for the caller (fail-closed).
+// unchanged with a nil error. A non-nil error means verify/repair failed; the
+// caller may still unpack (contiguous assemblies are often short of FileDesc
+// length while the RAR payload is intact).
+// Review if: go-newsgroups/par2 treats FileDesc length mismatch as trim/pad.
 func verifyAndRepair(dir string, files []string) ([]string, error) {
 	files = normalizeObfuscatedPar2Names(files)
 

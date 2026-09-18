@@ -1149,9 +1149,17 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 // downloadAll downloads every file in the NZB and returns the assembled paths.
 func (m *Manager) downloadAll(ctx context.Context, gid string, dl *dlState, nzb *NZB) ([]string, error) {
 	maxConc := concurrencyBudget(m.currentPools())
+	// Claude 2026-09-18: track claimed output names across NZB files.
+	// Reason: obfuscated multi-part releases reuse one yEnc filename for every
+	//   RAR/PAR2 part; without uniquify, assembleFile smashed them into one path
+	//   and merged resume Done maps (many MsgIDs at n:1/off:0) → PAR2
+	//   "thousands of damaged/missing slices".
+	// Troubleshooting: resume unique_n << done count; staging ~one-part size.
+	// Review if: posters start emitting distinct yEnc names per part again.
+	usedNames := map[string]struct{}{}
 	var paths []string
 	for _, nzbFile := range nzb.Files {
-		path, err := m.assembleFile(ctx, gid, dl, nzbFile, maxConc)
+		path, err := m.assembleFile(ctx, gid, dl, nzbFile, maxConc, usedNames)
 		if err != nil {
 			return nil, fmt.Errorf("%q: %w", nzbFile.Subject, err)
 		}
@@ -1186,12 +1194,20 @@ func (m *Manager) downloadAll(ctx context.Context, gid string, dl *dlState, nzb 
 // Troubleshooting: high eth0 RX with flat staging size mid-file → expected until
 //   the ordered writer commits; after this change staging should grow steadily.
 // Review if: markSegment persist rate needs batching for very large NZBs.
-func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzbFile NZBFile, maxConc int) (string, error) {
+//
+// Claude 2026-09-18: uniquify output names via usedNames (see downloadAll).
+// Reason: same yEnc name across NZB files must not share one staging path/resume key.
+// Troubleshooting: PAR2 not repairable after "complete" obfuscated RAR set.
+// Review if: uniqueOutputName scheme (.partNNN) conflicts with a poster convention.
+func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzbFile NZBFile, maxConc int, usedNames map[string]struct{}) (string, error) {
 	if len(nzbFile.Segs) == 0 {
 		return "", fmt.Errorf("no segments")
 	}
 	if maxConc < 1 {
 		maxConc = 1
+	}
+	if usedNames == nil {
+		usedNames = map[string]struct{}{}
 	}
 
 	segs := make([]NZBSegment, len(nzbFile.Segs))
@@ -1205,6 +1221,10 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 	if resume != nil {
 		filename, _, priorDone = resume.priorFile(firstMsg)
 	}
+	if filename != "" {
+		// Resume hit — claim so a later NZB file cannot reuse this path.
+		usedNames[filename] = struct{}{}
+	}
 
 	// Seed filename (+ optional first body) before open so the output path exists.
 	var seedData []byte
@@ -1215,7 +1235,7 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 			return "", fmt.Errorf("segment 1: %w", err)
 		}
 		if filename == "" {
-			filename = preferredOutputName(first.filename, nzbFile.Subject)
+			filename = uniqueOutputName(preferredOutputName(first.filename, nzbFile.Subject), usedNames)
 		}
 		seedData = first.data
 		seedNum = segs[0].Number
@@ -1388,7 +1408,16 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 		gotCond.Broadcast()
 	}
 	fetchErr := g.Wait()
+	// Claude 2026-09-18: prefer real fetch failure over writer cancel mask.
+	// Reason: errgroup cancels siblings on the first fetch error; the ordered
+	//   writer then surfaces segment N: context.Canceled and previously won
+	//   over fetchErr — UI/logs showed only "context canceled".
+	// Troubleshooting: "segment N: context canceled" with no underlying cause.
+	// Review if: errgroup is replaced with a model that preserves primary errors.
 	if writeErr != nil {
+		if fetchErr != nil && errors.Is(writeErr, context.Canceled) && !errors.Is(fetchErr, context.Canceled) {
+			return "", fetchErr
+		}
 		return "", writeErr
 	}
 	if fetchErr != nil {
@@ -1686,6 +1715,31 @@ func preferredOutputName(yencName, subject string) string {
 	return sanitizeName(subject)
 }
 
+// uniqueOutputName claims base in used (or base.part002, .part003, …) so each
+// NZB file gets a distinct staging path when posters reuse one yEnc filename.
+func uniqueOutputName(base string, used map[string]struct{}) string {
+	if used == nil {
+		used = map[string]struct{}{}
+	}
+	base = sanitizeName(base)
+	if base == "" {
+		base = "file.bin"
+	}
+	if _, taken := used[base]; !taken {
+		used[base] = struct{}{}
+		return base
+	}
+	ext := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+	for i := 2; ; i++ {
+		cand := fmt.Sprintf("%s.part%03d%s", stem, i, ext)
+		if _, taken := used[cand]; !taken {
+			used[cand] = struct{}{}
+			return cand
+		}
+	}
+}
+
 // Claude 2026-09-15: obfuscated payloads often keep a .par2 subject name while
 // the body is Matroska/MP4/RAR. Magic-sniff before PAR2 so we do not fail-closed
 // on a healthy video that only looks like a repair set by extension.
@@ -1793,7 +1847,8 @@ func isPar2Payload(path string) bool {
 //   ~N times. Stale paths left in the slice also poison verifyAndRepair's
 //   dataPaths ReadFile when a real PAR2 set exists.
 // Troubleshooting: journal spam "skipping non-PAR2"; par2: reading data file …
-// Review if: assembleFile uniquifies colliding output names
+// Claude 2026-09-18: assembleFile now uniquifies colliding yEnc names (.partNNN);
+//   keep dedupe here for resume/legacy staging that still lists duplicates.
 func normalizeObfuscatedPar2Names(files []string) []string {
 	renamed := make(map[string]string)
 	emitted := make(map[string]bool)

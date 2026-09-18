@@ -1354,10 +1354,12 @@ var ErrNoSubscriptions = errors.New("usenet: no Usenet subscriptions are configu
 // guessing 430 vs. 451) is the safe answer, including in the mixed case where
 // one provider answered 451 and another was simply unreachable.
 //
-// Claude 2026-09-17: added ctx + per-server retry loop for transport failures.
-// Reason: 88% of live segment failures were "write tcp …: write: broken pipe"
-//   on stale pooled connections; they previously failed the whole NZB. A single
-//   reconnect (pool.put false + new get) recovers the segment silently.
+// Claude 2026-09-17: ctx + per-server retry loop for transport failures.
+// Reason: stale pooled connections failed whole NZBs on broken pipe; reconnect
+//   (pool.put false + new get) recovers most segments.
+// Claude 2026-09-18: invalidateIdle() on transport error — get() prefers idle,
+//   so retries can exhaust maxSegmentAttemptsPerServer on stale siblings when
+//   MaxConns exceeds that limit, never dialing fresh.
 // Review if: maxSegmentAttemptsPerServer is exposed as a settings knob.
 func (m *Manager) fetchSegmentAny(ctx context.Context, msgID string) (segmentResult, error) {
 	pools := m.currentPools()
@@ -1415,9 +1417,12 @@ func (m *Manager) fetchSegmentAny(ctx context.Context, msgID string) (segmentRes
 			default:
 				// Transport or decode failure. Retry on a fresh connection if
 				// we have attempts left and the context is still live.
-				if isTransportError(ferr) && attempt < maxSegmentAttemptsPerServer && ctx.Err() == nil {
-					sleepWithCtx(ctx, transportRetryDelay(attempt))
-					continue
+				if isTransportError(ferr) {
+					p.invalidateIdle()
+					if attempt < maxSegmentAttemptsPerServer && ctx.Err() == nil {
+						sleepWithCtx(ctx, transportRetryDelay(attempt))
+						continue
+					}
 				}
 				allNotFound = false
 				if otherErr == nil {

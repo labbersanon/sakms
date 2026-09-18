@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Tensai75/nntp"
 	"github.com/mnightingale/rapidyenc"
 )
 
@@ -1145,10 +1146,7 @@ func TestMaxConcurrentDownloads_DefaultAndSet(t *testing.T) {
 	}
 }
 
-// fakeNNTPWithDrop wraps fakeNNTP and provides a drop-first-n-commands
-// mechanism by overriding the serve loop with an atomic counter.
-
-// fakeNNTPWithDrop wraps fakeNNTP, adding a drop-first-n-commands mechanism.
+// fakeNNTPWithDrop wraps fakeNNTP with a drop-first-n-commands mechanism.
 // It replaces the listener's accept loop with its own, forwarding accepted
 // connections through the modified serve logic.
 type fakeNNTPWithDrop struct {
@@ -1359,4 +1357,66 @@ func TestFetchSegmentAny_ContextCancel_ReturnsContextErr(t *testing.T) {
 	if errors.Is(err, ErrTransport) {
 		t.Errorf("context cancel must not produce ErrTransport, got %v", err)
 	}
+}
+
+func TestFetchSegmentAny_FlushesStaleIdleOnTransportError(t *testing.T) {
+	p := makePayload(t, 1, 512)
+	srv := newFakeNNTP(t)
+	srv.serveAll(p)
+	m := New(Config{Servers: []ServerConfig{srv.cfgWith(5)}, StagingDir: t.TempDir()})
+	pools := m.currentPools()
+	if len(pools) != 1 {
+		t.Fatalf("pools = %d, want 1", len(pools))
+	}
+	pool := pools[0]
+
+	held := make([]*nntp.Conn, 0, 5)
+	for i := 0; i < 5; i++ {
+		c, err := pool.get()
+		if err != nil {
+			t.Fatalf("seed get %d: %v", i, err)
+		}
+		held = append(held, c)
+	}
+	for _, c := range held {
+		pool.put(c, true)
+	}
+	for _, c := range held {
+		c.Quit()
+	}
+
+	res, err := m.fetchSegmentAny(context.Background(), p.msgIDs[0])
+	if err != nil {
+		t.Fatalf("expected dial-after-invalidateIdle recovery, got %v", err)
+	}
+	if len(res.data) != 512 {
+		t.Fatalf("decoded %d bytes, want 512", len(res.data))
+	}
+}
+
+func TestPool_InvalidateIdle(t *testing.T) {
+	srv := newFakeNNTP(t)
+	p := newPool(srv.cfgWith(2))
+	c1, err := p.get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2, err := p.get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.put(c1, true)
+	p.put(c2, true)
+	p.invalidateIdle()
+	c3, err := p.get()
+	if err != nil {
+		t.Fatalf("get after invalidateIdle: %v", err)
+	}
+	c4, err := p.get()
+	if err != nil {
+		t.Fatalf("second get after invalidateIdle: %v", err)
+	}
+	p.put(c3, true)
+	p.put(c4, true)
+	p.close()
 }

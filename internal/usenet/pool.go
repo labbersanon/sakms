@@ -224,6 +224,38 @@ func (p *pool) releaseLive() {
 	}
 }
 
+// invalidateIdle closes every connection sitting in idle without marking the
+// pool closed. Checked-out connections are untouched.
+//
+// Claude 2026-09-18: flush sibling idle sockets after a transport failure.
+// Reason: maxSegmentAttemptsPerServer (3) < MaxConns (e.g. 8). get() prefers
+//   idle, so retries can burn stale pooled sockets without ever dialing.
+// Troubleshooting: broken pipe then pending_retry; resume may recover after
+//   "segment recovered after N attempt(s)".
+// Review if: idle sockets gain a max-age / DATE probe before reuse.
+func (p *pool) invalidateIdle() {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
+	var drained []*nntp.Conn
+	for done := false; !done; {
+		select {
+		case c := <-p.idle:
+			drained = append(drained, c)
+		default:
+			done = true
+		}
+	}
+	p.mu.Unlock()
+	// Quit does network I/O — never hold p.mu across it.
+	for _, c := range drained {
+		c.Quit()
+		p.releaseLive()
+	}
+}
+
 // close terminates all idle connections in the pool and marks it closed so
 // subsequent get() calls fail fast rather than dialling new connections.
 // Idempotent — calling it twice is safe. Connections currently checked out by

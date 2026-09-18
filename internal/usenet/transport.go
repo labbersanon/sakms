@@ -86,6 +86,7 @@ func isTransportError(err error) bool {
 	for _, sub := range []string{
 		"broken pipe",
 		"connection reset by peer",
+		"connection closed",
 		"use of closed network connection",
 		"i/o timeout",
 		"unexpected eof",

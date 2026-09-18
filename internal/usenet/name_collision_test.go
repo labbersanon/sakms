@@ -79,12 +79,12 @@ func TestDownloadAll_UniquifiesCollidingYencNames(t *testing.T) {
 	}
 	nzbXML := `<?xml version="1.0" encoding="UTF-8"?>
 <nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
-  <file poster="p@example.com" date="0" subject="[1/2] &quot;` + sharedName + `&quot; yEnc (1/2)">
+  <file poster="p@example.com" date="0" subject="[1/2] &quot;Show.S01E01.part01.mkv&quot; yEnc (1/2)">
     <groups><group>alt.binaries.test</group></groups>
     <segments>
 ` + segsA.String() + `    </segments>
   </file>
-  <file poster="p@example.com" date="0" subject="[2/2] &quot;` + sharedName + `&quot; yEnc (1/2)">
+  <file poster="p@example.com" date="0" subject="[2/2] &quot;Show.S01E01.part02.mkv&quot; yEnc (1/2)">
     <groups><group>alt.binaries.test</group></groups>
     <segments>
 ` + segsB.String() + `    </segments>
@@ -115,8 +115,8 @@ func TestDownloadAll_UniquifiesCollidingYencNames(t *testing.T) {
 	}
 
 	dir := filepath.Join(staging, gid)
-	pathA := filepath.Join(dir, sharedName)
-	pathB := filepath.Join(dir, "316cef87b8ef42dc840681b2b2cf2c37.part002.par2")
+	pathA := filepath.Join(dir, "Show.S01E01.part01.mkv")
+	pathB := filepath.Join(dir, "Show.S01E01.part02.mkv")
 	gotA, err := os.ReadFile(pathA)
 	if err != nil {
 		t.Fatalf("read part1: %v (dir=%v)", err, listNames(t, dir))
@@ -151,6 +151,71 @@ func TestDownloadAll_UniquifiesCollidingYencNames(t *testing.T) {
 			t.Fatalf("%s: done=%d want %d", name, len(rf.Done), segCount)
 		}
 	}
+}
+
+// When subject quotes the same hash.par2 for every file, uniqueOutputName still
+// separates staging paths (safety net when subject offers no distinct part name).
+func TestDownloadAll_UniquifiesWhenSubjectAlsoCollides(t *testing.T) {
+	const sharedName = "316cef87b8ef42dc840681b2b2cf2c37.par2"
+	partSize := 256
+	segCount := 1
+
+	mkBody := func(label string, fill byte) (id string, body []byte, full []byte) {
+		full = bytes.Repeat([]byte{fill}, partSize)
+		id = label + "-seg1@test"
+		body = yencPart(t, sharedName, int64(len(full)), 1, 1, 0, full)
+		return id, body, full
+	}
+	idA, bodyA, fullA := mkBody("a", 0x33)
+	idB, bodyB, fullB := mkBody("b", 0x44)
+
+	nzbXML := `<?xml version="1.0" encoding="UTF-8"?>
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+  <file poster="p@example.com" date="0" subject="[1/2] &quot;` + sharedName + `&quot; yEnc (1/1)">
+    <groups><group>alt.binaries.test</group></groups>
+    <segments>
+      <segment bytes="` + fmt.Sprint(partSize) + `" number="1">` + idA + `</segment>
+    </segments>
+  </file>
+  <file poster="p@example.com" date="0" subject="[2/2] &quot;` + sharedName + `&quot; yEnc (1/1)">
+    <groups><group>alt.binaries.test</group></groups>
+    <segments>
+      <segment bytes="` + fmt.Sprint(partSize) + `" number="1">` + idB + `</segment>
+    </segments>
+  </file>
+</nzb>`
+
+	srv := newFakeNNTP(t)
+	srv.add(idA, bodyA)
+	srv.add(idB, bodyB)
+	nzbHTTP := nzbServer(t, testPayload{nzbXML: nzbXML})
+	staging := t.TempDir()
+	m := New(Config{
+		Servers:    []ServerConfig{srv.cfgWith(2)},
+		StagingDir: staging,
+		HTTPClient: nzbHTTP.Client(),
+	})
+	gid, err := m.AddNZB(context.Background(), nzbHTTP.URL, "Subject Collides Too")
+	if err != nil {
+		t.Fatalf("AddNZB: %v", err)
+	}
+	final := waitTerminal(t, m, gid)
+	if final.Status != "complete" {
+		t.Fatalf("status=%q err=%q", final.Status, final.ErrorMessage)
+	}
+	dir := filepath.Join(staging, gid)
+	gotA, err := os.ReadFile(filepath.Join(dir, sharedName))
+	if err != nil {
+		t.Fatalf("part1: %v dir=%v", err, listNames(t, dir))
+	}
+	gotB, err := os.ReadFile(filepath.Join(dir, "316cef87b8ef42dc840681b2b2cf2c37.part002.par2"))
+	if err != nil {
+		t.Fatalf("part2: %v dir=%v", err, listNames(t, dir))
+	}
+	if !bytes.Equal(gotA, fullA) || !bytes.Equal(gotB, fullB) {
+		t.Fatal("assembled bytes mismatch")
+	}
+	_ = segCount
 }
 
 func listNames(t *testing.T, dir string) []string {

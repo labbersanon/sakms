@@ -1160,16 +1160,13 @@ func (m *Manager) downloadAll(ctx context.Context, gid string, dl *dlState, nzb 
 	return paths, nil
 }
 
-// assembleFile downloads all segments of one NZB file and writes the assembled
-// output to dl.stagingDir. Segments are downloaded concurrently up to maxConc,
-// written to a pre-allocated file via io.WriterAt at the offsets in yEnc metadata.
+// assembleFile downloads every segment of one NZB file and writes a contiguous
+// on-disk file under dl.stagingDir.
 //
 // Claude 2026-09-11: skip segments recorded in .sakms-resume.json (Phase 2).
 // Reason: RelaunchNZB after restart re-fetched every segment; ARR-parity needs durable skip of completed MsgIDs while keeping the same nzb-* dir.
 // Troubleshooting: journal "resuming — N segment(s)"; force-full clears sidecar.
 // Review if: PAR2 repair requires invalidating specific MsgIDs after a bad write.
-// assembleFile downloads every segment of one NZB file and writes a contiguous
-// on-disk file under dl.stagingDir.
 //
 // Claude 2026-09-15: write at cumulative decoded lengths, NOT yEnc begin offsets.
 // Reason: many posters advance =ypart begin by a round stride (e.g. 768000) while
@@ -1180,9 +1177,21 @@ func (m *Manager) downloadAll(ctx context.Context, gid string, dl *dlState, nzb 
 //         resume v1 sidecars are wiped (resumeSchemaVersion).
 // Review if: a poster emits overlapping yEnc ranges that require sparse WriteAt.
 // Related: docs plan; resume.go resumeSchemaVersion; NZBGet DirectWrite.
+//
+// Claude 2026-09-18: ordered pipeline write (concurrent fetch, serial commit).
+// Reason: the previous "fetch-all into got[], then write" held an entire multi-GB
+//   file in RAM and only markSegment'd at the end — restart lost mid-file progress
+//   and drove sakms RSS to multi-GB. Fetchers take a slot before BODY; the writer
+//   frees it after WriteAt+markSegment so peak buffered bodies ≤ maxConc.
+// Troubleshooting: high eth0 RX with flat staging size mid-file → expected until
+//   the ordered writer commits; after this change staging should grow steadily.
+// Review if: markSegment persist rate needs batching for very large NZBs.
 func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzbFile NZBFile, maxConc int) (string, error) {
 	if len(nzbFile.Segs) == 0 {
 		return "", fmt.Errorf("no segments")
+	}
+	if maxConc < 1 {
+		maxConc = 1
 	}
 
 	segs := make([]NZBSegment, len(nzbFile.Segs))
@@ -1192,23 +1201,15 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 	resume := dl.resume
 	firstMsg := strings.TrimSpace(segs[0].MsgID)
 	var filename string
-	var fileSize int64
 	var priorDone int
 	if resume != nil {
-		filename, fileSize, priorDone = resume.priorFile(firstMsg)
+		filename, _, priorDone = resume.priorFile(firstMsg)
 	}
 
-	got := make(map[int][]byte, len(segs))
-	var gotMu sync.Mutex
-
-	needFetch := func(name string, seg NZBSegment) bool {
-		if resume == nil || resume.disabled || name == "" {
-			return true
-		}
-		return !resume.hasSegment(name, strings.TrimSpace(seg.MsgID))
-	}
-
-	if filename == "" || needFetch(filename, segs[0]) {
+	// Seed filename (+ optional first body) before open so the output path exists.
+	var seedData []byte
+	var seedNum int
+	if filename == "" || resume == nil || resume.disabled || !resume.hasSegment(filename, firstMsg) {
 		first, err := m.fetchSegmentAny(ctx, segs[0].MsgID)
 		if err != nil {
 			return "", fmt.Errorf("segment 1: %w", err)
@@ -1216,10 +1217,8 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 		if filename == "" {
 			filename = preferredOutputName(first.filename, nzbFile.Subject)
 		}
-		if first.fileSize > 0 {
-			fileSize = first.fileSize
-		}
-		got[segs[0].Number] = first.data
+		seedData = first.data
+		seedNum = segs[0].Number
 	}
 
 	outPath := filepath.Join(dl.stagingDir, filename)
@@ -1238,77 +1237,162 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 		fileBytes = fi.Size()
 	}
 
-	// Re-check first segment coverage after open (hollow-file guard).
-	if _, ok := got[segs[0].Number]; !ok {
+	// Hollow-file guard: sidecar said done but on-disk range is empty → re-fetch.
+	if seedData == nil {
 		if resume == nil || resume.disabled || !resume.segmentCovered(f, filename, firstMsg, fileBytes) {
 			first, err := m.fetchSegmentAny(ctx, segs[0].MsgID)
 			if err != nil {
 				return "", fmt.Errorf("segment 1: %w", err)
 			}
-			if first.fileSize > 0 {
-				fileSize = first.fileSize
-			}
-			got[segs[0].Number] = first.data
+			seedData = first.data
+			seedNum = segs[0].Number
 		}
 	}
 
-	// Claude 2026-09-17: errgroup.WithContext so the first hard segment failure
-	// cancels sibling fetches instead of letting all ~20 workers hammer a dead
-	// provider to completion.
-	// Reason: var g errgroup.Group allowed every worker to run to completion
-	//   even after an unrecoverable failure, wasting connections and time.
-	// Review if: partial-success semantics (continue despite one bad file) are
-	//   ever wanted — that would require a non-cancelling group again.
-	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(maxConc)
-	for _, seg := range segs[1:] {
-		seg := seg
+	covered := make([]bool, len(segs))
+	for i, seg := range segs {
 		msgID := strings.TrimSpace(seg.MsgID)
-		if resume != nil && !resume.disabled && resume.segmentCovered(f, filename, msgID, fileBytes) {
+		if seedData != nil && seg.Number == seedNum {
+			covered[i] = false
 			continue
 		}
+		if resume != nil && !resume.disabled && resume.segmentCovered(f, filename, msgID, fileBytes) {
+			covered[i] = true
+		}
+	}
+
+	type fetched struct {
+		data []byte
+	}
+	got := make(map[int]fetched)
+	var gotMu sync.Mutex
+	gotCond := sync.NewCond(&gotMu)
+	// nextWrite is the index into segs the ordered writer is waiting on.
+	// Fetchers may only run for indices in [nextWrite, nextWrite+maxConc).
+	nextWrite := 0
+
+	fetchCtx, fetchCancel := context.WithCancel(ctx)
+	defer fetchCancel()
+	g, gctx := errgroup.WithContext(fetchCtx)
+	doneWake := make(chan struct{})
+	go func() {
+		select {
+		case <-gctx.Done():
+			gotCond.Broadcast()
+		case <-doneWake:
+		}
+	}()
+	defer close(doneWake)
+
+	// Seed first body into the pipeline.
+	if seedData != nil {
+		gotMu.Lock()
+		got[seedNum] = fetched{data: seedData}
+		gotMu.Unlock()
+	}
+
+	// No errgroup.SetLimit: a limit here lets high-index workers hold worker
+	// slots while blocked on the window, starving the indices the writer needs.
+	// The sliding window alone caps concurrent BODY fetches at maxConc.
+	for i, seg := range segs {
+		if covered[i] {
+			continue
+		}
+		if seedData != nil && seg.Number == seedNum {
+			continue
+		}
+		seg := seg
+		idx := i
+		msgID := strings.TrimSpace(seg.MsgID)
 		g.Go(func() error {
-			res, err := m.fetchSegmentAny(gctx, seg.MsgID)
+			gotMu.Lock()
+			for idx >= nextWrite+maxConc && gctx.Err() == nil {
+				gotCond.Wait()
+			}
+			if gctx.Err() != nil {
+				gotMu.Unlock()
+				return gctx.Err()
+			}
+			gotMu.Unlock()
+
+			res, err := m.fetchSegmentAny(gctx, msgID)
 			if err != nil {
 				return fmt.Errorf("segment %d: %w", seg.Number, err)
 			}
 			gotMu.Lock()
-			got[seg.Number] = res.data
+			got[seg.Number] = fetched{data: res.data}
 			gotMu.Unlock()
+			gotCond.Broadcast()
 			return nil
 		})
 	}
-	if err := g.Wait(); err != nil {
-		return "", err
-	}
 
-	// Contiguous write in segment-number order using decoded lengths.
+	var writeErr error
 	var cursor int64
-	for _, seg := range segs {
+	for i, seg := range segs {
 		msgID := strings.TrimSpace(seg.MsgID)
-		if data, ok := got[seg.Number]; ok {
-			if _, err := f.WriteAt(data, cursor); err != nil {
-				return "", fmt.Errorf("writing segment %d: %w", seg.Number, err)
-			}
-			m.addCompleted(gid, int64(len(data)))
+		if covered[i] {
+			n := 0
 			if resume != nil {
-				if err := resume.markSegment(filename, msgID, seg.Number, cursor, len(data), 0); err != nil {
-					log.Printf("usenet: resume persist %s seg %d: %v", gid, seg.Number, err)
-				}
+				n = resume.skippedBytes(filename, msgID, int(seg.Bytes))
 			}
-			cursor += int64(len(data))
+			if n <= 0 {
+				writeErr = fmt.Errorf("segment %d: missing decoded length for resume skip", seg.Number)
+				break
+			}
+			m.addCompleted(gid, int64(n))
+			cursor += int64(n)
+			gotMu.Lock()
+			nextWrite = i + 1
+			gotMu.Unlock()
+			gotCond.Broadcast()
 			continue
 		}
-		// Already on disk from a v2 resume — advance by recorded decoded length.
-		n := 0
+
+		gotMu.Lock()
+		for {
+			if _, ok := got[seg.Number]; ok {
+				break
+			}
+			if gctx.Err() != nil {
+				gotMu.Unlock()
+				writeErr = fmt.Errorf("segment %d: %w", seg.Number, gctx.Err())
+				break
+			}
+			gotCond.Wait()
+		}
+		if writeErr != nil {
+			break
+		}
+		data := got[seg.Number].data
+		delete(got, seg.Number)
+		nextWrite = i + 1
+		gotMu.Unlock()
+		gotCond.Broadcast()
+
+		if _, err := f.WriteAt(data, cursor); err != nil {
+			writeErr = fmt.Errorf("writing segment %d: %w", seg.Number, err)
+			break
+		}
+		m.addCompleted(gid, int64(len(data)))
 		if resume != nil {
-			n = resume.skippedBytes(filename, msgID, int(seg.Bytes))
+			if err := resume.markSegment(filename, msgID, seg.Number, cursor, len(data), 0); err != nil {
+				log.Printf("usenet: resume persist %s seg %d: %v", gid, seg.Number, err)
+			}
 		}
-		if n <= 0 {
-			return "", fmt.Errorf("segment %d: missing decoded length for resume skip", seg.Number)
-		}
-		m.addCompleted(gid, int64(n))
-		cursor += int64(n)
+		cursor += int64(len(data))
+	}
+
+	if writeErr != nil {
+		fetchCancel()
+		gotCond.Broadcast()
+	}
+	fetchErr := g.Wait()
+	if writeErr != nil {
+		return "", writeErr
+	}
+	if fetchErr != nil {
+		return "", fetchErr
 	}
 
 	if err := f.Truncate(cursor); err != nil {
@@ -1317,7 +1401,6 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 	if resume != nil {
 		resume.setFileSize(filename, cursor)
 	}
-	_ = fileSize // yEnc header size is advisory only; contiguous length may differ
 	return outPath, nil
 }
 

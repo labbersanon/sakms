@@ -7,6 +7,7 @@ import (
 
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/usenet"
 )
 
 // UsenetErrorHandler returns the usenet Manager's onError callback: when the
@@ -18,15 +19,20 @@ import (
 //
 // Deliberate differences from handleStaleTorrent:
 //   - No Cancel and no file deletion — the download is already terminal;
-//     staging cleanup belongs to stagingsweep.
+//     staging cleanup belongs to stagingsweep (except content parks, which
+//     Forget + clear owned staging via deps.NZB — see parkUsenetContentFailure).
 //   - No nzb- GID prefix check — the caller is the usenet engine.
 //   - Dispatches nothing, so usenet_autograb_enabled is honored for free
 //     (parked rows wait for retryDueGrabs → RunAutoGrab).
 //
 // sweepUsenetFailures remains authoritative for restart recovery (unknown GIDs
 // after boot). This handler is the live fast path only.
-func UsenetErrorHandler(settingsStore *settings.Store, grabsStore *grabs.Store) func(gid string, failure error) {
-	deps := AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore}
+//
+// Claude 2026-09-17: nzb is required so content parks can Forget + wipe staging.
+// Reason: passing nil left terminal downloads in the engine queue after onError.
+// Review if: UsenetErrorHandler is constructed anywhere besides cmd/sakms.
+func UsenetErrorHandler(settingsStore *settings.Store, grabsStore *grabs.Store, nzb *usenet.Manager) func(gid string, failure error) {
+	deps := AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore, NZB: nzb}
 	return func(gid string, failure error) {
 		handleUsenetError(context.Background(), deps, gid, failure, parkGrabForRetry)
 	}

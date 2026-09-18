@@ -244,6 +244,134 @@ func TestParkUsenetContentFailure_CapFallsThrough(t *testing.T) {
 	}
 }
 
+// TestParkContentFailureOrDaysLadder_CapFallsToDaysLadder is the regression
+// for the live Love Is Blind stuck-queued bug: when the alternate-release
+// episode is exhausted, the import/reconcile helper must ParkWithBackoff
+// (clear GID, pending_retry) rather than leave the grab queued.
+func TestParkContentFailureOrDaysLadder_CapFallsToDaysLadder(t *testing.T) {
+	ctx := context.Background()
+	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
+	deps := AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore}
+	eng := &fakeForgetEngine{stagingDir: t.TempDir()}
+
+	g := dispatchedUsenetGrab(t, grabsStore, "nzb-import-cap0")
+	// Exhaust the alternate-release budget the same way the live path does.
+	for i := 0; i < grabs.MaxAlternateReleaseAttempts; i++ {
+		gid := fmt.Sprintf("nzb-import-cap%d", i+1)
+		url := fmt.Sprintf("https://indexer.example/nzb-import-cap?idx=%d", i+1)
+		if err := grabsStore.Relaunch(ctx, g.ID, grabs.Dispatch{
+			Indexer: "I", Protocol: "usenet", DownloadClient: "usenet",
+			RootFolderPath: "/movies", DownloadURL: url, GID: gid,
+		}); err != nil {
+			t.Fatalf("Relaunch iter %d: %v", i, err)
+		}
+		current, err := grabsStore.Get(ctx, g.ID)
+		if err != nil {
+			t.Fatalf("get iter %d: %v", i, err)
+		}
+		if err := parkContentFailureOrDaysLadder(ctx, deps, *current, library.ErrNoVideoFile, eng); err != nil {
+			t.Fatalf("park iter %d: %v", i, err)
+		}
+		parked, err := grabsStore.Get(ctx, g.ID)
+		if err != nil {
+			t.Fatalf("reload iter %d: %v", i, err)
+		}
+		if parked.Status != grabs.PendingRetry || parked.DownloadGID != "" {
+			t.Fatalf("iter %d: status=%q gid=%q, want pending_retry with empty gid", i, parked.Status, parked.DownloadGID)
+		}
+		if grabs.AlternateAttempts(grabs.ParseTriedReleaseKeys(parked.TriedReleaseKeys)) != i+1 {
+			t.Fatalf("iter %d: attempts=%d, want %d", i, grabs.AlternateAttempts(grabs.ParseTriedReleaseKeys(parked.TriedReleaseKeys)), i+1)
+		}
+	}
+
+	// Cap exhausted: next content failure must take the days ladder.
+	if err := grabsStore.Relaunch(ctx, g.ID, grabs.Dispatch{
+		Indexer: "I", Protocol: "usenet", DownloadClient: "usenet",
+		RootFolderPath: "/movies",
+		DownloadURL:    "https://indexer.example/nzb-import-cap?idx=99",
+		GID:            "nzb-import-cap-over",
+	}); err != nil {
+		t.Fatalf("Relaunch at cap: %v", err)
+	}
+	atCap, err := grabsStore.Get(ctx, g.ID)
+	if err != nil {
+		t.Fatalf("get at cap: %v", err)
+	}
+	beforeCount := atCap.RetryCount
+	if err := parkContentFailureOrDaysLadder(ctx, deps, *atCap, library.ErrNoVideoFile, eng); err != nil {
+		t.Fatalf("park at cap: %v", err)
+	}
+	got, err := grabsStore.Get(ctx, g.ID)
+	if err != nil {
+		t.Fatalf("reload at cap: %v", err)
+	}
+	if got.Status != grabs.PendingRetry {
+		t.Errorf("status = %q, want pending_retry", got.Status)
+	}
+	if got.DownloadGID != "" {
+		t.Errorf("download_gid = %q, want empty (days ladder clears it)", got.DownloadGID)
+	}
+	if got.RetryCount != beforeCount+1 {
+		t.Errorf("retry_count = %d, want %d (ParkWithBackoff advances)", got.RetryCount, beforeCount+1)
+	}
+	// tried_release_keys cleared by SetPendingRetry / ParkWithBackoff.
+	if got.TriedReleaseKeys != "" {
+		t.Errorf("tried_release_keys = %q, want cleared after days-ladder fallthrough", got.TriedReleaseKeys)
+	}
+}
+
+// TestApplyUsenetFailure_ContentCapFallsToDaysLadder pins the same fallthrough
+// on the applyUsenetFailure / onError / sweep path.
+func TestApplyUsenetFailure_ContentCapFallsToDaysLadder(t *testing.T) {
+	ctx := context.Background()
+	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
+	deps := AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore}
+
+	g := dispatchedUsenetGrab(t, grabsStore, "nzb-apply-cap0")
+	for i := 0; i < grabs.MaxAlternateReleaseAttempts; i++ {
+		gid := fmt.Sprintf("nzb-apply-cap%d", i+1)
+		url := fmt.Sprintf("https://indexer.example/nzb-apply-cap?idx=%d", i+1)
+		if err := grabsStore.Relaunch(ctx, g.ID, grabs.Dispatch{
+			Indexer: "I", Protocol: "usenet", DownloadClient: "usenet",
+			RootFolderPath: "/movies", DownloadURL: url, GID: gid,
+		}); err != nil {
+			t.Fatalf("Relaunch iter %d: %v", i, err)
+		}
+		current, err := grabsStore.Get(ctx, g.ID)
+		if err != nil {
+			t.Fatalf("get iter %d: %v", i, err)
+		}
+		if _, err := applyUsenetFailure(ctx, deps, *current, usenet.ErrContentUnusable, parkGrabForRetry); err != nil {
+			t.Fatalf("applyUsenetFailure iter %d: %v", i, err)
+		}
+	}
+	if err := grabsStore.Relaunch(ctx, g.ID, grabs.Dispatch{
+		Indexer: "I", Protocol: "usenet", DownloadClient: "usenet",
+		RootFolderPath: "/movies",
+		DownloadURL:    "https://indexer.example/nzb-apply-cap?idx=99",
+		GID:            "nzb-apply-cap-over",
+	}); err != nil {
+		t.Fatalf("Relaunch at cap: %v", err)
+	}
+	atCap, err := grabsStore.Get(ctx, g.ID)
+	if err != nil {
+		t.Fatalf("get at cap: %v", err)
+	}
+	if _, err := applyUsenetFailure(ctx, deps, *atCap, usenet.ErrContentUnusable, parkGrabForRetry); err != nil {
+		t.Fatalf("applyUsenetFailure at cap: %v", err)
+	}
+	got, err := grabsStore.Get(ctx, g.ID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got.Status != grabs.PendingRetry || got.DownloadGID != "" {
+		t.Fatalf("status=%q gid=%q, want pending_retry with empty gid", got.Status, got.DownloadGID)
+	}
+	if got.TriedReleaseKeys != "" {
+		t.Errorf("tried_release_keys should be cleared on days-ladder fallthrough, got %q", got.TriedReleaseKeys)
+	}
+}
+
 // TestApplyUsenetFailure_ContentBranch asserts that a content-unusable error
 // routes to the alternate-release park (due-now, keys set) rather than the
 // days-ladder park.

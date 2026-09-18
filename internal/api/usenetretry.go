@@ -465,7 +465,15 @@ func parkRetrievalFailure(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, 
 	//   guards reject it (non-nzb- GID, empty URL, cap reached).
 	// Review if: content failures should also be cap-gated per-day.
 	if contentUnusableFailure(failure) {
-		if handled, err := parkUsenetContentFailure(ctx, deps, g, failure, nil); err != nil || handled {
+		// Claude 2026-09-17: pass deps.NZB so Forget + staging cleanup run on success.
+		// Reason: nil engine left terminal downloads in the in-memory queue and
+		//   hollow nzb-* dirs on disk after content parks from onError/sweep.
+		// Review if: contentForgetEngine is threaded via a dedicated deps field.
+		var engine contentForgetEngine
+		if deps.NZB != nil {
+			engine = deps.NZB
+		}
+		if handled, err := parkUsenetContentFailure(ctx, deps, g, failure, engine); err != nil || handled {
 			return err
 		}
 	}

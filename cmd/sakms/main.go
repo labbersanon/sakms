@@ -545,7 +545,11 @@ func run() error {
 		// Troubleshooting: journal "usenet error: grab … parked"; SetOnError before Start
 		// Review if: RunUsenetRetry interval is shortened for failure-only recovery
 		// Related: usenet.SetOnError; UsenetErrorHandler; applyUsenetFailure
-		nzbManager.SetOnError(api.UsenetErrorHandler(settingsStore, grabsStore))
+		// Claude 2026-09-17: pass nzbManager so content parks Forget + clear staging.
+		// Reason: UsenetErrorHandler previously built AutoGrabDeps without NZB, so
+		//   parkUsenetContentFailure ran with a nil engine on the onError path.
+		// Review if: UsenetErrorHandler gains more engine-side side effects.
+		nzbManager.SetOnError(api.UsenetErrorHandler(settingsStore, grabsStore, nzbManager))
 		go nzbManager.Start(ctx)
 		// Claude 2026-09-11: sweep sakms-owned stale usenet staging dirs
 		// Reason: imported leftovers + aged orphan RAR trees (~122G); only deletes

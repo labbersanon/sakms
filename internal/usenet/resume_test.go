@@ -160,3 +160,38 @@ func TestSegmentCovered_RejectsHollowRange(t *testing.T) {
 	}
 	_ = f.Close()
 }
+
+func TestLoadResumeTracker_WipesV2(t *testing.T) {
+	dir := t.TempDir()
+	snap := ResumeSnapshot{
+		Version: 2,
+		GID:     "nzb-test",
+		Files: map[string]*ResumeFile{
+			"a.bin": {Size: 273, Done: map[string]ResumeSeg{
+				"<m@x>": {Number: 1, Offset: 0, Length: 90},
+			}},
+		},
+	}
+	raw, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ResumeFileName), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	payload := filepath.Join(dir, "a.bin")
+	if err := os.WriteFile(payload, []byte("packed-contiguous-v2-payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tr := loadResumeTracker(dir, "nzb-test", nil, false)
+	if tr.hasSegment("a.bin", "<m@x>") {
+		t.Fatal("v2 sidecar must not be reused after resume v3")
+	}
+	if _, err := os.Stat(filepath.Join(dir, ResumeFileName)); !os.IsNotExist(err) {
+		t.Fatal("v2 sidecar should be wiped")
+	}
+	if _, err := os.Stat(payload); !os.IsNotExist(err) {
+		t.Fatal("v2 packed payload should be wiped")
+	}
+}

@@ -834,7 +834,6 @@ const NativeSearchCard: Component = () => {
 
   const valid = () => {
     if (!enabled()) return true;
-    if (!indexDir().trim().startsWith("/")) return false;
     if (!groups().trim()) return false;
     return indexMaxGb() > 0 && windowDays() > 0 && crawlInterval() >= 0;
   };
@@ -948,17 +947,14 @@ const NativeSearchCard: Component = () => {
         />
       </label>
       <label class="mb-3 block">
-        <span class={labelClass}>Index directory (absolute path, required when enabled)</span>
+        <span class={labelClass}>Index directory (unused — index is in the SAK Postgres DB)</span>
         <input
           type="text"
           class={inputClass + " font-mono text-sm"}
           aria-label="native search index directory"
           value={indexDir()}
-          onInput={(e) => {
-            setIndexDir(e.currentTarget.value);
-            mark();
-          }}
-          placeholder="/mnt/iscsi/sakms/nntp-index"
+          disabled
+          title="Header index uses dedicated Postgres tables after the SQLite cutover"
         />
       </label>
       <div class="mb-3 grid gap-3 sm:grid-cols-3">

@@ -2,8 +2,8 @@ package usenetsearch
 
 import (
 	"context"
+	"database/sql"
 	"log"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -75,14 +75,13 @@ func ParseGroups(raw string) []string {
 	return out
 }
 
-// ValidateIndexDir returns an error message when dir is unusable (fail-closed).
+// ValidateIndexDir is retained for settings API compatibility. The index now
+// lives in Postgres (migration 0026); a path is never required.
+//
+// Claude 2026-09-18: no longer fail-closed on blank path.
+// Reason: modernc SQLite banned from cmd/sakms; index moved to app DB.
 func ValidateIndexDir(dir string) string {
-	if strings.TrimSpace(dir) == "" {
-		return "index directory is required"
-	}
-	if !filepath.IsAbs(dir) {
-		return "index directory must be an absolute path"
-	}
+	_ = dir
 	return ""
 }
 
@@ -91,14 +90,15 @@ type Service struct {
 	mu     sync.Mutex
 	cfg    Config
 	src    usenet.HeaderSource
+	sqlDB  *sql.DB
 	idx    *Index
 	cancel context.CancelFunc
 	probe  Readiness
 }
 
 // NewService constructs a stopped Service. Call Apply to open the index / start crawl.
-func NewService(src usenet.HeaderSource) *Service {
-	return &Service{src: src, probe: Readiness{State: "unknown"}}
+func NewService(src usenet.HeaderSource, sqlDB *sql.DB) *Service {
+	return &Service{src: src, sqlDB: sqlDB, probe: Readiness{State: "unknown"}}
 }
 
 // SetHeaderSource updates the NNTP source (e.g. after SetSubscriptions).
@@ -125,15 +125,15 @@ func (s *Service) Apply(cfg Config) error {
 		s.probe = Readiness{Ready: false, State: "unknown", Detail: "native backend disabled"}
 		return nil
 	}
-	if msg := ValidateIndexDir(cfg.IndexDir); msg != "" {
-		s.probe = Readiness{Ready: false, State: "degraded", Detail: msg}
-		return nil
-	}
 	if len(cfg.Groups) == 0 {
 		s.probe = Readiness{Ready: false, State: "degraded", Detail: "no groups configured"}
 		return nil
 	}
-	idx, err := OpenIndex(cfg.IndexDir)
+	if s.sqlDB == nil {
+		s.probe = Readiness{Ready: false, State: "degraded", Detail: "database not configured"}
+		return nil
+	}
+	idx, err := OpenIndex(s.sqlDB)
 	if err != nil {
 		s.probe = Readiness{Ready: false, State: "degraded", Detail: err.Error()}
 		return err
@@ -197,9 +197,6 @@ func (s *Service) Ready(ctx context.Context) (Readiness, error) {
 	r := s.probe
 	if !s.cfg.Enabled {
 		return Readiness{Ready: false, State: "unknown", Detail: "disabled"}, nil
-	}
-	if msg := ValidateIndexDir(s.cfg.IndexDir); msg != "" {
-		return Readiness{Ready: false, State: "degraded", Detail: msg}, nil
 	}
 	if len(s.cfg.Groups) == 0 {
 		return Readiness{Ready: false, State: "degraded", Detail: "no groups"}, nil

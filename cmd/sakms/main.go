@@ -219,7 +219,7 @@ func run() error {
 	// Reason: feature-flagged; Apply opens index + starts crawl only when enabled.
 	// Troubleshooting: settings → Usenet → Native search; probe_state/detail.
 	// Review if: NewMux takes the service as an explicit param.
-	nntpSearch := usenetsearch.NewService(nzbManager.HeaderSource())
+	nntpSearch := usenetsearch.NewService(nzbManager.HeaderSource(), sqlDB)
 	if cfgNative, err := api.LoadUsenetSearchConfig(context.Background(), settingsStore); err != nil {
 		log.Printf("usenetsearch: loading config: %v", err)
 	} else if err := nntpSearch.Apply(cfgNative); err != nil {

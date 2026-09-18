@@ -24,7 +24,8 @@ func assembleFromRows(group, release string, rows *sql.Rows) (Candidate, error) 
 	for rows.Next() {
 		var msgid, subject, from, filename string
 		var postedAt, bytes, yenc int64
-		var partN, partM, isMeta int
+		var partN, partM int
+		var isMeta bool
 		if err := rows.Scan(&msgid, &subject, &from, &postedAt, &bytes, &partN, &partM, &filename, &yenc, &isMeta); err != nil {
 			return Candidate{}, err
 		}
@@ -34,7 +35,7 @@ func assembleFromRows(group, release string, rows *sql.Rows) (Candidate, error) 
 		if postedAt > posted {
 			posted = postedAt
 		}
-		if isMeta != 0 {
+		if isMeta {
 			c.HasPAR2 = true
 		}
 		fn := filename

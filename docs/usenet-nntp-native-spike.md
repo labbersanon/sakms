@@ -5,7 +5,9 @@ Measurement-only. Product surface still off. See `.omc/plans/usenet-nntp-native-
 ## Owner locks reflected here
 
 - Groups are **manual** (`usenet_nntp_groups`); search indexes only those.
-- Index storage path is a **required setting** (`usenet_nntp_index_dir`), plus soft `usenet_nntp_index_max_gb` (default 20).
+- Index storage uses dedicated **Postgres** tables (not a sidecar SQLite file —
+  `cmd/sakms` cannot import `modernc.org/sqlite`). Soft `usenet_nntp_index_max_gb`
+  (default 20) still applies.
 - Eweka **account** connection limit is **50**. Live `service_connections.max_conns` for `news.eweka.nl` remains `0` (engine default 4) until a separate soaked raise.
 
 ## Tool

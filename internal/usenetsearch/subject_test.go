@@ -3,6 +3,8 @@ package usenetsearch
 import (
 	"context"
 	"testing"
+
+	"github.com/labbersanon/sakms/internal/dbtest"
 )
 
 func TestParseSubject_Scene(t *testing.T) {
@@ -56,8 +58,8 @@ func TestToNZB(t *testing.T) {
 }
 
 func TestOpenIndexSearch(t *testing.T) {
-	dir := t.TempDir()
-	idx, err := OpenIndex(dir)
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
 	if err != nil {
 		t.Fatal(err)
 	}

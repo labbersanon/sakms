@@ -112,10 +112,6 @@ func putUsenetNNTPNativeHandler(settingsStore *settings.Store, svc *usenetsearch
 			cur.CrawlInterval = 0
 		}
 		if cur.Enabled {
-			if msg := usenetsearch.ValidateIndexDir(cur.IndexDir); msg != "" {
-				http.Error(w, msg, http.StatusBadRequest)
-				return
-			}
 			if len(usenetsearch.ParseGroups(cur.Groups)) == 0 {
 				http.Error(w, "at least one newsgroup is required when native search is enabled", http.StatusBadRequest)
 				return

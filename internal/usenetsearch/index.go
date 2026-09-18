@@ -4,80 +4,32 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
-const indexFileName = "nntp-index.sqlite"
+// Claude 2026-09-18: header index on app Postgres (not modernc SQLite).
+// Reason: TestCmdSakms_DoesNotImportModerncSQLite forbids modernc in cmd/sakms
+//   after the Postgres cutover. Dedicated tables keep the index prunable.
+// Troubleshooting: migration 0026; Ready reports index empty until crawl.
+// Review if: index moves to a separate Postgres database for size isolation.
 
-// Index is the local header store (separate SQLite under usenet_nntp_index_dir).
+// Index is the local header store (usenet_nntp_* tables on the app DB).
 type Index struct {
-	db *sql.DB
+	db     *sql.DB
+	owned  bool // if true, Close closes db (tests only; production shares app DB)
 }
 
-// OpenIndex creates/opens <dir>/nntp-index.sqlite and migrates schema.
-func OpenIndex(dir string) (*Index, error) {
-	if dir == "" || !filepath.IsAbs(dir) {
-		return nil, fmt.Errorf("usenetsearch: index dir must be absolute, got %q", dir)
+// OpenIndex wraps an already-migrated app *sql.DB. Does not take ownership.
+func OpenIndex(db *sql.DB) (*Index, error) {
+	if db == nil {
+		return nil, fmt.Errorf("usenetsearch: nil database")
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("usenetsearch: mkdir index dir: %w", err)
-	}
-	path := filepath.Join(dir, indexFileName)
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return nil, err
-	}
-	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;`); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if err := migrateIndex(db); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	return &Index{db: db}, nil
-}
-
-func migrateIndex(db *sql.DB) error {
-	_, err := db.Exec(`
-CREATE TABLE IF NOT EXISTS headers (
-  group_name   TEXT NOT NULL,
-  msg_num      INTEGER NOT NULL,
-  msgid        TEXT NOT NULL,
-  subject      TEXT NOT NULL DEFAULT '',
-  from_addr    TEXT NOT NULL DEFAULT '',
-  posted_at    INTEGER NOT NULL DEFAULT 0,
-  bytes        INTEGER NOT NULL DEFAULT 0,
-  release_name TEXT NOT NULL DEFAULT '',
-  part_n       INTEGER NOT NULL DEFAULT 0,
-  part_m       INTEGER NOT NULL DEFAULT 0,
-  filename     TEXT NOT NULL DEFAULT '',
-  yenc_size    INTEGER NOT NULL DEFAULT 0,
-  obfuscated   INTEGER NOT NULL DEFAULT 0,
-  is_meta      INTEGER NOT NULL DEFAULT 0,
-  ingested_at  INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (group_name, msgid)
-);
-CREATE INDEX IF NOT EXISTS idx_headers_release ON headers(group_name, release_name);
-CREATE INDEX IF NOT EXISTS idx_headers_posted ON headers(posted_at);
-CREATE INDEX IF NOT EXISTS idx_headers_subject ON headers(release_name);
-CREATE TABLE IF NOT EXISTS watermarks (
-  group_name TEXT PRIMARY KEY,
-  high       INTEGER NOT NULL DEFAULT 0,
-  updated_at INTEGER NOT NULL DEFAULT 0
-);
-`)
-	return err
+	return &Index{db: db, owned: false}, nil
 }
 
 func (idx *Index) Close() error {
-	if idx == nil || idx.db == nil {
+	if idx == nil || idx.db == nil || !idx.owned {
 		return nil
 	}
 	return idx.db.Close()
@@ -112,15 +64,15 @@ func (idx *Index) Upsert(ctx context.Context, rows []HeaderRow) error {
 	}
 	defer tx.Rollback()
 	stmt, err := tx.PrepareContext(ctx, `
-INSERT INTO headers (group_name, msg_num, msgid, subject, from_addr, posted_at, bytes,
+INSERT INTO usenet_nntp_headers (group_name, msg_num, msgid, subject, from_addr, posted_at, bytes,
   release_name, part_n, part_m, filename, yenc_size, obfuscated, is_meta, ingested_at)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-ON CONFLICT(group_name, msgid) DO UPDATE SET
-  msg_num=excluded.msg_num, subject=excluded.subject, from_addr=excluded.from_addr,
-  posted_at=excluded.posted_at, bytes=excluded.bytes, release_name=excluded.release_name,
-  part_n=excluded.part_n, part_m=excluded.part_m, filename=excluded.filename,
-  yenc_size=excluded.yenc_size, obfuscated=excluded.obfuscated, is_meta=excluded.is_meta,
-  ingested_at=excluded.ingested_at
+ON CONFLICT (group_name, msgid) DO UPDATE SET
+  msg_num=EXCLUDED.msg_num, subject=EXCLUDED.subject, from_addr=EXCLUDED.from_addr,
+  posted_at=EXCLUDED.posted_at, bytes=EXCLUDED.bytes, release_name=EXCLUDED.release_name,
+  part_n=EXCLUDED.part_n, part_m=EXCLUDED.part_m, filename=EXCLUDED.filename,
+  yenc_size=EXCLUDED.yenc_size, obfuscated=EXCLUDED.obfuscated, is_meta=EXCLUDED.is_meta,
+  ingested_at=EXCLUDED.ingested_at
 `)
 	if err != nil {
 		return err
@@ -128,15 +80,8 @@ ON CONFLICT(group_name, msgid) DO UPDATE SET
 	defer stmt.Close()
 	now := time.Now().Unix()
 	for _, r := range rows {
-		ob, meta := 0, 0
-		if r.Obfuscated {
-			ob = 1
-		}
-		if r.IsMeta {
-			meta = 1
-		}
 		if _, err := stmt.ExecContext(ctx, r.Group, r.MsgNum, r.MsgID, r.Subject, r.From, r.PostedAt, r.Bytes,
-			r.ReleaseName, r.PartN, r.PartM, r.Filename, r.YencSize, ob, meta, now); err != nil {
+			r.ReleaseName, r.PartN, r.PartM, r.Filename, r.YencSize, r.Obfuscated, r.IsMeta, now); err != nil {
 			return err
 		}
 	}
@@ -145,7 +90,7 @@ ON CONFLICT(group_name, msgid) DO UPDATE SET
 
 func (idx *Index) Watermark(ctx context.Context, group string) (int, error) {
 	var high int
-	err := idx.db.QueryRowContext(ctx, `SELECT high FROM watermarks WHERE group_name=?`, group).Scan(&high)
+	err := idx.db.QueryRowContext(ctx, `SELECT high FROM usenet_nntp_watermarks WHERE group_name=?`, group).Scan(&high)
 	if err == sql.ErrNoRows {
 		return 0, nil
 	}
@@ -154,14 +99,14 @@ func (idx *Index) Watermark(ctx context.Context, group string) (int, error) {
 
 func (idx *Index) SetWatermark(ctx context.Context, group string, high int) error {
 	_, err := idx.db.ExecContext(ctx, `
-INSERT INTO watermarks(group_name, high, updated_at) VALUES(?,?,?)
-ON CONFLICT(group_name) DO UPDATE SET high=excluded.high, updated_at=excluded.updated_at
+INSERT INTO usenet_nntp_watermarks(group_name, high, updated_at) VALUES(?,?,?)
+ON CONFLICT (group_name) DO UPDATE SET high=EXCLUDED.high, updated_at=EXCLUDED.updated_at
 `, group, high, time.Now().Unix())
 	return err
 }
 
 func (idx *Index) PruneOlderThan(ctx context.Context, cutoffUnix int64) (int64, error) {
-	res, err := idx.db.ExecContext(ctx, `DELETE FROM headers WHERE posted_at > 0 AND posted_at < ?`, cutoffUnix)
+	res, err := idx.db.ExecContext(ctx, `DELETE FROM usenet_nntp_headers WHERE posted_at > 0 AND posted_at < ?`, cutoffUnix)
 	if err != nil {
 		return 0, err
 	}
@@ -170,11 +115,10 @@ func (idx *Index) PruneOlderThan(ctx context.Context, cutoffUnix int64) (int64, 
 
 func (idx *Index) ApproxBytes(ctx context.Context) (int64, error) {
 	var n sql.NullInt64
-	err := idx.db.QueryRowContext(ctx, `SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()`).Scan(&n)
+	err := idx.db.QueryRowContext(ctx, `SELECT pg_total_relation_size('usenet_nntp_headers')`).Scan(&n)
 	if err != nil {
-		// fallback row estimate
 		var rows int64
-		_ = idx.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM headers`).Scan(&rows)
+		_ = idx.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usenet_nntp_headers`).Scan(&rows)
 		return rows * 200, nil
 	}
 	return n.Int64, nil
@@ -187,8 +131,8 @@ func (idx *Index) PruneOldest(ctx context.Context, targetBytes int64) error {
 			return err
 		}
 		res, err := idx.db.ExecContext(ctx, `
-DELETE FROM headers WHERE rowid IN (
-  SELECT rowid FROM headers ORDER BY ingested_at ASC, posted_at ASC LIMIT 5000
+DELETE FROM usenet_nntp_headers WHERE ctid IN (
+  SELECT ctid FROM usenet_nntp_headers ORDER BY ingested_at ASC, posted_at ASC LIMIT 5000
 )`)
 		if err != nil {
 			return err
@@ -202,7 +146,7 @@ DELETE FROM headers WHERE rowid IN (
 
 func (idx *Index) Empty(ctx context.Context) (bool, error) {
 	var n int
-	err := idx.db.QueryRowContext(ctx, `SELECT 1 FROM headers LIMIT 1`).Scan(&n)
+	err := idx.db.QueryRowContext(ctx, `SELECT 1 FROM usenet_nntp_headers LIMIT 1`).Scan(&n)
 	if err == sql.ErrNoRows {
 		return true, nil
 	}
@@ -214,7 +158,7 @@ func (idx *Index) Empty(ctx context.Context) (bool, error) {
 
 func (idx *Index) HasGroup(ctx context.Context, group string) (bool, error) {
 	var n int
-	err := idx.db.QueryRowContext(ctx, `SELECT 1 FROM headers WHERE group_name=? LIMIT 1`, group).Scan(&n)
+	err := idx.db.QueryRowContext(ctx, `SELECT 1 FROM usenet_nntp_headers WHERE group_name=? LIMIT 1`, group).Scan(&n)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
@@ -230,7 +174,7 @@ func (idx *Index) SearchReleases(ctx context.Context, q Query) ([]Candidate, err
 	groups := q.Groups
 	var args []any
 	var where []string
-	where = append(where, `obfuscated=0`, `release_name!=''`)
+	where = append(where, `obfuscated=FALSE`, `release_name!=''`)
 	if len(groups) > 0 {
 		ph := make([]string, len(groups))
 		for i, g := range groups {
@@ -244,7 +188,7 @@ func (idx *Index) SearchReleases(ctx context.Context, q Query) ([]Candidate, err
 		if t == "" {
 			continue
 		}
-		where = append(where, `release_name LIKE ?`)
+		where = append(where, `release_name ILIKE ?`)
 		args = append(args, "%"+escapeLike(t)+"%")
 	}
 	for _, ex := range q.Exclude {
@@ -252,15 +196,15 @@ func (idx *Index) SearchReleases(ctx context.Context, q Query) ([]Candidate, err
 		if ex == "" {
 			continue
 		}
-		where = append(where, `release_name NOT LIKE ?`)
+		where = append(where, `release_name NOT ILIKE ?`)
 		args = append(args, "%"+escapeLike(ex)+"%")
 	}
 	if !q.PostedAfter.IsZero() {
 		where = append(where, `posted_at >= ?`)
 		args = append(args, q.PostedAfter.Unix())
 	}
-	sqlStr := `SELECT DISTINCT group_name, release_name FROM headers WHERE ` + strings.Join(where, " AND ") + ` LIMIT ?`
-	args = append(args, limit*3) // over-fetch then assemble
+	sqlStr := `SELECT DISTINCT group_name, release_name FROM usenet_nntp_headers WHERE ` + strings.Join(where, " AND ") + ` LIMIT ?`
+	args = append(args, limit*3)
 	rows, err := idx.db.QueryContext(ctx, sqlStr, args...)
 	if err != nil {
 		return nil, err
@@ -301,7 +245,7 @@ func (idx *Index) SearchReleases(ctx context.Context, q Query) ([]Candidate, err
 func (idx *Index) loadCandidate(ctx context.Context, group, release string) (Candidate, error) {
 	rows, err := idx.db.QueryContext(ctx, `
 SELECT msgid, subject, from_addr, posted_at, bytes, part_n, part_m, filename, yenc_size, is_meta
-FROM headers WHERE group_name=? AND release_name=? ORDER BY filename, part_n, msg_num
+FROM usenet_nntp_headers WHERE group_name=? AND release_name=? ORDER BY filename, part_n, msg_num
 `, group, release)
 	if err != nil {
 		return Candidate{}, err
@@ -314,7 +258,7 @@ FROM headers WHERE group_name=? AND release_name=? ORDER BY filename, part_n, ms
 func (idx *Index) LoadBySeed(ctx context.Context, group, seedMsgID string) (Candidate, error) {
 	var release string
 	err := idx.db.QueryRowContext(ctx, `
-SELECT release_name FROM headers WHERE group_name=? AND msgid=?`, group, seedMsgID).Scan(&release)
+SELECT release_name FROM usenet_nntp_headers WHERE group_name=? AND msgid=?`, group, seedMsgID).Scan(&release)
 	if err != nil {
 		return Candidate{}, err
 	}

@@ -412,6 +412,14 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 			pr.releases = filterExcludedReleases(pr.releases, req.ExcludeReleaseKeys)
 		}
 
+		// Claude 2026-09-19: drop blocked release groups + password-titled NZBs (2b/3c).
+		// Reason: unattended path must not pick TupaC-style password RARs or 430-bait.
+		// Troubleshooting: Advanced → blocked release groups; default includes TupaC.
+		// Review if: manual Search should share the same filter via Profile.BlockedGroups.
+		if blocked, err := loadBlockedReleaseGroups(ctx, deps.SettingsStore); err == nil {
+			pr.releases = filterBlockedReleaseGroups(pr.releases, blocked)
+		}
+
 		if req.Mode == mode.Series {
 			pr.releases = FilterSeasonScope(pr.releases, req.Season, req.Episode, req.SeasonSpecified)
 		}

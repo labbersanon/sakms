@@ -187,23 +187,26 @@ func TestSlotGateBlocksDispatchWhenFull(t *testing.T) {
 }
 
 // TestFailureEscalationSetsNextSearchScope verifies that a 430/ErrArticleNotFound
-// on a Usenet download:
-//   - parks the grab as pending_retry (retry_after ≈ now)
-//   - sets next_search_scope = 'torrent'
-//   - clears the download GID (so DueForRetry sees the row)
+// on a Usenet download parks for a DIFFERENT Usenet release (alternate), not
+// torrent escalation — missing articles are NZB-local; another release has
+// different message-IDs.
 //
-// And that a 451 does NOT set next_search_scope.
+// And that a 451 does NOT set next_search_scope / stays Failed.
 func TestFailureEscalationSetsNextSearchScope(t *testing.T) {
 	ctx := context.Background()
 	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
 	deps := AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore}
 
-	t.Run("430 sets torrent scope due-now", func(t *testing.T) {
+	t.Run("430 parks alternate Usenet release due-now", func(t *testing.T) {
 		g := dispatchedUsenetGrab(t, grabsStore, "nzb-scope-1")
+		beforeGrab, err := grabsStore.Get(ctx, g.ID)
+		if err != nil {
+			t.Fatalf("reload grab: %v", err)
+		}
 		failure := fmt.Errorf("segment: %w", usenet.ErrArticleNotFound)
 
 		before := time.Now()
-		status, err := applyUsenetFailure(ctx, deps, g, failure, parkGrabForRetry)
+		status, err := applyUsenetFailure(ctx, deps, *beforeGrab, failure, parkGrabForRetry)
 		after := time.Now()
 		if err != nil {
 			t.Fatalf("applyUsenetFailure: %v", err)
@@ -216,19 +219,21 @@ func TestFailureEscalationSetsNextSearchScope(t *testing.T) {
 		if err != nil {
 			t.Fatalf("loading parked grab: %v", err)
 		}
-		if parked.NextSearchScope != "torrent" {
-			t.Errorf("next_search_scope = %q, want %q", parked.NextSearchScope, "torrent")
+		if parked.NextSearchScope == "torrent" {
+			t.Errorf("next_search_scope = %q, want empty/usenet alternate (not torrent)", parked.NextSearchScope)
 		}
 		if parked.DownloadGID != "" {
 			t.Errorf("GID not cleared: %q", parked.DownloadGID)
 		}
-		// retry_after must be ≤ now so DueForRetry picks it up immediately.
+		if parked.TriedReleaseKeys == "" {
+			t.Error("tried_release_keys empty — alternate park should record the failed NZB")
+		}
 		retryAt, err := time.Parse("2006-01-02T15:04:05.000Z", parked.RetryAfter)
 		if err != nil {
 			t.Fatalf("parsing retry_after %q: %v", parked.RetryAfter, err)
 		}
-		if retryAt.After(after) {
-			t.Errorf("retry_after %v is in the future (window: %v–%v)", retryAt, before, after)
+		if retryAt.After(after.Add(time.Minute)) {
+			t.Errorf("retry_after %v far in future (window: %v–%v)", retryAt, before, after)
 		}
 	})
 

@@ -236,10 +236,10 @@ func TestApplyUsenetFailure_PAR2AndOtherNonTransport(t *testing.T) {
 	}
 }
 
-// TestApplyUsenetFailure_430KeepsCurrentBehaviour verifies that a 430
-// (ErrArticleNotFound) still escalates to torrent scope and clears the GID,
-// independent of transport park logic.
-func TestApplyUsenetFailure_430KeepsCurrentBehaviour(t *testing.T) {
+// TestApplyUsenetFailure_430ParksAlternateRelease verifies that a 430
+// (ErrArticleNotFound) parks for a different Usenet NZB (tried keys, cleared GID),
+// not torrent escalation.
+func TestApplyUsenetFailure_430ParksAlternateRelease(t *testing.T) {
 	ctx := context.Background()
 	deps, grabsStore := transportDeps(t)
 	g := dispatchedTransportGrab(t, grabsStore, "nzb-430-1")
@@ -253,10 +253,16 @@ func TestApplyUsenetFailure_430KeepsCurrentBehaviour(t *testing.T) {
 
 	after, _ := grabsStore.Get(ctx, g.ID)
 	if after.DownloadGID != "" {
-		t.Errorf("download_gid = %q, want '' (430 path clears GID)", after.DownloadGID)
+		t.Errorf("download_gid = %q, want '' (alternate park clears GID)", after.DownloadGID)
 	}
 	if after.Status != grabs.PendingRetry {
 		t.Errorf("status = %q, want pending_retry", after.Status)
+	}
+	if after.NextSearchScope == "torrent" {
+		t.Errorf("next_search_scope = torrent, want usenet alternate")
+	}
+	if after.TriedReleaseKeys == "" {
+		t.Error("tried_release_keys empty")
 	}
 }
 

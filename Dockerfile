@@ -75,15 +75,16 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 #   blocked sakms-auto-update (rollback rebuilds the previous SHA against
 #   the same dead pin, so it failed too). n7.1 is no longer published;
 #   n8.1 is the current GPL static linux64 line. Still a dated tag +
-#   SHA256, never `latest`.
+# Claude 2026-09-19: bump BtbN pin — prior autobuild-2026-08-26-13-06 asset 404s.
+# Reason: sakms-auto-update failed deploying A3 (off-data staging) on main.
 # Troubleshooting: compose build wget 404 on BtbN/FFmpeg-Builds — pick a
 #   tag that still exists on the releases page and copy the asset name +
 #   checksums.sha256 line.
 # Review if: BtbN drops n8.1 the same way, or trixie ffmpeg gains libvmaf.
 FROM debian:trixie-slim AS ffmpeg
-ARG FFMPEG_TAG=autobuild-2026-08-26-13-06
-ARG FFMPEG_ASSET=ffmpeg-n8.1.2-46-g139afe709a-linux64-gpl-8.1.tar.xz
-ARG FFMPEG_SHA256=0814f4491c2673ea505be8fb65a76c2bfabaa5aad8f33d49b1c5b87a2262e8c5
+ARG FFMPEG_TAG=autobuild-2026-09-19-13-11
+ARG FFMPEG_ASSET=ffmpeg-n8.1.2-54-gc573a95381-linux64-gpl-8.1.tar.xz
+ARG FFMPEG_SHA256=5c7ffcf37fd5e0ab99ee2a4a6a5e70219379ec5a4dee2ed39f891c3790a2cbb5
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update \

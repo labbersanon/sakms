@@ -297,6 +297,32 @@ func (m *Manager) SetMaxConcurrentDownloads(n int) {
 	m.mu.Unlock()
 }
 
+// Claude 2026-09-19: live StagingDir swap for Advanced off-data staging (A3).
+// Reason: operators may point Usenet assemble at a non-data-volume path without
+//   restarting; refusing while downloads are active avoids split-brain staging trees.
+// Troubleshooting: PUT /api/settings/usenet-off-data-staging returns 409.
+// Review if: drain-and-migrate of in-flight GIDs is added.
+var ErrStagingDirBusy = errors.New("usenet: cannot change staging dir while downloads are active")
+
+// SetStagingDir replaces the Usenet staging root. dir must be non-empty.
+// Returns ErrStagingDirBusy if any download is tracked.
+func (m *Manager) SetStagingDir(dir string) error {
+	if m == nil {
+		return nil
+	}
+	dir = filepath.Clean(dir)
+	if dir == "" || dir == "." {
+		return errors.New("usenet: staging dir must be non-empty")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.downloads) > 0 {
+		return ErrStagingDirBusy
+	}
+	m.stagingDir = dir
+	return nil
+}
+
 // SetRateCap replaces the shared download bandwidth cap (may be nil = unlimited).
 func (m *Manager) SetRateCap(c *xferlimit.Cap) {
 	if m == nil {

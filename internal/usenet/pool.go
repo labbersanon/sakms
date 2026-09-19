@@ -354,22 +354,21 @@ func fetchSegment(c *nntp.Conn, msgID string) (segmentResult, error) {
 }
 
 // articleWireReader restores raw NNTP wire framing on top of nntp.Conn's body
-// reader.
+// reader: CRLF line endings, leading-dot restuff, and the article terminator.
 //
-// Claude 2026-08-01: added while building the multi-pool fetch path.
-// Reason: nntp.Conn.Body() returns a bodyReader that canonicalises CRLF to a
-// bare LF and consumes the terminating "." line without emitting it. rapidyenc's
-// decoder splits on the literal "\r\n" and treats "\r\n.\r\n" as the end of the
-// article, so it never sees a line break or a terminator and every single
-// decode failed with io.ErrUnexpectedEOF. This adapter re-emits each line with
-// CRLF and appends the "." terminator at EOF, which is the exact byte stream the
-// decoder expects. Leading dots are deliberately NOT re-stuffed — bodyReader
-// already unstuffed them, and rapidyenc escapes a leading "." at encode time so
-// a data line can never be mistaken for the terminator.
-// Troubleshooting: every usenet segment failing with "yEnc decode ...:
-// unexpected EOF"; usenet downloads never completing.
-// Review if: Tensai75/nntp gains a raw-body accessor, or fetchSegment stops
-// using nntp.Conn.Body().
+// Claude 2026-09-18: restuff leading dots after bodyReader unstuff.
+// Reason: nntp.Conn.Body() unstuffs leading '.' (RFC 3977). This adapter used
+// to re-emit those lines without restuffing. rapidyenc then unstuffs again,
+// dropping one byte per data line that started with '.'. EDITH posters (and
+// others that do not yEnc-escape leading dots) produce articles whose =ypart
+// size is e.g. 768000 but decoded length is ~767978, leaving NUL gaps that
+// make PAR2 report all slices damaged and unrar fail CRC.
+// The article-terminating ".\r\n" appended on EOF is NOT restuffed — that is
+// the terminator, not a data line.
+// Troubleshooting: assembled files shorter than yEnc PartSize; PAR2 all-slices
+// damaged; unrar CRC errors on otherwise complete EDITH grabs.
+// Review if: Tensai75/nntp gains a raw-body accessor, or rapidyenc is given
+// already-unstuffed input and stops treating leading '.' as NNTP stuffing.
 type articleWireReader struct {
 	br   *bufio.Reader
 	buf  bytes.Buffer
@@ -390,7 +389,11 @@ func (a *articleWireReader) Read(p []byte) (int, error) {
 			// TrimRight both bytes: bodyReader only rewrites CRLF when the line
 			// actually had one, so a wire line that was already bare-LF passes
 			// through untouched.
-			a.buf.Write(bytes.TrimRight(line, "\r\n"))
+			line = bytes.TrimRight(line, "\r\n")
+			if len(line) > 0 && line[0] == '.' {
+				a.buf.WriteByte('.')
+			}
+			a.buf.Write(line)
 			a.buf.WriteString("\r\n")
 		}
 		if err != nil {

@@ -38,6 +38,10 @@ import {
   triggerRecheck,
   type EntitySyncSource,
 } from "../../api/settings";
+import {
+  fetchUsenetOffDataStaging,
+  putUsenetOffDataStaging,
+} from "../../api/usenet";
 import { ApiError } from "../../api/client";
 import { AdultModeContext, Button, Muted, inputClass, labelClass } from "../../components/ui";
 import { Card, SaveStatus, useSaveStatus, useSectionSaveItem } from "./shared";
@@ -657,12 +661,115 @@ const AdultModeSection: Component = () => {
 // selector below it. It is placed next to AdultModeSection because the two are
 // adjacent concerns and routinely read together — one is a visibility switch
 // that enforces nothing, the other is the actual enforcement boundary.
+// Claude 2026-09-19: Advanced opt-in Usenet staging outside data volume (A3).
+// Reason: app must stay portable — default keeps Usenet under <dataDir>/downloads;
+//   only operators with remote/fragile data volumes enable this.
+// Troubleshooting: Settings → Advanced → Global; restart after disable to revert live path.
+// Review if: disable gains live revert to downloader_staging_dir without restart.
+const UsenetOffDataStagingSection: Component = () => {
+  const [enabled, setEnabled] = createSignal(false);
+  const [dir, setDir] = createSignal("");
+  const [dirty, setDirty] = createSignal(false);
+  const [loadError, setLoadError] = createSignal<string | null>(null);
+  const status = useSaveStatus();
+
+  createResource(async () => {
+    try {
+      const v = await fetchUsenetOffDataStaging();
+      setEnabled(v.enabled);
+      setDir(v.dir ?? "");
+      return v;
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : String(e));
+      throw e;
+    }
+  });
+
+  const valid = () => {
+    if (!enabled()) return true;
+    const d = dir().trim();
+    return d.startsWith("/");
+  };
+
+  const save = async () => {
+    try {
+      await putUsenetOffDataStaging({
+        enabled: enabled(),
+        dir: dir().trim(),
+      });
+      setDirty(false);
+      status.set("✓ saved");
+    } catch (e) {
+      status.failed(e);
+      throw e;
+    }
+  };
+
+  useSectionSaveItem({
+    id: "usenet-off-data-staging",
+    label: "Usenet off-data staging",
+    dirty,
+    valid,
+    save,
+  });
+
+  return (
+    <Card title="Usenet off-data staging — advanced">
+      <Muted class="mb-3">
+        Off by default. When enabled, Usenet NZB assemble/write uses the path
+        below instead of the data-volume downloads directory. Torrents are
+        unchanged. Use this only when the data volume is remote or fragile
+        (for example iSCSI) and you have mounted a separate local path into
+        the container. Disabling requires a process restart to move live
+        staging back to the data volume.
+      </Muted>
+      <Show when={loadError()}>
+        <span class="mb-2 block text-sm text-danger">{loadError()}</span>
+      </Show>
+      <label class="mb-3 flex items-center gap-2">
+        <input
+          type="checkbox"
+          aria-label="Enable Usenet off-data staging"
+          checked={enabled()}
+          onChange={(e) => {
+            setEnabled(e.currentTarget.checked);
+            setDirty(true);
+          }}
+        />
+        <span class="text-sm text-fg">Enable off-data Usenet staging</span>
+      </label>
+      <label class="mb-3 block">
+        <span class={labelClass}>Staging directory (absolute path)</span>
+        <input
+          type="text"
+          class={`${inputClass} mt-1`}
+          aria-label="Usenet off-data staging directory"
+          placeholder="/var/lib/sakms-usenet-staging"
+          disabled={!enabled()}
+          value={dir()}
+          onInput={(e) => {
+            setDir(e.currentTarget.value);
+            setDirty(true);
+          }}
+        />
+      </label>
+      <Show when={enabled() && !valid()}>
+        <span class="mb-2 block text-sm text-danger">
+          Path must be absolute (start with /) when enabled.
+        </span>
+      </Show>
+      <SaveStatus />
+    </Card>
+  );
+};
+
 export const GlobalSection: Component = () => (
   <>
     <APISection />
     <AdultModeSection />
     <SectionLockSection />
     <DownloadRateLimitSection />
+    <UsenetOffDataStagingSection />
     <RecheckSection />
     <DiscoverRefreshSection />
     <EntityDatabaseSection />

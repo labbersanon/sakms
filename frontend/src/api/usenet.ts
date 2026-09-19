@@ -66,6 +66,25 @@ export function putUsenetMaxConcurrentDownloads(
   });
 }
 
+// Claude 2026-09-19: Advanced opt-in Usenet staging outside data volume (A3).
+// Reason: portable default stays on dataDir; fragile remote volumes can opt in.
+// Troubleshooting: GET/PUT /api/settings/usenet-off-data-staging.
+// Review if: disable path gains live revert without restart.
+export type UsenetOffDataStaging = { enabled: boolean; dir: string };
+
+export function fetchUsenetOffDataStaging(): Promise<UsenetOffDataStaging> {
+  return api<UsenetOffDataStaging>("/api/settings/usenet-off-data-staging");
+}
+
+export function putUsenetOffDataStaging(
+  body: UsenetOffDataStaging,
+): Promise<void> {
+  return api<void>("/api/settings/usenet-off-data-staging", {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
 // fetchUsenetSegmentResume — GET /api/settings/usenet-segment-resume.
 // Defaults enabled=true, forceFull=false.
 export function fetchUsenetSegmentResume(): Promise<{

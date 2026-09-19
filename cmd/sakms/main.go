@@ -976,6 +976,22 @@ func buildUsenetManager(ctx context.Context, dataDir string, serviceConnStore *s
 		staging = filepath.Join(dataDir, "downloads")
 	}
 
+	// Claude 2026-09-19: Advanced opt-in off-data Usenet staging (A3).
+	// Reason: portable default stays <dataDir>/downloads; fragile remote data
+	//   volumes can point Usenet assemble elsewhere without affecting torrents.
+	// Troubleshooting: iSCSI LUN pressure during NZB drains.
+	// Review if: setting is enabled in a deploy that lacks the path mount.
+	if settingBool(ctx, settingsStore, api.UsenetOffDataStagingEnabledKey, false) {
+		alt, altErr := settingsStore.Get(ctx, api.UsenetOffDataStagingDirKey)
+		if altErr != nil && !errors.Is(altErr, settings.ErrNotFound) {
+			if err == nil {
+				err = fmt.Errorf("usenet: reading off-data staging dir: %w", altErr)
+			}
+		} else if alt != "" {
+			staging = alt
+		}
+	}
+
 	maxConcurrentDownloads := settingInt(ctx, settingsStore, api.UsenetMaxConcurrentDownloadsKey, usenet.DefaultMaxConcurrentDownloads)
 
 	resumeEnabled := settingBool(ctx, settingsStore, api.UsenetSegmentResumeEnabledKey, true)

@@ -705,7 +705,7 @@ const UsenetOffDataStagingSection: Component = () => {
     }
   };
 
-  useSectionSaveItem({
+  const batched = useSectionSaveItem({
     id: "usenet-off-data-staging",
     label: "Usenet off-data staging",
     dirty,
@@ -734,6 +734,7 @@ const UsenetOffDataStagingSection: Component = () => {
           onChange={(e) => {
             setEnabled(e.currentTarget.checked);
             setDirty(true);
+            status.set("");
           }}
         />
         <span class="text-sm text-fg">Enable off-data Usenet staging</span>
@@ -750,6 +751,7 @@ const UsenetOffDataStagingSection: Component = () => {
           onInput={(e) => {
             setDir(e.currentTarget.value);
             setDirty(true);
+            status.set("");
           }}
         />
       </label>
@@ -758,7 +760,18 @@ const UsenetOffDataStagingSection: Component = () => {
           Path must be absolute (start with /) when enabled.
         </span>
       </Show>
-      <SaveStatus />
+      <Show when={!batched()}>
+        <div class="flex items-center gap-2">
+          <Button
+            variant="primary"
+            disabled={!dirty() || !valid()}
+            onClick={() => void save().catch(() => {})}
+          >
+            Save
+          </Button>
+          <SaveStatus text={status.status().text} error={status.status().error} />
+        </div>
+      </Show>
     </Card>
   );
 };

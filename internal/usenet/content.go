@@ -1,6 +1,9 @@
 package usenet
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // Claude 2026-09-17: content-unusable sentinels, distinct from transport errors.
 // Reason: the api layer needs a typed predicate to decide "try a different
@@ -16,6 +19,13 @@ import "errors"
 // the connection or the article: the archive would not unpack, PAR2 could not
 // repair a non-archive staging dir, or the assembly produced no usable video.
 var ErrContentUnusable = errors.New("usenet: the downloaded release is unusable")
+
+// Claude 2026-09-19: typed password-archive sentinel (wraps ErrContentUnusable).
+// Reason: operators need a distinct reason + fail-fast path; routing stays on
+//   the alternate-release park via errors.Is(..., ErrContentUnusable).
+// Troubleshooting: journal "password-protected archive"; Requests shows password reason.
+// Review if: password-file support is added (then this may become retryable same-NZB).
+var ErrPasswordProtected = fmt.Errorf("%w: password-protected archive (unsupported)", ErrContentUnusable)
 
 // ErrUnpackToolMissing is an ENVIRONMENT fault — no unrar or 7z in the image.
 // A different release cannot fix it, so it must NOT be content-classified.

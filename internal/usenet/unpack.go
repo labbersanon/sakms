@@ -284,7 +284,7 @@ func runUnrar(ctx context.Context, bin, archive, dest string) error {
 			msg = err.Error()
 		}
 		if looksPasswordProtected(msg) {
-			return fmt.Errorf("password-protected archive (unsupported): %s", msg)
+			return fmt.Errorf("%w: %s", ErrPasswordProtected, msg)
 		}
 		return fmt.Errorf("%s", msg)
 	}
@@ -303,7 +303,7 @@ func run7z(ctx context.Context, bin, archive, dest string) error {
 			msg = err.Error()
 		}
 		if looksPasswordProtected(msg) {
-			return fmt.Errorf("password-protected archive (unsupported): %s", msg)
+			return fmt.Errorf("%w: %s", ErrPasswordProtected, msg)
 		}
 		return fmt.Errorf("%s", msg)
 	}

@@ -36,6 +36,18 @@ const (
 	// import content park. Distinct from contentUnpackFailedReason so an operator
 	// can tell the two failure types apart on the Requests screen.
 	contentNoVideoReason = "the download contained no usable video — trying a different release"
+
+	// Claude 2026-09-19: distinct password reason (still alternate-release park).
+	// Reason: Requests screen should show why this NZB was abandoned.
+	// Review if: password-file support lands.
+	contentPasswordReason = "the release is password-protected (unsupported) — trying a different release"
+
+	// Claude 2026-09-19: 430 mid-download → alternate Usenet NZB (not torrent).
+	// Reason: missing articles are property of THIS NZB; a different release has
+	//   different message-IDs. Re-hitting the same articles on Usenet is futile;
+	//   switching release group is not.
+	// Review if: dual-path (Usenet alternate then torrent) is wanted after cap.
+	contentArticlesMissingReason = "articles missing on Usenet for this release (430) — trying a different release"
 )
 
 // contentUnusableFailure reports whether failure should route to the
@@ -51,7 +63,10 @@ func contentUnusableFailure(err error) bool {
 	if errors.Is(err, usenet.ErrUnpackToolMissing) {
 		return false // environment fault — different release cannot fix it
 	}
-	return errors.Is(err, usenet.ErrContentUnusable) || errors.Is(err, library.ErrNoVideoFile)
+	// Claude 2026-09-19: 430 is a bad-THIS-NZB signal for alternate routing.
+	return errors.Is(err, usenet.ErrArticleNotFound) ||
+		errors.Is(err, usenet.ErrContentUnusable) ||
+		errors.Is(err, library.ErrNoVideoFile)
 }
 
 // contentFailureReason maps a content-unusable failure to its operator-facing
@@ -59,6 +74,12 @@ func contentUnusableFailure(err error) bool {
 func contentFailureReason(failure error) string {
 	if errors.Is(failure, library.ErrNoVideoFile) {
 		return contentNoVideoReason
+	}
+	if errors.Is(failure, usenet.ErrPasswordProtected) {
+		return contentPasswordReason
+	}
+	if errors.Is(failure, usenet.ErrArticleNotFound) {
+		return contentArticlesMissingReason
 	}
 	return contentUnpackFailedReason
 }
@@ -134,9 +155,13 @@ func parkUsenetContentFailure(
 //
 // Claude 2026-09-17: closes the live Love Is Blind stuck-queued bug.
 // Reason: UsenetCompleteImporter treated (false, nil) from parkUsenetContentFailure
-//   as "done" and returned without parking — grab stayed queued with a hollow GID.
+//
+//	as "done" and returned without parking — grab stayed queued with a hollow GID.
+//
 // Troubleshooting: journal "cap reached … falling back to days ladder" with the
-//   grab still status=queued → this helper was missing on the import path.
+//
+//	grab still status=queued → this helper was missing on the import path.
+//
 // Review if: import/reconcile share applyUsenetFailure directly instead.
 func parkContentFailureOrDaysLadder(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, failure error, engine contentForgetEngine) error {
 	handled, err := parkUsenetContentFailure(ctx, deps, g, failure, engine)

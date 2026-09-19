@@ -39,7 +39,9 @@ import {
   type EntitySyncSource,
 } from "../../api/settings";
 import {
+  fetchUsenetBlockedReleaseGroups,
   fetchUsenetOffDataStaging,
+  putUsenetBlockedReleaseGroups,
   putUsenetOffDataStaging,
 } from "../../api/usenet";
 import { ApiError } from "../../api/client";
@@ -776,6 +778,90 @@ const UsenetOffDataStagingSection: Component = () => {
   );
 };
 
+// Claude 2026-09-19: Advanced blocked release groups (3c).
+// Reason: password-prone groups waste full NZB downloads; default includes TupaC.
+// Troubleshooting: Settings → Advanced → Global; empty save clears defaults permanently.
+// Review if: password failures auto-append groups.
+const UsenetBlockedGroupsSection: Component = () => {
+  const [text, setText] = createSignal("TupaC");
+  const [dirty, setDirty] = createSignal(false);
+  const [loadError, setLoadError] = createSignal<string | null>(null);
+  const status = useSaveStatus();
+
+  createResource(async () => {
+    try {
+      const groups = await fetchUsenetBlockedReleaseGroups();
+      setText(groups.join("\n"));
+      return groups;
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : String(e));
+      throw e;
+    }
+  });
+
+  const save = async () => {
+    try {
+      const groups = text()
+        .split(/[\n,]+/)
+        .map((g) => g.trim())
+        .filter(Boolean);
+      await putUsenetBlockedReleaseGroups(groups);
+      setDirty(false);
+      status.set("✓ saved");
+    } catch (e) {
+      status.failed(e);
+      throw e;
+    }
+  };
+
+  const batched = useSectionSaveItem({
+    id: "usenet-blocked-release-groups",
+    label: "Usenet blocked release groups",
+    dirty,
+    valid: () => true,
+    save,
+  });
+
+  return (
+    <Card title="Usenet blocked release groups — advanced">
+      <Muted class="mb-3">
+        Unattended Usenet auto-grab never picks these release groups
+        (case-insensitive). Also skips titles that advertise a password in the
+        name. Default includes TupaC. Saving an empty list clears the default
+        permanently until you add groups again.
+      </Muted>
+      <Show when={loadError()}>
+        <span class="mb-2 block text-sm text-danger">{loadError()}</span>
+      </Show>
+      <label class="mb-3 block">
+        <span class={labelClass}>Groups (one per line)</span>
+        <textarea
+          class={`${inputClass} mt-1 min-h-[6rem] font-mono text-sm`}
+          aria-label="Usenet blocked release groups"
+          value={text()}
+          onInput={(e) => {
+            setText(e.currentTarget.value);
+            setDirty(true);
+            status.set("");
+          }}
+        />
+      </label>
+      <Show when={!batched()}>
+        <div class="flex items-center gap-2">
+          <Button
+            variant="primary"
+            disabled={!dirty()}
+            onClick={() => void save().catch(() => {})}
+          >
+            Save
+          </Button>
+          <SaveStatus text={status.status().text} error={status.status().error} />
+        </div>
+      </Show>
+    </Card>
+  );
+};
+
 export const GlobalSection: Component = () => (
   <>
     <APISection />
@@ -783,6 +869,7 @@ export const GlobalSection: Component = () => (
     <SectionLockSection />
     <DownloadRateLimitSection />
     <UsenetOffDataStagingSection />
+    <UsenetBlockedGroupsSection />
     <RecheckSection />
     <DiscoverRefreshSection />
     <EntityDatabaseSection />

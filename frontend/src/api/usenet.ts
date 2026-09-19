@@ -85,6 +85,23 @@ export function putUsenetOffDataStaging(
   });
 }
 
+// Claude 2026-09-19: Advanced blocked release groups (default includes TupaC).
+// Reason: unattended auto-grab must skip password-prone groups before download.
+// Troubleshooting: GET/PUT /api/settings/usenet-blocked-release-groups.
+// Review if: password failures auto-append groups.
+export function fetchUsenetBlockedReleaseGroups(): Promise<string[]> {
+  return api<{ groups: string[] }>(
+    "/api/settings/usenet-blocked-release-groups",
+  ).then((r) => r.groups ?? []);
+}
+
+export function putUsenetBlockedReleaseGroups(groups: string[]): Promise<void> {
+  return api<void>("/api/settings/usenet-blocked-release-groups", {
+    method: "PUT",
+    body: JSON.stringify({ groups }),
+  });
+}
+
 // fetchUsenetSegmentResume — GET /api/settings/usenet-segment-resume.
 // Defaults enabled=true, forceFull=false.
 export function fetchUsenetSegmentResume(): Promise<{

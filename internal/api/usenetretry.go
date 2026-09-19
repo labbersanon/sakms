@@ -405,14 +405,12 @@ func sweepUsenetFailures(ctx context.Context, deps AutoGrabDeps, lookup usenetDo
 // Review if: a non-failure state ever needs this, which means a real state
 // parameter rather than a constant.
 //
-// Claude 2026-09-16: ErrArticleNotFound (430) escalates to torrent on next attempt.
-// Reason: a 430 means zero Usenet indexers hold the article — re-searching Usenet
-// immediately is provably futile and wastes the indexer's API budget. Setting
-// next_search_scope='torrent' and parking with retry_after=now makes the drain or
-// retry cycle issue indexerIds=-2 on the next tick instead.
-// One-shot: ClearNextSearchScope is called before the next RunAutoGrab so the
-// marker does not accumulate across cycles.
-// Review if: escalation should be conditional (e.g. only within N days of air date).
+// Claude 2026-09-19: ErrArticleNotFound (430) parks for a DIFFERENT Usenet release.
+// Reason: missing message-IDs are a property of this NZB; another release (often
+//   another group) has different articles. Immediate Usenet re-search of the SAME
+//   NZB is futile — alternate-release park is not. Torrent escalation was the
+//   prior behaviour and skipped working Usenet alternates (e.g. EDITH after RiPER 430).
+// Review if: after alternate-cap, torrent escalation should return as a second stage.
 func applyUsenetFailure(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, failure error, park grabParker) (grabs.Status, error) {
 	status := classifyDownloadState("error", failure)
 	switch status {
@@ -429,22 +427,12 @@ func applyUsenetFailure(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, fa
 }
 
 // parkRetrievalFailure routes one retrievable failure to exactly one park
-// track. The order below IS the precedence: 430 escalation, then transport
-// resume, then alternate release, then the days ladder as the catch-all. The
+// track. The order below IS the precedence: transport resume, then alternate
+// release (content + 430), then the days ladder as the catch-all. The
 // transport and content parks each decline (handled=false) when their own
 // fail-closed guards reject the failure, and the next track gets it.
 func parkRetrievalFailure(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, failure error, park grabParker, now time.Time) error {
 	reason := usenetRetrievalReason(failure)
-
-	if errors.Is(failure, usenet.ErrArticleNotFound) {
-		// 430: escalate — park due-now with next_search_scope='torrent'.
-		// SetPendingRetryWithScope increments retry_count and clears the GID
-		// atomically (same contract as SetPendingRetry / ParkWithBackoff).
-		// The escalation "costs one rung of the backoff ladder" (plan §E) because
-		// retry_count advances; a subsequent miss after the torrent attempt re-parks
-		// on the normal Usenet-first order at the new count.
-		return deps.GrabsStore.SetPendingRetryWithScope(ctx, g.ID, now, reason, "torrent")
-	}
 
 	// Claude 2026-09-17: transport failure → short-park for resume before days ladder.
 	// Reason: a dropped socket is a network blip; the staging dir and resume
@@ -457,18 +445,15 @@ func parkRetrievalFailure(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, 
 	}
 
 	// Claude 2026-09-17: content failure → park for a different-release retry.
-	// Reason: PAR2/unpack/no-video are properties of THIS release; a different
-	//   NZB is the fix. contentUnusableFailure gates this so that
+	// Claude 2026-09-19: also 430 (ErrArticleNotFound) — see contentUnusableFailure.
+	// Reason: PAR2/unpack/no-video/password/430-holes are properties of THIS release;
+	//   a different NZB is the fix. contentUnusableFailure gates this so that
 	//   ErrUnpackToolMissing (environment fault, not a release defect) falls
 	//   straight to the days ladder instead of the alternate-release path.
 	//   parkUsenetContentFailure falls through (false) when its own fail-closed
 	//   guards reject it (non-nzb- GID, empty URL, cap reached).
 	// Review if: content failures should also be cap-gated per-day.
 	if contentUnusableFailure(failure) {
-		// Claude 2026-09-17: pass deps.NZB so Forget + staging cleanup run on success.
-		// Reason: nil engine left terminal downloads in the in-memory queue and
-		//   hollow nzb-* dirs on disk after content parks from onError/sweep.
-		// Review if: contentForgetEngine is threaded via a dedicated deps field.
 		var engine contentForgetEngine
 		if deps.NZB != nil {
 			engine = deps.NZB

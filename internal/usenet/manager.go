@@ -68,6 +68,10 @@ type Download struct {
 	// ResumeMode is how this job started: "resumed", "full", "forced-full", or "disabled".
 	// Empty until runDownload sets it. Surfaced on the downloads SSE for operators.
 	ResumeMode string
+	// Claude 2026-09-20: queue order key — when this job entered the in-memory engine.
+	// Reason: List()/SSE used map iteration and reshuffled the Downloads UI every tick.
+	// Review if: durable queue restore should carry the original add time across restart.
+	AddedAt time.Time
 	// Err is the unflattened retrieval failure, Go-side only — it is never
 	// serialised (the api layer maps this struct field-by-field into
 	// apidto.Download, which carries ErrorMessage for the UI). Callers use
@@ -90,6 +94,8 @@ type dlState struct {
 	err        error // classified retrieval failure; surfaced as Download.Err
 	files      []string
 	cancel     context.CancelFunc
+	// Claude 2026-09-20: set once when the job is inserted into m.downloads.
+	addedAt time.Time
 
 	// Progress fields — updated by download goroutines via Manager.addCompleted
 	// and read + speed-computed by snapshot(), all under Manager.mu.
@@ -299,7 +305,9 @@ func (m *Manager) SetMaxConcurrentDownloads(n int) {
 
 // Claude 2026-09-19: live StagingDir swap for Advanced off-data staging (A3).
 // Reason: operators may point Usenet assemble at a non-data-volume path without
-//   restarting; refusing while downloads are active avoids split-brain staging trees.
+//
+//	restarting; refusing while downloads are active avoids split-brain staging trees.
+//
 // Troubleshooting: PUT /api/settings/usenet-off-data-staging returns 409.
 // Review if: drain-and-migrate of in-flight GIDs is added.
 var ErrStagingDirBusy = errors.New("usenet: cannot change staging dir while downloads are active")
@@ -707,6 +715,7 @@ func (m *Manager) AddArticleSet(ctx context.Context, nzb *NZB, name string) (str
 		status:     "active",
 		total:      totalBytes,
 		cancel:     cancel,
+		addedAt:    time.Now(),
 	}
 
 	m.mu.Lock()
@@ -810,6 +819,7 @@ func (m *Manager) RelaunchArticleSet(ctx context.Context, gid string, nzb *NZB, 
 		status:     "active",
 		total:      totalBytes,
 		cancel:     cancel,
+		addedAt:    time.Now(),
 	}
 
 	m.mu.Lock()
@@ -1683,12 +1693,23 @@ func (m *Manager) snapshot() []Download {
 			TotalLength:     dl.total,
 			CompletedLength: dl.completed,
 			ResumeMode:      dl.resumeMode,
+			AddedAt:         dl.addedAt,
 			DownloadSpeed:   speed,
 			Files:           dl.files,
 			ErrorMessage:    dl.errorMsg,
 			Err:             dl.err,
 		})
 	}
+	// Claude 2026-09-20: stable oldest-first order for Downloads SSE/List.
+	// Reason: ranging m.downloads (a map) reshuffled the UI on every progress tick.
+	// Troubleshooting: Downloads rows jumping; sort by AddedAt then GID.
+	// Review if: operator-configurable sort lands.
+	sort.SliceStable(out, func(i, j int) bool {
+		if c := out[i].AddedAt.Compare(out[j].AddedAt); c != 0 {
+			return c < 0
+		}
+		return out[i].GID < out[j].GID
+	})
 	return out
 }
 

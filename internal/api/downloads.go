@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -222,6 +224,7 @@ func toDTODownload(d downloader.Download) apidto.Download {
 		UploadSpeed:     d.UploadSpeed,
 		Protocol:        apidto.DownloadProtocolTorrent,
 		ErrorMessage:    d.ErrorMessage,
+		AddedAt:         formatDownloadAddedAt(d.AddedAt),
 	}
 }
 
@@ -249,11 +252,26 @@ func toUsenetDTODownload(d usenet.Download) apidto.Download {
 		Protocol:        apidto.DownloadProtocolUsenet,
 		ErrorMessage:    d.ErrorMessage,
 		ResumeMode:      d.ResumeMode,
+		AddedAt:         formatDownloadAddedAt(d.AddedAt),
 	}
+}
+
+// formatDownloadAddedAt renders engine AddedAt for the wire DTO. Zero times
+// stay empty so omitempty clients do not invent an epoch date.
+func formatDownloadAddedAt(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339Nano)
 }
 
 // mergedDownloads returns the combined torrent + usenet download queue as a
 // DTO slice. Returns a non-nil empty slice so JSON encodes [] not null.
+//
+// Claude 2026-09-20: merge by AddedAt ASC (then GID), not "all torrents then
+// all usenet". Reason: the Downloads screen is one chronological queue; map
+// iteration plus protocol-block merge made rows jump every SSE tick.
+// Review if: operator-configurable sort lands.
 func mergedDownloads(dl *downloader.Manager, nzb *usenet.Manager) []apidto.Download {
 	out := make([]apidto.Download, 0)
 	if dl != nil {
@@ -266,7 +284,17 @@ func mergedDownloads(dl *downloader.Manager, nzb *usenet.Manager) []apidto.Downl
 			out = append(out, toUsenetDTODownload(d))
 		}
 	}
+	sortDownloadsOldestFirst(out)
 	return out
+}
+
+func sortDownloadsOldestFirst(out []apidto.Download) {
+	slices.SortStableFunc(out, func(a, b apidto.Download) int {
+		if c := cmp.Compare(a.AddedAt, b.AddedAt); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.GID, b.GID)
+	})
 }
 
 // Claude 2026-08-03: the Downloads queue now hides Adult rows while

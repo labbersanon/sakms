@@ -155,6 +155,8 @@ type Download struct {
 	UploadSpeed     int64
 	Files           []string
 	ErrorMessage    string
+	// Claude 2026-09-20: when the entry was added — List() sorts by this ASC.
+	AddedAt time.Time
 }
 
 type seenKey struct {
@@ -1491,6 +1493,7 @@ func (m *Manager) buildEntry(gid string, e *entry) Download {
 		UploadSpeed:     e.upSpeed,
 		Files:           e.files,
 		ErrorMessage:    e.errorMsg,
+		AddedAt:         e.addedAt,
 	}
 }
 
@@ -1504,6 +1507,16 @@ func (m *Manager) readSnapshot() []Download {
 	for gid, e := range m.entries {
 		out = append(out, m.buildEntry(gid, e))
 	}
+	// Claude 2026-09-20: stable oldest-first order for Downloads SSE/List.
+	// Reason: ranging m.entries (a map) reshuffled the UI on every progress tick.
+	// Troubleshooting: Downloads rows jumping; sort by AddedAt then GID.
+	// Review if: operator-configurable sort lands.
+	sort.SliceStable(out, func(i, j int) bool {
+		if c := out[i].AddedAt.Compare(out[j].AddedAt); c != 0 {
+			return c < 0
+		}
+		return out[i].GID < out[j].GID
+	})
 	return out
 }
 

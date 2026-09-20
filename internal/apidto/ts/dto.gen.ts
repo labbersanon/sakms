@@ -2701,6 +2701,12 @@ export interface Download {
    * Empty for torrents and for usenet jobs that have not entered runDownload yet.
    */
   resumeMode?: string;
+  /**
+   * Claude 2026-09-20: RFC3339 when the job entered the engine (oldest-first queue).
+   * Reason: Downloads SSE was reshuffling on map iteration; clients sort/merge by this.
+   * Review if: durable queue restore should preserve original add time across restart.
+   */
+  addedAt?: string;
 }
 /**
  * DownloadProtocolTorrent and DownloadProtocolUsenet are the two values

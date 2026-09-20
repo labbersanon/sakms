@@ -34,6 +34,25 @@ import { Button, ErrorText, Muted } from "../components/ui";
 import { useBulkSelection } from "./workflowHooks";
 import { matchesQueueSearch, QueueSearchField } from "./queueSearch";
 
+// Claude 2026-09-20: lock row order for this browser session.
+// Reason: even with a stable server sort, a reshuffled SSE frame (reconnect,
+//   mid-deploy) must not jump rows under the operator's cursor.
+// Troubleshooting: Downloads list jumping; server sorts by addedAt ASC.
+// Review if: operator drag-reorder is added (then this becomes the source of truth).
+function stabilizeQueueOrder(prev: Download[], next: Download[]): Download[] {
+  if (prev.length === 0) return next;
+  const leftover = new Map(next.map((d) => [d.gid, d]));
+  const kept: Download[] = [];
+  for (const d of prev) {
+    const fresh = leftover.get(d.gid);
+    if (fresh === undefined) continue;
+    kept.push(fresh);
+    leftover.delete(d.gid);
+  }
+  // New GIDs keep the server's chronological order among themselves.
+  return kept.concat([...leftover.values()]);
+}
+
 // formatBps renders a bytes/sec value: <1024 → "X B/s", <1MB → "X KB/s",
 // else "X.X MB/s" (same scale as Dashboard's formatBps).
 function formatBps(bps: number): string {
@@ -237,7 +256,7 @@ export const Downloads: Component = () => {
     es.onmessage = (ev) => {
       try {
         const list = JSON.parse(ev.data) as Download[];
-        setDownloads(list);
+        setDownloads((prev) => stabilizeQueueOrder(prev, list));
         setHasData(true);
         setReconnecting(false);
       } catch {

@@ -353,3 +353,37 @@ describe("Downloads — global pause toggle", () => {
     ).toBe(true);
   });
 });
+
+describe("Downloads — session order stays locked across reshuffled SSE frames", () => {
+  it("keeps the first-seen row order when a later frame permutes GIDs", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/downloads/pause-state"))
+        return jsonResponse({ paused: false });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Downloads />);
+    MockEventSource.last!.emit([
+      dl({ gid: "g1", filename: "First.mkv" }),
+      dl({ gid: "g2", filename: "Second.mkv" }),
+      dl({ gid: "g3", filename: "Third.mkv" }),
+    ]);
+    await screen.findByText("First.mkv");
+
+    MockEventSource.last!.emit([
+      dl({ gid: "g3", filename: "Third.mkv", completedLength: 500 }),
+      dl({ gid: "g1", filename: "First.mkv", completedLength: 500 }),
+      dl({ gid: "g2", filename: "Second.mkv", completedLength: 500 }),
+    ]);
+
+    const labels = screen
+      .getAllByRole("checkbox", { name: /Select / })
+      .map((el) => el.getAttribute("aria-label"))
+      .filter((l) => l !== "Select all");
+    expect(labels).toEqual([
+      "Select First.mkv",
+      "Select Second.mkv",
+      "Select Third.mkv",
+    ]);
+  });
+});

@@ -377,9 +377,8 @@ describe("Downloads — session order stays locked across reshuffled SSE frames"
     ]);
 
     const labels = screen
-      .getAllByRole("checkbox", { name: /Select / })
-      .map((el) => el.getAttribute("aria-label"))
-      .filter((l) => l !== "Select all");
+      .getAllByRole("checkbox", { name: /^Select .+\.mkv$/ })
+      .map((el) => el.getAttribute("aria-label"));
     expect(labels).toEqual([
       "Select First.mkv",
       "Select Second.mkv",

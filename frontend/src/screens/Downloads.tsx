@@ -158,32 +158,43 @@ function protocolLabel(protocol: string): string {
   return protocol;
 }
 
-// Claude 2026-09-21: last nonzero (or first-seen-active-at-zero) downloadSpeed.
-// Reason: Stalled is a client-side 5-minute zero-speed overlay, not a server status.
-// Troubleshooting: Downloads row sitting at 0 B/s still labelled Downloading.
-// Review if: the engine starts emitting a stalled status of its own.
+// Claude 2026-09-21: client-side Stalled overlay (5 min no progress).
+// Reason: stall on completedLength advances, not speed alone — Usenet List()
+//   after fanout briefly zeroed speed; sparse segments can report 0 B/s between
+//   real byte advances.
+// Troubleshooting: false Stalled while completedLength climbs; row at 0 B/s still Downloading.
+// Review if: engine emits a first-class stalled flag.
 function updateStalledTrackers(
-  lastSpeedAt: Map<string, number>,
+  lastProgressAt: Map<string, number>,
+  lastCompleted: Map<string, number>,
   list: Download[],
   now: number,
 ): Set<string> {
   const live = new Set(list.map((d) => d.gid));
-  for (const gid of [...lastSpeedAt.keys()]) {
-    if (!live.has(gid)) lastSpeedAt.delete(gid);
+  for (const gid of [...lastProgressAt.keys()]) {
+    if (!live.has(gid)) {
+      lastProgressAt.delete(gid);
+      lastCompleted.delete(gid);
+    }
   }
   const stalled = new Set<string>();
   for (const d of list) {
     if (!isActiveish(d)) {
-      lastSpeedAt.delete(d.gid);
+      lastProgressAt.delete(d.gid);
+      lastCompleted.delete(d.gid);
       continue;
     }
-    if (d.downloadSpeed > 0) {
-      lastSpeedAt.set(d.gid, now);
-    } else if (!lastSpeedAt.has(d.gid)) {
-      lastSpeedAt.set(d.gid, now);
+    const prevCompleted = lastCompleted.get(d.gid);
+    const advanced =
+      prevCompleted === undefined ||
+      d.completedLength > prevCompleted ||
+      d.downloadSpeed > 0;
+    if (advanced || !lastProgressAt.has(d.gid)) {
+      lastProgressAt.set(d.gid, now);
     }
-    const since = lastSpeedAt.get(d.gid) ?? now;
-    if (isStallCandidate(d) && d.downloadSpeed <= 0 && now - since >= STALL_MS) {
+    lastCompleted.set(d.gid, d.completedLength);
+    const since = lastProgressAt.get(d.gid) ?? now;
+    if (isStallCandidate(d) && now - since >= STALL_MS) {
       stalled.add(d.gid);
     }
   }
@@ -395,7 +406,8 @@ const DownloadRow: Component<{
 
 export const Downloads: Component = () => {
   const [downloads, setDownloads] = createSignal<Download[]>([]);
-  const lastSpeedAt = new Map<string, number>();
+  const lastProgressAt = new Map<string, number>();
+  const lastCompleted = new Map<string, number>();
   const etaTrackers = new Map<string, EtaTracker>();
   const [etaVersion, setEtaVersion] = createSignal(0);
   const [nowMs, setNowMs] = createSignal(Date.now());
@@ -430,7 +442,9 @@ export const Downloads: Component = () => {
       try {
         const list = JSON.parse(ev.data) as Download[];
         const now = Date.now();
-        setStalledGids(updateStalledTrackers(lastSpeedAt, list, now));
+        setStalledGids(
+          updateStalledTrackers(lastProgressAt, lastCompleted, list, now),
+        );
         updateEtaTrackers(etaTrackers, list, now);
         setEtaVersion((v) => v + 1);
         setNowMs(now);

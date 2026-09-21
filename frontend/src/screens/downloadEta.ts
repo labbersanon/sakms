@@ -74,15 +74,16 @@ export function priorUnpackSec(totalLength: number): number {
   return Math.max(PRIOR_FLOOR_SEC, totalLength / HARDWARE_UNPACK_BPS);
 }
 
+const TERMINAL_STATUSES = new Set([
+  "paused",
+  "waiting",
+  "complete",
+  "error",
+  "removed",
+]);
+
 export function showsCountdown(d: EtaInput): boolean {
-  switch (d.status) {
-    case "paused":
-    case "waiting":
-    case "complete":
-    case "error":
-    case "removed":
-      return false;
-  }
+  if (TERMINAL_STATUSES.has(d.status)) return false;
   return (
     d.status === "active" ||
     d.phase === "downloading" ||
@@ -172,9 +173,15 @@ function isEtaLive(
   tracker: EtaTracker,
   stalled: boolean,
 ): boolean {
+  // Claude 2026-09-21: live countdown does not require the current frame's
+  // downloadSpeed > 0. Reason: SSE frames can briefly report 0 between EMA
+  // samples; requiring speed forced calculating…/freeze flicker. Stalled still
+  // freezes then dashes via resolveEtaView.
+  // Troubleshooting: calculating… while ↓ MB/s was intermittently zero.
+  // Review if: engine emits a stable smoothed speed on the wire.
   if (!showsCountdown(d)) return false;
   if (isPostprocess(d)) return tracker.lastGoodEtaSec != null;
-  if (stalled || d.downloadSpeed <= 0) return false;
+  if (stalled) return false;
   return (
     tracker.samples >= MIN_POSITIVE_SAMPLES &&
     tracker.smoothedBps > 0 &&
@@ -239,10 +246,10 @@ export function resolveEtaView(
   if (!showsCountdown(d)) return { kind: "hidden" };
   const elapsed = elapsedMs(d, tracker, now);
   if (!tracker) return { kind: "calculating", elapsedMs: elapsed };
-  if (isEtaLive(d, tracker, stalled) && tracker.lastGoodEtaSec != null) {
+  if (isEtaLive(d, tracker, stalled)) {
     const remainingSec = Math.max(
       0,
-      tracker.lastGoodEtaSec - (now - tracker.lastGoodAt) / 1000,
+      tracker.lastGoodEtaSec! - (now - tracker.lastGoodAt) / 1000,
     );
     return { kind: "eta", remainingSec, elapsedMs: elapsed, frozen: false };
   }

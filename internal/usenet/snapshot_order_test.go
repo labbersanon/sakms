@@ -16,7 +16,7 @@ func TestSnapshot_StableOldestFirst(t *testing.T) {
 
 	want := []string{"nzb-a", "nzb-c", "nzb-b"}
 	for i := 0; i < 20; i++ {
-		snap := m.snapshot()
+		snap := m.readSnapshot()
 		got := make([]string, len(snap))
 		for j, d := range snap {
 			got[j] = d.GID
@@ -34,7 +34,7 @@ func TestSnapshot_IncludesPhase(t *testing.T) {
 		gid: "nzb-a", status: "active", phase: phaseRepairing,
 		phaseDone: 2, phaseTotal: 5, phaseStartedAt: started,
 	}
-	snap := m.snapshot()
+	snap := m.readSnapshot()
 	if len(snap) != 1 {
 		t.Fatalf("len=%d want 1", len(snap))
 	}
@@ -70,11 +70,58 @@ func TestSetPhaseProgress_ClampsAndSnapshots(t *testing.T) {
 		"nzb-a": {gid: "nzb-a", status: "active", phase: phaseUnpacking},
 	}}
 	m.setPhaseProgress("nzb-a", 9, 4)
-	snap := m.snapshot()
+	snap := m.readSnapshot()
 	if len(snap) != 1 {
 		t.Fatalf("len=%d want 1", len(snap))
 	}
 	if snap[0].PhaseDone != 4 || snap[0].PhaseTotal != 4 {
 		t.Fatalf("clamped progress=%d/%d want 4/4", snap[0].PhaseDone, snap[0].PhaseTotal)
+	}
+}
+
+func TestList_DoesNotCorruptDownloadSpeed(t *testing.T) {
+	m := &Manager{downloads: map[string]*dlState{}}
+	dl := &dlState{
+		gid:       "nzb-a",
+		status:    "active",
+		phase:     phaseDownloading,
+		total:     10_000,
+		completed: 1_000,
+		prevBytes: 0,
+		prevTime:  time.Now().Add(-500 * time.Millisecond),
+	}
+	m.downloads["nzb-a"] = dl
+
+	poll := m.pollSnapshot()
+	if len(poll) != 1 {
+		t.Fatalf("poll len=%d want 1", len(poll))
+	}
+	if poll[0].DownloadSpeed <= 0 {
+		t.Fatalf("poll DownloadSpeed=%d want > 0 after 1000 bytes in ~500ms", poll[0].DownloadSpeed)
+	}
+	wantSpeed := poll[0].DownloadSpeed
+
+	// Simulate downloadsStreamHandler's mergedDownloads → List() after fanout.
+	dl.completed = 1_500
+	listed := m.List()
+	if len(listed) != 1 {
+		t.Fatalf("list len=%d want 1", len(listed))
+	}
+	if listed[0].DownloadSpeed != wantSpeed {
+		t.Fatalf("List DownloadSpeed=%d want cached %d — List must not recompute/zero speed",
+			listed[0].DownloadSpeed, wantSpeed)
+	}
+	if listed[0].CompletedLength != 1_500 {
+		t.Fatalf("List CompletedLength=%d want 1500", listed[0].CompletedLength)
+	}
+
+	// A second List still must not roll the delta base forward.
+	_ = m.List()
+	time.Sleep(50 * time.Millisecond)
+	dl.completed = 2_500
+	again := m.pollSnapshot()
+	if again[0].DownloadSpeed <= 0 {
+		t.Fatalf("second poll DownloadSpeed=%d want > 0 — List must not have advanced prevBytes",
+			again[0].DownloadSpeed)
 	}
 }

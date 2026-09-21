@@ -143,7 +143,13 @@ type dlState struct {
 	addedAt time.Time
 
 	// Progress fields — updated by download goroutines via Manager.addCompleted
-	// and read + speed-computed by snapshot(), all under Manager.mu.
+	// and speed-computed only by pollSnapshot(), all under Manager.mu.
+	// Claude 2026-09-21: List()/FindByGID must NOT advance prevBytes/prevTime.
+	// Reason: downloadsStreamHandler re-Lists after every fanout; mutating the
+	//   delta base there zeroed DownloadSpeed on every SSE frame (false Stalled
+	//   + stuck calculating…). Torrents already split readSnapshot vs pollSnapshot.
+	// Troubleshooting: active Usenet row at 0 B/s / Stalled while bytes advance.
+	// Review if: stream handler sends the fanout payload instead of re-Listing.
 	total     int64
 	completed int64
 	prevBytes int64
@@ -658,7 +664,7 @@ func (m *Manager) Start(ctx context.Context) {
 			}
 			return
 		case <-ticker.C:
-			snap := m.snapshot()
+			snap := m.pollSnapshot()
 			if !sameDownloads(prev, snap) {
 				m.fanout(snap)
 				prev = snap
@@ -1036,11 +1042,12 @@ func (m *Manager) deleteDownloadDir(dir string) {
 }
 
 // List returns a point-in-time snapshot of all known downloads.
-func (m *Manager) List() []Download { return m.snapshot() }
+// Safe for HTTP/SSE handlers — does not mutate speed delta state.
+func (m *Manager) List() []Download { return m.readSnapshot() }
 
 // FindByGID looks up one download by GID. Returns (nil, nil) when not found.
 func (m *Manager) FindByGID(gid string) (*Download, error) {
-	for _, d := range m.snapshot() {
+	for _, d := range m.readSnapshot() {
 		if d.GID == gid {
 			return &d, nil
 		}
@@ -1827,6 +1834,19 @@ func (m *Manager) addCompleted(gid string, n int64) {
 	m.mu.Unlock()
 }
 
+func clampPhaseProgress(done, total int64) (int64, int64) {
+	if total < 0 {
+		total = 0
+	}
+	if done < 0 {
+		done = 0
+	}
+	if total > 0 && done > total {
+		done = total
+	}
+	return done, total
+}
+
 // setPhaseProgress records repairing/unpacking work-unit progress under m.mu
 // so snapshot/SSE emit the new counts. done is clamped to total when total > 0.
 func (m *Manager) setPhaseProgress(gid string, done, total int64) {
@@ -1836,15 +1856,7 @@ func (m *Manager) setPhaseProgress(gid string, done, total int64) {
 	if !ok {
 		return
 	}
-	if total < 0 {
-		total = 0
-	}
-	if done < 0 {
-		done = 0
-	}
-	if total > 0 && done > total {
-		done = total
-	}
+	done, total = clampPhaseProgress(done, total)
 	dl.phaseDone = done
 	dl.phaseTotal = total
 }
@@ -1853,55 +1865,35 @@ func reportPhaseProgress(onProgress func(done, total int64), done, total int64) 
 	if onProgress == nil {
 		return
 	}
-	if total < 0 {
-		total = 0
-	}
-	if done < 0 {
-		done = 0
-	}
-	if total > 0 && done > total {
-		done = total
-	}
+	done, total = clampPhaseProgress(done, total)
 	onProgress(done, total)
 }
 
-func (m *Manager) snapshot() []Download {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	now := time.Now()
-	out := make([]Download, 0, len(m.downloads))
-	for _, dl := range m.downloads {
-		var speed int64
-		if dl.status == "active" && !dl.prevTime.IsZero() {
-			if dt := now.Sub(dl.prevTime).Seconds(); dt > 0 {
-				if delta := dl.completed - dl.prevBytes; delta > 0 {
-					speed = int64(float64(delta) / dt)
-				}
-			}
-		}
-		dl.prevBytes = dl.completed
-		dl.prevTime = now
-		dl.speed = speed
-
-		out = append(out, Download{
-			GID:             dl.gid,
-			Status:          dl.status,
-			Filename:        dl.name,
-			Dir:             dl.stagingDir,
-			TotalLength:     dl.total,
-			CompletedLength: dl.completed,
-			ResumeMode:      dl.resumeMode,
-			Phase:           dl.phase,
-			PhaseDone:       dl.phaseDone,
-			PhaseTotal:      dl.phaseTotal,
-			PhaseStartedAt:  dl.phaseStartedAt,
-			AddedAt:         dl.addedAt,
-			DownloadSpeed:   speed,
-			Files:           dl.files,
-			ErrorMessage:    dl.errorMsg,
-			Err:             dl.err,
-		})
+// buildDownload maps dlState to Download. Caller must hold m.mu.
+func (m *Manager) buildDownload(dl *dlState) Download {
+	return Download{
+		GID:             dl.gid,
+		Status:          dl.status,
+		Filename:        dl.name,
+		Dir:             dl.stagingDir,
+		TotalLength:     dl.total,
+		CompletedLength: dl.completed,
+		ResumeMode:      dl.resumeMode,
+		Phase:           dl.phase,
+		PhaseDone:       dl.phaseDone,
+		PhaseTotal:      dl.phaseTotal,
+		PhaseStartedAt:  dl.phaseStartedAt,
+		AddedAt:         dl.addedAt,
+		DownloadSpeed:   dl.speed,
+		Files:           dl.files,
+		ErrorMessage:    dl.errorMsg,
+		Err:             dl.err,
 	}
+}
+
+// sortDownloadsOldestFirst orders by AddedAt then GID. Caller holds m.mu
+// only for the slice contents; sorting the local out slice needs no lock.
+func sortDownloadsOldestFirst(out []Download) {
 	// Claude 2026-09-20: stable oldest-first order for Downloads SSE/List.
 	// Reason: ranging m.downloads (a map) reshuffled the UI on every progress tick.
 	// Troubleshooting: Downloads rows jumping; sort by AddedAt then GID.
@@ -1912,8 +1904,38 @@ func (m *Manager) snapshot() []Download {
 		}
 		return out[i].GID < out[j].GID
 	})
+}
+
+func (m *Manager) snapshot(advanceSpeed bool) []Download {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	out := make([]Download, 0, len(m.downloads))
+	for _, dl := range m.downloads {
+		if advanceSpeed {
+			var speed int64
+			if dl.status == "active" && !dl.prevTime.IsZero() {
+				if dt := now.Sub(dl.prevTime).Seconds(); dt > 0 {
+					if delta := dl.completed - dl.prevBytes; delta > 0 {
+						speed = int64(float64(delta) / dt)
+					}
+				}
+			}
+			dl.prevBytes = dl.completed
+			dl.prevTime = now
+			dl.speed = speed
+		}
+		out = append(out, m.buildDownload(dl))
+	}
+	sortDownloadsOldestFirst(out)
 	return out
 }
+
+// readSnapshot is safe for HTTP/SSE handlers — it does not touch speed deltas.
+func (m *Manager) readSnapshot() []Download { return m.snapshot(false) }
+
+// pollSnapshot advances speed deltas; only Start()'s ticker may call it.
+func (m *Manager) pollSnapshot() []Download { return m.snapshot(true) }
 
 func (m *Manager) fanout(snap []Download) {
 	m.mu.Lock()

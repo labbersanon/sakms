@@ -441,7 +441,12 @@ describe("Downloads — phase tags", () => {
     stubPauseStateOnly();
     render(() => <Downloads />);
     MockEventSource.last!.emit([
-      dl({ gid: "g1", status: "active", downloadSpeed: 0 }),
+      dl({
+        gid: "g1",
+        status: "active",
+        downloadSpeed: 0,
+        completedLength: 100,
+      }),
     ]);
     expect(await screen.findByLabelText("Download phase")).toHaveTextContent(
       "Downloading",
@@ -449,9 +454,46 @@ describe("Downloads — phase tags", () => {
 
     vi.setSystemTime(new Date(start.getTime() + 5 * 60 * 1000));
     MockEventSource.last!.emit([
-      dl({ gid: "g1", status: "active", downloadSpeed: 0 }),
+      dl({
+        gid: "g1",
+        status: "active",
+        downloadSpeed: 0,
+        completedLength: 100,
+      }),
     ]);
     expect(screen.getByLabelText("Download phase")).toHaveTextContent("Stalled");
+  });
+
+  it("does not label as Stalled when completedLength advances at zero speed", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const start = new Date("2026-09-21T12:00:00Z");
+    vi.setSystemTime(start);
+    stubPauseStateOnly();
+    render(() => <Downloads />);
+    MockEventSource.last!.emit([
+      dl({
+        gid: "g1",
+        status: "active",
+        downloadSpeed: 0,
+        completedLength: 100,
+      }),
+    ]);
+    expect(await screen.findByLabelText("Download phase")).toHaveTextContent(
+      "Downloading",
+    );
+
+    vi.setSystemTime(new Date(start.getTime() + 5 * 60 * 1000));
+    MockEventSource.last!.emit([
+      dl({
+        gid: "g1",
+        status: "active",
+        downloadSpeed: 0,
+        completedLength: 200,
+      }),
+    ]);
+    expect(screen.getByLabelText("Download phase")).toHaveTextContent(
+      "Downloading",
+    );
   });
 
   it("does not label repairing as Stalled at zero speed", async () => {

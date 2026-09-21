@@ -251,6 +251,19 @@ describe("freeze / calculating / hidden", () => {
     }
   });
 
+  it("keeps a live countdown across zero-speed frames when not stalled", () => {
+    const d = item({ downloadSpeed: 100 });
+    const trackers = sampleTwice(d, 1000);
+    const gap = item({ downloadSpeed: 0 });
+    updateEtaTrackers(trackers, [gap], 2000);
+    const live = resolveEtaView(gap, trackers.get("g1"), 3000, false);
+    expect(live.kind).toBe("eta");
+    if (live.kind === "eta") {
+      expect(live.frozen).toBe(false);
+      expect(live.remainingSec).toBeCloseTo(4);
+    }
+  });
+
   it("uses addedAt for elapsed when present, otherwise first-seen", () => {
     const added = new Date(0).toISOString();
     const d = item({ addedAt: added, downloadSpeed: 100 });

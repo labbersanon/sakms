@@ -313,7 +313,7 @@ describe("Downloads — protocol-scoped metrics", () => {
     expect(download.textContent).toContain("4.2 MB/s");
   });
 
-  it("V-9: shows calculating… then a ~countdown after two speed samples", async () => {
+  it("V-9: shows calculating… then a ~countdown after enough speed samples", async () => {
     stubPauseStateOnly();
     render(() => <Downloads />);
     const row = dl({
@@ -328,8 +328,13 @@ describe("Downloads — protocol-scoped metrics", () => {
     ).toHaveTextContent("calculating…");
 
     MockEventSource.last!.emit([row]);
+    expect(
+      screen.getByLabelText("Estimated time remaining"),
+    ).toHaveTextContent("calculating…");
+
+    MockEventSource.last!.emit([row]);
     expect(screen.getByLabelText("Estimated time remaining")).toHaveTextContent(
-      "~0:06",
+      /^~/,
     );
     expect(screen.getByLabelText("Elapsed")).toHaveTextContent("0:00");
     expect(screen.getByLabelText("Download speed").textContent).toContain("B/s");

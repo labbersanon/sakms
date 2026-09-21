@@ -18,6 +18,7 @@ import (
 	"time"
 
 	par2lib "github.com/go-newsgroups/par2"
+	"github.com/labbersanon/sakms/internal/ratesmooth"
 	"github.com/labbersanon/sakms/internal/xferlimit"
 	"golang.org/x/sync/errgroup"
 )
@@ -144,17 +145,20 @@ type dlState struct {
 
 	// Progress fields — updated by download goroutines via Manager.addCompleted
 	// and speed-computed only by pollSnapshot(), all under Manager.mu.
-	// Claude 2026-09-21: List()/FindByGID must NOT advance prevBytes/prevTime.
+	// Claude 2026-09-21: List()/FindByGID must NOT call snapshot(advanceSpeed).
 	// Reason: downloadsStreamHandler re-Lists after every fanout; mutating the
-	//   delta base there zeroed DownloadSpeed on every SSE frame (false Stalled
+	//   speed window there zeroed DownloadSpeed on every SSE frame (false Stalled
 	//   + stuck calculating…). Torrents already split readSnapshot vs pollSnapshot.
 	// Troubleshooting: active Usenet row at 0 B/s / Stalled while bytes advance.
 	// Review if: stream handler sends the fanout payload instead of re-Listing.
 	total     int64
 	completed int64
-	prevBytes int64
-	prevTime  time.Time
-	speed     int64
+	// Claude 2026-09-21: rolling ~10s DownloadSpeed window (ratesmooth).
+	// Reason: single 500ms tick was too bursty for Usenet/NNTP ETA accuracy.
+	// Troubleshooting: ↓ MB/s and ETA jumping every half-second.
+	// Review if: wire field becomes a server-smoothed rate with its own contract.
+	speedWin ratesmooth.Window
+	speed    int64
 }
 
 // Manager is the Usenet download engine. It starts NZB downloads, tracks
@@ -1913,17 +1917,12 @@ func (m *Manager) snapshot(advanceSpeed bool) []Download {
 	out := make([]Download, 0, len(m.downloads))
 	for _, dl := range m.downloads {
 		if advanceSpeed {
-			var speed int64
-			if dl.status == "active" && !dl.prevTime.IsZero() {
-				if dt := now.Sub(dl.prevTime).Seconds(); dt > 0 {
-					if delta := dl.completed - dl.prevBytes; delta > 0 {
-						speed = int64(float64(delta) / dt)
-					}
-				}
+			if dl.status == "active" {
+				dl.speed = dl.speedWin.Add(now, dl.completed)
+			} else {
+				dl.speedWin.Reset()
+				dl.speed = 0
 			}
-			dl.prevBytes = dl.completed
-			dl.prevTime = now
-			dl.speed = speed
 		}
 		out = append(out, m.buildDownload(dl))
 	}

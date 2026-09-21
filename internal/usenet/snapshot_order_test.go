@@ -81,15 +81,16 @@ func TestSetPhaseProgress_ClampsAndSnapshots(t *testing.T) {
 
 func TestList_DoesNotCorruptDownloadSpeed(t *testing.T) {
 	m := &Manager{downloads: map[string]*dlState{}}
+	start := time.Now().Add(-2 * time.Second)
 	dl := &dlState{
 		gid:       "nzb-a",
 		status:    "active",
 		phase:     phaseDownloading,
-		total:     10_000,
-		completed: 1_000,
-		prevBytes: 0,
-		prevTime:  time.Now().Add(-500 * time.Millisecond),
+		total:     10_000_000,
+		completed: 1_000_000,
 	}
+	dl.speedWin.Add(start, 0)
+	dl.speedWin.Add(start.Add(time.Second), 1_000_000)
 	m.downloads["nzb-a"] = dl
 
 	poll := m.pollSnapshot()
@@ -97,12 +98,11 @@ func TestList_DoesNotCorruptDownloadSpeed(t *testing.T) {
 		t.Fatalf("poll len=%d want 1", len(poll))
 	}
 	if poll[0].DownloadSpeed <= 0 {
-		t.Fatalf("poll DownloadSpeed=%d want > 0 after 1000 bytes in ~500ms", poll[0].DownloadSpeed)
+		t.Fatalf("poll DownloadSpeed=%d want > 0", poll[0].DownloadSpeed)
 	}
 	wantSpeed := poll[0].DownloadSpeed
 
-	// Simulate downloadsStreamHandler's mergedDownloads → List() after fanout.
-	dl.completed = 1_500
+	dl.completed = 1_500_000
 	listed := m.List()
 	if len(listed) != 1 {
 		t.Fatalf("list len=%d want 1", len(listed))
@@ -111,17 +111,16 @@ func TestList_DoesNotCorruptDownloadSpeed(t *testing.T) {
 		t.Fatalf("List DownloadSpeed=%d want cached %d — List must not recompute/zero speed",
 			listed[0].DownloadSpeed, wantSpeed)
 	}
-	if listed[0].CompletedLength != 1_500 {
-		t.Fatalf("List CompletedLength=%d want 1500", listed[0].CompletedLength)
+	if listed[0].CompletedLength != 1_500_000 {
+		t.Fatalf("List CompletedLength=%d want 1500000", listed[0].CompletedLength)
 	}
 
-	// A second List still must not roll the delta base forward.
 	_ = m.List()
 	time.Sleep(50 * time.Millisecond)
-	dl.completed = 2_500
+	dl.completed = 2_500_000
 	again := m.pollSnapshot()
 	if again[0].DownloadSpeed <= 0 {
-		t.Fatalf("second poll DownloadSpeed=%d want > 0 — List must not have advanced prevBytes",
+		t.Fatalf("second poll DownloadSpeed=%d want > 0 — List must not have reset the speed window",
 			again[0].DownloadSpeed)
 	}
 }

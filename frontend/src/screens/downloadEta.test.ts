@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  DISPLAY_MAX_FRAC_PER_SEC,
   EMA_ALPHA,
   ETA_FREEZE_MS,
   HARDWARE_REPAIR_BPS,
@@ -7,6 +8,7 @@ import {
   MIN_POSITIVE_SAMPLES,
   type EtaInput,
   type EtaTracker,
+  clampEtaJump,
   computeEtaSec,
   formatElapsed,
   formatEtaCountdown,
@@ -27,13 +29,19 @@ const item = (over: Partial<EtaInput> = {}): EtaInput => ({
   ...over,
 });
 
-const sampleTwice = (
+/** Feed MIN_POSITIVE_SAMPLES bootstrap speed frames spaced 1s apart. */
+const sampleEnough = (
   d: EtaInput,
   now = 1_000,
 ): Map<string, EtaTracker> => {
   const trackers = new Map<string, EtaTracker>();
-  updateEtaTrackers(trackers, [d], now - 1_000);
-  updateEtaTrackers(trackers, [d], now);
+  for (let i = 0; i < MIN_POSITIVE_SAMPLES; i++) {
+    updateEtaTrackers(
+      trackers,
+      [d],
+      now - (MIN_POSITIVE_SAMPLES - 1 - i) * 1_000,
+    );
+  }
   return trackers;
 };
 
@@ -48,7 +56,7 @@ describe("formatElapsed / formatEtaCountdown", () => {
 });
 
 describe("EMA download speed", () => {
-  it("seeds on the first positive sample and mixes with α on the next", () => {
+  it("seeds on the first positive sample and mixes with α on later samples", () => {
     const trackers = new Map<string, EtaTracker>();
     updateEtaTrackers(trackers, [item({ downloadSpeed: 100 })], 0);
     expect(trackers.get("g1")?.samples).toBe(1);
@@ -56,23 +64,53 @@ describe("EMA download speed", () => {
     expect(trackers.get("g1")?.lastGoodEtaSec).toBeNull();
 
     updateEtaTrackers(trackers, [item({ downloadSpeed: 200 })], 1000);
-    expect(trackers.get("g1")?.samples).toBe(MIN_POSITIVE_SAMPLES);
+    expect(trackers.get("g1")?.samples).toBe(2);
     expect(trackers.get("g1")?.smoothedBps).toBe(
       EMA_ALPHA * 200 + (1 - EMA_ALPHA) * 100,
     );
-    expect(trackers.get("g1")?.lastGoodEtaSec).toBeCloseTo(600 / 130);
+
+    updateEtaTrackers(trackers, [item({ downloadSpeed: 200 })], 2000);
+    expect(trackers.get("g1")?.samples).toBe(MIN_POSITIVE_SAMPLES);
+    expect(trackers.get("g1")?.lastGoodEtaSec).not.toBeNull();
+  });
+
+  it("prefers completedLength byte-deltas once past bootstrap", () => {
+    const trackers = sampleEnough(item({ downloadSpeed: 100, completedLength: 400 }), 2000);
+    const before = trackers.get("g1")!.smoothedBps;
+    // 400 bytes in 1s → 400 B/s instant; EMA pulls smoothed toward it.
+    updateEtaTrackers(
+      trackers,
+      [item({ downloadSpeed: 0, completedLength: 800 })],
+      3000,
+    );
+    expect(trackers.get("g1")!.smoothedBps).not.toBe(before);
+    expect(trackers.get("g1")!.smoothedBps).toBeCloseTo(
+      EMA_ALPHA * 400 + (1 - EMA_ALPHA) * before,
+    );
   });
 
   it("ignores zero-speed frames so EMA does not collapse toward 0", () => {
-    const trackers = sampleTwice(item({ downloadSpeed: 100 }), 1000);
+    const trackers = sampleEnough(item({ downloadSpeed: 100 }), 2000);
     const smoothed = trackers.get("g1")!.smoothedBps;
+    const samples = trackers.get("g1")!.samples;
     updateEtaTrackers(
       trackers,
       [item({ downloadSpeed: 0 })],
-      2000,
+      3000,
     );
-    expect(trackers.get("g1")?.samples).toBe(2);
+    expect(trackers.get("g1")?.samples).toBe(samples);
     expect(trackers.get("g1")?.smoothedBps).toBe(smoothed);
+  });
+});
+
+describe("clampEtaJump", () => {
+  it("limits estimate jumps to DISPLAY_MAX_FRAC_PER_SEC of the projected value", () => {
+    const projected = 100;
+    const dt = 1;
+    const maxJump = projected * DISPLAY_MAX_FRAC_PER_SEC * dt;
+    expect(clampEtaJump(200, projected, dt)).toBeCloseTo(projected + maxJump);
+    expect(clampEtaJump(10, projected, dt)).toBeCloseTo(projected - maxJump);
+    expect(clampEtaJump(105, projected, dt)).toBe(105);
   });
 });
 
@@ -94,16 +132,18 @@ describe("hardware priors", () => {
       completedLength: 400,
       downloadSpeed: 50,
     });
-    const trackers = sampleTwice(d, 1000);
-    const eta = computeEtaSec(d, trackers.get("g1")!, 1000);
-    expect(eta).toBeCloseTo(600 / 50 + 5 + 5);
+    const trackers = sampleEnough(d, 2000);
+    const eta = computeEtaSec(d, trackers.get("g1")!, 2000);
+    expect(eta).toBeCloseTo(600 / trackers.get("g1")!.smoothedBps + 5 + 5);
   });
 
   it("does not add hardware priors for torrents", () => {
     const d = item({ protocol: "torrent", downloadSpeed: 100 });
-    const trackers = sampleTwice(d, 1000);
-    expect(hardwareEtaSec(d, 1000)).toBe(0);
-    expect(computeEtaSec(d, trackers.get("g1")!, 1000)).toBeCloseTo(6);
+    const trackers = sampleEnough(d, 2000);
+    expect(hardwareEtaSec(d, 2000)).toBe(0);
+    expect(computeEtaSec(d, trackers.get("g1")!, 2000)).toBeCloseTo(
+      600 / trackers.get("g1")!.smoothedBps,
+    );
   });
 });
 
@@ -122,7 +162,6 @@ describe("postprocess remaining", () => {
     });
     const trackers = new Map<string, EtaTracker>();
     updateEtaTrackers(trackers, [d], now);
-    // rate = 2/10 units/s, remain units = 2 → 10s repair + 5s unpack prior
     expect(trackers.get("g1")?.lastGoodEtaSec).toBeCloseTo(15);
   });
 
@@ -170,7 +209,7 @@ describe("postprocess remaining", () => {
 });
 
 describe("freeze / calculating / hidden", () => {
-  it("shows calculating until two positive speed samples", () => {
+  it("shows calculating until enough positive speed samples", () => {
     const trackers = new Map<string, EtaTracker>();
     const d = item({ downloadSpeed: 100 });
     updateEtaTrackers(trackers, [d], 0);
@@ -181,13 +220,13 @@ describe("freeze / calculating / hidden", () => {
 
   it("freezes last good ETA for 30s of zero speed, then dashes", () => {
     const d = item({ downloadSpeed: 100 });
-    const trackers = sampleTwice(d, 1000);
+    const trackers = sampleEnough(d, 2000);
     const good = trackers.get("g1")!.lastGoodEtaSec;
-    expect(good).toBeCloseTo(6);
+    expect(good).toBeGreaterThan(0);
 
     const stalled = item({ downloadSpeed: 0 });
-    updateEtaTrackers(trackers, [stalled], 2000);
-    const frozen = resolveEtaView(stalled, trackers.get("g1"), 2000, true);
+    updateEtaTrackers(trackers, [stalled], 3000);
+    const frozen = resolveEtaView(stalled, trackers.get("g1"), 3000, true);
     expect(frozen).toMatchObject({
       kind: "eta",
       remainingSec: good,
@@ -197,7 +236,7 @@ describe("freeze / calculating / hidden", () => {
     const stillFrozen = resolveEtaView(
       stalled,
       trackers.get("g1"),
-      1000 + ETA_FREEZE_MS - 1,
+      2000 + ETA_FREEZE_MS - 1,
       true,
     );
     expect(stillFrozen.kind).toBe("eta");
@@ -206,7 +245,7 @@ describe("freeze / calculating / hidden", () => {
     const dashed = resolveEtaView(
       stalled,
       trackers.get("g1"),
-      1000 + ETA_FREEZE_MS,
+      2000 + ETA_FREEZE_MS,
       true,
     );
     expect(dashed.kind).toBe("dash");
@@ -224,50 +263,54 @@ describe("freeze / calculating / hidden", () => {
 
   it("hides the countdown when paused, queued, complete, or error", () => {
     const d = item({ downloadSpeed: 100 });
-    const trackers = sampleTwice(d, 1000);
+    const trackers = sampleEnough(d, 2000);
     const t = trackers.get("g1");
-    expect(resolveEtaView({ ...d, status: "paused" }, t, 1000, false).kind).toBe(
+    expect(resolveEtaView({ ...d, status: "paused" }, t, 2000, false).kind).toBe(
       "hidden",
     );
-    expect(resolveEtaView({ ...d, status: "waiting" }, t, 1000, false).kind).toBe(
+    expect(resolveEtaView({ ...d, status: "waiting" }, t, 2000, false).kind).toBe(
       "hidden",
     );
     expect(
-      resolveEtaView({ ...d, status: "complete" }, t, 1000, false).kind,
+      resolveEtaView({ ...d, status: "complete" }, t, 2000, false).kind,
     ).toBe("hidden");
-    expect(resolveEtaView({ ...d, status: "error" }, t, 1000, false).kind).toBe(
+    expect(resolveEtaView({ ...d, status: "error" }, t, 2000, false).kind).toBe(
       "hidden",
     );
   });
 
   it("ticks the live countdown down between samples", () => {
     const d = item({ downloadSpeed: 100 });
-    const trackers = sampleTwice(d, 1000);
-    const live = resolveEtaView(d, trackers.get("g1"), 3000, false);
+    const trackers = sampleEnough(d, 2000);
+    const live = resolveEtaView(d, trackers.get("g1"), 4000, false);
     expect(live.kind).toBe("eta");
     if (live.kind === "eta") {
       expect(live.frozen).toBe(false);
-      expect(live.remainingSec).toBeCloseTo(4);
+      expect(live.remainingSec).toBeCloseTo(
+        trackers.get("g1")!.lastGoodEtaSec! - 2,
+      );
     }
   });
 
   it("keeps a live countdown across zero-speed frames when not stalled", () => {
     const d = item({ downloadSpeed: 100 });
-    const trackers = sampleTwice(d, 1000);
+    const trackers = sampleEnough(d, 2000);
     const gap = item({ downloadSpeed: 0 });
-    updateEtaTrackers(trackers, [gap], 2000);
-    const live = resolveEtaView(gap, trackers.get("g1"), 3000, false);
+    updateEtaTrackers(trackers, [gap], 3000);
+    const live = resolveEtaView(gap, trackers.get("g1"), 4000, false);
     expect(live.kind).toBe("eta");
     if (live.kind === "eta") {
       expect(live.frozen).toBe(false);
-      expect(live.remainingSec).toBeCloseTo(4);
+      expect(live.remainingSec).toBeCloseTo(
+        trackers.get("g1")!.lastGoodEtaSec! - 2,
+      );
     }
   });
 
   it("uses addedAt for elapsed when present, otherwise first-seen", () => {
     const added = new Date(0).toISOString();
     const d = item({ addedAt: added, downloadSpeed: 100 });
-    const trackers = sampleTwice(d, 1000);
+    const trackers = sampleEnough(d, 2000);
     const view = resolveEtaView(d, trackers.get("g1"), 83_000, false);
     expect(view.kind).not.toBe("hidden");
     if (view.kind !== "hidden") expect(view.elapsedMs).toBe(83_000);
@@ -281,8 +324,8 @@ describe("freeze / calculating / hidden", () => {
   });
 
   it("drops trackers for gids that left the queue", () => {
-    const trackers = sampleTwice(item(), 1000);
-    updateEtaTrackers(trackers, [], 2000);
+    const trackers = sampleEnough(item(), 2000);
+    updateEtaTrackers(trackers, [], 3000);
     expect(trackers.size).toBe(0);
   });
 });

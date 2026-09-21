@@ -40,6 +40,7 @@ import (
 
 	torrentlib "github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/metainfo"
+	"github.com/labbersanon/sakms/internal/ratesmooth"
 	"golang.org/x/time/rate"
 )
 
@@ -180,18 +181,22 @@ type entry struct {
 	dir       string   // per-torrent folder or stagingDir
 	filename  string   // display: files[0] when known
 
-	// Speed (delta across poll ticks).
+	// Speed: prevBytes still drives the stale clock; DownloadSpeed uses a
+	// rolling ~10s window (ratesmooth) so UI ETA is less bursty than a single
+	// 500ms poll delta.
+	// Claude 2026-09-21: rolling window for DownloadSpeed.
+	// Reason: single-tick deltas made Downloads ETA jumpy for torrents too.
+	// Review if: wire DownloadSpeed is redefined as instantaneous.
 	prevBytes int64
-	prevTime  time.Time
+	speedWin  ratesmooth.Window
 	speed     int64
 
 	// Claude 2026-08-04: upload-speed delta state, deliberately a SEPARATE
-	// triple from prevBytes/prevTime/speed above.
+	// triple from the download speed fields above.
 	// Reason: the upload pass in pollSnapshot runs for complete-and-seeding
 	// entries too (F-1 in the plan), which the download-speed pass above
-	// does not — sharing prevTime would let the upload pass advance the
-	// download pass's delta base on a tick where only upload ran, corrupting
-	// download speed. Never cross-assign between the two triples.
+	// does not — sharing a download delta base with upload would corrupt
+	// download speed. Never cross-assign between the two.
 	// Review if: the two passes are ever merged into one guard.
 	prevUpBytes int64
 	prevUpTime  time.Time
@@ -1290,6 +1295,7 @@ func (m *Manager) watchTorrent(t *torrentlib.Torrent, gid string) {
 		e.status = "complete"
 		e.cachedCompleted = completed
 		e.cachedTotal = total
+		e.speedWin.Reset()
 		e.speed = 0
 		e.upSpeed = 0
 		seedingEnabled := m.cfg.SeedingEnabled
@@ -1475,7 +1481,7 @@ func (m *Manager) pollLoop(ctx context.Context) {
 }
 
 // buildEntry assembles a Download from an entry's cached/stable fields without
-// touching prevBytes, prevTime, or speed. Caller must hold m.mu.
+// touching prevBytes, speedWin, or speed. Caller must hold m.mu.
 func (m *Manager) buildEntry(gid string, e *entry) Download {
 	dir := e.dir
 	if dir == "" {
@@ -1498,7 +1504,7 @@ func (m *Manager) buildEntry(gid string, e *entry) Download {
 }
 
 // readSnapshot builds the current Download list from cached entry fields.
-// It never mutates prevBytes, prevTime, or speed — safe to call from HTTP
+// It never mutates prevBytes, speedWin, or speed — safe to call from HTTP
 // request handlers without corrupting the poll loop's speed calculation.
 func (m *Manager) readSnapshot() []Download {
 	m.mu.Lock()
@@ -1941,9 +1947,8 @@ func (m *Manager) SeedImportCopy(gid, importRoot string, importPaths []string) {
 }
 
 // pollSnapshot builds the current Download list from all entries, advancing
-// speed state (prevBytes/prevTime/speed) and the stale clock for active
-// downloads. Only called by pollLoop — HTTP handlers use readSnapshot to avoid
-// corrupting speed state.
+// speed state (rolling window + stale clock) for active downloads. Only called
+// by pollLoop — HTTP handlers use readSnapshot to avoid corrupting speed state.
 //
 // It also returns the work that must be performed AFTER m.mu is released:
 // seeding entries that tripped a stop condition, and gids that tripped the
@@ -1983,15 +1988,12 @@ func (m *Manager) pollSnapshot() (snap []Download, stopSeeds []seedStop, staleGI
 					total = e.t.Length()
 				}
 				var speed int64
-				if e.status == "active" && !e.prevTime.IsZero() {
-					if dt := now.Sub(e.prevTime).Seconds(); dt > 0 {
-						if delta := completed - e.prevBytes; delta > 0 {
-							speed = int64(float64(delta) / dt)
-						}
-					}
+				if e.status == "active" {
+					speed = e.speedWin.Add(now, completed)
+				} else {
+					e.speedWin.Reset()
 				}
 				e.prevBytes = completed
-				e.prevTime = now
 				e.speed = speed
 				e.cachedCompleted = completed
 				e.cachedTotal = total

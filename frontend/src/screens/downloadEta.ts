@@ -4,19 +4,26 @@
 // Troubleshooting: Downloads showed NN% + elapsed during PAR2/unrar, or ↓ speed
 //   while downloading, with no sense of time left.
 // Review if: the engine starts emitting remaining-time estimates of its own.
+//
+// Claude 2026-09-21: balanced smoothness pass (byte-delta EMA + display clamp).
+// Reason: wire downloadSpeed (even with a 10s engine window) still jitters; UI
+//   also jerked when lastGoodEtaSec jumped. Prefer calm countdown with moderate
+//   tracking of real speed changes.
+// Troubleshooting: ~countdown leaping by large steps every SSE frame.
+// Review if: engine emits a first-class remaining-time field.
 
-export const EMA_ALPHA = 0.3;
-export const MIN_POSITIVE_SAMPLES = 2;
+/** Balanced: smoother than 0.3, still tracks real speed shifts within ~a few samples. */
+export const EMA_ALPHA = 0.18;
+export const MIN_POSITIVE_SAMPLES = 3;
 export const ETA_FREEZE_MS = 30_000;
+/** Ignore sub-frame byte deltas that would invent huge instantaneous rates. */
+export const BYTE_DELTA_MIN_MS = 400;
+/**
+ * Max fractional jump of the ETA estimate per second of wall time when a new
+ * sample arrives (display clamp). Natural countdown between samples is uncapped.
+ */
+export const DISPLAY_MAX_FRAC_PER_SEC = 0.2;
 
-// Claude 2026-09-21: tunable wall-clock priors for local Usenet postprocess.
-// Reason: PAR2/unrar have downloadSpeed 0, so remaining time is modeled as
-//   payload bytes / these hardware rates until a live phase rate exists.
-//   25 MiB/s repair and 40 MiB/s unpack are desktop-disk/CPU approximations,
-//   not measured from this host; floors keep tiny NZBs from showing ~0:00.
-// Troubleshooting: repair/unpack ETA stuck at calculating or ~0:00 with no
-//   phase rate yet.
-// Review if: these rates are calibrated against observed PAR2/unrar duration.
 export const HARDWARE_REPAIR_BPS = 25 * 1024 * 1024;
 export const HARDWARE_UNPACK_BPS = 40 * 1024 * 1024;
 export const PRIOR_FLOOR_SEC = 5;
@@ -42,6 +49,8 @@ export type EtaTracker = {
   smoothedBps: number;
   samples: number;
   firstSeenAt: number;
+  lastCompleted: number;
+  lastCompletedAt: number;
 };
 
 export type EtaView =
@@ -162,10 +171,22 @@ export function computeEtaSec(
   if (!showsCountdown(d)) return null;
   const hw = hardwareEtaSec(d, now);
   if (isPostprocess(d)) return hw;
-  if (d.downloadSpeed <= 0) return null;
   const dlEta = downloadEtaSec(d, tracker);
   if (dlEta == null) return null;
   return dlEta + hw;
+}
+
+/** Clamp a newly computed ETA toward the projected display value. */
+export function clampEtaJump(
+  rawSec: number,
+  projectedSec: number,
+  dtSec: number,
+): number {
+  if (!(dtSec > 0) || !Number.isFinite(projectedSec)) return rawSec;
+  const maxJump = Math.max(1, Math.abs(projectedSec) * DISPLAY_MAX_FRAC_PER_SEC * dtSec);
+  if (rawSec > projectedSec + maxJump) return projectedSec + maxJump;
+  if (rawSec < projectedSec - maxJump) return projectedSec - maxJump;
+  return rawSec;
 }
 
 function isEtaLive(
@@ -202,6 +223,13 @@ export function elapsedMs(
   return 0;
 }
 
+function feedBps(t: EtaTracker, bps: number): void {
+  if (!(bps > 0)) return;
+  if (t.samples === 0) t.smoothedBps = bps;
+  else t.smoothedBps = EMA_ALPHA * bps + (1 - EMA_ALPHA) * t.smoothedBps;
+  t.samples += 1;
+}
+
 export function updateEtaTrackers(
   trackers: Map<string, EtaTracker>,
   list: readonly EtaInput[],
@@ -220,20 +248,42 @@ export function updateEtaTrackers(
         smoothedBps: 0,
         samples: 0,
         firstSeenAt: now,
+        lastCompleted: d.completedLength,
+        lastCompletedAt: now,
       };
       trackers.set(d.gid, t);
     }
     if (!showsCountdown(d)) continue;
-    if (d.downloadSpeed > 0 && !isPostprocess(d)) {
-      if (t.samples === 0) t.smoothedBps = d.downloadSpeed;
-      else t.smoothedBps = EMA_ALPHA * d.downloadSpeed + (1 - EMA_ALPHA) * t.smoothedBps;
-      t.samples += 1;
+
+    let sampled = false;
+    if (!isPostprocess(d)) {
+      const dtMs = now - t.lastCompletedAt;
+      const dBytes = d.completedLength - t.lastCompleted;
+      if (dtMs >= BYTE_DELTA_MIN_MS && dBytes > 0) {
+        feedBps(t, dBytes / (dtMs / 1000));
+        sampled = true;
+      } else if (d.downloadSpeed > 0 && t.samples < MIN_POSITIVE_SAMPLES) {
+        // Bootstrap from the engine's rolling-window speed until byte deltas exist.
+        feedBps(t, d.downloadSpeed);
+        sampled = true;
+      }
+      t.lastCompleted = d.completedLength;
+      t.lastCompletedAt = now;
     }
+
     const eta = computeEtaSec(d, t, now);
-    if (eta != null) {
+    if (eta == null) continue;
+    // Only refresh lastGood on postprocess ticks or new rate samples — otherwise
+    // every SSE frame would reset the freeze clock and stall the natural countdown.
+    if (!isPostprocess(d) && !sampled && t.lastGoodEtaSec != null) continue;
+    if (t.lastGoodEtaSec != null && t.lastGoodAt > 0) {
+      const dtSec = (now - t.lastGoodAt) / 1000;
+      const projected = Math.max(0, t.lastGoodEtaSec - dtSec);
+      t.lastGoodEtaSec = clampEtaJump(eta, projected, dtSec);
+    } else {
       t.lastGoodEtaSec = eta;
-      t.lastGoodAt = now;
     }
+    t.lastGoodAt = now;
   }
 }
 

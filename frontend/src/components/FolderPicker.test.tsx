@@ -51,6 +51,7 @@ const roots: BrowseBody = {
     { name: "/media", path: "/media" },
     { name: "/downloads", path: "/downloads" },
     { name: "/adult", path: "/adult" },
+    { name: "/staging", path: "/staging" },
   ],
 };
 

@@ -211,6 +211,7 @@ function defaultGet(url: string): Response | undefined {
         { name: "/media", path: "/media" },
         { name: "/downloads", path: "/downloads" },
         { name: "/adult", path: "/adult" },
+        { name: "/staging", path: "/staging" },
       ],
     });
   return undefined;

@@ -19,7 +19,13 @@ import (
 // requested path that doesn't resolve under one of them is rejected, not
 // silently clamped, so a traversal attempt fails loudly rather than quietly
 // listing the wrong tree.
-var browsableRoots = []string{"/media", "/downloads", "/adult"}
+//
+// Claude 2026-09-20: added /staging (local HDD Usenet off-data staging mount).
+// Reason: compose binds /data/sakms-usenet → /staging; FolderPicker empty-path
+//   roots omitted it so Advanced off-data staging path was unpickable.
+// Troubleshooting: Settings FolderPicker focus with empty path must list /staging.
+// Review if: staging volume removed from compose — drop /staging from this list.
+var browsableRoots = []string{"/media", "/downloads", "/adult", "/staging"}
 
 const adultBrowsableRoot = "/adult"
 
@@ -82,7 +88,7 @@ func resolveBrowsablePath(root string) (string, error) {
 
 // errPathOutsideRoots is returned by resolveBrowsablePath for any path that
 // doesn't resolve under a browsable root — surfaced to the client as a 400.
-var errPathOutsideRoots = &browseError{"path must be within one of the mounted roots: /media, /downloads, /adult"}
+var errPathOutsideRoots = &browseError{"path must be within one of the mounted roots: /media, /downloads, /adult, /staging"}
 
 type browseError struct{ msg string }
 

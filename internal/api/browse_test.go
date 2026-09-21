@@ -25,6 +25,8 @@ func TestResolveBrowsablePath(t *testing.T) {
 		{name: "bare root media", input: "/media", want: "/media"},
 		{name: "bare root downloads", input: "/downloads", want: "/downloads"},
 		{name: "bare root adult", input: "/adult", want: "/adult"},
+		{name: "bare root staging", input: "/staging", want: "/staging"},
+		{name: "valid nested staging", input: "/staging/nzb-abc", want: "/staging/nzb-abc"},
 		{name: "valid nested", input: "/media/Movies/Action", want: "/media/Movies/Action"},
 		{name: "trailing slash cleaned", input: "/media/Movies/", want: "/media/Movies"},
 		{name: "redundant segments cleaned", input: "/media/./Movies//Action", want: "/media/Movies/Action"},

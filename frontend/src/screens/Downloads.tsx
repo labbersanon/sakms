@@ -77,6 +77,33 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
+// Claude 2026-09-21: elapsed clock for repairing/unpacking (M:SS or H:MM:SS).
+// Reason: operator asked for a timer beside NN% while downloadSpeed is 0.
+// Review if: the engine emits remaining-time estimates instead of elapsed.
+function formatElapsed(ms: number): string {
+  const totalSec = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  const ss = String(s).padStart(2, "0");
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${ss}`;
+  return `${m}:${ss}`;
+}
+
+const PhaseElapsed: Component<{ startedAt: string }> = (props) => {
+  const [now, setNow] = createSignal(Date.now());
+  onMount(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    onCleanup(() => window.clearInterval(id));
+  });
+  const label = () => {
+    const t = Date.parse(props.startedAt);
+    if (Number.isNaN(t)) return "0:00";
+    return formatElapsed(now() - t);
+  };
+  return <span aria-label="Phase elapsed">{label()}</span>;
+};
+
 const TAG_PILL = "shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium";
 
 const PHASE_BADGE: Record<string, string> = {
@@ -217,10 +244,23 @@ const DownloadRow: Component<{
   selected: boolean;
   onToggle: () => void;
 }> = (props) => {
-  const percent = () =>
-    props.dl.totalLength > 0
+  const isPostprocess = () =>
+    props.dl.protocol === "usenet" &&
+    (props.dl.phase === "repairing" || props.dl.phase === "unpacking");
+  // Claude 2026-09-21: PAR2/unpack percent from work units, not download bytes.
+  // Reason: completedLength is already 100% when postprocess starts; speed is 0.
+  // Troubleshooting: bar sitting at 100% while Repairing/Unpacking with no NN%.
+  // Review if: torrents grow a comparable postprocess phase.
+  const percent = () => {
+    if (isPostprocess()) {
+      const total = props.dl.phaseTotal ?? 0;
+      const done = props.dl.phaseDone ?? 0;
+      return total > 0 ? (done / total) * 100 : 0;
+    }
+    return props.dl.totalLength > 0
       ? (props.dl.completedLength / props.dl.totalLength) * 100
       : 0;
+  };
   const isPaused = () => props.dl.status === "paused";
   const isActive = () => props.dl.status === "active";
   const isDone = () =>
@@ -299,10 +339,27 @@ const DownloadRow: Component<{
           {formatSize(props.dl.completedLength)} / {formatSize(props.dl.totalLength)}
         </span>
         <Show when={isActive()}>
-          <span class="text-fg" aria-label="Download speed">
-            <span aria-hidden="true">↓ </span>
-            {formatBps(props.dl.downloadSpeed)}
-          </span>
+          <Show
+            when={isPostprocess()}
+            fallback={
+              <span class="text-fg" aria-label="Download speed">
+                <span aria-hidden="true">↓ </span>
+                {formatBps(props.dl.downloadSpeed)}
+              </span>
+            }
+          >
+            <span class="text-fg" aria-label="Postprocess progress">
+              {`${Math.round(percent())}%`}
+              <Show when={props.dl.phaseStartedAt}>
+                {(started) => (
+                  <>
+                    <span aria-hidden="true"> · </span>
+                    <PhaseElapsed startedAt={started()} />
+                  </>
+                )}
+              </Show>
+            </span>
+          </Show>
         </Show>
         <Show when={isTorrent()}>
           <span aria-label="Upload speed">

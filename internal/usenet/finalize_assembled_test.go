@@ -107,6 +107,10 @@ func TestFinalizeAssembled_PAR2FailUnpackExtracts_MarksComplete(t *testing.T) {
 	if dl.phase != "" {
 		t.Fatalf("phase after complete=%q want empty", dl.phase)
 	}
+	if dl.phaseDone != 0 || dl.phaseTotal != 0 || !dl.phaseStartedAt.IsZero() {
+		t.Fatalf("phase progress after complete should be cleared, got %d/%d started=%v",
+			dl.phaseDone, dl.phaseTotal, dl.phaseStartedAt)
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	if completeGID != dl.gid {

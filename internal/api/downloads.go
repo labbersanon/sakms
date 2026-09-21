@@ -253,12 +253,15 @@ func toUsenetDTODownload(d usenet.Download) apidto.Download {
 		Protocol:        apidto.DownloadProtocolUsenet,
 		ErrorMessage:    d.ErrorMessage,
 		ResumeMode:      d.ResumeMode,
-		// Claude 2026-09-21: Usenet postprocess phase passthrough.
-		// Reason: Downloads tags need downloading/repairing/unpacking while
-		//   status stays active; torrents leave Phase empty on toDTODownload.
+		// Claude 2026-09-21: Usenet postprocess phase + work-unit progress passthrough.
+		// Reason: Downloads tags and NN% / elapsed timer need phase, phaseDone,
+		//   phaseTotal, and phaseStartedAt while status stays active.
 		// Review if: torrents grow a comparable postprocess phase.
-		Phase:   d.Phase,
-		AddedAt: formatDownloadAddedAt(d.AddedAt),
+		Phase:          d.Phase,
+		PhaseDone:      d.PhaseDone,
+		PhaseTotal:     d.PhaseTotal,
+		PhaseStartedAt: formatDownloadAddedAt(d.PhaseStartedAt),
+		AddedAt:        formatDownloadAddedAt(d.AddedAt),
 	}
 }
 

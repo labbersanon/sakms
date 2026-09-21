@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/downloader"
@@ -52,12 +53,23 @@ func TestToUsenetDTODownload_SetsUsenetProtocolAndOmitsTorrentOnlyFields(t *test
 }
 
 func TestToUsenetDTODownload_MapsPhase(t *testing.T) {
+	started, err := time.Parse(time.RFC3339, "2026-09-21T16:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
 	got := toUsenetDTODownload(usenet.Download{
 		GID: "g2", Status: "active", Filename: "episode.mkv",
-		Phase: "repairing",
+		Phase: "repairing", PhaseDone: 3, PhaseTotal: 8,
+		PhaseStartedAt: started,
 	})
 	if got.Phase != "repairing" {
 		t.Fatalf("Phase = %q, want repairing", got.Phase)
+	}
+	if got.PhaseDone != 3 || got.PhaseTotal != 8 {
+		t.Fatalf("phase progress = %d/%d, want 3/8", got.PhaseDone, got.PhaseTotal)
+	}
+	if got.PhaseStartedAt == "" {
+		t.Fatal("PhaseStartedAt empty")
 	}
 }
 
@@ -67,6 +79,10 @@ func TestToDTODownload_LeavesPhaseEmpty(t *testing.T) {
 	})
 	if got.Phase != "" {
 		t.Fatalf("torrent Phase = %q, want empty", got.Phase)
+	}
+	if got.PhaseDone != 0 || got.PhaseTotal != 0 || got.PhaseStartedAt != "" {
+		t.Fatalf("torrent phase progress should be empty, got done=%d total=%d started=%q",
+			got.PhaseDone, got.PhaseTotal, got.PhaseStartedAt)
 	}
 }
 

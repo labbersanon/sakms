@@ -43,7 +43,7 @@ var (
 //
 // If no archives are present, or no unpacker is on PATH, files is returned
 // unchanged with a nil error.
-func unpackArchives(dir string, files []string) ([]string, error) {
+func unpackArchives(dir string, files []string, onProgress func(done, total int64)) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		// Claude 2026-09-17: ReadDir failure is an environment/filesystem fault.
@@ -79,6 +79,8 @@ func unpackArchives(dir string, files []string) ([]string, error) {
 
 	beforeVideos := videoNamesInDir(dir)
 	var firstErr error
+	var done int64
+	var total int64
 
 	// Up to two passes: some releases nest a rar inside a rar.
 	for pass := 0; pass < 2; pass++ {
@@ -95,6 +97,20 @@ func unpackArchives(dir string, files []string) ([]string, error) {
 		leaders = archiveLeaders(names)
 		if len(leaders) == 0 {
 			break
+		}
+		// Claude 2026-09-21: progress is archive leaders attempted this pass.
+		// Reason: Downloads unpack percent is N of M sets, not bytes. Pass 2
+		//   extends total by the new leaders still to run.
+		// Troubleshooting: percent stuck at 0% until first leader finishes.
+		// Review if: nested rar depth >2 becomes common.
+		n := int64(len(leaders))
+		if n < 1 {
+			n = 1
+		}
+		if total == 0 {
+			total = n
+		} else {
+			total = done + n
 		}
 		// Claude 2026-09-15: try every leader; obfuscated releases often ship a
 		// pretty-named orphan part01 alongside a complete hash-named set.
@@ -116,16 +132,15 @@ func unpackArchives(dir string, files []string) ([]string, error) {
 				} else {
 					runErr = run7z(ctx, sevenPath, path, dir)
 				}
-			default:
-				continue
 			}
 			if runErr != nil {
 				log.Printf("usenet: unpack leader %s failed: %v — trying next set", leader, runErr)
 				if firstErr == nil {
 					firstErr = fmt.Errorf("unpack %s: %w", leader, runErr)
 				}
-				continue
 			}
+			done++
+			reportPhaseProgress(onProgress, done, total)
 		}
 		if gainedVideo(beforeVideos, videoNamesInDir(dir)) {
 			break

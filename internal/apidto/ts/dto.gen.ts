@@ -2713,6 +2713,20 @@ export interface Download {
    */
   phase?: string;
   /**
+   * Claude 2026-09-21: Downloads postprocess progress (Usenet repairing/unpacking).
+   * Reason: status stays "active" and downloadSpeed is 0 during PAR2/unrar, so the
+   *   UI needs work-unit counts and a phase start time instead of ↓ MB/s.
+   * Troubleshooting: Downloads showing 0 B/s with no percent during repair/unpack.
+   * Review if: torrents grow a comparable postprocess phase with its own units.
+   * PhaseDone/PhaseTotal are work units (PAR2 files processed; archive leaders
+   * extracted), not bytes. PhaseStartedAt is RFC3339 when the current
+   * repairing/unpacking phase began. Empty/zero for torrents and when phase is
+   * cleared (complete/error/paused).
+   */
+  phaseDone?: number /* int64 */;
+  phaseTotal?: number /* int64 */;
+  phaseStartedAt?: string;
+  /**
    * Claude 2026-09-20: RFC3339 when the job entered the engine (oldest-first queue).
    * Reason: Downloads SSE was reshuffling on map iteration; clients sort/merge by this.
    * Review if: durable queue restore should preserve original add time across restart.

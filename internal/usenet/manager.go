@@ -76,6 +76,14 @@ type Download struct {
 	// Wire values: "downloading" | "repairing" | "unpacking". Empty when
 	// paused/error/complete/removed.
 	Phase string
+	// Claude 2026-09-21: Downloads postprocess progress (repairing/unpacking).
+	// Reason: work units + phase start so the UI can show NN% and an elapsed timer
+	//   instead of ↓ MB/s while downloadSpeed is 0.
+	// Troubleshooting: SSE skipped ticks when only phaseDone changed (must be in snapKey).
+	// Review if: torrents grow a comparable postprocess phase.
+	PhaseDone      int64
+	PhaseTotal     int64
+	PhaseStartedAt time.Time
 	// Claude 2026-09-20: queue order key — when this job entered the in-memory engine.
 	// Reason: List()/SSE used map iteration and reshuffled the Downloads UI every tick.
 	// Review if: durable queue restore should carry the original add time across restart.
@@ -98,6 +106,20 @@ const (
 	phaseUnpacking   = "unpacking"
 )
 
+// setPhase updates dl.phase under the caller's Manager.mu. Repairing/unpacking
+// reset work-unit counters and stamp phaseStartedAt; any other phase (including
+// empty on complete/error/paused) clears those fields so the DTO omitempties.
+func (dl *dlState) setPhase(phase string) {
+	dl.phase = phase
+	dl.phaseDone = 0
+	dl.phaseTotal = 0
+	if phase == phaseRepairing || phase == phaseUnpacking {
+		dl.phaseStartedAt = time.Now()
+		return
+	}
+	dl.phaseStartedAt = time.Time{}
+}
+
 // dlState is the mutable runtime state of one usenet download. All fields
 // except the atomics are protected by Manager.mu.
 type dlState struct {
@@ -108,8 +130,11 @@ type dlState struct {
 	resumeMode string
 	status     string
 	// Claude 2026-09-21: mirrors Download.Phase; set under Manager.mu with status.
-	phase    string
-	errorMsg string
+	phase          string
+	phaseDone      int64
+	phaseTotal     int64
+	phaseStartedAt time.Time
+	errorMsg       string
 	err      error // classified retrieval failure; surfaced as Download.Err
 	files    []string
 	cancel   context.CancelFunc
@@ -898,7 +923,7 @@ func (m *Manager) Pause(gid string) error {
 		return fmt.Errorf("usenet: download %s is %s, not active", gid, dl.status)
 	}
 	dl.status = "paused"
-	dl.phase = ""
+	dl.setPhase("")
 	gate := dl.gate
 	m.mu.Unlock()
 	if gate != nil {
@@ -934,7 +959,7 @@ func (m *Manager) Resume(gid string) error {
 		m.mu.Lock()
 		if d2, ok := m.downloads[gid]; ok && d2.status == "paused" {
 			d2.status = "error"
-			d2.phase = ""
+			d2.setPhase("")
 			d2.err = ErrStagingGone
 			d2.errorMsg = ErrStagingGone.Error()
 		}
@@ -952,7 +977,7 @@ func (m *Manager) Resume(gid string) error {
 	m.mu.Lock()
 	if d2, ok := m.downloads[gid]; ok && d2.status == "paused" {
 		d2.status = "active"
-		d2.phase = phaseDownloading
+		d2.setPhase(phaseDownloading)
 	}
 	m.mu.Unlock()
 	if gate != nil {
@@ -977,7 +1002,7 @@ func (m *Manager) Cancel(gid string) error {
 	dl, ok := m.downloads[gid]
 	if ok {
 		dl.status = "removed"
-		dl.phase = ""
+		dl.setPhase("")
 		delete(m.downloads, gid)
 	}
 	m.mu.Unlock()
@@ -1140,7 +1165,7 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 			// Already classified (e.g. ErrStagingGone on Resume) — do not re-fire.
 		default:
 			dl.status = "error"
-			dl.phase = ""
+			dl.setPhase("")
 			dl.errorMsg = err.Error()
 			// Keep the wrapped error itself, not just its text, so a caller can
 			// errors.Is a permanent ErrArticleRemoved apart from everything
@@ -1184,7 +1209,7 @@ func (m *Manager) waitGateOrAbort(ctx context.Context, gid string, dl *dlState) 
 	case "removed", "paused", "error":
 	default:
 		dl.status = "error"
-		dl.phase = ""
+		dl.setPhase("")
 		dl.errorMsg = err.Error()
 		dl.err = err
 		failed = true
@@ -1228,10 +1253,12 @@ func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState
 	// Review if: PAR2 is skipped for flat-video releases (still set, then unpacking).
 	m.mu.Lock()
 	if dl.status == "active" {
-		dl.phase = phaseRepairing
+		dl.setPhase(phaseRepairing)
 	}
 	m.mu.Unlock()
-	repaired, repairErr := verifyAndRepair(dl.stagingDir, files)
+	repaired, repairErr := verifyAndRepair(dl.stagingDir, files, func(done, total int64) {
+		m.setPhaseProgress(gid, done, total)
+	})
 	if repairErr != nil {
 		log.Printf("usenet: par2 repair %s: %v — continuing to unpack", gid, repairErr)
 	}
@@ -1250,16 +1277,18 @@ func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState
 	// Claude 2026-09-15: unpack failure is also fail-closed (no fake complete).
 	m.mu.Lock()
 	if dl.status == "active" {
-		dl.phase = phaseUnpacking
+		dl.setPhase(phaseUnpacking)
 	}
 	m.mu.Unlock()
-	unpacked, unpackErr := unpackArchives(dl.stagingDir, files)
+	unpacked, unpackErr := unpackArchives(dl.stagingDir, files, func(done, total int64) {
+		m.setPhaseProgress(gid, done, total)
+	})
 	if unpackErr != nil {
 		failed := false
 		m.mu.Lock()
 		if dl.status != "removed" && dl.status != "paused" {
 			dl.status = "error"
-			dl.phase = ""
+			dl.setPhase("")
 			dl.errorMsg = unpackErr.Error()
 			// Claude 2026-09-17: wrap unpack failure with ErrContentUnusable so
 			//   applyUsenetFailure can route to a different-release park.
@@ -1293,7 +1322,7 @@ func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState
 		m.mu.Lock()
 		if dl.status != "removed" && dl.status != "paused" {
 			dl.status = "error"
-			dl.phase = ""
+			dl.setPhase("")
 			dl.errorMsg = repairErr.Error()
 			dl.err = fmt.Errorf("%w: %w", ErrContentUnusable, repairErr)
 			failed = true
@@ -1309,7 +1338,7 @@ func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState
 	m.mu.Lock()
 	if dl.status != "removed" && dl.status != "paused" {
 		dl.status = "complete"
-		dl.phase = ""
+		dl.setPhase("")
 		dl.files = files
 	}
 	m.mu.Unlock()
@@ -1798,6 +1827,44 @@ func (m *Manager) addCompleted(gid string, n int64) {
 	m.mu.Unlock()
 }
 
+// setPhaseProgress records repairing/unpacking work-unit progress under m.mu
+// so snapshot/SSE emit the new counts. done is clamped to total when total > 0.
+func (m *Manager) setPhaseProgress(gid string, done, total int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	dl, ok := m.downloads[gid]
+	if !ok {
+		return
+	}
+	if total < 0 {
+		total = 0
+	}
+	if done < 0 {
+		done = 0
+	}
+	if total > 0 && done > total {
+		done = total
+	}
+	dl.phaseDone = done
+	dl.phaseTotal = total
+}
+
+func reportPhaseProgress(onProgress func(done, total int64), done, total int64) {
+	if onProgress == nil {
+		return
+	}
+	if total < 0 {
+		total = 0
+	}
+	if done < 0 {
+		done = 0
+	}
+	if total > 0 && done > total {
+		done = total
+	}
+	onProgress(done, total)
+}
+
 func (m *Manager) snapshot() []Download {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1825,6 +1892,9 @@ func (m *Manager) snapshot() []Download {
 			CompletedLength: dl.completed,
 			ResumeMode:      dl.resumeMode,
 			Phase:           dl.phase,
+			PhaseDone:       dl.phaseDone,
+			PhaseTotal:      dl.phaseTotal,
+			PhaseStartedAt:  dl.phaseStartedAt,
 			AddedAt:         dl.addedAt,
 			DownloadSpeed:   speed,
 			Files:           dl.files,
@@ -1866,10 +1936,13 @@ func (m *Manager) fanout(snap []Download) {
 }
 
 type snapKey struct {
-	status     string
-	completed  int64
-	resumeMode string
-	phase      string
+	status         string
+	completed      int64
+	resumeMode     string
+	phase          string
+	phaseDone      int64
+	phaseTotal     int64
+	phaseStartedAt time.Time
 }
 
 func sameDownloads(a, b []Download) bool {
@@ -1878,11 +1951,11 @@ func sameDownloads(a, b []Download) bool {
 	}
 	ka := make(map[string]snapKey, len(a))
 	for _, d := range a {
-		ka[d.GID] = snapKey{d.Status, d.CompletedLength, d.ResumeMode, d.Phase}
+		ka[d.GID] = snapKey{d.Status, d.CompletedLength, d.ResumeMode, d.Phase, d.PhaseDone, d.PhaseTotal, d.PhaseStartedAt}
 	}
 	kb := make(map[string]snapKey, len(b))
 	for _, d := range b {
-		kb[d.GID] = snapKey{d.Status, d.CompletedLength, d.ResumeMode, d.Phase}
+		kb[d.GID] = snapKey{d.Status, d.CompletedLength, d.ResumeMode, d.Phase, d.PhaseDone, d.PhaseTotal, d.PhaseStartedAt}
 	}
 	return reflect.DeepEqual(ka, kb)
 }
@@ -2034,7 +2107,7 @@ func uniqueOutputName(base string, used map[string]struct{}) string {
 // caller may still unpack (contiguous assemblies are often short of FileDesc
 // length while the RAR payload is intact).
 // Review if: go-newsgroups/par2 treats FileDesc length mismatch as trim/pad.
-func verifyAndRepair(dir string, files []string) ([]string, error) {
+func verifyAndRepair(dir string, files []string, onProgress func(done, total int64)) ([]string, error) {
 	files = normalizeObfuscatedPar2Names(files)
 
 	var par2Paths, dataPaths []string
@@ -2049,6 +2122,18 @@ func verifyAndRepair(dir string, files []string) ([]string, error) {
 		return files, nil
 	}
 
+	// Claude 2026-09-21: work-unit total known after path lists.
+	// Reason: Downloads postprocess bar needs a stable denominator. Units are
+	//   each PAR2 read + each data read + 1 verify + worst-case rewrite of all data.
+	// Troubleshooting: percent stuck at 0 until first ReadFile callback.
+	// Review if: par2 library gains streaming progress of its own.
+	total := int64(len(par2Paths) + len(dataPaths) + 1 + len(dataPaths))
+	var done int64
+	step := func() {
+		done++
+		reportPhaseProgress(onProgress, done, total)
+	}
+
 	blobs := make([][]byte, 0, len(par2Paths))
 	for _, p := range par2Paths {
 		data, err := os.ReadFile(p)
@@ -2056,6 +2141,7 @@ func verifyAndRepair(dir string, files []string) ([]string, error) {
 			return files, fmt.Errorf("par2: reading %s: %w", p, err)
 		}
 		blobs = append(blobs, data)
+		step()
 	}
 
 	rs, err := par2lib.Parse(blobs...)
@@ -2074,12 +2160,14 @@ func verifyAndRepair(dir string, files []string) ([]string, error) {
 			return files, fmt.Errorf("par2: reading data file %s: %w", p, err)
 		}
 		fileMap[filepath.Base(p)] = data
+		step()
 	}
 
 	result, err := rs.Verify(fileMap)
 	if err != nil {
 		return files, fmt.Errorf("par2: verify: %w", err)
 	}
+	step()
 	if result.Complete {
 		return files, nil
 	}
@@ -2096,6 +2184,7 @@ func verifyAndRepair(dir string, files []string) ([]string, error) {
 		if err := os.WriteFile(p, data, 0o644); err != nil {
 			return files, fmt.Errorf("par2: writing repaired %s: %w", name, err)
 		}
+		step()
 	}
 	return files, nil
 }

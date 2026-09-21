@@ -8932,3 +8932,32 @@ only resume SoT (same model as NZBGet/SABnzbd). Torrent seed state stays in
 | `internal/api/import.go` | Staging wipe without DB mirror clear |
 | `internal/api/downloadreconcile.go` | Force-full path no longer clears DB mirror |
 | `deploy/sakms/sakms-resume-vacuum.*` | Retired (timer disabled, ExecStart commented) |
+
+## 2026-09-21 — Downloads Usenet repair/unpack progress
+
+**Problem:** Usenet rows sat at 100% downloaded with ↓ 0 B/s during PAR2 repair
+and unrar, so there was no sense of remaining work.
+**Fix:** Wire `phaseDone` / `phaseTotal` work units and `phaseStartedAt` (RFC3339)
+on Usenet downloads. Downloads shows `NN%` plus an elapsed `M:SS` (or `H:MM:SS`)
+timer instead of download speed while `phase` is repairing or unpacking.
+Torrents leave the new fields empty. PAR2 units are each file read + 1 verify +
+worst-case data rewrites; unpack units are archive leaders attempted (pass 2
+extends the total).
+**Outcome:** Tests green; not deployed (do not run sakms-auto-update).
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/apidto/dto.go` | `PhaseDone`, `PhaseTotal`, `PhaseStartedAt` on `Download` |
+| `internal/apidto/ts/dto.gen.ts` | Regenerated via `go run ./cmd/gendto` |
+| `internal/usenet/manager.go` | Phase progress on `Download`/`dlState`; `setPhaseProgress`; PAR2 callback |
+| `internal/usenet/unpack.go` | Leader-attempt `onProgress` (pass 2 extends total) |
+| `internal/api/downloads.go` | Map phase progress on `toUsenetDTODownload` |
+| `frontend/src/screens/Downloads.tsx` | `NN%` + elapsed timer during repair/unpack |
+| `frontend/src/screens/Downloads.test.tsx` | Percent, timer, hide speed |
+| `internal/usenet/unpack_test.go` | Progress callback fires per leader |
+| `internal/usenet/par2_obfuscation_test.go` | Progress callback fires per PAR2 read |
+| `internal/usenet/snapshot_order_test.go` | snapKey includes phase progress |
+| `internal/api/downloads_protocol_test.go` | DTO mapping; torrents stay empty |
+

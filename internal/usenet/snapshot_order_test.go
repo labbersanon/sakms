@@ -29,13 +29,23 @@ func TestSnapshot_StableOldestFirst(t *testing.T) {
 
 func TestSnapshot_IncludesPhase(t *testing.T) {
 	m := &Manager{downloads: map[string]*dlState{}}
-	m.downloads["nzb-a"] = &dlState{gid: "nzb-a", status: "active", phase: phaseRepairing}
+	started := time.Date(2026, 9, 21, 16, 0, 0, 0, time.UTC)
+	m.downloads["nzb-a"] = &dlState{
+		gid: "nzb-a", status: "active", phase: phaseRepairing,
+		phaseDone: 2, phaseTotal: 5, phaseStartedAt: started,
+	}
 	snap := m.snapshot()
 	if len(snap) != 1 {
 		t.Fatalf("len=%d want 1", len(snap))
 	}
 	if snap[0].Phase != phaseRepairing {
 		t.Fatalf("Phase=%q want %q", snap[0].Phase, phaseRepairing)
+	}
+	if snap[0].PhaseDone != 2 || snap[0].PhaseTotal != 5 {
+		t.Fatalf("progress=%d/%d want 2/5", snap[0].PhaseDone, snap[0].PhaseTotal)
+	}
+	if !snap[0].PhaseStartedAt.Equal(started) {
+		t.Fatalf("PhaseStartedAt=%v want %v", snap[0].PhaseStartedAt, started)
 	}
 }
 
@@ -44,5 +54,27 @@ func TestSameDownloads_DetectsPhaseChange(t *testing.T) {
 	b := []Download{{GID: "n", Status: "active", Phase: phaseRepairing}}
 	if sameDownloads(a, b) {
 		t.Fatal("phase change must not compare equal (SSE would skip repairing/unpacking)")
+	}
+}
+
+func TestSameDownloads_DetectsPhaseProgressChange(t *testing.T) {
+	a := []Download{{GID: "n", Status: "active", Phase: phaseRepairing, PhaseDone: 1, PhaseTotal: 4}}
+	b := []Download{{GID: "n", Status: "active", Phase: phaseRepairing, PhaseDone: 2, PhaseTotal: 4}}
+	if sameDownloads(a, b) {
+		t.Fatal("phaseDone change must not compare equal (SSE would skip percent ticks)")
+	}
+}
+
+func TestSetPhaseProgress_ClampsAndSnapshots(t *testing.T) {
+	m := &Manager{downloads: map[string]*dlState{
+		"nzb-a": {gid: "nzb-a", status: "active", phase: phaseUnpacking},
+	}}
+	m.setPhaseProgress("nzb-a", 9, 4)
+	snap := m.snapshot()
+	if len(snap) != 1 {
+		t.Fatalf("len=%d want 1", len(snap))
+	}
+	if snap[0].PhaseDone != 4 || snap[0].PhaseTotal != 4 {
+		t.Fatalf("clamped progress=%d/%d want 4/4", snap[0].PhaseDone, snap[0].PhaseTotal)
 	}
 }

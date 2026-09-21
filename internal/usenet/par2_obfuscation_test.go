@@ -24,7 +24,7 @@ func TestNormalizeObfuscatedPar2Names_RenamesMatroska(t *testing.T) {
 	fake := filepath.Join(dir, "show.vol-01.par2")
 	writeMatroskaPayload(t, fake)
 
-	got, err := verifyAndRepair(dir, []string{fake})
+	got, err := verifyAndRepair(dir, []string{fake}, nil)
 	if err != nil {
 		t.Fatalf("verifyAndRepair: %v", err)
 	}
@@ -39,6 +39,44 @@ func TestNormalizeObfuscatedPar2Names_RenamesMatroska(t *testing.T) {
 	}
 	if _, err := os.Stat(fake); !os.IsNotExist(err) {
 		t.Fatal("original .par2 path should be gone after rename")
+	}
+}
+
+func TestVerifyAndRepair_ProgressCallback(t *testing.T) {
+	dir := t.TempDir()
+	par2a := filepath.Join(dir, "set.par2")
+	par2b := filepath.Join(dir, "set.vol.par2")
+	data := filepath.Join(dir, "set.rar")
+	for _, p := range []string{par2a, par2b} {
+		if err := os.WriteFile(p, []byte("PAR2\x00PKT incomplete"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(data, []byte("rar-payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls [][2]int64
+	_, err := verifyAndRepair(dir, []string{par2a, par2b, data}, func(done, total int64) {
+		calls = append(calls, [2]int64{done, total})
+	})
+	if err == nil {
+		t.Fatal("want parse error on junk PAR2")
+	}
+	if len(calls) < 2 {
+		t.Fatalf("want progress after each par2 ReadFile, got %v", calls)
+	}
+	wantTotal := int64(2 + 1 + 1 + 1) // par2 + data + verify + rewrite bound
+	for i, c := range calls {
+		if c[1] != wantTotal {
+			t.Fatalf("call %d total=%d want %d", i, c[1], wantTotal)
+		}
+		if c[0] > c[1] {
+			t.Fatalf("done > total: %v", c)
+		}
+		if i > 0 && c[0] <= calls[i-1][0] {
+			t.Fatalf("done not increasing: %v", calls)
+		}
 	}
 }
 

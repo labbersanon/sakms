@@ -465,6 +465,62 @@ describe("Downloads — phase tags", () => {
     );
   });
 
+  it("shows work-unit percent and elapsed timer instead of download speed", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const start = new Date("2026-09-21T12:00:00Z");
+    vi.setSystemTime(new Date(start.getTime() + 83 * 1000));
+    stubPauseStateOnly();
+    render(() => <Downloads />);
+    MockEventSource.last!.emit([
+      dl({
+        gid: "nzb-1",
+        protocol: "usenet",
+        status: "active",
+        phase: "repairing",
+        downloadSpeed: 0,
+        completedLength: 400 * 1024,
+        totalLength: 1000 * 1024,
+        phaseDone: 2,
+        phaseTotal: 4,
+        phaseStartedAt: start.toISOString(),
+      }),
+    ]);
+
+    const progress = await screen.findByLabelText("Postprocess progress");
+    expect(progress.textContent).toContain("50%");
+    expect(screen.getByLabelText("Phase elapsed")).toHaveTextContent("1:23");
+    expect(screen.queryByLabelText("Download speed")).toBeNull();
+    expect(screen.getByText("400 KB / 1000 KB")).toBeInTheDocument();
+    const bar = document.querySelector<HTMLElement>(".bg-accent");
+    expect(bar?.style.width).toBe("50%");
+  });
+
+  it("formats elapsed as H:MM:SS after one hour of unpacking", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const start = new Date("2026-09-21T12:00:00Z");
+    vi.setSystemTime(new Date(start.getTime() + 3661 * 1000));
+    stubPauseStateOnly();
+    render(() => <Downloads />);
+    MockEventSource.last!.emit([
+      dl({
+        gid: "nzb-1",
+        protocol: "usenet",
+        status: "active",
+        phase: "unpacking",
+        phaseDone: 1,
+        phaseTotal: 1,
+        phaseStartedAt: start.toISOString(),
+      }),
+    ]);
+
+    expect(await screen.findByLabelText("Phase elapsed")).toHaveTextContent(
+      "1:01:01",
+    );
+    expect(screen.getByLabelText("Postprocess progress").textContent).toContain(
+      "100%",
+    );
+  });
+
   it("clears the stall clock when a gid leaves the queue", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const start = new Date("2026-09-21T12:00:00Z");

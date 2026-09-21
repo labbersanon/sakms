@@ -89,7 +89,6 @@ func contentFailureReason(failure error) string {
 type contentForgetEngine interface {
 	Forget(gid string) bool
 	StagingDir() string
-	ClearResumeMirror(gid string)
 }
 
 // parkUsenetContentFailure parks g for a different-release Usenet retry.
@@ -194,5 +193,4 @@ func clearOwnedUsenetStagingEngine(engine contentForgetEngine, gid string) {
 	if err := usenet.RemoveOwnedStagingDir(root, gidDir); err != nil {
 		log.Printf("usenet content: staging cleanup %s: %v", gidDir, err)
 	}
-	engine.ClearResumeMirror(gid)
 }

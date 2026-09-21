@@ -1,17 +1,24 @@
-# Claude 2026-09-21: hourly stale usenet_resume_state cleanup
-# Reason: keep dead resume mirrors from accumulating on the 8G sakms_db LUN
-# Troubleshooting: sakms-db unhealthy / healthz 503 after large NZB resume writes
-# Review if: code stops per-segment SaveResume (interval can loosen)
-# Related: sakms-resume-vacuum.service
+# Claude 2026-09-21: retired — DB resume mirror dropped (sidecar-only).
+# Reason: usenet_resume_state is DROP'd by migration 0028; vacuuming it would fail.
+#   Staging .sakms-resume.json is SoT (like NZBGet/SABnzbd).
+# Troubleshooting: do not enable this timer; table DROP is the cleanup.
+# Review if: a different Postgres maintenance timer is added for sakms-db.
+# Related: internal/db/migrations/0028_drop_usenet_resume_state.sql
+#   sakms-resume-vacuum.service
+#
+# Original 2026-09-21 hourly stale usenet_resume_state cleanup is retired below.
+# Do not uncomment OnBootSec/WantedBy — that would VACUUM a gone table.
 
 [Unit]
-Description=Run sakms resume-state vacuum hourly
+Description=Run sakms resume-state vacuum hourly (RETIRED — do not enable)
 
 [Timer]
-OnBootSec=10min
-OnUnitActiveSec=1h
-Persistent=true
-Unit=sakms-resume-vacuum.service
+# Retired 2026-09-21: usenet_resume_state dropped; sidecar-only resume.
+# OnBootSec=10min
+# OnUnitActiveSec=1h
+# Persistent=true
+# Unit=sakms-resume-vacuum.service
 
 [Install]
-WantedBy=timers.target
+# Retired 2026-09-21: timer must stay disabled so it cannot VACUUM a gone table.
+# WantedBy=timers.target

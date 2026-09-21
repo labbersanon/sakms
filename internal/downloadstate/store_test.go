@@ -1,39 +1,12 @@
 package downloadstate
 
 import (
-	"context"
 	"math"
 	"testing"
 	"time"
 
 	"github.com/labbersanon/sakms/internal/dbtest"
-	"github.com/labbersanon/sakms/internal/usenet"
 )
-
-func TestStore_ResumeRoundTrip(t *testing.T) {
-	s := New(dbtest.New(t))
-	snap := usenet.ResumeSnapshot{
-		Version: 1,
-		GID:     "nzb-1",
-		Files: map[string]*usenet.ResumeFile{
-			"a.bin": {Size: 10, Done: map[string]usenet.ResumeSeg{"<m@x>": {Number: 1, Offset: 0, Length: 10}}},
-		},
-	}
-	if err := s.SaveResume("nzb-1", snap); err != nil {
-		t.Fatal(err)
-	}
-	raw, err := s.GetResumeJSON(context.Background(), "nzb-1")
-	if err != nil || raw == "" {
-		t.Fatalf("GetResumeJSON: %q %v", raw, err)
-	}
-	if err := s.ClearResume("nzb-1"); err != nil {
-		t.Fatal(err)
-	}
-	raw, err = s.GetResumeJSON(context.Background(), "nzb-1")
-	if err != nil || raw != "" {
-		t.Fatalf("cleared want empty, got %q err=%v", raw, err)
-	}
-}
 
 func TestStore_SeedRoundTrip(t *testing.T) {
 	s := New(dbtest.New(t))

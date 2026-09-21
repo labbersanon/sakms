@@ -1,14 +1,17 @@
-# Claude 2026-09-21: oneshot stale usenet_resume_state cleanup
-# Reason: automate DELETE of stale resume mirrors + VACUUM on sakms-db
-# Troubleshooting: /mnt/iscsi/sakms_db 100% full from resume TOAST bloat
-# Review if: mirror writes are removed/throttled in sakms; timer interval may change
+# Claude 2026-09-21: retired — DB resume mirror dropped (sidecar-only).
+# Reason: usenet_resume_state is DROP'd by migration 0028; ExecStart would VACUUM
+#   a missing relation. Sidecar .sakms-resume.json is SoT.
+# Troubleshooting: unit kept for history; do not enable on the host.
+# Review if: file can be deleted after operators have disabled the live timer.
 # Related: /usr/local/bin/sakms-resume-vacuum.py; sakms-resume-vacuum.timer
+#   internal/db/migrations/0028_drop_usenet_resume_state.sql
 
 [Unit]
-Description=sakms resume-state stale cleanup (DELETE + VACUUM usenet_resume_state)
+Description=sakms resume-state stale cleanup (RETIRED — usenet_resume_state dropped)
 After=docker.service
 Requires=docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/sakms-resume-vacuum.py
+# Retired 2026-09-21: DB resume mirror gone; do not VACUUM usenet_resume_state.
+# ExecStart=/usr/local/bin/sakms-resume-vacuum.py

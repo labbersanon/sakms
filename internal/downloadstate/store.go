@@ -1,74 +1,28 @@
 package downloadstate
 
 import (
-	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"time"
-
-	"github.com/labbersanon/sakms/internal/usenet"
 )
 
-// Claude 2026-09-11: DB mirror for usenet resume + torrent seed baselines
-// Reason: staging sidecar is SoT for segments; DB mirror feeds UI/debug and
-//         seed-ratio windows must survive process restart (ARR-parity Phase 2)
-// Troubleshooting: rows in usenet_resume_state / torrent_seed_state; cleared on import/stop
-// Review if: resume state moves entirely into grabs table
-// Related: usenet.resumeTracker, downloader.beginSeeding, RemoveOwnedStagingDir
+// Claude 2026-09-11: torrent seed baselines that survive process restart
+// Reason: seed-ratio windows must accumulate across boots (ARR-parity Phase 2)
+// Troubleshooting: rows in torrent_seed_state; cleared on seed-stop/cancel
+// Review if: seed state gains per-file paths
+// Related: downloader.beginSeeding
+//
+// Claude 2026-09-21: Usenet DB resume mirror removed (sidecar-only).
+// Reason: usenet_resume_state TOAST filled the 8G sakms_db LUN; .sakms-resume.json
+//   is SoT (like NZBGet/SABnzbd). This store keeps torrent seed methods only.
+// Troubleshooting: migration 0028 DROP TABLE usenet_resume_state
+// Review if: a UI/debug resume view is required (read sidecar, do not re-mirror).
 
 type Store struct {
 	db *sql.DB
 }
 
 func New(db *sql.DB) *Store { return &Store{db: db} }
-
-func (s *Store) SaveResume(gid string, snap usenet.ResumeSnapshot) error {
-	if s == nil || s.db == nil || gid == "" {
-		return nil
-	}
-	raw, err := json.Marshal(snap)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.Exec(`
-		INSERT INTO usenet_resume_state (download_gid, state_json, updated_at)
-		VALUES (?, ?, ?)
-		ON CONFLICT(download_gid) DO UPDATE SET
-			state_json = excluded.state_json,
-			updated_at = excluded.updated_at
-	`, gid, string(raw), time.Now().UTC().Format(time.RFC3339Nano))
-	if err != nil {
-		return fmt.Errorf("downloadstate: save usenet resume %s: %w", gid, err)
-	}
-	return nil
-}
-
-func (s *Store) ClearResume(gid string) error {
-	if s == nil || s.db == nil || gid == "" {
-		return nil
-	}
-	_, err := s.db.Exec(`DELETE FROM usenet_resume_state WHERE download_gid = ?`, gid)
-	if err != nil {
-		return fmt.Errorf("downloadstate: clear usenet resume %s: %w", gid, err)
-	}
-	return nil
-}
-
-func (s *Store) GetResumeJSON(ctx context.Context, gid string) (string, error) {
-	if s == nil || s.db == nil || gid == "" {
-		return "", nil
-	}
-	var raw string
-	err := s.db.QueryRowContext(ctx, `SELECT state_json FROM usenet_resume_state WHERE download_gid = ?`, gid).Scan(&raw)
-	if err == sql.ErrNoRows {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("downloadstate: get usenet resume %s: %w", gid, err)
-	}
-	return raw, nil
-}
 
 func (s *Store) SaveSeed(gid string, startedAt time.Time, baselineUp, totalBytes int64) error {
 	if s == nil || s.db == nil || gid == "" {

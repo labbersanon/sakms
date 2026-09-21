@@ -28,7 +28,7 @@ func TestUniqueOutputName_ClaimsBaseThenParts(t *testing.T) {
 
 func TestPriorFile_RequiresFirstMsgMatch(t *testing.T) {
 	dir := t.TempDir()
-	tr := loadResumeTracker(dir, "gid", nil, false)
+	tr := loadResumeTracker(dir, "gid", false)
 	if err := tr.markSegment("a.bin", "msg-a@x", 1, 0, 100, 100); err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestDownloadAll_UniquifiesCollidingYencNames(t *testing.T) {
 	}
 
 	// Resume keys must stay separate — no merged Done map with duplicate n values.
-	tr := loadResumeTracker(dir, gid, nil, false)
+	tr := loadResumeTracker(dir, gid, false)
 	if len(tr.snap.Files) != 2 {
 		t.Fatalf("resume files = %d, want 2: %#v", len(tr.snap.Files), tr.snap.Files)
 	}

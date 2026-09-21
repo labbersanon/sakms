@@ -23,8 +23,7 @@ func (f *fakeForgetEngine) Forget(gid string) bool {
 	f.forgotGIDs = append(f.forgotGIDs, gid)
 	return true
 }
-func (f *fakeForgetEngine) StagingDir() string      { return f.stagingDir }
-func (f *fakeForgetEngine) ClearResumeMirror(string) {}
+func (f *fakeForgetEngine) StagingDir() string { return f.stagingDir }
 
 // TestContentUnusableFailure is the 5-arm routing table that pins every branch
 // of contentUnusableFailure.

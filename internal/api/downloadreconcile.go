@@ -215,7 +215,6 @@ func reconcileUsenetInFlight(ctx context.Context, deps DownloadReconcileDeps, g 
 		if err := usenet.ClearResumeArtifacts(stagingPath); err != nil {
 			log.Printf("download reconcile: clear resume artifacts %s: %v", stagingPath, err)
 		}
-		deps.NZB.ClearResumeMirror(g.DownloadGID)
 		log.Printf("download reconcile: grab %d force-full — skipping staging import, will relaunch", g.ID)
 	} else if ok, why := usenetStagingReadyForImport(deps.NZB.StagingDir(), stagingPath); ok {
 		if err := reconcileImportUsenet(ctx, deps, g, stagingPath); err != nil {

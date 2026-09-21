@@ -215,7 +215,7 @@ func run() error {
 	// Constructed unconditionally (even with zero subscriptions configured),
 	// so nzbManager is never nil; must run after BackfillUsenetURL above, since
 	// a freshly migrated legacy row has no host/port until that normalizes it.
-	nzbManager, err := buildUsenetManager(context.Background(), cfg.DataDir, serviceConnStore, settingsStore, &http.Client{Timeout: outboundTimeout}, downloadStateStore, rateCap)
+	nzbManager, err := buildUsenetManager(context.Background(), cfg.DataDir, serviceConnStore, settingsStore, &http.Client{Timeout: outboundTimeout}, rateCap)
 	if err != nil {
 		// buildUsenetManager always returns a non-nil Manager (see its doc
 		// comment) — an error here means a subscription/settings read failed,
@@ -943,7 +943,7 @@ func buildDownloader(ctx context.Context, dataDir string, settingsStore *setting
 // read here — see DownloaderMaxConnectionsKey's doc comment: it is
 // torrent-only now. Each subscription carries its own MaxConns, with
 // usenet.defaultMaxConnsPerServer covering an unset (<=0) value.
-func buildUsenetManager(ctx context.Context, dataDir string, serviceConnStore *serviceconn.Store, settingsStore *settings.Store, httpClient *http.Client, resumeMirror usenet.ResumeMirror, rateCap *xferlimit.Cap) (*usenet.Manager, error) {
+func buildUsenetManager(ctx context.Context, dataDir string, serviceConnStore *serviceconn.Store, settingsStore *settings.Store, httpClient *http.Client, rateCap *xferlimit.Cap) (*usenet.Manager, error) {
 	var servers []usenet.ServerConfig
 	subs, err := serviceConnStore.ListByKind(ctx, serviceconn.KindUsenet)
 	if err != nil {
@@ -1003,7 +1003,6 @@ func buildUsenetManager(ctx context.Context, dataDir string, serviceConnStore *s
 		MaxConcurrentDownloads: maxConcurrentDownloads,
 		SegmentResume:          resumeEnabled,
 		ForceFullDownload:      forceFull,
-		ResumeMirror:           resumeMirror,
 		RateCap:                rateCap,
 	})
 	return m, err

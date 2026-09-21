@@ -2,12 +2,9 @@ package usenet
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
-	"time"
 )
 
 func TestIsStagingMetaFile(t *testing.T) {
@@ -52,7 +49,7 @@ func TestClearResumeArtifacts(t *testing.T) {
 
 func TestResumeTracker_MarkAndSkip(t *testing.T) {
 	dir := t.TempDir()
-	tr := loadResumeTracker(dir, "nzb-test", nil, false)
+	tr := loadResumeTracker(dir, "nzb-test", false)
 	if tr.hasSegment("a.bin", "<msg1@x>") {
 		t.Fatal("empty tracker should not have segment")
 	}
@@ -76,7 +73,7 @@ func TestResumeTracker_MarkAndSkip(t *testing.T) {
 	if snap.GID != "nzb-test" || snap.Files["a.bin"] == nil || len(snap.Files["a.bin"].Done) != 1 {
 		t.Fatalf("unexpected snapshot: %+v", snap)
 	}
-	tr2 := loadResumeTracker(dir, "nzb-test", nil, false)
+	tr2 := loadResumeTracker(dir, "nzb-test", false)
 	if !tr2.hasSegment("a.bin", "<msg1@x>") {
 		t.Fatal("reloaded tracker missing segment")
 	}
@@ -84,7 +81,7 @@ func TestResumeTracker_MarkAndSkip(t *testing.T) {
 
 func TestResumeTracker_DisabledWritesNothing(t *testing.T) {
 	dir := t.TempDir()
-	tr := loadResumeTracker(dir, "nzb-test", nil, true)
+	tr := loadResumeTracker(dir, "nzb-test", true)
 	if err := tr.markSegment("a.bin", "<msg1@x>", 1, 0, 100, 200); err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +116,7 @@ func TestDeleteArchiveMembers_RemovesResumeSidecar(t *testing.T) {
 
 func TestSegmentCovered(t *testing.T) {
 	dir := t.TempDir()
-	tr := loadResumeTracker(dir, "gid", nil, false)
+	tr := loadResumeTracker(dir, "gid", false)
 	if err := tr.markSegment("a.bin", "<m@x>", 1, 0, 100, 200); err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +133,7 @@ func TestSegmentCovered(t *testing.T) {
 
 func TestSegmentCovered_RejectsHollowRange(t *testing.T) {
 	dir := t.TempDir()
-	tr := loadResumeTracker(dir, "gid", nil, false)
+	tr := loadResumeTracker(dir, "gid", false)
 	if err := tr.markSegment("a.bin", "<m@x>", 1, 0, 100, 200); err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +184,7 @@ func TestLoadResumeTracker_WipesV2(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tr := loadResumeTracker(dir, "nzb-test", nil, false)
+	tr := loadResumeTracker(dir, "nzb-test", false)
 	if tr.hasSegment("a.bin", "<m@x>") {
 		t.Fatal("v2 sidecar must not be reused after resume v3")
 	}
@@ -196,68 +193,6 @@ func TestLoadResumeTracker_WipesV2(t *testing.T) {
 	}
 	if _, err := os.Stat(payload); !os.IsNotExist(err) {
 		t.Fatal("v2 packed payload should be wiped")
-	}
-}
-
-type countingMirror struct {
-	mu    sync.Mutex
-	saves int
-}
-
-func (m *countingMirror) SaveResume(string, ResumeSnapshot) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.saves++
-	return nil
-}
-
-func (m *countingMirror) ClearResume(string) error { return nil }
-
-func (m *countingMirror) count() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.saves
-}
-
-func TestResumeTracker_MirrorThrottled(t *testing.T) {
-	dir := t.TempDir()
-	mir := &countingMirror{}
-	tr := loadResumeTracker(dir, "nzb-throttle", mir, false)
-
-	for i := 0; i < 20; i++ {
-		msg := fmt.Sprintf("<seg%d@x>", i)
-		if err := tr.markSegment("a.bin", msg, i+1, int64(i*100), 100, 2000); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got := mir.count(); got != 1 {
-		t.Fatalf("mirror saves during burst = %d, want 1 (first write only within interval)", got)
-	}
-	if n := tr.skippedSegments(); n != 20 {
-		t.Fatalf("sidecar segments = %d, want 20", n)
-	}
-
-	tr.FlushMirror()
-	if got := mir.count(); got != 2 {
-		t.Fatalf("mirror saves after FlushMirror = %d, want 2", got)
-	}
-}
-
-func TestResumeTracker_MirrorIntervalAllowsNext(t *testing.T) {
-	dir := t.TempDir()
-	mir := &countingMirror{}
-	tr := loadResumeTracker(dir, "nzb-interval", mir, false)
-	if err := tr.markSegment("a.bin", "<a@x>", 1, 0, 10, 100); err != nil {
-		t.Fatal(err)
-	}
-	tr.mu.Lock()
-	tr.lastMirrorAt = time.Now().Add(-resumeMirrorMinInterval - time.Second)
-	tr.mu.Unlock()
-	if err := tr.markSegment("a.bin", "<b@x>", 2, 10, 10, 100); err != nil {
-		t.Fatal(err)
-	}
-	if got := mir.count(); got != 2 {
-		t.Fatalf("mirror saves after interval = %d, want 2", got)
 	}
 }
 

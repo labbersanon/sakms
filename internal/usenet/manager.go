@@ -130,7 +130,6 @@ type Manager struct {
 	// Troubleshooting: settings usenet_segment_resume_enabled / _force_full
 	segmentResume     bool
 	forceFullDownload bool
-	resumeMirror      ResumeMirror
 
 	mu          sync.Mutex
 	pools       []*pool // one per enabled subscription; swapped by SetSubscriptions
@@ -176,8 +175,6 @@ type Config struct {
 	SegmentResume bool
 	// ForceFullDownload ignores/clears any resume sidecar (operator rollback).
 	ForceFullDownload bool
-	// ResumeMirror optionally persists a copy of the sidecar for UI/debug.
-	ResumeMirror ResumeMirror
 	// RateCap is the shared global download bandwidth limiter (torrent + Usenet).
 	// Nil means unlimited.
 	RateCap *xferlimit.Cap
@@ -204,7 +201,6 @@ func New(cfg Config) *Manager {
 		stagingDir:             cfg.StagingDir,
 		segmentResume:          cfg.SegmentResume,
 		forceFullDownload:      cfg.ForceFullDownload,
-		resumeMirror:           cfg.ResumeMirror,
 		downloads:              map[string]*dlState{},
 		subscribers:            map[int]chan []Download{},
 		maxConcurrentDownloads: maxDL,
@@ -471,7 +467,6 @@ func (m *Manager) SetResumePolicy(enabled, forceFull bool) {
 			if err := ClearResumeArtifacts(item.dir); err != nil {
 				log.Printf("usenet: clear resume artifacts %s: %v", item.dir, err)
 			}
-			m.ClearResumeMirror(item.gid)
 		}
 	}
 	if forceFull {
@@ -504,13 +499,13 @@ func (m *Manager) SetResumePolicy(enabled, forceFull bool) {
 	}
 }
 
-// SweepResumeArtifacts removes resume sidecars (+ DB mirrors) under every
+// SweepResumeArtifacts removes resume sidecars under every
 // sakms-owned staging directory. Safe to call with no downloads running.
 func (m *Manager) SweepResumeArtifacts() int {
 	return m.sweepOwnedStaging(false)
 }
 
-// SweepForceFull removes resume sidecars, DB mirrors, AND non-meta payloads
+// SweepForceFull removes resume sidecars AND non-meta payloads
 // under every owned staging dir so hollow videos cannot be imported.
 func (m *Manager) SweepForceFull() int {
 	return m.sweepOwnedStaging(true)
@@ -557,7 +552,6 @@ func (m *Manager) InvalidateLegacyResumes() int {
 		if err := wipeStagingPayloads(dir); err != nil {
 			log.Printf("usenet: wipe payloads %s: %v", dir, err)
 		}
-		m.ClearResumeMirror(e.Name())
 		n++
 	}
 	if n > 0 {
@@ -596,27 +590,9 @@ func (m *Manager) sweepOwnedStaging(wipePayloads bool) int {
 				log.Printf("usenet: sweep wipe payloads %s: %v", dir, err)
 			}
 		}
-		m.ClearResumeMirror(e.Name())
 		n++
 	}
 	return n
-}
-
-// ClearResumeMirror drops the optional DB resume row for gid. Staging sidecar
-// cleanup is handled by RemoveOwnedStagingDir / ClearResumeArtifacts.
-func (m *Manager) ClearResumeMirror(gid string) {
-	if m == nil || gid == "" {
-		return
-	}
-	m.mu.Lock()
-	mirror := m.resumeMirror
-	m.mu.Unlock()
-	if mirror == nil {
-		return
-	}
-	if err := mirror.ClearResume(gid); err != nil {
-		log.Printf("usenet: clear resume mirror %s: %v", gid, err)
-	}
 }
 
 // Start runs the 500 ms progress-poll loop and blocks until ctx is cancelled.
@@ -900,13 +876,10 @@ func (m *Manager) Pause(gid string) error {
 	}
 	dl.status = "paused"
 	gate := dl.gate
-	resume := dl.resume
 	m.mu.Unlock()
 	if gate != nil {
 		gate.Pause()
 	}
-	// Flush throttled DB mirror so UI/debug sees pause-time progress.
-	resume.FlushMirror()
 	return nil
 }
 
@@ -986,7 +959,6 @@ func (m *Manager) Cancel(gid string) error {
 	}
 	dl.cancel()
 	m.deleteDownloadDir(dl.stagingDir)
-	m.ClearResumeMirror(gid)
 	return nil
 }
 
@@ -1096,7 +1068,6 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 
 	m.mu.Lock()
 	resumeOn, forceFull := m.segmentResume, m.forceFullDownload
-	mirror := m.resumeMirror
 	m.mu.Unlock()
 	// Claude 2026-09-11: clear sidecars on force-full OR resume-disabled
 	// Reason: disable→re-enable left a stale sidecar that skipped into a
@@ -1107,16 +1078,13 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 		if err := ClearResumeArtifacts(dl.stagingDir); err != nil {
 			log.Printf("usenet: clearing resume artifacts for %s: %v", gid, err)
 		}
-		if mirror != nil {
-			_ = mirror.ClearResume(gid)
-		}
 		if forceFull {
 			log.Printf("usenet: download %s (%s) full restart (force-full / rollback)", gid, dl.name)
 		} else {
 			log.Printf("usenet: download %s (%s) resume disabled — cleared sidecars", gid, dl.name)
 		}
 	}
-	dl.resume = loadResumeTracker(dl.stagingDir, gid, mirror, !resumeOn || forceFull)
+	dl.resume = loadResumeTracker(dl.stagingDir, gid, !resumeOn || forceFull)
 	skipped := dl.resume.skippedSegments()
 	switch {
 	case forceFull:
@@ -1170,8 +1138,6 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 		return
 	}
 
-	// Flush DB resume mirror once segments are done (throttled during fetch).
-	dl.resume.FlushMirror()
 	m.finalizeAssembled(ctx, gid, dl, files)
 }
 

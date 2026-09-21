@@ -8904,3 +8904,31 @@ logged, not fatal.
 | `internal/usenet/resume.go` | `resumeMirrorMinInterval`, `FlushMirror`, throttled `mirrorLocked` |
 | `internal/usenet/manager.go` | Flush on Pause + after downloadAll |
 | `internal/usenet/resume_test.go` | Throttle + interval tests |
+
+## 2026-09-21 — sidecar-only Usenet resume (drop DB mirror)
+
+**Problem:** Throttled `SaveResume` still wrote multi-MB JSON into
+`usenet_resume_state` (Pause + complete flushes). That table's TOAST filled the
+8G sakms_db LUN once already.
+**Fix:** Drop the DB resume mirror entirely. Staging `.sakms-resume.json` is the
+only resume SoT (same model as NZBGet/SABnzbd). Torrent seed state stays in
+`downloadstate`. Goose `0028` DROP TABLE `usenet_resume_state`. Hourly
+`sakms-resume-vacuum` timer/service retired so they cannot VACUUM a gone table.
+**Outcome:** No Postgres resume writes; live download cancel/requeue is ops
+(parent), not this change.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/resume.go` | Remove `ResumeMirror`, `FlushMirror`, `mirrorLocked` |
+| `internal/usenet/manager.go` | Drop mirror field, `ClearResumeMirror`, FlushMirror calls |
+| `internal/usenet/resume_test.go` | Remove countingMirror throttle tests |
+| `internal/downloadstate/store.go` | Keep seed methods; remove SaveResume/ClearResume/GetResumeJSON |
+| `internal/downloadstate/store_test.go` | Seed tests only |
+| `internal/db/migrations/0028_drop_usenet_resume_state.sql` | DROP TABLE usenet_resume_state |
+| `cmd/sakms/main.go` | `buildUsenetManager` no longer takes ResumeMirror |
+| `internal/api/usenetcontent.go` | Drop ClearResumeMirror from forget engine |
+| `internal/api/import.go` | Staging wipe without DB mirror clear |
+| `internal/api/downloadreconcile.go` | Force-full path no longer clears DB mirror |
+| `deploy/sakms/sakms-resume-vacuum.*` | Retired (timer disabled, ExecStart commented) |

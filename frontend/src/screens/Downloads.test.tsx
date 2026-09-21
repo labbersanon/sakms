@@ -290,7 +290,8 @@ describe("Downloads — protocol-scoped metrics", () => {
     ]);
 
     expect(await screen.findByText("Movie.1080p.mkv")).toBeInTheDocument();
-    expect(screen.getByText("active")).toBeInTheDocument();
+    expect(screen.getByLabelText("Download phase")).toHaveTextContent("Downloading");
+    expect(screen.getByLabelText("Protocol")).toHaveTextContent("Torrent");
     expect(screen.getByText("400 KB / 1000 KB")).toBeInTheDocument();
     const bar = document.querySelector<HTMLElement>(".bg-accent");
     expect(bar?.style.width).toBe("40%");
@@ -351,6 +352,138 @@ describe("Downloads — global pause toggle", () => {
           c.method === "GET" && c.url.includes("/api/downloads/pause-state"),
       ),
     ).toBe(true);
+  });
+});
+
+describe("Downloads — phase tags", () => {
+  const stubPauseStateOnly = (): void => {
+    stubFetch((url) => {
+      if (url.includes("/api/downloads/pause-state"))
+        return jsonResponse({ paused: false });
+      throw new Error("unexpected fetch: " + url);
+    });
+  };
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("stacks human phase + protocol + resume mode tags", async () => {
+    stubPauseStateOnly();
+    render(() => <Downloads />);
+    MockEventSource.last!.emit([
+      dl({
+        gid: "nzb-1",
+        protocol: "usenet",
+        status: "active",
+        phase: "repairing",
+        resumeMode: "resumed",
+      }),
+    ]);
+
+    expect(await screen.findByLabelText("Download phase")).toHaveTextContent(
+      "Repairing",
+    );
+    expect(screen.getByLabelText("Protocol")).toHaveTextContent("Usenet");
+    expect(screen.getByLabelText("Resume mode resumed")).toBeInTheDocument();
+  });
+
+  it("maps waiting to Queued, error to Failed, and unpacking phase", async () => {
+    stubPauseStateOnly();
+    render(() => <Downloads />);
+    MockEventSource.last!.emit([
+      dl({ gid: "g1", filename: "One.mkv", status: "waiting" }),
+      dl({ gid: "g2", filename: "Two.mkv", status: "error" }),
+      dl({
+        gid: "g3",
+        filename: "Three.mkv",
+        protocol: "usenet",
+        status: "active",
+        phase: "unpacking",
+      }),
+    ]);
+
+    const phases = await screen.findAllByLabelText("Download phase");
+    expect(phases.map((el) => el.textContent)).toEqual([
+      "Queued",
+      "Failed",
+      "Unpacking",
+    ]);
+  });
+
+  it("shows Stalled after 5 minutes of zero download speed while active", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const start = new Date("2026-09-21T12:00:00Z");
+    vi.setSystemTime(start);
+    stubPauseStateOnly();
+    render(() => <Downloads />);
+    MockEventSource.last!.emit([
+      dl({ gid: "g1", status: "active", downloadSpeed: 0 }),
+    ]);
+    expect(await screen.findByLabelText("Download phase")).toHaveTextContent(
+      "Downloading",
+    );
+
+    vi.setSystemTime(new Date(start.getTime() + 5 * 60 * 1000));
+    MockEventSource.last!.emit([
+      dl({ gid: "g1", status: "active", downloadSpeed: 0 }),
+    ]);
+    expect(screen.getByLabelText("Download phase")).toHaveTextContent("Stalled");
+  });
+
+  it("does not label repairing as Stalled at zero speed", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const start = new Date("2026-09-21T12:00:00Z");
+    vi.setSystemTime(start);
+    stubPauseStateOnly();
+    render(() => <Downloads />);
+    MockEventSource.last!.emit([
+      dl({
+        gid: "nzb-1",
+        protocol: "usenet",
+        status: "active",
+        phase: "repairing",
+        downloadSpeed: 0,
+      }),
+    ]);
+    expect(await screen.findByLabelText("Download phase")).toHaveTextContent(
+      "Repairing",
+    );
+
+    vi.setSystemTime(new Date(start.getTime() + 5 * 60 * 1000));
+    MockEventSource.last!.emit([
+      dl({
+        gid: "nzb-1",
+        protocol: "usenet",
+        status: "active",
+        phase: "repairing",
+        downloadSpeed: 0,
+      }),
+    ]);
+    expect(screen.getByLabelText("Download phase")).toHaveTextContent(
+      "Repairing",
+    );
+  });
+
+  it("clears the stall clock when a gid leaves the queue", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const start = new Date("2026-09-21T12:00:00Z");
+    vi.setSystemTime(start);
+    stubPauseStateOnly();
+    render(() => <Downloads />);
+    MockEventSource.last!.emit([
+      dl({ gid: "g1", status: "active", downloadSpeed: 0 }),
+    ]);
+    await screen.findByLabelText("Download phase");
+
+    vi.setSystemTime(new Date(start.getTime() + 5 * 60 * 1000));
+    MockEventSource.last!.emit([]);
+    MockEventSource.last!.emit([
+      dl({ gid: "g1", status: "active", downloadSpeed: 0 }),
+    ]);
+    expect(await screen.findByLabelText("Download phase")).toHaveTextContent(
+      "Downloading",
+    );
   });
 });
 

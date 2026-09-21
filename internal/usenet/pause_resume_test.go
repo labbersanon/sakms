@@ -70,6 +70,7 @@ func TestManager_PauseResume_NoCancel(t *testing.T) {
 		name:       "test",
 		stagingDir: sub,
 		status:     "active",
+		phase:      phaseDownloading,
 		cancel:     cancel,
 		gate:       newPauseGate(),
 		addedAt:    time.Now(),
@@ -85,6 +86,9 @@ func TestManager_PauseResume_NoCancel(t *testing.T) {
 	if err != nil || got == nil || got.Status != "paused" {
 		t.Fatalf("status after Pause = %+v err=%v", got, err)
 	}
+	if got.Phase != "" {
+		t.Fatalf("phase after Pause = %q, want empty", got.Phase)
+	}
 	// Context must still be live (true pause).
 	if ctx.Err() != nil {
 		t.Fatalf("context cancelled on Pause: %v", ctx.Err())
@@ -96,6 +100,9 @@ func TestManager_PauseResume_NoCancel(t *testing.T) {
 	got, err = m.FindByGID(dl.gid)
 	if err != nil || got == nil || got.Status != "active" {
 		t.Fatalf("status after Resume = %+v err=%v", got, err)
+	}
+	if got.Phase != phaseDownloading {
+		t.Fatalf("phase after Resume = %q, want %q", got.Phase, phaseDownloading)
 	}
 }
 

@@ -77,15 +77,111 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-// STATUS_BADGE maps an aria2 status to a badge color class.
-const STATUS_BADGE: Record<string, string> = {
-  active: "bg-accent/20 text-accent",
-  waiting: "bg-surface-2 text-muted",
+const TAG_PILL = "shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium";
+
+const PHASE_BADGE: Record<string, string> = {
+  stalled: "bg-warn/20 text-warn",
+  repairing: "bg-accent/20 text-accent",
+  unpacking: "bg-accent/20 text-accent",
+  downloading: "bg-accent/20 text-accent",
+  queued: "bg-surface-2 text-muted",
   paused: "bg-warn/20 text-warn",
   complete: "bg-ok/20 text-ok",
-  error: "bg-danger/20 text-danger",
+  failed: "bg-danger/20 text-danger",
   removed: "bg-surface-2 text-muted",
 };
+
+const PHASE_LABEL: Record<string, string> = {
+  stalled: "Stalled",
+  repairing: "Repairing",
+  unpacking: "Unpacking",
+  downloading: "Downloading",
+  queued: "Queued",
+  paused: "Paused",
+  complete: "Complete",
+  failed: "Failed",
+  removed: "Removed",
+};
+
+const STALL_MS = 5 * 60 * 1000;
+
+function isActiveish(d: Download): boolean {
+  return (
+    d.status === "active" ||
+    d.phase === "downloading" ||
+    d.phase === "repairing" ||
+    d.phase === "unpacking"
+  );
+}
+
+// Stalled only overrides the downloading label — PAR2/unpack often have
+// downloadSpeed 0 by design and must stay Repairing/Unpacking.
+function isStallCandidate(d: Download): boolean {
+  if (d.phase === "repairing" || d.phase === "unpacking") return false;
+  return d.status === "active" || d.phase === "downloading";
+}
+
+function phaseKind(d: Download, stalled: boolean): string {
+  if (stalled && isStallCandidate(d)) return "stalled";
+  if (d.phase === "repairing") return "repairing";
+  if (d.phase === "unpacking") return "unpacking";
+  switch (d.status) {
+    case "waiting":
+      return "queued";
+    case "paused":
+      return "paused";
+    case "complete":
+      return "complete";
+    case "error":
+      return "failed";
+    case "removed":
+      return "removed";
+    default:
+      return "downloading";
+  }
+}
+
+function phaseLabel(d: Download, stalled: boolean): string {
+  return PHASE_LABEL[phaseKind(d, stalled)] ?? "Downloading";
+}
+
+function protocolLabel(protocol: string): string {
+  if (protocol === "usenet") return "Usenet";
+  if (protocol === "torrent") return "Torrent";
+  return protocol;
+}
+
+// Claude 2026-09-21: last nonzero (or first-seen-active-at-zero) downloadSpeed.
+// Reason: Stalled is a client-side 5-minute zero-speed overlay, not a server status.
+// Troubleshooting: Downloads row sitting at 0 B/s still labelled Downloading.
+// Review if: the engine starts emitting a stalled status of its own.
+function updateStalledTrackers(
+  lastSpeedAt: Map<string, number>,
+  list: Download[],
+  now: number,
+): Set<string> {
+  const live = new Set(list.map((d) => d.gid));
+  for (const gid of [...lastSpeedAt.keys()]) {
+    if (!live.has(gid)) lastSpeedAt.delete(gid);
+  }
+  const stalled = new Set<string>();
+  for (const d of list) {
+    if (!isActiveish(d)) {
+      lastSpeedAt.delete(d.gid);
+      continue;
+    }
+    if (d.downloadSpeed > 0) {
+      lastSpeedAt.set(d.gid, now);
+    } else if (!lastSpeedAt.has(d.gid)) {
+      lastSpeedAt.set(d.gid, now);
+    }
+    const since = lastSpeedAt.get(d.gid) ?? now;
+    if (isStallCandidate(d) && d.downloadSpeed <= 0 && now - since >= STALL_MS) {
+      stalled.add(d.gid);
+    }
+  }
+  return stalled;
+}
 
 // resumeModeLabel is the Downloads badge text for Download.resumeMode.
 // Wire values stay "resumed" | "full" | "forced-full" | "disabled".
@@ -116,6 +212,7 @@ const ProgressBar: Component<{ percent: number }> = (props) => {
 
 const DownloadRow: Component<{
   dl: Download;
+  stalled: boolean;
   onAction: (fn: () => Promise<void>) => void;
   selected: boolean;
   onToggle: () => void;
@@ -159,13 +256,22 @@ const DownloadRow: Component<{
           </Show>
         </div>
         <span
-          class={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${STATUS_BADGE[props.dl.status] ?? "bg-surface-2 text-muted"}`}
+          class={`${TAG_PILL} ${PHASE_BADGE[phaseKind(props.dl, props.stalled)] ?? "bg-surface-2 text-muted"}`}
+          aria-label="Download phase"
         >
-          {props.dl.status}
+          {phaseLabel(props.dl, props.stalled)}
         </span>
+        <Show when={props.dl.protocol}>
+          <span
+            class={`${TAG_PILL} bg-surface-2 text-muted`}
+            aria-label="Protocol"
+          >
+            {protocolLabel(props.dl.protocol)}
+          </span>
+        </Show>
         <Show when={props.dl.protocol === "usenet" && props.dl.resumeMode}>
           <span
-            class="shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-muted"
+            class={`${TAG_PILL} bg-surface-2 text-muted`}
             title="How this Usenet job started after the last (re)launch"
             aria-label={`Resume mode ${props.dl.resumeMode}`}
           >
@@ -229,6 +335,10 @@ const DownloadRow: Component<{
 
 export const Downloads: Component = () => {
   const [downloads, setDownloads] = createSignal<Download[]>([]);
+  const lastSpeedAt = new Map<string, number>();
+  const [stalledGids, setStalledGids] = createSignal<ReadonlySet<string>>(
+    new Set(),
+  );
   const [search, setSearch] = createSignal("");
   const [reconnecting, setReconnecting] = createSignal(false);
   const [actionError, setActionError] = createSignal<string | null>(null);
@@ -256,6 +366,7 @@ export const Downloads: Component = () => {
     es.onmessage = (ev) => {
       try {
         const list = JSON.parse(ev.data) as Download[];
+        setStalledGids(updateStalledTrackers(lastSpeedAt, list, Date.now()));
         setDownloads((prev) => stabilizeQueueOrder(prev, list));
         setHasData(true);
         setReconnecting(false);
@@ -270,7 +381,16 @@ export const Downloads: Component = () => {
 
   const visible = createMemo(() =>
     downloads().filter((d) =>
-      matchesQueueSearch(search(), d.filename, d.status, d.protocol, d.errorMessage),
+      matchesQueueSearch(
+        search(),
+        d.filename,
+        d.status,
+        d.protocol,
+        d.errorMessage,
+        d.phase,
+        phaseLabel(d, stalledGids().has(d.gid)),
+        protocolLabel(d.protocol),
+      ),
     ),
   );
 
@@ -392,6 +512,7 @@ export const Downloads: Component = () => {
                 {(dl) => (
                   <DownloadRow
                     dl={dl}
+                    stalled={stalledGids().has(dl.gid)}
                     onAction={runAction}
                     selected={selection.has(dl.gid)}
                     onToggle={() => selection.toggle(dl.gid)}

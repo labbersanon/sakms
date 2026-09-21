@@ -57,7 +57,11 @@ func TestFinalizeAssembled_PAR2FailUnpackExtracts_MarksComplete(t *testing.T) {
 		}
 		return "", exec.ErrNotFound
 	}
+	var phaseDuringUnpack string
 	unpackCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		m.mu.Lock()
+		phaseDuringUnpack = dl.phase
+		m.mu.Unlock()
 		dest := args[len(args)-1]
 		dest = strings.TrimRight(dest, string(filepath.Separator))
 		script := "#!/bin/sh\nprintf fake > \"$1/out.mkv\"\n"
@@ -96,6 +100,12 @@ func TestFinalizeAssembled_PAR2FailUnpackExtracts_MarksComplete(t *testing.T) {
 	}
 	if dl.status != "complete" {
 		t.Fatalf("status=%q want complete (err=%v)", dl.status, dl.err)
+	}
+	if phaseDuringUnpack != phaseUnpacking {
+		t.Fatalf("phase during unpack=%q want %q", phaseDuringUnpack, phaseUnpacking)
+	}
+	if dl.phase != "" {
+		t.Fatalf("phase after complete=%q want empty", dl.phase)
 	}
 	mu.Lock()
 	defer mu.Unlock()

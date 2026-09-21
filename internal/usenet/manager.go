@@ -68,6 +68,14 @@ type Download struct {
 	// ResumeMode is how this job started: "resumed", "full", "forced-full", or "disabled".
 	// Empty until runDownload sets it. Surfaced on the downloads SSE for operators.
 	ResumeMode string
+	// Claude 2026-09-21: Usenet postprocess phase for Downloads screen tags.
+	// Reason: status stays "active" through PAR2/unpack; the UI needs a distinct
+	//   wire value for fetching vs repairing vs unpacking.
+	// Troubleshooting: Downloads showing raw "active" during PAR2/unrar.
+	// Review if: torrents grow a comparable postprocess phase.
+	// Wire values: "downloading" | "repairing" | "unpacking". Empty when
+	// paused/error/complete/removed.
+	Phase string
 	// Claude 2026-09-20: queue order key — when this job entered the in-memory engine.
 	// Reason: List()/SSE used map iteration and reshuffled the Downloads UI every tick.
 	// Review if: durable queue restore should carry the original add time across restart.
@@ -81,6 +89,15 @@ type Download struct {
 	Err error
 }
 
+// Claude 2026-09-21: Usenet download phase wire values (lowercase).
+// Reason: Downloads tags distinguish fetch vs PAR2 vs unpack while status=active.
+// Review if: a new postprocess step is added between assembly and complete.
+const (
+	phaseDownloading = "downloading"
+	phaseRepairing   = "repairing"
+	phaseUnpacking   = "unpacking"
+)
+
 // dlState is the mutable runtime state of one usenet download. All fields
 // except the atomics are protected by Manager.mu.
 type dlState struct {
@@ -90,11 +107,13 @@ type dlState struct {
 	resume     *resumeTracker // sidecar writer; set in runDownload (disabled=true when resume is off)
 	resumeMode string
 	status     string
-	errorMsg   string
-	err        error // classified retrieval failure; surfaced as Download.Err
-	files      []string
-	cancel     context.CancelFunc
-	gate       *pauseGate // true-pause; never nil after construction
+	// Claude 2026-09-21: mirrors Download.Phase; set under Manager.mu with status.
+	phase    string
+	errorMsg string
+	err      error // classified retrieval failure; surfaced as Download.Err
+	files    []string
+	cancel   context.CancelFunc
+	gate     *pauseGate // true-pause; never nil after construction
 	// Claude 2026-09-20: set once when the job is inserted into m.downloads.
 	addedAt time.Time
 
@@ -690,6 +709,7 @@ func (m *Manager) AddArticleSet(ctx context.Context, nzb *NZB, name string) (str
 		name:       name,
 		stagingDir: dlDir,
 		status:     "active",
+		phase:      phaseDownloading,
 		total:      totalBytes,
 		cancel:     cancel,
 		gate:       newPauseGate(),
@@ -795,6 +815,7 @@ func (m *Manager) RelaunchArticleSet(ctx context.Context, gid string, nzb *NZB, 
 		name:       name,
 		stagingDir: dlDir,
 		status:     "active",
+		phase:      phaseDownloading,
 		total:      totalBytes,
 		cancel:     cancel,
 		gate:       newPauseGate(),
@@ -860,7 +881,9 @@ func (m *Manager) allocateStaging() (gid, dlDir string, err error) {
 //
 // Claude 2026-09-20: true pause (no context cancel).
 // Reason: cancel-based Pause stranded grabs.queued with a dead GID and blocked
-//   freeUsenetSlots; Resume was a stub forcing NZB re-submit.
+//
+//	freeUsenetSlots; Resume was a stub forcing NZB re-submit.
+//
 // Troubleshooting: Pause then Resume on Downloads; global Resume all downloads.
 // Review if: pause should drop the job semaphore so another NZB can fetch.
 func (m *Manager) Pause(gid string) error {
@@ -875,6 +898,7 @@ func (m *Manager) Pause(gid string) error {
 		return fmt.Errorf("usenet: download %s is %s, not active", gid, dl.status)
 	}
 	dl.status = "paused"
+	dl.phase = ""
 	gate := dl.gate
 	m.mu.Unlock()
 	if gate != nil {
@@ -910,6 +934,7 @@ func (m *Manager) Resume(gid string) error {
 		m.mu.Lock()
 		if d2, ok := m.downloads[gid]; ok && d2.status == "paused" {
 			d2.status = "error"
+			d2.phase = ""
 			d2.err = ErrStagingGone
 			d2.errorMsg = ErrStagingGone.Error()
 		}
@@ -927,6 +952,7 @@ func (m *Manager) Resume(gid string) error {
 	m.mu.Lock()
 	if d2, ok := m.downloads[gid]; ok && d2.status == "paused" {
 		d2.status = "active"
+		d2.phase = phaseDownloading
 	}
 	m.mu.Unlock()
 	if gate != nil {
@@ -951,6 +977,7 @@ func (m *Manager) Cancel(gid string) error {
 	dl, ok := m.downloads[gid]
 	if ok {
 		dl.status = "removed"
+		dl.phase = ""
 		delete(m.downloads, gid)
 	}
 	m.mu.Unlock()
@@ -1023,6 +1050,7 @@ func (m *Manager) InjectDownloadForTest(gid string) {
 		gid:    gid,
 		name:   "test",
 		status: "active",
+		phase:  phaseDownloading,
 		cancel: func() {},
 		gate:   newPauseGate(),
 	}
@@ -1112,6 +1140,7 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 			// Already classified (e.g. ErrStagingGone on Resume) — do not re-fire.
 		default:
 			dl.status = "error"
+			dl.phase = ""
 			dl.errorMsg = err.Error()
 			// Keep the wrapped error itself, not just its text, so a caller can
 			// errors.Is a permanent ErrArticleRemoved apart from everything
@@ -1155,6 +1184,7 @@ func (m *Manager) waitGateOrAbort(ctx context.Context, gid string, dl *dlState) 
 	case "removed", "paused", "error":
 	default:
 		dl.status = "error"
+		dl.phase = ""
 		dl.errorMsg = err.Error()
 		dl.err = err
 		failed = true
@@ -1193,6 +1223,14 @@ func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState
 	if err := m.waitGateOrAbort(ctx, gid, dl); err != nil {
 		return
 	}
+	// Claude 2026-09-21: phase repairing while PAR2 runs; status stays active.
+	// Reason: Downloads tags need downloading vs repairing vs unpacking.
+	// Review if: PAR2 is skipped for flat-video releases (still set, then unpacking).
+	m.mu.Lock()
+	if dl.status == "active" {
+		dl.phase = phaseRepairing
+	}
+	m.mu.Unlock()
 	repaired, repairErr := verifyAndRepair(dl.stagingDir, files)
 	if repairErr != nil {
 		log.Printf("usenet: par2 repair %s: %v — continuing to unpack", gid, repairErr)
@@ -1210,12 +1248,18 @@ func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState
 	// Review if: password-protected archives need a setting.
 	// Related: unpack.go; Dockerfile unrar + p7zip-full.
 	// Claude 2026-09-15: unpack failure is also fail-closed (no fake complete).
+	m.mu.Lock()
+	if dl.status == "active" {
+		dl.phase = phaseUnpacking
+	}
+	m.mu.Unlock()
 	unpacked, unpackErr := unpackArchives(dl.stagingDir, files)
 	if unpackErr != nil {
 		failed := false
 		m.mu.Lock()
 		if dl.status != "removed" && dl.status != "paused" {
 			dl.status = "error"
+			dl.phase = ""
 			dl.errorMsg = unpackErr.Error()
 			// Claude 2026-09-17: wrap unpack failure with ErrContentUnusable so
 			//   applyUsenetFailure can route to a different-release park.
@@ -1249,6 +1293,7 @@ func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState
 		m.mu.Lock()
 		if dl.status != "removed" && dl.status != "paused" {
 			dl.status = "error"
+			dl.phase = ""
 			dl.errorMsg = repairErr.Error()
 			dl.err = fmt.Errorf("%w: %w", ErrContentUnusable, repairErr)
 			failed = true
@@ -1264,6 +1309,7 @@ func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState
 	m.mu.Lock()
 	if dl.status != "removed" && dl.status != "paused" {
 		dl.status = "complete"
+		dl.phase = ""
 		dl.files = files
 	}
 	m.mu.Unlock()
@@ -1778,6 +1824,7 @@ func (m *Manager) snapshot() []Download {
 			TotalLength:     dl.total,
 			CompletedLength: dl.completed,
 			ResumeMode:      dl.resumeMode,
+			Phase:           dl.phase,
 			AddedAt:         dl.addedAt,
 			DownloadSpeed:   speed,
 			Files:           dl.files,
@@ -1822,6 +1869,7 @@ type snapKey struct {
 	status     string
 	completed  int64
 	resumeMode string
+	phase      string
 }
 
 func sameDownloads(a, b []Download) bool {
@@ -1830,11 +1878,11 @@ func sameDownloads(a, b []Download) bool {
 	}
 	ka := make(map[string]snapKey, len(a))
 	for _, d := range a {
-		ka[d.GID] = snapKey{d.Status, d.CompletedLength, d.ResumeMode}
+		ka[d.GID] = snapKey{d.Status, d.CompletedLength, d.ResumeMode, d.Phase}
 	}
 	kb := make(map[string]snapKey, len(b))
 	for _, d := range b {
-		kb[d.GID] = snapKey{d.Status, d.CompletedLength, d.ResumeMode}
+		kb[d.GID] = snapKey{d.Status, d.CompletedLength, d.ResumeMode, d.Phase}
 	}
 	return reflect.DeepEqual(ka, kb)
 }

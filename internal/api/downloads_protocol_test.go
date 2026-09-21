@@ -51,6 +51,25 @@ func TestToUsenetDTODownload_SetsUsenetProtocolAndOmitsTorrentOnlyFields(t *test
 	}
 }
 
+func TestToUsenetDTODownload_MapsPhase(t *testing.T) {
+	got := toUsenetDTODownload(usenet.Download{
+		GID: "g2", Status: "active", Filename: "episode.mkv",
+		Phase: "repairing",
+	})
+	if got.Phase != "repairing" {
+		t.Fatalf("Phase = %q, want repairing", got.Phase)
+	}
+}
+
+func TestToDTODownload_LeavesPhaseEmpty(t *testing.T) {
+	got := toDTODownload(downloader.Download{
+		GID: "g1", Status: "active", Filename: "movie.mkv",
+	})
+	if got.Phase != "" {
+		t.Fatalf("torrent Phase = %q, want empty", got.Phase)
+	}
+}
+
 // G-10 — a mixed queue tags each row by its source engine (the mapper that
 // produced it), not by re-deriving protocol from a GID-prefix convention
 // (D-2). A torrent GID deliberately shaped like the "nzb-" prefix routing

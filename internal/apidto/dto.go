@@ -2736,6 +2736,15 @@ type Download struct {
 	// ResumeMode is usenet-only: "resumed" | "full" | "forced-full" | "disabled".
 	// Empty for torrents and for usenet jobs that have not entered runDownload yet.
 	ResumeMode string `json:"resumeMode,omitempty"`
+	// Claude 2026-09-21: Usenet postprocess phase for Downloads screen tags.
+	// Reason: status stays "active" through PAR2/unpack, so the UI needs a
+	//   distinct wire field for downloading vs repairing vs unpacking.
+	// Troubleshooting: Downloads showing raw "active" during PAR2/unrar.
+	// Review if: torrents grow a comparable postprocess phase.
+	// Wire values: "downloading" | "repairing" | "unpacking". Empty when
+	// paused/error/complete/removed (UI derives those from status). Torrents
+	// leave this empty.
+	Phase string `json:"phase,omitempty"`
 	// Claude 2026-09-20: RFC3339 when the job entered the engine (oldest-first queue).
 	// Reason: Downloads SSE was reshuffling on map iteration; clients sort/merge by this.
 	// Review if: durable queue restore should preserve original add time across restart.

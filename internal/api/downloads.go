@@ -253,7 +253,12 @@ func toUsenetDTODownload(d usenet.Download) apidto.Download {
 		Protocol:        apidto.DownloadProtocolUsenet,
 		ErrorMessage:    d.ErrorMessage,
 		ResumeMode:      d.ResumeMode,
-		AddedAt:         formatDownloadAddedAt(d.AddedAt),
+		// Claude 2026-09-21: Usenet postprocess phase passthrough.
+		// Reason: Downloads tags need downloading/repairing/unpacking while
+		//   status stays active; torrents leave Phase empty on toDTODownload.
+		// Review if: torrents grow a comparable postprocess phase.
+		Phase:   d.Phase,
+		AddedAt: formatDownloadAddedAt(d.AddedAt),
 	}
 }
 
@@ -588,8 +593,10 @@ func getPauseStateHandler(settingsStore *settings.Store) http.HandlerFunc {
 //
 // Claude 2026-09-20: setting paused=false also resumes per-item paused jobs.
 // Reason: Usenet true-pause keeps the goroutine alive; "Resume all" must wake
-//   those gates (and torrent Resume). Previously only the dispatch gate lifted,
-//   stranding paused Usenet rows and their grab GIDs in freeUsenetSlots.
+//
+//	those gates (and torrent Resume). Previously only the dispatch gate lifted,
+//	stranding paused Usenet rows and their grab GIDs in freeUsenetSlots.
+//
 // Troubleshooting: Pause all → Resume all on Downloads; Usenet rows leave paused.
 // Review if: operator wants Resume-all to leave per-row pauses intact.
 func putPauseStateHandler(settingsStore *settings.Store, dl *downloader.Manager, nzb *usenet.Manager) http.HandlerFunc {

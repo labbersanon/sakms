@@ -13,7 +13,8 @@
 
 /** Stability-first EMA: slow to absorb bursty byte-deltas / wire speed. */
 export const EMA_ALPHA = 0.10;
-export const MIN_POSITIVE_SAMPLES = 3;
+/** One solid rate sample is enough to leave calculating… (Usenet is bursty). */
+export const MIN_POSITIVE_SAMPLES = 1;
 export const ETA_FREEZE_MS = 30_000;
 /** Ignore sub-frame byte deltas that would invent huge instantaneous rates. */
 export const BYTE_DELTA_MIN_MS = 400;
@@ -22,6 +23,8 @@ export const BYTE_DELTA_MIN_MS = 400;
  * sample arrives (display clamp). Natural countdown between samples is uncapped.
  */
 export const DISPLAY_MAX_FRAC_PER_SEC = 0.1;
+/** Session-average fallback when wire speed and short byte-deltas are both quiet. */
+export const OVERALL_AVG_MIN_MS = 2_000;
 
 export const HARDWARE_REPAIR_BPS = 25 * 1024 * 1024;
 export const HARDWARE_UNPACK_BPS = 40 * 1024 * 1024;
@@ -48,6 +51,8 @@ export type EtaTracker = {
   smoothedBps: number;
   samples: number;
   firstSeenAt: number;
+  /** completedLength when the tracker was created (session-average baseline). */
+  originCompleted: number;
   lastCompleted: number;
   lastCompletedAt: number;
 };
@@ -247,6 +252,7 @@ export function updateEtaTrackers(
         smoothedBps: 0,
         samples: 0,
         firstSeenAt: now,
+        originCompleted: d.completedLength,
         lastCompleted: d.completedLength,
         lastCompletedAt: now,
       };
@@ -257,15 +263,13 @@ export function updateEtaTrackers(
     let sampled = false;
     if (!isPostprocess(d)) {
       // Claude 2026-09-21: do not advance lastCompletedAt on zero-progress
-      //   frames, and hold the byte baseline until dt >= BYTE_DELTA_MIN_MS.
-      // Reason: torrent+usenet both fan out ~500ms; when out of phase the SSE
-      //   arrives ~250ms. Updating the clock every frame kept dtMs < 400 forever,
-      //   so byte-delta EMA never armed. After DefaultWindow=60s, wire
-      //   downloadSpeed stays 0 longer at start, so bootstrap also missed →
-      //   stuck on calculating….
-      // Troubleshooting: progress bar moves, ↓ may show a rate, ETA stays
-      //   "calculating…".
-      // Review if: downloads SSE coalesces to a single cadence ≥ BYTE_DELTA_MIN_MS.
+      //   frames; hold byte baseline until dt >= BYTE_DELTA_MIN_MS; fall back
+      //   to session-average rate when wire speed stays 0 (Usenet bursts /
+      //   60s ratesmooth).
+      // Reason: dual-engine ~250ms SSE + sparse completedLength left ETA on
+      //   calculating… even after the first unstick (f67f616).
+      // Troubleshooting: progress and/or ↓ rate visible, ETA stuck calculating….
+      // Review if: engine emits a stable smoothed DownloadSpeed on every frame.
       const dtMs = now - t.lastCompletedAt;
       const dBytes = d.completedLength - t.lastCompleted;
       if (dBytes > 0 && dtMs >= BYTE_DELTA_MIN_MS) {
@@ -273,12 +277,27 @@ export function updateEtaTrackers(
         sampled = true;
         t.lastCompleted = d.completedLength;
         t.lastCompletedAt = now;
-      } else if (d.downloadSpeed > 0 && t.samples < MIN_POSITIVE_SAMPLES) {
-        // Bootstrap from the engine's rolling-window speed until byte deltas exist.
+      } else if (
+        d.downloadSpeed > 0 &&
+        (t.samples < MIN_POSITIVE_SAMPLES || dtMs >= BYTE_DELTA_MIN_MS)
+      ) {
+        // Bootstrap (and later refresh) from the engine's rolling-window speed
+        // when short-term byte deltas are quiet — common on Usenet between
+        // article flushes.
         feedBps(t, d.downloadSpeed);
         sampled = true;
         t.lastCompleted = d.completedLength;
         t.lastCompletedAt = now;
+      } else if (
+        t.samples < MIN_POSITIVE_SAMPLES &&
+        now - t.firstSeenAt >= OVERALL_AVG_MIN_MS
+      ) {
+        const sessionBytes = d.completedLength - t.originCompleted;
+        const elapsedSec = (now - t.firstSeenAt) / 1000;
+        if (sessionBytes > 0 && elapsedSec > 0) {
+          feedBps(t, sessionBytes / elapsedSec);
+          sampled = true;
+        }
       }
       // else: zero progress, or progress too fresh to rate — keep baseline so
       // bytes accumulate across fast SSE frames until dtMs clears the gate.

@@ -6,6 +6,7 @@ import {
   HARDWARE_REPAIR_BPS,
   HARDWARE_UNPACK_BPS,
   MIN_POSITIVE_SAMPLES,
+  OVERALL_AVG_MIN_MS,
   type EtaInput,
   type EtaTracker,
   clampEtaJump,
@@ -61,17 +62,13 @@ describe("EMA download speed", () => {
     updateEtaTrackers(trackers, [item({ downloadSpeed: 100 })], 0);
     expect(trackers.get("g1")?.samples).toBe(1);
     expect(trackers.get("g1")?.smoothedBps).toBe(100);
-    expect(trackers.get("g1")?.lastGoodEtaSec).toBeNull();
+    expect(trackers.get("g1")?.lastGoodEtaSec).not.toBeNull();
 
     updateEtaTrackers(trackers, [item({ downloadSpeed: 200 })], 1000);
     expect(trackers.get("g1")?.samples).toBe(2);
     expect(trackers.get("g1")?.smoothedBps).toBe(
       EMA_ALPHA * 200 + (1 - EMA_ALPHA) * 100,
     );
-
-    updateEtaTrackers(trackers, [item({ downloadSpeed: 200 })], 2000);
-    expect(trackers.get("g1")?.samples).toBe(MIN_POSITIVE_SAMPLES);
-    expect(trackers.get("g1")?.lastGoodEtaSec).not.toBeNull();
   });
 
   it("prefers completedLength byte-deltas once past bootstrap", () => {
@@ -100,6 +97,38 @@ describe("EMA download speed", () => {
     );
     expect(trackers.get("g1")?.samples).toBe(samples);
     expect(trackers.get("g1")?.smoothedBps).toBe(smoothed);
+  });
+
+  it("arms ETA from session-average when wire speed stays 0 but bytes advanced", () => {
+    const trackers = new Map<string, EtaTracker>();
+    updateEtaTrackers(
+      trackers,
+      [item({ downloadSpeed: 0, completedLength: 0, totalLength: 1_000_000 })],
+      0,
+    );
+    expect(resolveEtaView(
+      item({ downloadSpeed: 0, completedLength: 0, totalLength: 1_000_000 }),
+      trackers.get("g1"),
+      0,
+      false,
+    ).kind).toBe("calculating");
+
+    updateEtaTrackers(
+      trackers,
+      [item({ downloadSpeed: 0, completedLength: 200_000, totalLength: 1_000_000 })],
+      OVERALL_AVG_MIN_MS,
+    );
+    const t = trackers.get("g1")!;
+    expect(t.samples).toBeGreaterThanOrEqual(MIN_POSITIVE_SAMPLES);
+    expect(t.lastGoodEtaSec).not.toBeNull();
+    expect(
+      resolveEtaView(
+        item({ downloadSpeed: 0, completedLength: 200_000, totalLength: 1_000_000 }),
+        t,
+        OVERALL_AVG_MIN_MS,
+        false,
+      ).kind,
+    ).toBe("eta");
   });
 });
 
@@ -211,7 +240,7 @@ describe("postprocess remaining", () => {
 describe("freeze / calculating / hidden", () => {
   it("shows calculating until enough positive speed samples", () => {
     const trackers = new Map<string, EtaTracker>();
-    const d = item({ downloadSpeed: 100 });
+    const d = item({ downloadSpeed: 0 });
     updateEtaTrackers(trackers, [d], 0);
     expect(resolveEtaView(d, trackers.get("g1"), 0, false).kind).toBe(
       "calculating",

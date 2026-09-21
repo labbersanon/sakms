@@ -26,6 +26,13 @@
   --color-danger: #c1272d;
   --color-ok: #3f7d4a;
   --color-warn: #c67c1e;
+  /* Claude 2026-09-21: Downloads phase pill text (neon blue / neon red).
+     Reason: operator asked for neon blue on active phases and neon red on
+       Stalled/Paused instead of gold accent / amber warn text.
+     Troubleshooting: Downloads status chip text still reading orange/gold.
+     Review if: global theme gains a dedicated status-neon palette. */
+  --color-neon-blue: #00c8ff;
+  --color-neon-red: #ff1744;
 
   /*
    * chrome/chrome-fg are the persistent app shell's OWN colors (header +

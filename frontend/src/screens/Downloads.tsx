@@ -87,12 +87,17 @@ function formatSize(bytes: number): string {
 const TAG_PILL = "shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium";
 
 const PHASE_BADGE: Record<string, string> = {
-  stalled: "bg-warn/20 text-warn",
-  repairing: "bg-accent/20 text-accent",
-  unpacking: "bg-accent/20 text-accent",
-  downloading: "bg-accent/20 text-accent",
+  // Claude 2026-09-21: active → neon blue text; stalled/paused → neon red text.
+  // Reason: gold accent / amber warn text read as orange; operator wanted neon
+  //   blue (active) and neon red (warn) while keeping soft chip backgrounds.
+  // Troubleshooting: Downloads phase pill still orange/gold.
+  // Review if: theme tokens neon-blue/neon-red are renamed or removed.
+  stalled: "bg-warn/20 text-neon-red",
+  repairing: "bg-accent/20 text-neon-blue",
+  unpacking: "bg-accent/20 text-neon-blue",
+  downloading: "bg-accent/20 text-neon-blue",
   queued: "bg-surface-2 text-muted",
-  paused: "bg-warn/20 text-warn",
+  paused: "bg-warn/20 text-neon-red",
   complete: "bg-ok/20 text-ok",
   failed: "bg-danger/20 text-danger",
   removed: "bg-surface-2 text-muted",

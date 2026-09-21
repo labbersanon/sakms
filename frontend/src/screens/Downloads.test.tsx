@@ -292,6 +292,9 @@ describe("Downloads — protocol-scoped metrics", () => {
 
     expect(await screen.findByText("Movie.1080p.mkv")).toBeInTheDocument();
     expect(screen.getByLabelText("Download phase")).toHaveTextContent("Downloading");
+    expect(screen.getByLabelText("Download phase").className).toContain(
+      "text-neon-blue",
+    );
     expect(screen.getByLabelText("Protocol")).toHaveTextContent("Torrent");
     expect(screen.getByText("400 KB / 1000 KB")).toBeInTheDocument();
     const bar = document.querySelector<HTMLElement>(".bg-accent");
@@ -467,6 +470,9 @@ describe("Downloads — phase tags", () => {
       }),
     ]);
     expect(screen.getByLabelText("Download phase")).toHaveTextContent("Stalled");
+    expect(screen.getByLabelText("Download phase").className).toContain(
+      "text-neon-red",
+    );
   });
 
   it("does not label as Stalled when completedLength advances at zero speed", async () => {

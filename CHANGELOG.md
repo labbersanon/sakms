@@ -9033,3 +9033,43 @@ prior override. Not deployed (do not run sakms-auto-update).
 | `frontend/src/screens/downloadEta.test.ts` | Prior override |
 | `frontend/src/screens/Downloads.tsx` | Fetch priors; POST accuracy on transitions |
 | `frontend/src/screens/Downloads.test.tsx` | Stub new endpoints; phase-change POST |
+
+## 2026-09-21 — Hardware ETA calibration (synthetic bench + persisted REPLACE)
+
+**Problem:** Repair/unpack ETA priors were in-memory EMA seeded at 25/40 MiB/s and
+died on restart. Live skip-PAR2 / skip-unpack (e.g. 36ms no-op) EMA'd GB/s rates
+into the next job. Operators had no way to measure this host's staging disk + CPU.
+**Fix:** `Manager.CalibrateHardware` writes a 32 MiB incompressible zip under
+`.sakms-hwbench-*` on the configured staging dir, times `7z x` (optional) and a
+ReadFile+SHA-256 repair proxy (≥500ms). Successful sides REPLACE in-memory priors
+(N reset to 0) and persist `usenet_hw_*` settings keys. Live Observe EMA still
+refines in-process only and is never persisted. Observe skips `dur < 250ms` and
+no-op repair/unpack. GET `/api/downloads/eta-priors` adds `calibrated` /
+`calibratedAt`. POST `/api/downloads/calibrate-hardware` runs the bench (409 if
+in flight). Downloads shows a Run now / Later banner when uncalibrated; Settings
+→ Usenet Downloads card has Recalibrate hardware.
+**Outcome:** Unit tests cover Observe skip, SetPriors REPLACE, bench repair,
+GET/POST, Downloads banner, Settings Recalibrate. Not deployed (do not run
+sakms-auto-update). Do not merge to main.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/eta_priors.go` | 250ms Observe floor; SetPriors/LoadPersistedPriors; sampled logPhaseTiming |
+| `internal/usenet/eta_priors_test.go` | REPLACE + skip tests |
+| `internal/usenet/hwbench.go` | CalibrateHardware fixture zip + 7z unpack + read/hash repair |
+| `internal/usenet/hwbench_test.go` | Repair bps; unpack when 7z present; overlap; not owned by sweep |
+| `internal/usenet/manager.go` | Calibration fields; skip Observe on no-op repair/unpack |
+| `internal/usenet/finalize_assembled_test.go` | Skip-PAR2/skip-unpack does not increment N |
+| `internal/api/downloads.go` | GET calibrated fields; POST calibrate + persist keys |
+| `internal/api/handler.go` | Register POST `/api/downloads/calibrate-hardware` |
+| `internal/api/downloads_eta_test.go` | GET calibrated flag; POST persist+REPLACE; 409 in-flight |
+| `cmd/sakms/main.go` | Load persisted priors in `buildUsenetManager` |
+| `cmd/sakms/usenet_manager_test.go` | Load REPLACE from settings; corrupt keys keep defaults |
+| `frontend/src/api/downloads.ts` | `calibrated` / `calibratedAt`; `calibrateHardware()` |
+| `frontend/src/screens/Downloads.tsx` | First-run banner + compact Later bar |
+| `frontend/src/screens/Downloads.test.tsx` | Banner + POST calibrate |
+| `frontend/src/screens/settings/Usenet.tsx` | Recalibrate hardware on Downloads card |
+| `frontend/src/screens/Settings.test.tsx` | defaultGet eta-priors stub; Recalibrate click |
+

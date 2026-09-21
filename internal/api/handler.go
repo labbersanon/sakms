@@ -585,12 +585,15 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// skip-and-continue per GID. Registered before the {gid} subtree is fine —
 	// "cancel-batch" is a distinct literal segment, not a {gid} value.
 	mux.HandleFunc("POST /api/downloads/cancel-batch", bulkCancelHandler(dl, nzb))
-	// Claude 2026-09-21: go-forward ETA priors + accuracy samples (no historical claim).
-	// Reason: adaptive hardware priors need a GET for the SPA; client POSTs
-	//   projected vs actual on phase/status transitions for O2 only.
-	// Troubleshooting: Downloads repair/unpack ETA off; no paired past data to score.
-	// Review if: accuracy samples are stored rather than log-only.
+	// Claude 2026-09-21: go-forward ETA priors + accuracy samples + hardware bench.
+	// Reason: adaptive hardware priors need a GET for the SPA; POST calibrate
+	//   REPLACE-writes the persisted base; client POSTs projected vs actual on
+	//   phase/status transitions for O2 only.
+	// Troubleshooting: Downloads repair/unpack ETA off; Recalibrate 409 when in flight.
+	// Review if: hardware priors become a typed settings struct or the engine
+	//   emits its own ETA.
 	mux.HandleFunc("GET /api/downloads/eta-priors", etaPriorsHandler(nzb))
+	mux.HandleFunc("POST /api/downloads/calibrate-hardware", calibrateHardwareHandler(settingsStore, nzb))
 	mux.HandleFunc("POST /api/downloads/eta-accuracy", etaAccuracyHandler())
 	// Global download pause: a single system-wide toggle that pauses every active
 	// download AND blocks new grabs at the shared dispatch choke point (see

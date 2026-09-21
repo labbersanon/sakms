@@ -579,33 +579,126 @@ func bulkCancelHandler(dl *downloader.Manager, nzb *usenet.Manager) http.Handler
 	}
 }
 
-// Claude 2026-09-21: live EMA hardware priors for Downloads ETA (go-forward only).
-// Reason: SPA seeds repair/unpack BPS from this process; nil usenet manager
+// Claude 2026-09-21: persisted hardware-prior REPLACE keys (not live EMA).
+// Reason: boot reloads the last calibrated base; in-process Observe still
 //
-//	still returns the 25/40 MiB/s defaults so torrents-only installs work.
+//	refines RAM only. Live EMA must never be written here.
+//
+// Troubleshooting: GET eta-priors calibrated=false after Recalibrate + restart.
+// Review if: hardware priors become a typed settings struct or the engine
+//
+//	emits its own ETA.
+const (
+	UsenetHWRepairBpsKey          = "usenet_hw_repair_bps"
+	UsenetHWUnpackBpsKey          = "usenet_hw_unpack_bps"
+	UsenetHWPriorsCalibratedKey   = "usenet_hw_priors_calibrated"
+	UsenetHWPriorsCalibratedAtKey = "usenet_hw_priors_calibrated_at"
+)
+
+// Claude 2026-09-21: live (possibly EMA-shifted) hardware priors + last REPLACE flag.
+// Reason: SPA seeds repair/unpack BPS from this process; calibrated/calibratedAt
+//
+//	  come from Manager after load/calibrate so GET does not thread settings.
+//
+//		nil usenet manager still returns the 25/40 MiB/s defaults so torrents-only
+//		installs work.
 //
 // Troubleshooting: GET /api/downloads/eta-priors 503 when nzb is nil.
-// Review if: priors are persisted or an operator setting replaces the EMA.
+// Review if: hardware priors become a typed settings struct or the engine
+//
+//	emits its own ETA.
 type etaPriorsResponse struct {
-	RepairBps     int64 `json:"repairBps"`
-	UnpackBps     int64 `json:"unpackBps"`
-	RepairSamples int   `json:"repairSamples"`
-	UnpackSamples int   `json:"unpackSamples"`
+	RepairBps     int64  `json:"repairBps"`
+	UnpackBps     int64  `json:"unpackBps"`
+	RepairSamples int    `json:"repairSamples"`
+	UnpackSamples int    `json:"unpackSamples"`
+	Calibrated    bool   `json:"calibrated"`
+	CalibratedAt  string `json:"calibratedAt"`
 }
 
 func etaPriorsHandler(nzb *usenet.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		repairBps, unpackBps, repairN, unpackN := usenet.DefaultHardwareRepairBps, usenet.DefaultHardwareUnpackBps, 0, 0
-		if nzb != nil {
-			repairBps, unpackBps, repairN, unpackN = nzb.Priors()
-		}
-		writeJSON(w, etaPriorsResponse{
-			RepairBps:     repairBps,
-			UnpackBps:     unpackBps,
-			RepairSamples: repairN,
-			UnpackSamples: unpackN,
-		})
+		writeEtaPriors(w, nzb)
 	}
+}
+
+func writeEtaPriors(w http.ResponseWriter, nzb *usenet.Manager) {
+	repairBps, unpackBps, repairN, unpackN := usenet.DefaultHardwareRepairBps, usenet.DefaultHardwareUnpackBps, 0, 0
+	calibrated := false
+	calibratedAt := ""
+	if nzb != nil {
+		repairBps, unpackBps, repairN, unpackN = nzb.Priors()
+		var at time.Time
+		calibrated, at = nzb.Calibration()
+		if !at.IsZero() {
+			calibratedAt = at.UTC().Format(time.RFC3339)
+		}
+	}
+	writeJSON(w, etaPriorsResponse{
+		RepairBps:     repairBps,
+		UnpackBps:     unpackBps,
+		RepairSamples: repairN,
+		UnpackSamples: unpackN,
+		Calibrated:    calibrated,
+		CalibratedAt:  calibratedAt,
+	})
+}
+
+// Claude 2026-09-21: POST runs the synthetic staging-dir bench, REPLACE-persists,
+//
+//	and applies to Manager. 409 if a bench is already running.
+//
+// Reason: first-visit Downloads banner and Settings Recalibrate share this route;
+//
+//	handler owns KV, Manager owns RAM. Live EMA is not written.
+//
+// Troubleshooting: overlapping Recalibrate; calibrated=false after a successful POST.
+// Review if: hardware priors become a typed settings struct or the engine
+//
+//	emits its own ETA.
+func calibrateHardwareHandler(settingsStore *settings.Store, nzb *usenet.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if nzb == nil {
+			http.Error(w, "usenet manager is unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		_, _, err := nzb.CalibrateHardware(r.Context())
+		if errors.Is(err, usenet.ErrCalibrationInProgress) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := persistHardwarePriors(r.Context(), settingsStore, nzb); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeEtaPriors(w, nzb)
+	}
+}
+
+func persistHardwarePriors(ctx context.Context, store *settings.Store, nzb *usenet.Manager) error {
+	if store == nil || nzb == nil {
+		return nil
+	}
+	repair, unpack, _, _ := nzb.Priors()
+	cal, at := nzb.Calibration()
+	if err := store.Set(ctx, UsenetHWRepairBpsKey, strconv.FormatInt(repair, 10)); err != nil {
+		return err
+	}
+	if err := store.Set(ctx, UsenetHWUnpackBpsKey, strconv.FormatInt(unpack, 10)); err != nil {
+		return err
+	}
+	if err := store.SetBool(ctx, UsenetHWPriorsCalibratedKey, cal); err != nil {
+		return err
+	}
+	atStr := ""
+	if !at.IsZero() {
+		atStr = at.UTC().Format(time.RFC3339)
+	}
+	return store.Set(ctx, UsenetHWPriorsCalibratedAtKey, atStr)
 }
 
 // Claude 2026-09-21: log-only ETA accuracy samples from the Downloads SPA.

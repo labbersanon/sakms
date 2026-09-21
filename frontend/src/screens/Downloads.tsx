@@ -26,6 +26,7 @@ import type { Download } from "@dto";
 import {
   bulkCancelDownloads,
   cancelDownload,
+  calibrateHardware,
   fetchEtaPriors,
   fetchPauseState,
   pauseDownload,
@@ -79,6 +80,24 @@ function formatBps(bps: number): string {
 // "—" means for download speed, and why that function is left alone.
 function formatUpBps(bps: number): string {
   return bps <= 0 ? "0 KB/s" : formatBps(bps);
+}
+
+const HW_CALIBRATE_LATER_KEY = "sakms-hw-calibrate-later";
+
+function readHwCalibrateLater(): boolean {
+  try {
+    return sessionStorage.getItem(HW_CALIBRATE_LATER_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeHwCalibrateLater(): void {
+  try {
+    sessionStorage.setItem(HW_CALIBRATE_LATER_KEY, "1");
+  } catch {
+    /* private mode / no sessionStorage */
+  }
 }
 
 // formatSize renders a byte count as MB/GB for the progress label.
@@ -522,14 +541,47 @@ export const Downloads: Component = () => {
     if (d) setPaused(d.paused);
   });
 
+  // Claude 2026-09-21: first-visit hardware bench banner (not an import gate).
+  // Reason: ETAs already run during the job; compiled 25/40 stay until Run now.
+  //   Later is session-only; a compact bar remains until calibrated.
+  // Troubleshooting: banner re-exploding every Downloads mount after Later.
+  // Review if: hardware priors become a typed settings struct or the engine
+  //   emits its own ETA.
+  const [hwCalibrated, setHwCalibrated] = createSignal<boolean | null>(null);
+  const [hwCalibrateLater, setHwCalibrateLater] = createSignal(readHwCalibrateLater());
+  const [hwCalibrating, setHwCalibrating] = createSignal(false);
+
+  const applyEtaPriors = (p: {
+    repairBps: number;
+    unpackBps: number;
+    calibrated?: boolean;
+  }) => {
+    if (p.repairBps > 0 && p.unpackBps > 0) {
+      setHardwarePriors(p.repairBps, p.unpackBps);
+    }
+    if (typeof p.calibrated === "boolean") {
+      setHwCalibrated(p.calibrated);
+    }
+  };
+
+  const runHardwareCalibration = async () => {
+    setActionError(null);
+    setHwCalibrating(true);
+    try {
+      applyEtaPriors(await calibrateHardware());
+    } catch (err) {
+      setActionError((err as Error).message);
+    } finally {
+      setHwCalibrating(false);
+    }
+  };
+
   let es: EventSource | undefined;
 
   onMount(() => {
     void fetchEtaPriors()
       .then((p) => {
-        if (p.repairBps > 0 && p.unpackBps > 0) {
-          setHardwarePriors(p.repairBps, p.unpackBps);
-        }
+        applyEtaPriors(p);
       })
       .catch(() => {
         /* keep compiled 25/40 MiB/s seeds */
@@ -667,6 +719,48 @@ export const Downloads: Component = () => {
         <div class="mb-4 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-warn">
           Downloads are globally paused — active downloads are held and new
           grabs are blocked until you resume.
+        </div>
+      </Show>
+      <Show when={hwCalibrated() === false && !hwCalibrateLater()}>
+        <div class="mb-4 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-warn">
+          <p>
+            Measure this host's repair and unpack speed so Downloads ETAs match
+            this hardware. Results may vary under load. The queue is not blocked.
+          </p>
+          <div class="mt-2 flex items-center gap-2">
+            <Button
+              variant="primary"
+              disabled={hwCalibrating()}
+              onClick={() => void runHardwareCalibration()}
+            >
+              {hwCalibrating() ? "Measuring…" : "Run now"}
+            </Button>
+            <Button
+              variant="secondary"
+              disabled={hwCalibrating()}
+              onClick={() => {
+                writeHwCalibrateLater();
+                setHwCalibrateLater(true);
+              }}
+            >
+              Later
+            </Button>
+          </div>
+        </div>
+      </Show>
+      <Show when={hwCalibrated() === false && hwCalibrateLater()}>
+        <div class="mb-4 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-warn">
+          <span>
+            Hardware speed not measured — ETAs use compiled 25/40 MiB/s priors.
+          </span>
+          <Button
+            variant="secondary"
+            class="ml-2 !px-2 !py-1 !text-xs"
+            disabled={hwCalibrating()}
+            onClick={() => void runHardwareCalibration()}
+          >
+            {hwCalibrating() ? "Measuring…" : "Run now"}
+          </Button>
         </div>
       </Show>
 

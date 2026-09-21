@@ -66,15 +66,18 @@ export function resumeDownload(gid: string): Promise<void> {
 }
 
 // Claude 2026-09-21: adaptive Usenet hardware priors + go-forward ETA samples.
-// Reason: SPA seeds repair/unpack BPS from the engine EMA; accuracy POSTs are
-//   log-only (no historical projection score exists).
+// Reason: SPA seeds repair/unpack BPS from the engine (calibrated REPLACE base
+//   ± in-process EMA); accuracy POSTs are log-only.
 // Troubleshooting: Downloads countdown ignores observed PAR2/unrar rates.
-// Review if: priors are persisted or become an operator setting.
+// Review if: hardware priors become a typed settings struct or the engine
+//   emits its own ETA.
 export type EtaPriors = {
   repairBps: number;
   unpackBps: number;
   repairSamples: number;
   unpackSamples: number;
+  calibrated: boolean;
+  calibratedAt: string;
 };
 
 export type EtaAccuracySample = {
@@ -89,6 +92,12 @@ export type EtaAccuracySample = {
 
 export function fetchEtaPriors(): Promise<EtaPriors> {
   return api<EtaPriors>("/api/downloads/eta-priors");
+}
+
+export function calibrateHardware(): Promise<EtaPriors> {
+  return api<EtaPriors>("/api/downloads/calibrate-hardware", {
+    method: "POST",
+  });
 }
 
 export function postEtaAccuracy(sample: EtaAccuracySample): Promise<void> {

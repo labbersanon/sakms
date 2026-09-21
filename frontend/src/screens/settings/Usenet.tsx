@@ -51,6 +51,7 @@ import {
   type UsenetNNTPNativeSettings,
 } from "../../api/usenet";
 import { fetchAutoGrabSlots, putAutoGrabSlots } from "../../api/autograbSlots";
+import { calibrateHardware, fetchEtaPriors, type EtaPriors } from "../../api/downloads";
 import {
   Button,
   ErrorText,
@@ -498,12 +499,20 @@ const DownloadsCard: Component = () => {
   const [maxConcurrentDownloads, setMaxConcurrentDownloads] = createSignal(1);
   const [dirty, setDirty] = createSignal(false);
   const [loadError, setLoadError] = createSignal<Error | null>(null);
+  const [etaPriors, setEtaPriors] = createSignal<EtaPriors | null>(null);
+  const [calibrating, setCalibrating] = createSignal(false);
+  const [calibrateError, setCalibrateError] = createSignal<string | null>(null);
   const status = useSaveStatus();
 
   onMount(() => {
     void fetchUsenetMaxConcurrentDownloads()
       .then((n) => setMaxConcurrentDownloads(n))
       .catch((e) => setLoadError(e instanceof Error ? e : new Error(String(e))));
+    void fetchEtaPriors()
+      .then((p) => setEtaPriors(p))
+      .catch(() => {
+        /* card still usable without live priors */
+      });
   });
 
   const save = async () => {
@@ -568,9 +577,57 @@ const DownloadsCard: Component = () => {
           <SaveStatus text={status.status().text} error={status.status().error} />
         </div>
       </Show>
+      {/* Claude 2026-09-21: Recalibrate is an immediate action, not SectionSave.
+          Reason: same POST as the Downloads banner; must not wait on dirty
+          concurrency fields. Live bps may include in-process EMA until restart.
+          Troubleshooting: Recalibrate disabled because Max concurrent is dirty.
+          Review if: hardware priors become a typed settings struct or the engine
+          emits its own ETA. */}
+      <div class="mt-4 border-t border-border pt-3">
+        <Muted>
+          {etaPriors()?.calibrated
+            ? `Calibrated ${formatCalibratedAt(etaPriors()!.calibratedAt)}. Live repair ${formatMibps(etaPriors()!.repairBps)}, unpack ${formatMibps(etaPriors()!.unpackBps)}. Session samples may refine until restart.`
+            : `Hardware not measured yet. ETAs use compiled 25/40 MiB/s until you run the bench. Live repair ${formatMibps(etaPriors()?.repairBps ?? 25 * 1024 * 1024)}, unpack ${formatMibps(etaPriors()?.unpackBps ?? 40 * 1024 * 1024)}.`}
+        </Muted>
+        <Muted class="mt-1">Results may vary under load.</Muted>
+        <div class="mt-2 flex items-center gap-2">
+          <Button
+            variant="secondary"
+            class="!px-2 !py-1 !text-xs"
+            disabled={calibrating()}
+            onClick={() => {
+              setCalibrateError(null);
+              setCalibrating(true);
+              void calibrateHardware()
+                .then((p) => setEtaPriors(p))
+                .catch((e) =>
+                  setCalibrateError(e instanceof Error ? e.message : String(e)),
+                )
+                .finally(() => setCalibrating(false));
+            }}
+          >
+            {calibrating() ? "Measuring…" : "Recalibrate hardware"}
+          </Button>
+        </div>
+        <Show when={calibrateError()}>
+          <ErrorText>{calibrateError()}</ErrorText>
+        </Show>
+      </div>
     </Card>
   );
 };
+
+function formatMibps(bps: number): string {
+  if (!Number.isFinite(bps) || bps <= 0) return "—";
+  return `${(bps / (1024 * 1024)).toFixed(1)} MiB/s`;
+}
+
+function formatCalibratedAt(rfc: string): string {
+  if (!rfc) return "unknown time";
+  const d = new Date(rfc);
+  if (Number.isNaN(d.getTime())) return rfc;
+  return d.toLocaleString();
+}
 
 const ResumeCard: Component = () => {
   const [enabled, setEnabled] = createSignal(true);

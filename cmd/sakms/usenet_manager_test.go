@@ -3,12 +3,16 @@ package main
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"testing"
+	"time"
 
+	"github.com/labbersanon/sakms/internal/api"
 	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/secrets"
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/usenet"
 )
 
 // newUsenetTestStores builds a serviceconn.Store and settings.Store against a
@@ -62,5 +66,69 @@ func TestBuildUsenetManager_NeverNil(t *testing.T) {
 	}
 	if m.HasSubscriptions() {
 		t.Fatal("expected HasSubscriptions() == false when the registry read failed")
+	}
+}
+
+func TestBuildUsenetManager_LoadsPersistedHardwarePriors(t *testing.T) {
+	serviceConnStore, settingsStore, closeDB := newUsenetTestStores(t)
+	t.Cleanup(closeDB)
+
+	ctx := context.Background()
+	wantRepair := int64(94 << 20)
+	wantUnpack := int64(55 << 20)
+	at := time.Date(2026, 9, 21, 18, 0, 0, 0, time.UTC)
+	if err := settingsStore.Set(ctx, api.UsenetHWRepairBpsKey, strconv.FormatInt(wantRepair, 10)); err != nil {
+		t.Fatal(err)
+	}
+	if err := settingsStore.Set(ctx, api.UsenetHWUnpackBpsKey, strconv.FormatInt(wantUnpack, 10)); err != nil {
+		t.Fatal(err)
+	}
+	if err := settingsStore.SetBool(ctx, api.UsenetHWPriorsCalibratedKey, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := settingsStore.Set(ctx, api.UsenetHWPriorsCalibratedAtKey, at.Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := buildUsenetManager(ctx, t.TempDir(), serviceConnStore, settingsStore, &http.Client{}, nil)
+	if err != nil {
+		t.Fatalf("buildUsenetManager: %v", err)
+	}
+	repair, unpack, rn, un := m.Priors()
+	if repair != wantRepair || unpack != wantUnpack {
+		t.Fatalf("loaded priors = %d/%d, want REPLACE %d/%d not compiled defaults", repair, unpack, wantRepair, wantUnpack)
+	}
+	if rn != 0 || un != 0 {
+		t.Fatalf("sample counts = %d/%d, want 0/0", rn, un)
+	}
+	cal, gotAt := m.Calibration()
+	if !cal || !gotAt.Equal(at) {
+		t.Fatalf("calibration = %t %v, want true %v", cal, gotAt, at)
+	}
+}
+
+func TestBuildUsenetManager_CorruptHardwarePriorsKeepDefaults(t *testing.T) {
+	serviceConnStore, settingsStore, closeDB := newUsenetTestStores(t)
+	t.Cleanup(closeDB)
+
+	ctx := context.Background()
+	if err := settingsStore.SetBool(ctx, api.UsenetHWPriorsCalibratedKey, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := settingsStore.Set(ctx, api.UsenetHWRepairBpsKey, "nope"); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := buildUsenetManager(ctx, t.TempDir(), serviceConnStore, settingsStore, &http.Client{}, nil)
+	if err != nil {
+		t.Fatalf("buildUsenetManager: %v", err)
+	}
+	repair, unpack, _, _ := m.Priors()
+	if repair != usenet.DefaultHardwareRepairBps || unpack != usenet.DefaultHardwareUnpackBps {
+		t.Fatalf("corrupt keys mutated priors: %d/%d", repair, unpack)
+	}
+	cal, _ := m.Calibration()
+	if cal {
+		t.Fatal("corrupt keys must leave calibrated=false")
 	}
 }

@@ -310,6 +310,14 @@ func TestFinalizeAssembled_NoPar2_Unchanged(t *testing.T) {
 	if dl.status != "complete" {
 		t.Fatalf("status=%q want complete", dl.status)
 	}
+	// Claude 2026-09-21: skip-PAR2 + skip-unpack must not Observe.
+	// Reason: this path was the 36ms no-op that EMA'd GB/s into unpackBps.
+	// Review if: hardware priors become a typed settings struct or the engine
+	//   emits its own ETA.
+	_, _, rn, un := m.Priors()
+	if rn != 0 || un != 0 {
+		t.Fatalf("skip-PAR2/skip-unpack incremented sample counts: repairN=%d unpackN=%d", rn, un)
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	if completeGID != dl.gid || errorFired {

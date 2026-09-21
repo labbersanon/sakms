@@ -70,6 +70,8 @@ const stubFetch = (
         unpackBps: 40 * 1024 * 1024,
         repairSamples: 0,
         unpackSamples: 0,
+        calibrated: false,
+        calibratedAt: "",
       });
     }
     if (url.includes("/api/downloads/eta-accuracy") && method === "POST") {
@@ -84,10 +86,12 @@ const stubFetch = (
 beforeEach(() => {
   MockEventSource.last = null;
   vi.stubGlobal("EventSource", MockEventSource);
+  sessionStorage.clear();
 });
 
 afterEach(() => {
   cleanup();
+  sessionStorage.clear();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -747,5 +751,72 @@ describe("Downloads — ETA accuracy samples", () => {
         actualSec: 5,
       });
     });
+  });
+});
+
+describe("Downloads — hardware calibration banner", () => {
+  it("shows the Run now banner when GET eta-priors reports calibrated=false", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/downloads/pause-state"))
+        return jsonResponse({ paused: false });
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => <Downloads />);
+    expect(
+      await screen.findByText(/Measure this host's repair and unpack speed/),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run now" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Later" })).toBeInTheDocument();
+  });
+
+  it("Run now POSTs /api/downloads/calibrate-hardware and hides the banner", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/api/downloads/pause-state"))
+        return jsonResponse({ paused: false });
+      if (url.includes("/api/downloads/calibrate-hardware")) {
+        return jsonResponse({
+          repairBps: 94 * 1024 * 1024,
+          unpackBps: 40 * 1024 * 1024,
+          repairSamples: 0,
+          unpackSamples: 0,
+          calibrated: true,
+          calibratedAt: "2026-09-21T22:00:00Z",
+        });
+      }
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => <Downloads />);
+    fireEvent.click(await screen.findByRole("button", { name: "Run now" }));
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.method === "POST" &&
+            c.url.includes("/api/downloads/calibrate-hardware"),
+        ),
+      ).toBe(true),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByText(/Measure this host's repair and unpack speed/),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("Later collapses to a compact bar for the session", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/downloads/pause-state"))
+        return jsonResponse({ paused: false });
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => <Downloads />);
+    fireEvent.click(await screen.findByRole("button", { name: "Later" }));
+    expect(
+      screen.queryByText(/Measure this host's repair and unpack speed/),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/Hardware speed not measured/),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run now" })).toBeInTheDocument();
   });
 });

@@ -214,6 +214,19 @@ function defaultGet(url: string): Response | undefined {
         { name: "/staging", path: "/staging" },
       ],
     });
+  // Claude 2026-09-21: DownloadsCard GETs eta-priors on mount for Recalibrate copy.
+  // Reason: unstubbed GET fell through to 204 and broke unrelated Settings tests.
+  // Review if: hardware priors become a typed settings struct or the engine
+  //   emits its own ETA.
+  if (url.includes("/api/downloads/eta-priors"))
+    return jsonResponse({
+      repairBps: 25 * 1024 * 1024,
+      unpackBps: 40 * 1024 * 1024,
+      repairSamples: 0,
+      unpackSamples: 0,
+      calibrated: false,
+      calibratedAt: "",
+    });
   return undefined;
 }
 
@@ -3243,6 +3256,43 @@ describe("Usenet subscriptions — three-state secret semantics through the UI",
     const body = registryPuts(calls)[0]!.body as { secret?: string };
     expect(body).toHaveProperty("secret");
     expect(body.secret).toBe("");
+  });
+});
+
+describe("Usenet Downloads card — Recalibrate hardware", () => {
+  it("shows Recalibrate hardware and POSTs calibrate-hardware", async () => {
+    const calls = stubFetch((url, init) => {
+      if (
+        url.includes("/api/downloads/calibrate-hardware") &&
+        (init?.method ?? "GET").toUpperCase() === "POST"
+      ) {
+        return jsonResponse({
+          repairBps: 94 * 1024 * 1024,
+          unpackBps: 40 * 1024 * 1024,
+          repairSamples: 0,
+          unpackSamples: 0,
+          calibrated: true,
+          calibratedAt: "2026-09-21T22:00:00Z",
+        });
+      }
+      return undefined;
+    });
+    renderSettings();
+    goToDownloadSubTab("Usenet");
+    const btn = await screen.findByRole("button", {
+      name: "Recalibrate hardware",
+    });
+    fireEvent.click(btn);
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.method === "POST" &&
+            c.url.includes("/api/downloads/calibrate-hardware"),
+        ),
+      ).toBe(true),
+    );
+    expect(await screen.findByText(/Calibrated/)).toBeInTheDocument();
   });
 });
 

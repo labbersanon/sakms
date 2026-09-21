@@ -1005,7 +1005,50 @@ func buildUsenetManager(ctx context.Context, dataDir string, serviceConnStore *s
 		ForceFullDownload:      forceFull,
 		RateCap:                rateCap,
 	})
+	// Claude 2026-09-21: load last hardware-bench REPLACE, not live EMA.
+	// Reason: restart must restore the calibrated base (or compiled 25/40).
+	//   Unset/corrupt keys leave defaults and calibrated=false.
+	// Troubleshooting: ETAs reset to 25 MiB/s after Recalibrate + container restart.
+	// Review if: hardware priors become a typed settings struct or the engine
+	//   emits its own ETA.
+	loadPersistedHardwarePriors(ctx, settingsStore, m)
 	return m, err
+}
+
+func loadPersistedHardwarePriors(ctx context.Context, settingsStore *settings.Store, m *usenet.Manager) {
+	if settingsStore == nil || m == nil {
+		return
+	}
+	if !settingBool(ctx, settingsStore, api.UsenetHWPriorsCalibratedKey, false) {
+		return
+	}
+	repair := settingInt64(ctx, settingsStore, api.UsenetHWRepairBpsKey, 0)
+	unpack := settingInt64(ctx, settingsStore, api.UsenetHWUnpackBpsKey, 0)
+	if repair <= 0 && unpack <= 0 {
+		return
+	}
+	atStr, err := settingsStore.Get(ctx, api.UsenetHWPriorsCalibratedAtKey)
+	var at time.Time
+	if err == nil && atStr != "" {
+		parsed, parseErr := time.Parse(time.RFC3339, atStr)
+		if parseErr == nil {
+			at = parsed
+		}
+	}
+	m.LoadPersistedPriors(repair, unpack, at)
+}
+
+// settingInt64 reads an int64 settings scalar, returning def when unset/invalid.
+func settingInt64(ctx context.Context, settingsStore *settings.Store, key string, def int64) int64 {
+	v, err := settingsStore.Get(ctx, key)
+	if err != nil || v == "" {
+		return def
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return def
+	}
+	return n
 }
 
 // settingInt reads an int settings scalar, returning def when unset/invalid.

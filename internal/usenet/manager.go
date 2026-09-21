@@ -52,7 +52,9 @@ func (m *Manager) Forget(gid string) bool {
 
 // Claude 2026-09-21: how long a Complete row stays on Downloads before Forget.
 // Reason: operator wants a glance window, then Usenet Complete (and torrents
-//   after seeding) should leave the live queue; errors stay until Cancel.
+//
+//	after seeding) should leave the live queue; errors stay until Cancel.
+//
 // Troubleshooting: Complete rows lingering forever after import.
 // Review if: Settings gains a dismiss-delay control.
 var dismissCompleteAfter = 30 * time.Second
@@ -242,15 +244,20 @@ type Manager struct {
 	semaphore              chan struct{}
 	rateCap                *xferlimit.Cap
 
-	// Claude 2026-09-21: process-lifetime EMA of observed PAR2/unrar rates.
-	// Reason: frontend 25/40 MiB/s priors are a seed; go-forward samples from
-	//   this host should retune without claiming historical projection accuracy.
+	// Claude 2026-09-21: hardware priors — calibrated REPLACE base + in-process EMA.
+	// Reason: settings persist the bench REPLACE; live Observe still refines
+	//   in-RAM only and is discarded on restart. Never persist live EMA.
 	// Troubleshooting: repair/unpack ETA systematically high/low on this hardware.
-	// Review if: priors are persisted across restart or become a setting.
-	repairBps int64
-	unpackBps int64
-	repairN   int
-	unpackN   int
+	// Review if: hardware priors become a typed settings struct or the engine
+	//   emits its own ETA.
+	repairBps      int64
+	unpackBps      int64
+	repairN        int
+	unpackN        int
+	hwCalibrated   bool
+	hwCalibratedAt time.Time
+	hwBenchRunning bool
+	hwBenchHold    <-chan struct{}
 }
 
 // DefaultMaxConcurrentDownloads is used when Config.MaxConcurrentDownloads is
@@ -1235,7 +1242,7 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 	m.mu.Lock()
 	dlBytes := dlPayloadBytes(dl)
 	m.mu.Unlock()
-	m.logPhaseTiming(gid, phaseDownloading, dlBytes, dlStart)
+	m.logPhaseTiming(gid, phaseDownloading, dlBytes, dlStart, true)
 	if err != nil {
 		failed := false
 		m.mu.Lock()
@@ -1342,10 +1349,16 @@ func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState
 	}
 	repairBytes := dlPayloadBytes(dl)
 	m.mu.Unlock()
+	// Claude 2026-09-21: skip Observe when verifyAndRepair is a no-op (no PAR2).
+	// Reason: a 36ms skip of a multi-hundred-MB payload EMA'd GB/s into the next job.
+	// Troubleshooting: repairN climbing after flat-video releases.
+	// Review if: hardware priors become a typed settings struct or the engine
+	//   emits its own ETA.
+	repairSampled := repairPhaseSampled(files)
 	repaired, repairErr := verifyAndRepair(dl.stagingDir, files, func(done, total int64) {
 		m.setPhaseProgress(gid, done, total)
 	})
-	m.logPhaseTiming(gid, phaseRepairing, repairBytes, repairStarted)
+	m.logPhaseTiming(gid, phaseRepairing, repairBytes, repairStarted, repairSampled)
 	if repairErr != nil {
 		log.Printf("usenet: par2 repair %s: %v — continuing to unpack", gid, repairErr)
 	}
@@ -1372,10 +1385,16 @@ func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState
 	}
 	unpackBytes := dlPayloadBytes(dl)
 	m.mu.Unlock()
+	// Claude 2026-09-21: skip Observe when unpackArchives has no archive leaders.
+	// Reason: skip-unpack logged 36ms at absurd bps and poisoned the unpack prior.
+	// Troubleshooting: unpackBps jumping after jobs that imported a flat video.
+	// Review if: hardware priors become a typed settings struct or the engine
+	//   emits its own ETA.
+	unpackSampled := unpackPhaseSampled(dl.stagingDir)
 	unpacked, unpackErr := unpackArchives(dl.stagingDir, files, func(done, total int64) {
 		m.setPhaseProgress(gid, done, total)
 	})
-	m.logPhaseTiming(gid, phaseUnpacking, unpackBytes, unpackStarted)
+	m.logPhaseTiming(gid, phaseUnpacking, unpackBytes, unpackStarted, unpackSampled)
 	if unpackErr != nil {
 		failed := false
 		m.mu.Lock()

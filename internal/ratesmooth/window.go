@@ -1,13 +1,19 @@
 // Package ratesmooth computes a rolling bytes/sec rate from timestamped
 // progress samples. Used by the Usenet and torrent poll loops so DownloadSpeed
-// is averaged over ~10s instead of a single 500ms tick.
+// is averaged over ~60s instead of a single 500ms tick.
 package ratesmooth
 
 import "time"
 
-// DefaultWindow is the wall-clock span used for DownloadSpeed (balanced
-// smoothness vs responsiveness for Usenet/NNTP burstiness).
-const DefaultWindow = 10 * time.Second
+// Claude 2026-09-21: DefaultWindow raised 10s → 60s.
+// Reason: operators still saw jumpy ETA with a 10s span under Usenet/NNTP
+//   burstiness; a minute-scale average matches "calm countdown" preference.
+// Troubleshooting: Downloads ~countdown leaping between SSE frames.
+// Review if: ETA becomes sluggish to real speed changes and needs a shorter span.
+
+// DefaultWindow is the wall-clock span used for DownloadSpeed (stability-first
+// for Usenet/NNTP burstiness; client EMA still tracks slower drifts).
+const DefaultWindow = 60 * time.Second
 
 // Sample is one (time, completed-bytes) point.
 type Sample struct {

@@ -63,7 +63,7 @@ type Download struct {
 	Dir             string   // staging subdirectory where assembled files land
 	TotalLength     int64    // sum of NZB segment byte counts (approximate before download)
 	CompletedLength int64    // decoded bytes written so far
-	DownloadSpeed   int64    // bytes/sec (rolling ~10s window, updated each 500 ms poll)
+	DownloadSpeed   int64    // bytes/sec (rolling ~60s window, updated each 500 ms poll)
 	Files           []string // absolute paths of assembled files (populated on complete)
 	ErrorMessage    string
 	// ResumeMode is how this job started: "resumed", "full", "forced-full", or "disabled".
@@ -153,10 +153,10 @@ type dlState struct {
 	// Review if: stream handler sends the fanout payload instead of re-Listing.
 	total     int64
 	completed int64
-	// Claude 2026-09-21: rolling ~10s DownloadSpeed window (ratesmooth).
-	// Reason: single 500ms tick was too bursty for Usenet/NNTP ETA accuracy.
-	// Troubleshooting: ↓ MB/s and ETA jumping every half-second.
-	// Review if: wire field becomes a server-smoothed rate with its own contract.
+	// Claude 2026-09-21: rolling ~60s DownloadSpeed window (ratesmooth).
+	// Reason: 10s still bursty for Usenet/NNTP ETA; operators asked for a larger span.
+	// Troubleshooting: ↓ MB/s and ETA jumping across SSE frames.
+	// Review if: ETA becomes too slow to reflect real speed drops/spikes.
 	speedWin ratesmooth.Window
 	speed    int64
 }

@@ -5,15 +5,14 @@
 //   while downloading, with no sense of time left.
 // Review if: the engine starts emitting remaining-time estimates of its own.
 //
-// Claude 2026-09-21: balanced smoothness pass (byte-delta EMA + display clamp).
-// Reason: wire downloadSpeed (even with a 10s engine window) still jitters; UI
-//   also jerked when lastGoodEtaSec jumped. Prefer calm countdown with moderate
-//   tracking of real speed changes.
-// Troubleshooting: ~countdown leaping by large steps every SSE frame.
-// Review if: engine emits a first-class remaining-time field.
+// Claude 2026-09-21: stability-first smoothness (α=0.10, ±10%/s clamp) paired
+//   with engine ratesmooth DefaultWindow=60s.
+// Reason: 10s window + α=0.18 / ±20%/s still jumped under Usenet bursts.
+// Troubleshooting: ~countdown leaping between SSE frames after the first smooth pass.
+// Review if: ETA lags real speed changes enough that operators distrust it.
 
-/** Balanced: smoother than 0.3, still tracks real speed shifts within ~a few samples. */
-export const EMA_ALPHA = 0.18;
+/** Stability-first EMA: slow to absorb bursty byte-deltas / wire speed. */
+export const EMA_ALPHA = 0.10;
 export const MIN_POSITIVE_SAMPLES = 3;
 export const ETA_FREEZE_MS = 30_000;
 /** Ignore sub-frame byte deltas that would invent huge instantaneous rates. */
@@ -22,7 +21,7 @@ export const BYTE_DELTA_MIN_MS = 400;
  * Max fractional jump of the ETA estimate per second of wall time when a new
  * sample arrives (display clamp). Natural countdown between samples is uncapped.
  */
-export const DISPLAY_MAX_FRAC_PER_SEC = 0.2;
+export const DISPLAY_MAX_FRAC_PER_SEC = 0.1;
 
 export const HARDWARE_REPAIR_BPS = 25 * 1024 * 1024;
 export const HARDWARE_UNPACK_BPS = 40 * 1024 * 1024;

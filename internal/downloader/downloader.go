@@ -182,11 +182,11 @@ type entry struct {
 	filename  string   // display: files[0] when known
 
 	// Speed: prevBytes still drives the stale clock; DownloadSpeed uses a
-	// rolling ~10s window (ratesmooth) so UI ETA is less bursty than a single
+	// rolling ~60s window (ratesmooth) so UI ETA is less bursty than a single
 	// 500ms poll delta.
-	// Claude 2026-09-21: rolling window for DownloadSpeed.
-	// Reason: single-tick deltas made Downloads ETA jumpy for torrents too.
-	// Review if: wire DownloadSpeed is redefined as instantaneous.
+	// Claude 2026-09-21: rolling ~60s window for DownloadSpeed.
+	// Reason: 10s still jumpy under bursty transfers; match Usenet ratesmooth span.
+	// Review if: ETA becomes too slow to reflect real speed drops/spikes.
 	prevBytes int64
 	speedWin  ratesmooth.Window
 	speed     int64

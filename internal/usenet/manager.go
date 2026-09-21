@@ -889,18 +889,24 @@ func (m *Manager) allocateStaging() (gid, dlDir string, err error) {
 // Review if: pause should drop the job semaphore so another NZB can fetch.
 func (m *Manager) Pause(gid string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	dl, ok := m.downloads[gid]
 	if !ok {
+		m.mu.Unlock()
 		return fmt.Errorf("usenet: download not found: %s", gid)
 	}
 	if dl.status != "active" {
+		m.mu.Unlock()
 		return fmt.Errorf("usenet: download %s is %s, not active", gid, dl.status)
 	}
 	dl.status = "paused"
-	if dl.gate != nil {
-		dl.gate.Pause()
+	gate := dl.gate
+	resume := dl.resume
+	m.mu.Unlock()
+	if gate != nil {
+		gate.Pause()
 	}
+	// Flush throttled DB mirror so UI/debug sees pause-time progress.
+	resume.FlushMirror()
 	return nil
 }
 
@@ -1164,6 +1170,8 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 		return
 	}
 
+	// Flush DB resume mirror once segments are done (throttled during fetch).
+	dl.resume.FlushMirror()
 	m.finalizeAssembled(ctx, gid, dl, files)
 }
 

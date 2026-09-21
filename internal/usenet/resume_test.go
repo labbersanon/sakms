@@ -2,9 +2,12 @@ package usenet
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestIsStagingMetaFile(t *testing.T) {
@@ -195,3 +198,66 @@ func TestLoadResumeTracker_WipesV2(t *testing.T) {
 		t.Fatal("v2 packed payload should be wiped")
 	}
 }
+
+type countingMirror struct {
+	mu    sync.Mutex
+	saves int
+}
+
+func (m *countingMirror) SaveResume(string, ResumeSnapshot) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.saves++
+	return nil
+}
+
+func (m *countingMirror) ClearResume(string) error { return nil }
+
+func (m *countingMirror) count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.saves
+}
+
+func TestResumeTracker_MirrorThrottled(t *testing.T) {
+	dir := t.TempDir()
+	mir := &countingMirror{}
+	tr := loadResumeTracker(dir, "nzb-throttle", mir, false)
+
+	for i := 0; i < 20; i++ {
+		msg := fmt.Sprintf("<seg%d@x>", i)
+		if err := tr.markSegment("a.bin", msg, i+1, int64(i*100), 100, 2000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := mir.count(); got != 1 {
+		t.Fatalf("mirror saves during burst = %d, want 1 (first write only within interval)", got)
+	}
+	if n := tr.skippedSegments(); n != 20 {
+		t.Fatalf("sidecar segments = %d, want 20", n)
+	}
+
+	tr.FlushMirror()
+	if got := mir.count(); got != 2 {
+		t.Fatalf("mirror saves after FlushMirror = %d, want 2", got)
+	}
+}
+
+func TestResumeTracker_MirrorIntervalAllowsNext(t *testing.T) {
+	dir := t.TempDir()
+	mir := &countingMirror{}
+	tr := loadResumeTracker(dir, "nzb-interval", mir, false)
+	if err := tr.markSegment("a.bin", "<a@x>", 1, 0, 10, 100); err != nil {
+		t.Fatal(err)
+	}
+	tr.mu.Lock()
+	tr.lastMirrorAt = time.Now().Add(-resumeMirrorMinInterval - time.Second)
+	tr.mu.Unlock()
+	if err := tr.markSegment("a.bin", "<b@x>", 2, 10, 10, 100); err != nil {
+		t.Fatal(err)
+	}
+	if got := mir.count(); got != 2 {
+		t.Fatalf("mirror saves after interval = %d, want 2", got)
+	}
+}
+

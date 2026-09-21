@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // Claude 2026-09-11: durable usenet segment-resume sidecar (Phase 2)
@@ -58,13 +59,21 @@ type ResumeMirror interface {
 	ClearResume(gid string) error
 }
 
+// Claude 2026-09-21: throttle DB resume mirrors (sidecar stays per-segment SoT).
+// Reason: per-segment SaveResume of multi-MB JSON filled the 8G sakms_db LUN
+//   via MVCC TOAST (~6.5G from one REMUX). Sidecar overwrite is cheap; DB is not.
+// Troubleshooting: sakms-db 100% / healthz 503; FlushMirror on Pause + complete.
+// Review if: interval needs tuning or the DB mirror is removed entirely.
+const resumeMirrorMinInterval = 30 * time.Second
+
 type resumeTracker struct {
-	mu       sync.Mutex
-	dir      string
-	gid      string
-	snap     ResumeSnapshot
-	mirror   ResumeMirror
-	disabled bool // force-full / resume off — never write
+	mu           sync.Mutex
+	dir          string
+	gid          string
+	snap         ResumeSnapshot
+	mirror       ResumeMirror
+	disabled     bool // force-full / resume off — never write
+	lastMirrorAt time.Time
 }
 
 func loadResumeTracker(dir, gid string, mirror ResumeMirror, disabled bool) *resumeTracker {
@@ -277,11 +286,44 @@ func (t *resumeTracker) persistLocked() error {
 		_ = os.Remove(tmp)
 		return err
 	}
-	if t.mirror != nil {
-		if err := t.mirror.SaveResume(t.gid, cloneResumeSnapshot(t.snap)); err != nil {
-			return fmt.Errorf("resume mirror: %w", err)
-		}
+	// Sidecar is SoT and written every segment; DB mirror is throttled.
+	// Mirror errors are logged only — a full/unavailable DB must not fail the fetch.
+	if err := t.mirrorLocked(false); err != nil {
+		log.Printf("usenet: resume mirror %s: %v", t.gid, err)
 	}
+	return nil
+}
+
+// FlushMirror forces a DB mirror write (Pause / download-complete). Sidecar is
+// already current. Errors are logged — mirror failure must not fail the download.
+func (t *resumeTracker) FlushMirror() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.disabled {
+		return
+	}
+	if err := t.mirrorLocked(true); err != nil {
+		log.Printf("usenet: resume mirror flush %s: %v", t.gid, err)
+	}
+}
+
+// mirrorLocked writes the DB mirror when force is set or the min interval has
+// elapsed. Caller must hold t.mu.
+func (t *resumeTracker) mirrorLocked(force bool) error {
+	if t.mirror == nil {
+		return nil
+	}
+	now := time.Now()
+	if !force && now.Sub(t.lastMirrorAt) < resumeMirrorMinInterval {
+		return nil
+	}
+	if err := t.mirror.SaveResume(t.gid, cloneResumeSnapshot(t.snap)); err != nil {
+		return fmt.Errorf("resume mirror: %w", err)
+	}
+	t.lastMirrorAt = now
 	return nil
 }
 

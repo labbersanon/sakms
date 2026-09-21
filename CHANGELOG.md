@@ -8887,3 +8887,20 @@ throttle/removal of `SaveResume` still required.
 | `deploy/sakms/sakms-resume-vacuum.service` | New oneshot unit |
 | `deploy/sakms/sakms-resume-vacuum.timer` | New hourly timer |
 | `internal/db/migrations/0027_usenet_resume_autovacuum.sql` | Aggressive autovacuum reloptions |
+
+## 2026-09-21 — throttle Usenet DB resume mirror
+
+**Problem:** Per-segment `SaveResume` of multi-MB JSON filled the 8G sakms_db LUN
+(MVCC TOAST) even with one download at a time.
+**Fix:** Sidecar still writes every segment (SoT). DB mirror at most every 30s,
+plus forced flush on Pause and when segment fetch completes. Mirror errors are
+logged, not fatal.
+**Outcome:** Tests green; deploy pending.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/resume.go` | `resumeMirrorMinInterval`, `FlushMirror`, throttled `mirrorLocked` |
+| `internal/usenet/manager.go` | Flush on Pause + after downloadAll |
+| `internal/usenet/resume_test.go` | Throttle + interval tests |

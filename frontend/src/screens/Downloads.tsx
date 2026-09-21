@@ -87,16 +87,16 @@ function formatSize(bytes: number): string {
 const TAG_PILL = "shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium";
 
 const PHASE_BADGE: Record<string, string> = {
-  // Claude 2026-09-21: neon text + thin black outline (pill-neon-outline).
-  // Reason: plain neon on soft chips washed out; outline + bold for contrast.
-  // Troubleshooting: Downloads phase pill text still hard to read.
-  // Review if: chips switch to solid dark backgrounds instead of outlined neon.
-  stalled: "bg-warn/20 text-neon-red pill-neon-outline",
-  repairing: "bg-accent/20 text-neon-blue pill-neon-outline",
-  unpacking: "bg-accent/20 text-neon-blue pill-neon-outline",
-  downloading: "bg-accent/20 text-neon-blue pill-neon-outline",
+  // Claude 2026-09-21: option E — deep solid text, no neon/outline.
+  // Reason: neon+outline still unreadably washed on cream chips.
+  // Troubleshooting: Downloads phase pill contrast.
+  // Review if: solid filled chips (B/C/F) are preferred instead.
+  stalled: "bg-surface text-status-red font-semibold",
+  repairing: "bg-surface text-status-blue font-semibold",
+  unpacking: "bg-surface text-status-blue font-semibold",
+  downloading: "bg-surface text-status-blue font-semibold",
   queued: "bg-surface-2 text-muted",
-  paused: "bg-warn/20 text-neon-red pill-neon-outline",
+  paused: "bg-surface text-status-red font-semibold",
   complete: "bg-ok/20 text-ok",
   failed: "bg-danger/20 text-danger",
   removed: "bg-surface-2 text-muted",

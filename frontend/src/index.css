@@ -26,13 +26,12 @@
   --color-danger: #c1272d;
   --color-ok: #3f7d4a;
   --color-warn: #c67c1e;
-  /* Claude 2026-09-21: Downloads phase pill text (neon blue / neon red).
-     Reason: operator asked for neon blue on active phases and neon red on
-       Stalled/Paused instead of gold accent / amber warn text.
-     Troubleshooting: Downloads status chip text still reading orange/gold.
-     Review if: global theme gains a dedicated status-neon palette. */
-  --color-neon-blue: #00c8ff;
-  --color-neon-red: #ff1744;
+  /* Claude 2026-09-21: Downloads phase pill text — deep solid (option E).
+     Reason: neon + outline still hard to read on cream; darker non-neon blues/reds.
+     Troubleshooting: Downloads Downloading/Stalled pills wash out.
+     Review if: phase pills move to solid filled chips (options B/C/F). */
+  --color-status-blue: #0066cc;
+  --color-status-red: #b00020;
 
   /*
    * chrome/chrome-fg are the persistent app shell's OWN colors (header +
@@ -75,17 +74,6 @@ body {
   &::-webkit-scrollbar {
     display: none;
   }
-}
-
-/* Claude 2026-09-21: thin black outline for neon Downloads phase pill text.
-   Reason: neon blue/red on soft cream chips was hard to read; operator asked
-     for a thin black outline + bold weight (contrast first).
-   Troubleshooting: Downloads Downloading/Stalled pills still wash out.
-   Review if: phase pills move off neon or gain a solid dark chip instead. */
-@utility pill-neon-outline {
-  font-weight: 700;
-  -webkit-text-stroke: 0.75px #000;
-  paint-order: stroke fill;
 }
 
 /* Claude 2026-08-14: Library in-app playback fullscreen was cream

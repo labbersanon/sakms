@@ -293,10 +293,7 @@ describe("Downloads — protocol-scoped metrics", () => {
     expect(await screen.findByText("Movie.1080p.mkv")).toBeInTheDocument();
     expect(screen.getByLabelText("Download phase")).toHaveTextContent("Downloading");
     expect(screen.getByLabelText("Download phase").className).toContain(
-      "text-neon-blue",
-    );
-    expect(screen.getByLabelText("Download phase").className).toContain(
-      "pill-neon-outline",
+      "text-status-blue",
     );
     expect(screen.getByLabelText("Protocol")).toHaveTextContent("Torrent");
     expect(screen.getByText("400 KB / 1000 KB")).toBeInTheDocument();
@@ -474,10 +471,7 @@ describe("Downloads — phase tags", () => {
     ]);
     expect(screen.getByLabelText("Download phase")).toHaveTextContent("Stalled");
     expect(screen.getByLabelText("Download phase").className).toContain(
-      "text-neon-red",
-    );
-    expect(screen.getByLabelText("Download phase").className).toContain(
-      "pill-neon-outline",
+      "text-status-red",
     );
   });
 

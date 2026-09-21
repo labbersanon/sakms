@@ -218,6 +218,43 @@ describe("freeze / calculating / hidden", () => {
     );
   });
 
+  it("arms ETA from byte deltas when SSE is faster than BYTE_DELTA_MIN_MS and wire speed is 0", () => {
+    // Dual-engine fanout often delivers ~250ms frames; wire downloadSpeed can
+    // stay 0 while the 60s ratesmooth window fills. Progress must still arm ETA.
+    const trackers = new Map<string, EtaTracker>();
+    let completed = 0;
+    const start = 1_000;
+    for (let i = 0; i < 12; i++) {
+      completed += 25_000;
+      updateEtaTrackers(
+        trackers,
+        [
+          item({
+            downloadSpeed: 0,
+            completedLength: completed,
+            totalLength: 1_000_000,
+          }),
+        ],
+        start + i * 250,
+      );
+    }
+    const t = trackers.get("g1")!;
+    expect(t.samples).toBeGreaterThanOrEqual(MIN_POSITIVE_SAMPLES);
+    expect(t.lastGoodEtaSec).not.toBeNull();
+    expect(
+      resolveEtaView(
+        item({
+          downloadSpeed: 0,
+          completedLength: completed,
+          totalLength: 1_000_000,
+        }),
+        t,
+        start + 11 * 250,
+        false,
+      ).kind,
+    ).toBe("eta");
+  });
+
   it("freezes last good ETA for 30s of zero speed, then dashes", () => {
     const d = item({ downloadSpeed: 100 });
     const trackers = sampleEnough(d, 2000);

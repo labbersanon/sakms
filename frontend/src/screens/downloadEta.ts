@@ -256,18 +256,32 @@ export function updateEtaTrackers(
 
     let sampled = false;
     if (!isPostprocess(d)) {
+      // Claude 2026-09-21: do not advance lastCompletedAt on zero-progress
+      //   frames, and hold the byte baseline until dt >= BYTE_DELTA_MIN_MS.
+      // Reason: torrent+usenet both fan out ~500ms; when out of phase the SSE
+      //   arrives ~250ms. Updating the clock every frame kept dtMs < 400 forever,
+      //   so byte-delta EMA never armed. After DefaultWindow=60s, wire
+      //   downloadSpeed stays 0 longer at start, so bootstrap also missed →
+      //   stuck on calculating….
+      // Troubleshooting: progress bar moves, ↓ may show a rate, ETA stays
+      //   "calculating…".
+      // Review if: downloads SSE coalesces to a single cadence ≥ BYTE_DELTA_MIN_MS.
       const dtMs = now - t.lastCompletedAt;
       const dBytes = d.completedLength - t.lastCompleted;
-      if (dtMs >= BYTE_DELTA_MIN_MS && dBytes > 0) {
+      if (dBytes > 0 && dtMs >= BYTE_DELTA_MIN_MS) {
         feedBps(t, dBytes / (dtMs / 1000));
         sampled = true;
+        t.lastCompleted = d.completedLength;
+        t.lastCompletedAt = now;
       } else if (d.downloadSpeed > 0 && t.samples < MIN_POSITIVE_SAMPLES) {
         // Bootstrap from the engine's rolling-window speed until byte deltas exist.
         feedBps(t, d.downloadSpeed);
         sampled = true;
+        t.lastCompleted = d.completedLength;
+        t.lastCompletedAt = now;
       }
-      t.lastCompleted = d.completedLength;
-      t.lastCompletedAt = now;
+      // else: zero progress, or progress too fresh to rate — keep baseline so
+      // bytes accumulate across fast SSE frames until dtMs clears the gate.
     }
 
     const eta = computeEtaSec(d, t, now);

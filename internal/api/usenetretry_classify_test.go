@@ -62,6 +62,11 @@ func TestClassifyDownloadStateTransientFailureIsRetryable(t *testing.T) {
 			failure: fmt.Errorf("segment <abc@news>: %w", usenet.ErrArticleRemoved),
 			want:    grabs.Failed,
 		},
+		{
+			name:    "staging-gone on Resume is retryable (re-search)",
+			failure: usenet.ErrStagingGone,
+			want:    grabs.PendingRetry,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := classifyDownloadState("error", tc.failure); got != tc.want {

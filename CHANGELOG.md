@@ -8834,3 +8834,34 @@ suite green.
 | `internal/api/usenetcontent_test.go` | New tests |
 | `docs/usenet-alternate-release.md` | New doc |
 | `docs/usenet-transport-resilience.md` | Cross-link to C doc |
+
+## 2026-09-21 — Usenet true pause / resume
+
+**Feature:** Usenet downloads can be paused and resumed without cancelling the
+download context. Pause blocks segment fetch / finalize on a pause gate;
+Resume wakes waiters. Global "Resume all downloads" resumes per-row paused
+jobs (torrent + Usenet). If staging is missing on Resume, the job errors with
+`ErrStagingGone` and `onError` parks the grab for re-search (`PendingRetry`).
+
+**Problem:** Pause cancelled the download context, leaving `grabs.queued` with
+a dead GID that still filled `freeUsenetSlots` (often max=1), so autograb
+stopped. Resume was a stub that required re-submitting the NZB.
+
+**Design:**
+- `pauseGate` on each `dlState`; Wait checkpoints in `downloadAll` /
+  `assembleFile` / `finalizeAssembled`.
+- Pause does not cancel; Cancel / staging-gone abort still cancel context.
+- `putPauseStateHandler(paused=false)` calls `resumeAllPaused`.
+
+**Tests:** `pause_resume_test.go` (gate + Pause/Resume + staging-gone);
+classify asserts `ErrStagingGone` → `PendingRetry`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/pause.go` | New: `pauseGate`, `ErrStagingGone` |
+| `internal/usenet/manager.go` | True Pause/Resume; gate waits; `waitGateOrAbort` |
+| `internal/usenet/pause_resume_test.go` | New tests |
+| `internal/api/downloads.go` | `resumeAllPaused` on global resume |
+| `internal/api/usenetretry_classify_test.go` | ErrStagingGone → PendingRetry |

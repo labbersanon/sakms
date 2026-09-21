@@ -94,6 +94,7 @@ type dlState struct {
 	err        error // classified retrieval failure; surfaced as Download.Err
 	files      []string
 	cancel     context.CancelFunc
+	gate       *pauseGate // true-pause; never nil after construction
 	// Claude 2026-09-20: set once when the job is inserted into m.downloads.
 	addedAt time.Time
 
@@ -715,6 +716,7 @@ func (m *Manager) AddArticleSet(ctx context.Context, nzb *NZB, name string) (str
 		status:     "active",
 		total:      totalBytes,
 		cancel:     cancel,
+		gate:       newPauseGate(),
 		addedAt:    time.Now(),
 	}
 
@@ -819,6 +821,7 @@ func (m *Manager) RelaunchArticleSet(ctx context.Context, gid string, nzb *NZB, 
 		status:     "active",
 		total:      totalBytes,
 		cancel:     cancel,
+		gate:       newPauseGate(),
 		addedAt:    time.Now(),
 	}
 
@@ -877,26 +880,80 @@ func (m *Manager) allocateStaging() (gid, dlDir string, err error) {
 	return "", "", fmt.Errorf("usenet: could not allocate a free nzb GID")
 }
 
-// Pause stops an active download by cancelling its context. The entry remains
-// visible in List/FindByGID with status "paused". Re-submit via AddNZB to retry.
+// Pause suspends an active download without cancelling its context.
+//
+// Claude 2026-09-20: true pause (no context cancel).
+// Reason: cancel-based Pause stranded grabs.queued with a dead GID and blocked
+//   freeUsenetSlots; Resume was a stub forcing NZB re-submit.
+// Troubleshooting: Pause then Resume on Downloads; global Resume all downloads.
+// Review if: pause should drop the job semaphore so another NZB can fetch.
 func (m *Manager) Pause(gid string) error {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	dl, ok := m.downloads[gid]
-	if ok {
-		dl.status = "paused"
-	}
-	m.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("usenet: download not found: %s", gid)
 	}
-	dl.cancel()
+	if dl.status != "active" {
+		return fmt.Errorf("usenet: download %s is %s, not active", gid, dl.status)
+	}
+	dl.status = "paused"
+	if dl.gate != nil {
+		dl.gate.Pause()
+	}
 	return nil
 }
 
-// Resume is not supported for usenet downloads in this implementation.
-// Re-submit the NZB via AddNZB to restart.
-func (m *Manager) Resume(_ string) error {
-	return fmt.Errorf("usenet: resume is not supported; re-submit the NZB to restart")
+// Resume continues a paused download. Missing staging returns ErrStagingGone.
+//
+// Claude 2026-09-20: true resume + staging-gone → re-search.
+// Reason: operator requirement — never pretend to resume a missing staging tree.
+// Troubleshooting: Resume returns ErrStagingGone; Requests shows pending_retry.
+// Review if: Resume should RelaunchNZB into a fresh dir when staging is missing.
+func (m *Manager) Resume(gid string) error {
+	m.mu.Lock()
+	dl, ok := m.downloads[gid]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("usenet: download not found: %s", gid)
+	}
+	if dl.status != "paused" {
+		m.mu.Unlock()
+		return fmt.Errorf("usenet: download %s is %s, not paused", gid, dl.status)
+	}
+	staging := dl.stagingDir
+	cancel := dl.cancel
+	gate := dl.gate
+	m.mu.Unlock()
+
+	st, err := os.Stat(staging)
+	if err != nil || !st.IsDir() {
+		m.mu.Lock()
+		if d2, ok := m.downloads[gid]; ok && d2.status == "paused" {
+			d2.status = "error"
+			d2.err = ErrStagingGone
+			d2.errorMsg = ErrStagingGone.Error()
+		}
+		m.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		if gate != nil {
+			gate.Resume() // wake waiters so they observe ctx cancel
+		}
+		m.fireOnError(m.baseContext(), gid, ErrStagingGone)
+		return ErrStagingGone
+	}
+
+	m.mu.Lock()
+	if d2, ok := m.downloads[gid]; ok && d2.status == "paused" {
+		d2.status = "active"
+	}
+	m.mu.Unlock()
+	if gate != nil {
+		gate.Resume()
+	}
+	return nil
 }
 
 // Cancel removes a download entirely (stops it and removes it from the queue),
@@ -989,6 +1046,7 @@ func (m *Manager) InjectDownloadForTest(gid string) {
 		name:   "test",
 		status: "active",
 		cancel: func() {},
+		gate:   newPauseGate(),
 	}
 }
 
@@ -1073,7 +1131,12 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 	if err != nil {
 		failed := false
 		m.mu.Lock()
-		if dl.status != "removed" && dl.status != "paused" {
+		switch dl.status {
+		case "removed", "paused":
+			// True pause does not cancel. Staging-gone Resume sets error before cancel.
+		case "error":
+			// Already classified (e.g. ErrStagingGone on Resume) — do not re-fire.
+		default:
 			dl.status = "error"
 			dl.errorMsg = err.Error()
 			// Keep the wrapped error itself, not just its text, so a caller can
@@ -1104,6 +1167,32 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 	m.finalizeAssembled(ctx, gid, dl, files)
 }
 
+func (m *Manager) waitGateOrAbort(ctx context.Context, gid string, dl *dlState) error {
+	if dl.gate == nil {
+		return nil
+	}
+	err := dl.gate.Wait(ctx)
+	if err == nil {
+		return nil
+	}
+	failed := false
+	m.mu.Lock()
+	switch dl.status {
+	case "removed", "paused", "error":
+	default:
+		dl.status = "error"
+		dl.errorMsg = err.Error()
+		dl.err = err
+		failed = true
+		log.Printf("usenet: download %s (%s) error: %v", gid, dl.name, err)
+	}
+	m.mu.Unlock()
+	if failed {
+		m.fireOnError(ctx, gid, err)
+	}
+	return err
+}
+
 // finalizeAssembled runs PAR2 then unpack on assembled staging files and marks
 // the download complete or error. Extracted so tests can exercise the gate
 // without NNTP.
@@ -1127,11 +1216,18 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 //
 // Related: verifyAndRepair; unpackArchives; docs/usenet-contiguous-assembly.md.
 func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState, files []string) {
+	if err := m.waitGateOrAbort(ctx, gid, dl); err != nil {
+		return
+	}
 	repaired, repairErr := verifyAndRepair(dl.stagingDir, files)
 	if repairErr != nil {
 		log.Printf("usenet: par2 repair %s: %v — continuing to unpack", gid, repairErr)
 	}
 	files = repaired
+
+	if err := m.waitGateOrAbort(ctx, gid, dl); err != nil {
+		return
+	}
 
 	// Claude 2026-09-03: unpack rar/zip/7z after PAR2, before import.
 	// Reason: most Usenet releases are multi-part RAR; import only resolves
@@ -1217,6 +1313,11 @@ func (m *Manager) downloadAll(ctx context.Context, gid string, dl *dlState, nzb 
 	usedNames := map[string]struct{}{}
 	var paths []string
 	for _, nzbFile := range nzb.Files {
+		if dl.gate != nil {
+			if err := dl.gate.Wait(ctx); err != nil {
+				return nil, err
+			}
+		}
 		path, err := m.assembleFile(ctx, gid, dl, nzbFile, maxConc, usedNames)
 		if err != nil {
 			return nil, fmt.Errorf("%q: %w", nzbFile.Subject, err)
@@ -1266,6 +1367,11 @@ func (m *Manager) downloadAll(ctx context.Context, gid string, dl *dlState, nzb 
 // Troubleshooting: PAR2 not repairable after "complete" obfuscated RAR set.
 // Review if: uniqueOutputName scheme (.partNNN) conflicts with a poster convention.
 func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzbFile NZBFile, maxConc int, usedNames map[string]struct{}) (string, error) {
+	if dl.gate != nil {
+		if err := dl.gate.Wait(ctx); err != nil {
+			return "", err
+		}
+	}
 	if len(nzbFile.Segs) == 0 {
 		return "", fmt.Errorf("no segments")
 	}
@@ -1406,6 +1512,11 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 			}
 			gotMu.Unlock()
 
+			if dl.gate != nil {
+				if err := dl.gate.Wait(gctx); err != nil {
+					return err
+				}
+			}
 			res, err := m.fetchSegmentAny(gctx, msgID)
 			if err != nil {
 				return fmt.Errorf("segment %d: %w", seg.Number, err)

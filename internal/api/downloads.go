@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"os"
@@ -582,13 +583,15 @@ func getPauseStateHandler(settingsStore *settings.Store) http.HandlerFunc {
 	}
 }
 
-// putPauseStateHandler sets the global download pause flag. Setting it true
-// pauses every currently-active download (reusing each engine's per-item Pause,
-// best-effort/skip-and-continue) AND — via the gate in dispatchToDownloadClient
-// keyed on the same flag — blocks any new grab until it's set back to false.
-// Setting it false only lifts that gate: it does NOT auto-resume the downloads
-// this toggle paused (per-item Resume stays the operator's tool, and usenet has
-// no resume anyway — re-submit the NZB), scoped deliberately to the spec.
+// putPauseStateHandler sets the global download pause flag. True pauses
+// in-flight items and blocks new grabs; false resumes paused items.
+//
+// Claude 2026-09-20: setting paused=false also resumes per-item paused jobs.
+// Reason: Usenet true-pause keeps the goroutine alive; "Resume all" must wake
+//   those gates (and torrent Resume). Previously only the dispatch gate lifted,
+//   stranding paused Usenet rows and their grab GIDs in freeUsenetSlots.
+// Troubleshooting: Pause all → Resume all on Downloads; Usenet rows leave paused.
+// Review if: operator wants Resume-all to leave per-row pauses intact.
 func putPauseStateHandler(settingsStore *settings.Store, dl *downloader.Manager, nzb *usenet.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req apidto.DownloadPauseState
@@ -603,6 +606,8 @@ func putPauseStateHandler(settingsStore *settings.Store, dl *downloader.Manager,
 		}
 		if req.Paused {
 			pauseAllActive(dl, nzb)
+		} else {
+			resumeAllPaused(dl, nzb)
 		}
 		writeJSON(w, apidto.DownloadPauseState{Paused: req.Paused})
 	}
@@ -623,6 +628,27 @@ func pauseAllActive(dl *downloader.Manager, nzb *usenet.Manager) {
 		for _, d := range nzb.List() {
 			if d.Status == "active" {
 				_ = nzb.Pause(d.GID)
+			}
+		}
+	}
+}
+
+// resumeAllPaused resumes paused items on both engines. Usenet ErrStagingGone
+// is logged; onError already parked the grab for re-search.
+func resumeAllPaused(dl *downloader.Manager, nzb *usenet.Manager) {
+	if dl != nil {
+		for _, d := range dl.List() {
+			if d.Status == "paused" {
+				_ = dl.Resume(d.GID)
+			}
+		}
+	}
+	if nzb != nil {
+		for _, d := range nzb.List() {
+			if d.Status == "paused" {
+				if err := nzb.Resume(d.GID); err != nil {
+					log.Printf("downloads: resume usenet %s: %v", d.GID, err)
+				}
 			}
 		}
 	}

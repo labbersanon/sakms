@@ -1,14 +1,6 @@
-// FolderPicker — a drop-in replacement for a plain <input type="text"> on
-// Settings filesystem-path fields (library/kids roots, torrent staging, Usenet
-// off-data staging, …). It stays a fully free-typed input at all times (the
-// picker is a pure suggestion layer, never a hard constraint) and adds a
-// dropdown listing the subdirectories of whatever path is currently typed,
-// sourced from GET /api/browse (fetchBrowse). The backend lists an exact path's
-// children, not a fuzzy prefix search across siblings, so the dropdown fills in
-// as the operator drills down: clicking a suggestion sets the value to that
-// directory's full path, whose own children are then fetched. A resolved-but-
-// nonexistent path returns 200 with no entries (graceful degradation), so a
-// half-typed path just shows nothing extra rather than an error.
+// FolderPicker — free-typed path input with subdirectory suggestions from
+// GET /api/browse for Settings path fields. Suggestions list an exact path's
+// children (drill-down on click); unknown paths return empty entries, not errors.
 
 import {
   type Component,
@@ -21,9 +13,6 @@ import type { BrowseEntry } from "@dto";
 import { fetchBrowse, isAdultBrowsablePath } from "../api/settings";
 import { inputClass, useAdultEnabled } from "./ui";
 
-// DEBOUNCE_MS throttles the as-you-type fetch so each keystroke doesn't fire a
-// request; a clicked suggestion reuses the same debounced path so drilling down
-// stays one code path.
 const DEBOUNCE_MS = 300;
 
 export const FolderPicker: Component<{
@@ -31,9 +20,6 @@ export const FolderPicker: Component<{
   onChange: (path: string) => void;
   ariaLabel?: string;
   placeholder?: string;
-  // invalid, when it returns true, red-tints the input — used by the Library
-  // root-folder field to reflect a failed path test. Optional; other callers
-  // (e.g. the kids-path field) omit it and render normally.
   invalid?: () => boolean;
   // Claude 2026-09-20: optional disabled for gated path fields (off-data staging).
   // Reason: Usenet off-data staging input is inert until the enable toggle is on;
@@ -56,15 +42,12 @@ export const FolderPicker: Component<{
       const r = await fetchBrowse(path);
       setEntries(r.entries ?? []);
     } catch {
-      // Never surface an error mid-word — the backend already 200s an unknown
-      // path with no entries, and a genuine failure just means no suggestions.
       setEntries([]);
     }
     setOpen(true);
   };
 
   const scheduleFetch = (path: string) => {
-    if (isDisabled()) return;
     if (debounceTimer !== undefined) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => void doFetch(path), DEBOUNCE_MS);
   };
@@ -82,18 +65,13 @@ export const FolderPicker: Component<{
 
   const onFocus = () => {
     if (isDisabled()) return;
-    // Empty value on focus: immediately show the configured roots as a starting
-    // point (no debounce — this is a deliberate open, not a keystroke).
     if (props.value().trim() === "") void doFetch("");
     else if (entries().length) setOpen(true);
   };
 
   const pick = (entry: BrowseEntry) => {
-    if (isDisabled()) return;
     props.onChange(entry.path);
     setOpen(false);
-    // The value change is a drill-down: fetch the picked directory's children so
-    // the operator can continue without extra wiring.
     scheduleFetch(entry.path);
   };
 

@@ -33,10 +33,15 @@ function stub(browse: BrowseBody | ((url: string) => BrowseBody)) {
 
 // Harness owns the path signal exactly as the Library sections do, so the
 // picker is exercised as its real callers wire it.
-function Harness(props: { initial?: string }) {
+function Harness(props: { initial?: string; disabled?: boolean }) {
   const [val, setVal] = createSignal(props.initial ?? "");
   return (
-    <FolderPicker value={val} onChange={setVal} ariaLabel="Folder" />
+    <FolderPicker
+      value={val}
+      onChange={setVal}
+      ariaLabel="Folder"
+      disabled={props.disabled ? () => true : undefined}
+    />
   );
 }
 
@@ -146,15 +151,7 @@ describe("FolderPicker", () => {
 
   it("does not fetch or open suggestions when disabled", async () => {
     const urls = stub(roots);
-    const [val, setVal] = createSignal("");
-    render(() => (
-      <FolderPicker
-        value={val}
-        onChange={setVal}
-        ariaLabel="Folder"
-        disabled={() => true}
-      />
-    ));
+    render(() => <Harness disabled />);
     const input = screen.getByLabelText("Folder") as HTMLInputElement;
     expect(input.disabled).toBe(true);
     fireEvent.focus(input);

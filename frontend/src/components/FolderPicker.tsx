@@ -1,7 +1,8 @@
-// FolderPicker — a drop-in replacement for a plain <input type="text"> on the
-// Settings root-folder / kids-path fields. It stays a fully free-typed input at
-// all times (the picker is a pure suggestion layer, never a hard constraint) and
-// adds a dropdown listing the subdirectories of whatever path is currently typed,
+// FolderPicker — a drop-in replacement for a plain <input type="text"> on
+// Settings filesystem-path fields (library/kids roots, torrent staging, Usenet
+// off-data staging, …). It stays a fully free-typed input at all times (the
+// picker is a pure suggestion layer, never a hard constraint) and adds a
+// dropdown listing the subdirectories of whatever path is currently typed,
 // sourced from GET /api/browse (fetchBrowse). The backend lists an exact path's
 // children, not a fuzzy prefix search across siblings, so the dropdown fills in
 // as the operator drills down: clicking a suggestion sets the value to that
@@ -34,6 +35,12 @@ export const FolderPicker: Component<{
   // root-folder field to reflect a failed path test. Optional; other callers
   // (e.g. the kids-path field) omit it and render normally.
   invalid?: () => boolean;
+  // Claude 2026-09-20: optional disabled for gated path fields (off-data staging).
+  // Reason: Usenet off-data staging input is inert until the enable toggle is on;
+  //   browse must not fire while disabled.
+  // Troubleshooting: focus/type on a disabled FolderPicker must not hit /api/browse.
+  // Review if: every caller that needs disabled has migrated — then keep the prop.
+  disabled?: () => boolean;
 }> = (props) => {
   const adultEnabled = useAdultEnabled();
   const [entries, setEntries] = createSignal<BrowseEntry[]>([]);
@@ -41,7 +48,10 @@ export const FolderPicker: Component<{
   let debounceTimer: ReturnType<typeof setTimeout> | undefined;
   let containerRef: HTMLDivElement | undefined;
 
+  const isDisabled = () => props.disabled?.() === true;
+
   const doFetch = async (path: string) => {
+    if (isDisabled()) return;
     try {
       const r = await fetchBrowse(path);
       setEntries(r.entries ?? []);
@@ -54,6 +64,7 @@ export const FolderPicker: Component<{
   };
 
   const scheduleFetch = (path: string) => {
+    if (isDisabled()) return;
     if (debounceTimer !== undefined) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => void doFetch(path), DEBOUNCE_MS);
   };
@@ -64,11 +75,13 @@ export const FolderPicker: Component<{
       : entries().filter((e) => !isAdultBrowsablePath(e.path));
 
   const onInput = (v: string) => {
+    if (isDisabled()) return;
     props.onChange(v);
     scheduleFetch(v);
   };
 
   const onFocus = () => {
+    if (isDisabled()) return;
     // Empty value on focus: immediately show the configured roots as a starting
     // point (no debounce — this is a deliberate open, not a keystroke).
     if (props.value().trim() === "") void doFetch("");
@@ -76,6 +89,7 @@ export const FolderPicker: Component<{
   };
 
   const pick = (entry: BrowseEntry) => {
+    if (isDisabled()) return;
     props.onChange(entry.path);
     setOpen(false);
     // The value change is a drill-down: fetch the picked directory's children so
@@ -104,11 +118,12 @@ export const FolderPicker: Component<{
         placeholder={props.placeholder}
         aria-label={props.ariaLabel}
         value={props.value()}
+        disabled={isDisabled()}
         onInput={(e) => onInput(e.currentTarget.value)}
         onFocus={onFocus}
         onKeyDown={onKeyDown}
       />
-      <Show when={open() && visibleEntries().length > 0}>
+      <Show when={!isDisabled() && open() && visibleEntries().length > 0}>
         <ul class="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-md border border-border bg-surface shadow-lg">
           <For each={visibleEntries()}>
             {(entry) => (

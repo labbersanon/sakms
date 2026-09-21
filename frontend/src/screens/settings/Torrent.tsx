@@ -45,6 +45,7 @@ import {
 } from "../../api/torrent";
 import { fetchUsenetAutoGrabEnabled } from "../../api/usenet";
 import { fetchAutoGrabSlots, putAutoGrabSlots } from "../../api/autograbSlots";
+import { FolderPicker } from "../../components/FolderPicker";
 import { ErrorText, Muted, inputClass, labelClass } from "../../components/ui";
 import {
   AutoGrabSlotFields,
@@ -319,13 +320,11 @@ const TorrentSettingsCard: Component = () => {
           </Muted>
           <label class="mb-3 block">
             <span class={labelClass}>Staging directory</span>
-            <input
-              type="text"
-              class={`${inputClass} mt-1`}
+            <FolderPicker
+              value={() => config()!.stagingDir}
+              onChange={(p) => patch("stagingDir", p)}
+              ariaLabel="Staging directory"
               placeholder="leave empty for the default"
-              aria-label="Staging directory"
-              value={config()!.stagingDir}
-              onInput={(e) => patch("stagingDir", e.currentTarget.value)}
             />
             <Muted class="mt-1">
               Where in-progress downloads are written before they are imported

@@ -45,6 +45,7 @@ import {
   putUsenetOffDataStaging,
 } from "../../api/usenet";
 import { ApiError } from "../../api/client";
+import { FolderPicker } from "../../components/FolderPicker";
 import { AdultModeContext, Button, Muted, inputClass, labelClass } from "../../components/ui";
 import { Card, SaveStatus, useSaveStatus, useSectionSaveItem } from "./shared";
 import { DurationSetting } from "./Advanced";
@@ -743,18 +744,16 @@ const UsenetOffDataStagingSection: Component = () => {
       </label>
       <label class="mb-3 block">
         <span class={labelClass}>Staging directory (absolute path)</span>
-        <input
-          type="text"
-          class={`${inputClass} mt-1`}
-          aria-label="Usenet off-data staging directory"
-          placeholder="/var/lib/sakms-usenet-staging"
-          disabled={!enabled()}
-          value={dir()}
-          onInput={(e) => {
-            setDir(e.currentTarget.value);
+        <FolderPicker
+          value={dir}
+          onChange={(p) => {
+            setDir(p);
             setDirty(true);
             status.set("");
           }}
+          ariaLabel="Usenet off-data staging directory"
+          placeholder="/var/lib/sakms-usenet-staging"
+          disabled={() => !enabled()}
         />
       </label>
       <Show when={enabled() && !valid()}>

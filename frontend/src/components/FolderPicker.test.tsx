@@ -143,4 +143,23 @@ describe("FolderPicker", () => {
     expect(screen.getByRole("button", { name: /\/downloads/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /\/adult/ })).toBeNull();
   });
+
+  it("does not fetch or open suggestions when disabled", async () => {
+    const urls = stub(roots);
+    const [val, setVal] = createSignal("");
+    render(() => (
+      <FolderPicker
+        value={val}
+        onChange={setVal}
+        ariaLabel="Folder"
+        disabled={() => true}
+      />
+    ));
+    const input = screen.getByLabelText("Folder") as HTMLInputElement;
+    expect(input.disabled).toBe(true);
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: "/media" } });
+    expect(urls.some((u) => u.includes("/api/browse"))).toBe(false);
+    expect(screen.queryByRole("button", { name: /\/media/ })).toBeNull();
+  });
 });

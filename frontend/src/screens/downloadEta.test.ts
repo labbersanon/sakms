@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   DISPLAY_MAX_FRAC_PER_SEC,
   EMA_ALPHA,
@@ -16,7 +16,9 @@ import {
   hardwareEtaSec,
   priorRepairSec,
   priorUnpackSec,
+  resetHardwarePriors,
   resolveEtaView,
+  setHardwarePriors,
   updateEtaTrackers,
 } from "./downloadEta";
 
@@ -28,6 +30,10 @@ const item = (over: Partial<EtaInput> = {}): EtaInput => ({
   completedLength: 400,
   downloadSpeed: 100,
   ...over,
+});
+
+afterEach(() => {
+  resetHardwarePriors();
 });
 
 /** Feed MIN_POSITIVE_SAMPLES bootstrap speed frames spaced 1s apart. */
@@ -173,6 +179,23 @@ describe("hardware priors", () => {
     expect(computeEtaSec(d, trackers.get("g1")!, 2000)).toBeCloseTo(
       600 / trackers.get("g1")!.smoothedBps,
     );
+  });
+
+  it("uses setHardwarePriors instead of the compiled constants", () => {
+    setHardwarePriors(10, 20);
+    expect(priorRepairSec(100)).toBe(10);
+    expect(priorUnpackSec(80)).toBe(5);
+    const d = item({
+      protocol: "usenet",
+      phase: "unpacking",
+      downloadSpeed: 0,
+      totalLength: 200,
+      phaseDone: 0,
+      phaseTotal: 4,
+    });
+    expect(hardwareEtaSec(d, 0)).toBeCloseTo(10);
+    resetHardwarePriors();
+    expect(priorRepairSec(HARDWARE_REPAIR_BPS * 10)).toBe(10);
   });
 });
 

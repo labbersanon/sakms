@@ -26,8 +26,10 @@ import type { Download } from "@dto";
 import {
   bulkCancelDownloads,
   cancelDownload,
+  fetchEtaPriors,
   fetchPauseState,
   pauseDownload,
+  postEtaAccuracy,
   resumeDownload,
   setPauseState,
 } from "../api/downloads";
@@ -39,6 +41,7 @@ import {
   formatElapsed,
   formatEtaCountdown,
   resolveEtaView,
+  setHardwarePriors,
   updateEtaTrackers,
 } from "./downloadEta";
 
@@ -204,6 +207,78 @@ function updateStalledTrackers(
     }
   }
   return stalled;
+}
+
+type EtaAccuracyTrack = {
+  phase: string;
+  status: string;
+  remainingSec: number | null;
+  startedAt: number;
+};
+
+const WORK_PHASES = new Set(["downloading", "repairing", "unpacking"]);
+
+// Claude 2026-09-21: go-forward ETA accuracy samples (no historical score).
+// Reason: on phase change or complete/error, POST the last projected remaining
+//   vs wall-clock of that segment; fire-and-forget for O2.
+// Troubleshooting: no "downloads: eta accuracy" lines after repairing starts.
+// Review if: samples are persisted rather than log-only.
+function reportEtaAccuracyTransitions(
+  tracks: Map<string, EtaAccuracyTrack>,
+  list: Download[],
+  remainingOf: (d: Download) => number | null,
+  now: number,
+): void {
+  const live = new Set(list.map((d) => d.gid));
+  for (const gid of [...tracks.keys()]) {
+    if (!live.has(gid)) tracks.delete(gid);
+  }
+  for (const d of list) {
+    const prev = tracks.get(d.gid);
+    const phase = d.phase ?? "";
+    const remaining = remainingOf(d);
+    if (prev) {
+      const phaseChanged =
+        prev.phase !== phase && WORK_PHASES.has(prev.phase) && WORK_PHASES.has(phase);
+      const terminal =
+        (d.status === "complete" || d.status === "error") &&
+        prev.status !== d.status;
+      if (
+        (phaseChanged || terminal) &&
+        prev.remainingSec != null &&
+        prev.startedAt > 0
+      ) {
+        const actualSec = (now - prev.startedAt) / 1000;
+        if (actualSec > 0) {
+          void postEtaAccuracy({
+            gid: d.gid,
+            protocol: d.protocol,
+            phase: prev.phase || "lifecycle",
+            projectedSec: prev.remainingSec,
+            actualSec,
+            totalLength: d.totalLength,
+            at: new Date(now).toISOString(),
+          }).catch(() => {
+            /* fire-and-forget */
+          });
+        }
+      }
+    }
+    if (d.status === "complete" || d.status === "error") {
+      tracks.delete(d.gid);
+      continue;
+    }
+    if (!prev || prev.phase !== phase || prev.status !== d.status) {
+      tracks.set(d.gid, {
+        phase,
+        status: d.status,
+        remainingSec: remaining,
+        startedAt: now,
+      });
+    } else if (prev.remainingSec == null && remaining != null) {
+      prev.remainingSec = remaining;
+    }
+  }
 }
 
 // resumeModeLabel is the Downloads badge text for Download.resumeMode.
@@ -421,6 +496,7 @@ export const Downloads: Component = () => {
   const lastProgressAt = new Map<string, number>();
   const lastCompleted = new Map<string, number>();
   const etaTrackers = new Map<string, EtaTracker>();
+  const etaAccuracy = new Map<string, EtaAccuracyTrack>();
   const [etaVersion, setEtaVersion] = createSignal(0);
   const [nowMs, setNowMs] = createSignal(Date.now());
   const [stalledGids, setStalledGids] = createSignal<ReadonlySet<string>>(
@@ -449,15 +525,37 @@ export const Downloads: Component = () => {
   let es: EventSource | undefined;
 
   onMount(() => {
+    void fetchEtaPriors()
+      .then((p) => {
+        if (p.repairBps > 0 && p.unpackBps > 0) {
+          setHardwarePriors(p.repairBps, p.unpackBps);
+        }
+      })
+      .catch(() => {
+        /* keep compiled 25/40 MiB/s seeds */
+      });
     es = new EventSource("/api/downloads/stream");
     es.onmessage = (ev) => {
       try {
         const list = JSON.parse(ev.data) as Download[];
         const now = Date.now();
-        setStalledGids(
-          updateStalledTrackers(lastProgressAt, lastCompleted, list, now),
+        const stalled = updateStalledTrackers(
+          lastProgressAt,
+          lastCompleted,
+          list,
+          now,
         );
         updateEtaTrackers(etaTrackers, list, now);
+        reportEtaAccuracyTransitions(
+          etaAccuracy,
+          list,
+          (d) => {
+            const view = resolveEtaView(d, etaTrackers.get(d.gid), now, stalled.has(d.gid));
+            return view.kind === "eta" ? view.remainingSec : null;
+          },
+          now,
+        );
+        setStalledGids(stalled);
         setEtaVersion((v) => v + 1);
         setNowMs(now);
         setDownloads((prev) => stabilizeQueueOrder(prev, list));

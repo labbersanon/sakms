@@ -56,11 +56,25 @@ const stubFetch = (
   const calls: Call[] = [];
   const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
+    const method = (init?.method ?? "GET").toUpperCase();
     calls.push({
       url,
-      method: (init?.method ?? "GET").toUpperCase(),
+      method,
       body: init?.body ? JSON.parse(init.body as string) : undefined,
     });
+    // Claude 2026-09-21: Downloads onMount fetches eta-priors; SSE transitions
+    //   POST eta-accuracy. Default those so existing tests stay focused.
+    if (url.includes("/api/downloads/eta-priors") && method === "GET") {
+      return jsonResponse({
+        repairBps: 25 * 1024 * 1024,
+        unpackBps: 40 * 1024 * 1024,
+        repairSamples: 0,
+        unpackSamples: 0,
+      });
+    }
+    if (url.includes("/api/downloads/eta-accuracy") && method === "POST") {
+      return noContent();
+    }
     return handler(url, init);
   });
   vi.stubGlobal("fetch", fn);
@@ -678,5 +692,60 @@ describe("Downloads — session order stays locked across reshuffled SSE frames"
       "Select Second.mkv",
       "Select Third.mkv",
     ]);
+  });
+});
+
+describe("Downloads — ETA accuracy samples", () => {
+  it("POSTs a sample when a usenet row moves downloading → repairing", async () => {
+    let now = 10_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const calls = stubFetch((url) => {
+      if (url.includes("/api/downloads/pause-state"))
+        return jsonResponse({ paused: false });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Downloads />);
+    MockEventSource.last!.emit([
+      dl({
+        gid: "nzb-1",
+        protocol: "usenet",
+        status: "active",
+        phase: "downloading",
+        downloadSpeed: 100,
+        totalLength: 1000,
+        completedLength: 400,
+      }),
+    ]);
+    await screen.findByText("Movie.1080p.mkv");
+
+    now += 5_000;
+    MockEventSource.last!.emit([
+      dl({
+        gid: "nzb-1",
+        protocol: "usenet",
+        status: "active",
+        phase: "repairing",
+        downloadSpeed: 0,
+        totalLength: 1000,
+        completedLength: 1000,
+        phaseDone: 0,
+        phaseTotal: 4,
+      }),
+    ]);
+
+    await waitFor(() => {
+      const post = calls.find(
+        (c) =>
+          c.method === "POST" && c.url.includes("/api/downloads/eta-accuracy"),
+      );
+      expect(post).toBeTruthy();
+      expect(post!.body).toMatchObject({
+        gid: "nzb-1",
+        protocol: "usenet",
+        phase: "downloading",
+        actualSec: 5,
+      });
+    });
   });
 });

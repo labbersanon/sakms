@@ -31,6 +31,24 @@ export const HARDWARE_UNPACK_BPS = 40 * 1024 * 1024;
 export const PRIOR_FLOOR_SEC = 5;
 const PHASE_RATE_MIN_ELAPSED_SEC = 1;
 
+// Claude 2026-09-21: live repair/unpack BPS, seeded at HARDWARE_* constants.
+// Reason: GET /api/downloads/eta-priors may raise these after observed phases;
+//   tests keep the exported constants as the default seed.
+// Troubleshooting: Downloads countdown still using 25/40 after samples exist.
+// Review if: hardwareEtaSec takes an explicit Priors object instead of setters.
+let liveRepairBps = HARDWARE_REPAIR_BPS;
+let liveUnpackBps = HARDWARE_UNPACK_BPS;
+
+export function setHardwarePriors(repairBps: number, unpackBps: number): void {
+  if (repairBps > 0) liveRepairBps = repairBps;
+  if (unpackBps > 0) liveUnpackBps = unpackBps;
+}
+
+export function resetHardwarePriors(): void {
+  liveRepairBps = HARDWARE_REPAIR_BPS;
+  liveUnpackBps = HARDWARE_UNPACK_BPS;
+}
+
 export type EtaInput = {
   gid: string;
   status: string;
@@ -79,12 +97,12 @@ export function formatEtaCountdown(sec: number): string {
 
 export function priorRepairSec(totalLength: number): number {
   if (totalLength <= 0) return 0;
-  return Math.max(PRIOR_FLOOR_SEC, totalLength / HARDWARE_REPAIR_BPS);
+  return Math.max(PRIOR_FLOOR_SEC, totalLength / liveRepairBps);
 }
 
 export function priorUnpackSec(totalLength: number): number {
   if (totalLength <= 0) return 0;
-  return Math.max(PRIOR_FLOOR_SEC, totalLength / HARDWARE_UNPACK_BPS);
+  return Math.max(PRIOR_FLOOR_SEC, totalLength / liveUnpackBps);
 }
 
 const TERMINAL_STATUSES = new Set([

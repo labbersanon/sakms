@@ -579,6 +579,65 @@ func bulkCancelHandler(dl *downloader.Manager, nzb *usenet.Manager) http.Handler
 	}
 }
 
+// Claude 2026-09-21: live EMA hardware priors for Downloads ETA (go-forward only).
+// Reason: SPA seeds repair/unpack BPS from this process; nil usenet manager
+//
+//	still returns the 25/40 MiB/s defaults so torrents-only installs work.
+//
+// Troubleshooting: GET /api/downloads/eta-priors 503 when nzb is nil.
+// Review if: priors are persisted or an operator setting replaces the EMA.
+type etaPriorsResponse struct {
+	RepairBps     int64 `json:"repairBps"`
+	UnpackBps     int64 `json:"unpackBps"`
+	RepairSamples int   `json:"repairSamples"`
+	UnpackSamples int   `json:"unpackSamples"`
+}
+
+func etaPriorsHandler(nzb *usenet.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		repairBps, unpackBps, repairN, unpackN := usenet.DefaultHardwareRepairBps, usenet.DefaultHardwareUnpackBps, 0, 0
+		if nzb != nil {
+			repairBps, unpackBps, repairN, unpackN = nzb.Priors()
+		}
+		writeJSON(w, etaPriorsResponse{
+			RepairBps:     repairBps,
+			UnpackBps:     unpackBps,
+			RepairSamples: repairN,
+			UnpackSamples: unpackN,
+		})
+	}
+}
+
+// Claude 2026-09-21: log-only ETA accuracy samples from the Downloads SPA.
+// Reason: no paired historical projections exist; O2 gets go-forward
+//
+//	projectedSec vs actualSec on phase/status transitions. Not stored.
+//
+// Troubleshooting: missing "downloads: eta accuracy" lines after a phase change.
+// Review if: samples are persisted for a later accuracy dashboard.
+type etaAccuracySample struct {
+	GID          string  `json:"gid"`
+	Protocol     string  `json:"protocol"`
+	Phase        string  `json:"phase"`
+	ProjectedSec float64 `json:"projectedSec"`
+	ActualSec    float64 `json:"actualSec"`
+	TotalLength  int64   `json:"totalLength"`
+	At           string  `json:"at,omitempty"`
+}
+
+func etaAccuracyHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req etaAccuracySample
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		log.Printf("downloads: eta accuracy gid=%s protocol=%s phase=%s projected_sec=%g actual_sec=%g total_length=%d at=%s",
+			req.GID, req.Protocol, req.Phase, req.ProjectedSec, req.ActualSec, req.TotalLength, req.At)
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 // getPauseStateHandler returns the global download pause flag.
 func getPauseStateHandler(settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

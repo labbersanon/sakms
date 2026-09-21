@@ -141,6 +141,15 @@ func (dl *dlState) setPhase(phase string) {
 		dl.phaseStartedAt = time.Now()
 		return
 	}
+	// Claude 2026-09-21: stamp downloadPhaseStarted once per fetch, not on
+	//   every Resume setPhase(downloading).
+	// Reason: phase-timing logs need wall-clock of the downloading phase;
+	//   phaseStartedAt stays empty here so the DTO omitempty for fetch.
+	// Troubleshooting: downloading phase timing missing after downloadAll.
+	// Review if: Downloads elapsed switches from addedAt to phaseStartedAt.
+	if phase == phaseDownloading && dl.downloadPhaseStarted.IsZero() {
+		dl.downloadPhaseStarted = time.Now()
+	}
 	dl.phaseStartedAt = time.Time{}
 }
 
@@ -158,11 +167,17 @@ type dlState struct {
 	phaseDone      int64
 	phaseTotal     int64
 	phaseStartedAt time.Time
-	errorMsg       string
-	err            error // classified retrieval failure; surfaced as Download.Err
-	files          []string
-	cancel         context.CancelFunc
-	gate           *pauseGate // true-pause; never nil after construction
+	// Claude 2026-09-21: wall-clock start of the fetching phase (not on DTO).
+	// Reason: setPhase(repairing) overwrites phaseStartedAt; downloadAll's
+	//   duration must survive that so we can log effective download bps.
+	// Troubleshooting: downloading phase timing dur_ms=0 or missing entirely.
+	// Review if: phaseStartedAt is kept per-phase instead of one field.
+	downloadPhaseStarted time.Time
+	errorMsg             string
+	err                  error // classified retrieval failure; surfaced as Download.Err
+	files                []string
+	cancel               context.CancelFunc
+	gate                 *pauseGate // true-pause; never nil after construction
 	// Claude 2026-09-20: set once when the job is inserted into m.downloads.
 	addedAt time.Time
 
@@ -226,6 +241,16 @@ type Manager struct {
 	maxConcurrentDownloads int
 	semaphore              chan struct{}
 	rateCap                *xferlimit.Cap
+
+	// Claude 2026-09-21: process-lifetime EMA of observed PAR2/unrar rates.
+	// Reason: frontend 25/40 MiB/s priors are a seed; go-forward samples from
+	//   this host should retune without claiming historical projection accuracy.
+	// Troubleshooting: repair/unpack ETA systematically high/low on this hardware.
+	// Review if: priors are persisted across restart or become a setting.
+	repairBps int64
+	unpackBps int64
+	repairN   int
+	unpackN   int
 }
 
 // DefaultMaxConcurrentDownloads is used when Config.MaxConcurrentDownloads is
@@ -282,6 +307,8 @@ func New(cfg Config) *Manager {
 		subscribers:            map[int]chan []Download{},
 		maxConcurrentDownloads: maxDL,
 		rateCap:                cfg.RateCap,
+		repairBps:              DefaultHardwareRepairBps,
+		unpackBps:              DefaultHardwareUnpackBps,
 	}
 	m.pools = newPools(servers)
 	m.semaphore = make(chan struct{}, maxDL)
@@ -762,16 +789,18 @@ func (m *Manager) AddArticleSet(ctx context.Context, nzb *NZB, name string) (str
 	// downloads. Fall back to context.Background() if Start hasn't been called.
 	base := m.baseContext()
 	dlCtx, cancel := context.WithCancel(base)
+	now := time.Now()
 	dl := &dlState{
-		gid:        gid,
-		name:       name,
-		stagingDir: dlDir,
-		status:     "active",
-		phase:      phaseDownloading,
-		total:      totalBytes,
-		cancel:     cancel,
-		gate:       newPauseGate(),
-		addedAt:    time.Now(),
+		gid:                  gid,
+		name:                 name,
+		stagingDir:           dlDir,
+		status:               "active",
+		phase:                phaseDownloading,
+		total:                totalBytes,
+		cancel:               cancel,
+		gate:                 newPauseGate(),
+		addedAt:              now,
+		downloadPhaseStarted: now,
 	}
 
 	m.mu.Lock()
@@ -868,16 +897,18 @@ func (m *Manager) RelaunchArticleSet(ctx context.Context, gid string, nzb *NZB, 
 
 	base := m.baseContext()
 	dlCtx, cancel := context.WithCancel(base)
+	now := time.Now()
 	dl := &dlState{
-		gid:        gid,
-		name:       name,
-		stagingDir: dlDir,
-		status:     "active",
-		phase:      phaseDownloading,
-		total:      totalBytes,
-		cancel:     cancel,
-		gate:       newPauseGate(),
-		addedAt:    time.Now(),
+		gid:                  gid,
+		name:                 name,
+		stagingDir:           dlDir,
+		status:               "active",
+		phase:                phaseDownloading,
+		total:                totalBytes,
+		cancel:               cancel,
+		gate:                 newPauseGate(),
+		addedAt:              now,
+		downloadPhaseStarted: now,
 	}
 
 	m.mu.Lock()
@@ -1186,9 +1217,25 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 		log.Printf("usenet: download %s (%s) starting (resume enabled, no prior segments)", gid, dl.name)
 	}
 
+	// Claude 2026-09-21: stamp + log downloading phase around downloadAll.
+	// Reason: go-forward phase timing for O2; duration cannot use phaseStartedAt
+	//   because setPhase(repairing) overwrites it before we would log.
+	// Troubleshooting: no "phase timing ... phase=downloading" line after fetch.
+	// Review if: download speed is persisted as a prior like repair/unpack.
+	m.mu.Lock()
+	if dl.downloadPhaseStarted.IsZero() {
+		dl.downloadPhaseStarted = time.Now()
+	}
+	dlStart := dl.downloadPhaseStarted
+	m.mu.Unlock()
+
 	files, err := m.downloadAll(ctx, gid, dl, nzb)
 	<-sem
 	released = true
+	m.mu.Lock()
+	dlBytes := dlPayloadBytes(dl)
+	m.mu.Unlock()
+	m.logPhaseTiming(gid, phaseDownloading, dlBytes, dlStart)
 	if err != nil {
 		failed := false
 		m.mu.Lock()
@@ -1289,10 +1336,16 @@ func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState
 	if dl.status == "active" {
 		dl.setPhase(phaseRepairing)
 	}
+	repairStarted := dl.phaseStartedAt
+	if repairStarted.IsZero() {
+		repairStarted = time.Now()
+	}
+	repairBytes := dlPayloadBytes(dl)
 	m.mu.Unlock()
 	repaired, repairErr := verifyAndRepair(dl.stagingDir, files, func(done, total int64) {
 		m.setPhaseProgress(gid, done, total)
 	})
+	m.logPhaseTiming(gid, phaseRepairing, repairBytes, repairStarted)
 	if repairErr != nil {
 		log.Printf("usenet: par2 repair %s: %v — continuing to unpack", gid, repairErr)
 	}
@@ -1313,10 +1366,16 @@ func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState
 	if dl.status == "active" {
 		dl.setPhase(phaseUnpacking)
 	}
+	unpackStarted := dl.phaseStartedAt
+	if unpackStarted.IsZero() {
+		unpackStarted = time.Now()
+	}
+	unpackBytes := dlPayloadBytes(dl)
 	m.mu.Unlock()
 	unpacked, unpackErr := unpackArchives(dl.stagingDir, files, func(done, total int64) {
 		m.setPhaseProgress(gid, done, total)
 	})
+	m.logPhaseTiming(gid, phaseUnpacking, unpackBytes, unpackStarted)
 	if unpackErr != nil {
 		failed := false
 		m.mu.Lock()

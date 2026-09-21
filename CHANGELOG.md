@@ -9002,3 +9002,34 @@ auto-dismissed (`scheduleDismissComplete` only deletes status `complete`).
 | `internal/usenet/dismiss_complete_test.go` | Delay dismiss + keep errors |
 | `internal/downloader/dismiss_complete_test.go` | Forget + schedule dismiss + keep errors |
 | `frontend/src/screens/Downloads.tsx` | Header notes auto-dismiss glance window |
+
+## 2026-09-21 — ETA accuracy logging + adaptive hardware priors
+
+**Problem:** Downloads ETA used fixed 25 MiB/s repair and 40 MiB/s unpack priors with
+no way to see whether those guesses matched this host, and no go-forward log of
+projected vs actual remaining time. There is no paired historical projection data,
+so this change does not claim a past accuracy number.
+**Fix:** Usenet logs `usenet: phase timing …` when downloading/repairing/unpacking
+end (success or fail-after-running). Manager keeps an in-memory EMA (α=0.2) of
+observed repair/unpack rates, seeded at 25<<20 / 40<<20. GET `/api/downloads/eta-priors`
+exposes them; POST `/api/downloads/eta-accuracy` logs a client sample (204). The
+SPA fetches priors on Downloads mount and POSTs a sample on phase change or
+complete/error.
+**Outcome:** Unit tests cover Observe EMA, GET defaults-then-updated, POST 204, and
+prior override. Not deployed (do not run sakms-auto-update).
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/eta_priors.go` | EMA Observe/Priors + phase-timing log helper |
+| `internal/usenet/eta_priors_test.go` | Observe updates EMA; ignores download/zero |
+| `internal/usenet/manager.go` | downloadPhaseStarted; log around downloadAll/repair/unpack |
+| `internal/api/downloads.go` | GET eta-priors + POST eta-accuracy handlers |
+| `internal/api/handler.go` | Register the two download ETA routes |
+| `internal/api/downloads_eta_test.go` | GET defaults/updated; POST 204 |
+| `frontend/src/api/downloads.ts` | fetchEtaPriors + postEtaAccuracy |
+| `frontend/src/screens/downloadEta.ts` | setHardwarePriors / resetHardwarePriors |
+| `frontend/src/screens/downloadEta.test.ts` | Prior override |
+| `frontend/src/screens/Downloads.tsx` | Fetch priors; POST accuracy on transitions |
+| `frontend/src/screens/Downloads.test.tsx` | Stub new endpoints; phase-change POST |

@@ -135,10 +135,10 @@ type dlState struct {
 	phaseTotal     int64
 	phaseStartedAt time.Time
 	errorMsg       string
-	err      error // classified retrieval failure; surfaced as Download.Err
-	files    []string
-	cancel   context.CancelFunc
-	gate     *pauseGate // true-pause; never nil after construction
+	err            error // classified retrieval failure; surfaced as Download.Err
+	files          []string
+	cancel         context.CancelFunc
+	gate           *pauseGate // true-pause; never nil after construction
 	// Claude 2026-09-20: set once when the job is inserted into m.downloads.
 	addedAt time.Time
 

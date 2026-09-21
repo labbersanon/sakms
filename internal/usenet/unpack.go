@@ -180,8 +180,10 @@ func archiveKind(name string) string {
 //
 // Claude 2026-09-15: rank complete RAR sets before orphan pretty-named part01s.
 // Reason: obfuscated posts often include Show.Name.part01.rar (no part02) plus
-//          a full AbCdEf.part01–N.rar set; lexicographic order tried the orphan
-//          first and aborted before the hash set (see unpack loop).
+//
+//	a full AbCdEf.part01–N.rar set; lexicographic order tried the orphan
+//	first and aborted before the hash set (see unpack loop).
+//
 // Troubleshooting: unpack "Bad archive" on pretty part01 while hash parts exist.
 // Review if: .r00-style volume sets need the same completeness scoring.
 func archiveLeaders(names []string) []string {

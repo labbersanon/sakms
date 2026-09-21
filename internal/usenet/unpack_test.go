@@ -281,7 +281,6 @@ func writeZipWithFile(zipPath, name string, body []byte) error {
 	return w.Close()
 }
 
-
 func TestDeleteArchiveMembers_RemovesPar2AndSFV(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"a.mkv", "a.par2", "a.vol00+01.par2", "a.sfv", "a.nfo"} {

@@ -8865,3 +8865,25 @@ classify asserts `ErrStagingGone` → `PendingRetry`.
 | `internal/usenet/pause_resume_test.go` | New tests |
 | `internal/api/downloads.go` | `resumeAllPaused` on global resume |
 | `internal/api/usenetretry_classify_test.go` | ErrStagingGone → PendingRetry |
+
+## 2026-09-21 — sakms-db resume TOAST outage + vacuum automation
+
+**Problem:** sakms healthz 503; Postgres rejected connections (recovery loop).
+**Root cause:** `usenet_resume_state` TOAST bloat (~6.5GB) from per-segment full
+JSON `SaveResume` of a ~7MB REMUX resume sidecar; 8G iSCSI LUN hit 100%.
+**Fix (ops):** freed ext4 reserved blocks → Postgres recovered → `TRUNCATE
+usenet_resume_state` → restored 1% reserved. Tuned table autovacuum; added
+hourly `sakms-resume-vacuum` timer (stale DELETE + VACUUM). Sidecar remains SoT.
+**Outcome:** healthz 200; sakms-db healthy; LUN ~13% used after truncate.
+
+**Note:** active per-segment DB mirror still refills during large NZBs — code
+throttle/removal of `SaveResume` still required.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `deploy/sakms/sakms-resume-vacuum.py` | New hourly stale cleanup script |
+| `deploy/sakms/sakms-resume-vacuum.service` | New oneshot unit |
+| `deploy/sakms/sakms-resume-vacuum.timer` | New hourly timer |
+| `internal/db/migrations/0027_usenet_resume_autovacuum.sql` | Aggressive autovacuum reloptions |

@@ -1,0 +1,14 @@
+# Claude 2026-09-21: oneshot stale usenet_resume_state cleanup
+# Reason: automate DELETE of stale resume mirrors + VACUUM on sakms-db
+# Troubleshooting: /mnt/iscsi/sakms_db 100% full from resume TOAST bloat
+# Review if: mirror writes are removed/throttled in sakms; timer interval may change
+# Related: /usr/local/bin/sakms-resume-vacuum.py; sakms-resume-vacuum.timer
+
+[Unit]
+Description=sakms resume-state stale cleanup (DELETE + VACUUM usenet_resume_state)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/sakms-resume-vacuum.py

@@ -63,7 +63,7 @@ type Download struct {
 	Dir             string   // staging subdirectory where assembled files land
 	TotalLength     int64    // sum of NZB segment byte counts (approximate before download)
 	CompletedLength int64    // decoded bytes written so far
-	DownloadSpeed   int64    // bytes/sec (computed per 500 ms poll tick)
+	DownloadSpeed   int64    // bytes/sec (rolling ~10s window, updated each 500 ms poll)
 	Files           []string // absolute paths of assembled files (populated on complete)
 	ErrorMessage    string
 	// ResumeMode is how this job started: "resumed", "full", "forced-full", or "disabled".

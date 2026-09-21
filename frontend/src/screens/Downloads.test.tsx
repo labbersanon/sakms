@@ -275,6 +275,7 @@ describe("Downloads — protocol-scoped metrics", () => {
     expect(upload.textContent).toContain("240 KB/s");
     expect(screen.getByLabelText("Connected seeders").textContent).toContain("11 seeds");
     expect(screen.queryByLabelText("Download speed")).toBeNull();
+    expect(screen.queryByLabelText("Estimated time remaining")).toBeNull();
   });
 
   it("V-7: filename, status badge, progress bytes, and progress bar are unchanged by protocol scoping", async () => {
@@ -310,6 +311,28 @@ describe("Downloads — protocol-scoped metrics", () => {
 
     const download = await screen.findByLabelText("Download speed");
     expect(download.textContent).toContain("4.2 MB/s");
+  });
+
+  it("V-9: shows calculating… then a ~countdown after two speed samples", async () => {
+    stubPauseStateOnly();
+    render(() => <Downloads />);
+    const row = dl({
+      gid: "g1",
+      downloadSpeed: 100,
+      completedLength: 400,
+      totalLength: 1000,
+    });
+    MockEventSource.last!.emit([row]);
+    expect(
+      await screen.findByLabelText("Estimated time remaining"),
+    ).toHaveTextContent("calculating…");
+
+    MockEventSource.last!.emit([row]);
+    expect(screen.getByLabelText("Estimated time remaining")).toHaveTextContent(
+      "~0:06",
+    );
+    expect(screen.getByLabelText("Elapsed")).toHaveTextContent("0:00");
+    expect(screen.getByLabelText("Download speed").textContent).toContain("B/s");
   });
 });
 
@@ -465,7 +488,7 @@ describe("Downloads — phase tags", () => {
     );
   });
 
-  it("shows work-unit percent and elapsed timer instead of download speed", async () => {
+  it("shows work-unit percent plus lifecycle countdown instead of download speed", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const start = new Date("2026-09-21T12:00:00Z");
     vi.setSystemTime(new Date(start.getTime() + 83 * 1000));
@@ -483,19 +506,25 @@ describe("Downloads — phase tags", () => {
         phaseDone: 2,
         phaseTotal: 4,
         phaseStartedAt: start.toISOString(),
+        addedAt: start.toISOString(),
       }),
     ]);
 
     const progress = await screen.findByLabelText("Postprocess progress");
     expect(progress.textContent).toContain("50%");
-    expect(screen.getByLabelText("Phase elapsed")).toHaveTextContent("1:23");
+    expect(progress.textContent).not.toContain("1:23");
+    expect(screen.getByLabelText("Elapsed")).toHaveTextContent("1:23");
+    expect(screen.getByLabelText("Estimated time remaining")).toHaveTextContent(
+      "~1:28",
+    );
     expect(screen.queryByLabelText("Download speed")).toBeNull();
+    expect(screen.queryByLabelText("Phase elapsed")).toBeNull();
     expect(screen.getByText("400 KB / 1000 KB")).toBeInTheDocument();
     const bar = document.querySelector<HTMLElement>(".bg-accent");
     expect(bar?.style.width).toBe("50%");
   });
 
-  it("formats elapsed as H:MM:SS after one hour of unpacking", async () => {
+  it("formats overall elapsed as H:MM:SS after one hour of unpacking", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const start = new Date("2026-09-21T12:00:00Z");
     vi.setSystemTime(new Date(start.getTime() + 3661 * 1000));
@@ -510,14 +539,16 @@ describe("Downloads — phase tags", () => {
         phaseDone: 1,
         phaseTotal: 1,
         phaseStartedAt: start.toISOString(),
+        addedAt: start.toISOString(),
       }),
     ]);
 
-    expect(await screen.findByLabelText("Phase elapsed")).toHaveTextContent(
-      "1:01:01",
-    );
+    expect(await screen.findByLabelText("Elapsed")).toHaveTextContent("1:01:01");
     expect(screen.getByLabelText("Postprocess progress").textContent).toContain(
       "100%",
+    );
+    expect(screen.getByLabelText("Estimated time remaining")).toHaveTextContent(
+      "~0:00",
     );
   });
 

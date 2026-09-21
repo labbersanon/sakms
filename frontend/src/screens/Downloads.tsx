@@ -33,6 +33,13 @@ import {
 import { Button, ErrorText, Muted } from "../components/ui";
 import { useBulkSelection } from "./workflowHooks";
 import { matchesQueueSearch, QueueSearchField } from "./queueSearch";
+import {
+  type EtaTracker,
+  formatElapsed,
+  formatEtaCountdown,
+  resolveEtaView,
+  updateEtaTrackers,
+} from "./downloadEta";
 
 // Claude 2026-09-20: lock row order for this browser session.
 // Reason: even with a stable server sort, a reshuffled SSE frame (reconnect,
@@ -76,33 +83,6 @@ function formatSize(bytes: number): string {
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
-
-// Claude 2026-09-21: elapsed clock for repairing/unpacking (M:SS or H:MM:SS).
-// Reason: operator asked for a timer beside NN% while downloadSpeed is 0.
-// Review if: the engine emits remaining-time estimates instead of elapsed.
-function formatElapsed(ms: number): string {
-  const totalSec = Math.max(0, Math.floor(ms / 1000));
-  const h = Math.floor(totalSec / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  const s = totalSec % 60;
-  const ss = String(s).padStart(2, "0");
-  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${ss}`;
-  return `${m}:${ss}`;
-}
-
-const PhaseElapsed: Component<{ startedAt: string }> = (props) => {
-  const [now, setNow] = createSignal(Date.now());
-  onMount(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 1000);
-    onCleanup(() => window.clearInterval(id));
-  });
-  const label = () => {
-    const t = Date.parse(props.startedAt);
-    if (Number.isNaN(t)) return "0:00";
-    return formatElapsed(now() - t);
-  };
-  return <span aria-label="Phase elapsed">{label()}</span>;
-};
 
 const TAG_PILL = "shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium";
 
@@ -240,6 +220,8 @@ const ProgressBar: Component<{ percent: number }> = (props) => {
 const DownloadRow: Component<{
   dl: Download;
   stalled: boolean;
+  etaTracker: EtaTracker | undefined;
+  now: number;
   onAction: (fn: () => Promise<void>) => void;
   selected: boolean;
   onToggle: () => void;
@@ -267,6 +249,19 @@ const DownloadRow: Component<{
     props.dl.status === "complete" || props.dl.status === "error";
   const isTorrent = () => props.dl.protocol === "torrent";
   const seedLabel = () => (props.dl.seedCount === 1 ? "seed" : "seeds");
+  const etaView = () =>
+    resolveEtaView(props.dl, props.etaTracker, props.now, props.stalled);
+  const etaLabel = () => {
+    const v = etaView();
+    if (v.kind === "calculating") return "calculating…";
+    if (v.kind === "dash") return "—";
+    if (v.kind === "eta") return formatEtaCountdown(v.remainingSec);
+    return "";
+  };
+  const elapsedLabel = () => {
+    const v = etaView();
+    return v.kind === "hidden" ? "" : formatElapsed(v.elapsedMs);
+  };
 
   // Cancelling now also deletes the download's files server-side (the backend
   // DELETE changed), so the confirm makes that explicit before firing.
@@ -338,6 +333,11 @@ const DownloadRow: Component<{
         <span>
           {formatSize(props.dl.completedLength)} / {formatSize(props.dl.totalLength)}
         </span>
+        {/* Claude 2026-09-21: lifecycle ETA countdown + overall elapsed.
+            Reason: remaining time is download-speed EMA + Usenet repair/unpack
+              priors (B+C); phase-elapsed beside NN% was not a remaining estimate.
+            Troubleshooting: Downloads showed speed or NN% with no time left.
+            Review if: the engine emits remaining-time estimates of its own. */}
         <Show when={isActive()}>
           <Show
             when={isPostprocess()}
@@ -350,14 +350,17 @@ const DownloadRow: Component<{
           >
             <span class="text-fg" aria-label="Postprocess progress">
               {`${Math.round(percent())}%`}
-              <Show when={props.dl.phaseStartedAt}>
-                {(started) => (
-                  <>
-                    <span aria-hidden="true"> · </span>
-                    <PhaseElapsed startedAt={started()} />
-                  </>
-                )}
-              </Show>
+            </span>
+          </Show>
+          <Show when={etaView().kind !== "hidden"}>
+            <span>
+              <span class="text-fg" aria-label="Estimated time remaining">
+                {etaLabel()}
+              </span>
+              <span aria-hidden="true"> · </span>
+              <span class="text-[11px] text-muted" aria-label="Elapsed">
+                {elapsedLabel()}
+              </span>
             </span>
           </Show>
         </Show>
@@ -393,6 +396,9 @@ const DownloadRow: Component<{
 export const Downloads: Component = () => {
   const [downloads, setDownloads] = createSignal<Download[]>([]);
   const lastSpeedAt = new Map<string, number>();
+  const etaTrackers = new Map<string, EtaTracker>();
+  const [etaVersion, setEtaVersion] = createSignal(0);
+  const [nowMs, setNowMs] = createSignal(Date.now());
   const [stalledGids, setStalledGids] = createSignal<ReadonlySet<string>>(
     new Set(),
   );
@@ -423,7 +429,11 @@ export const Downloads: Component = () => {
     es.onmessage = (ev) => {
       try {
         const list = JSON.parse(ev.data) as Download[];
-        setStalledGids(updateStalledTrackers(lastSpeedAt, list, Date.now()));
+        const now = Date.now();
+        setStalledGids(updateStalledTrackers(lastSpeedAt, list, now));
+        updateEtaTrackers(etaTrackers, list, now);
+        setEtaVersion((v) => v + 1);
+        setNowMs(now);
         setDownloads((prev) => stabilizeQueueOrder(prev, list));
         setHasData(true);
         setReconnecting(false);
@@ -432,6 +442,8 @@ export const Downloads: Component = () => {
       }
     };
     es.onerror = () => setReconnecting(true);
+    const tick = window.setInterval(() => setNowMs(Date.now()), 1000);
+    onCleanup(() => window.clearInterval(tick));
   });
 
   onCleanup(() => es?.close());
@@ -570,6 +582,8 @@ export const Downloads: Component = () => {
                   <DownloadRow
                     dl={dl}
                     stalled={stalledGids().has(dl.gid)}
+                    etaTracker={etaVersion() >= 0 ? etaTrackers.get(dl.gid) : undefined}
+                    now={nowMs()}
                     onAction={runAction}
                     selected={selection.has(dl.gid)}
                     onToggle={() => selection.toggle(dl.gid)}

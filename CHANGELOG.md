@@ -8961,3 +8961,25 @@ extends the total).
 | `internal/usenet/snapshot_order_test.go` | snapKey includes phase progress |
 | `internal/api/downloads_protocol_test.go` | DTO mapping; torrents stay empty |
 
+## 2026-09-21 — Downloads lifecycle ETA countdown
+
+**Problem:** Downloads showed ↓ speed or postprocess `NN%` plus phase-elapsed, but
+no remaining-time estimate for the rest of the job (download + Usenet repair/unpack).
+**Fix:** Client-side lifecycle ETA: per-gid EMA of download speed (α=0.3, two
+positive samples) plus hardware priors for Usenet PAR2/unrar (`totalLength` /
+25 MiB/s repair and 40 MiB/s unpack, 5s floor). Live phase rate replaces the
+repair/unpack prior when `phaseDone`/`phaseStartedAt` allow it. Torrents skip
+hardware priors. UI is `~M:SS` (or `~H:MM:SS`) primary with overall elapsed
+secondary; `calculating…` until samples exist; freeze last good ETA 30s on
+stall then `—`. Tick every 1s. Paused/queued/complete/error hide the countdown.
+**Outcome:** Tests green; not deployed (do not run sakms-auto-update).
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/downloadEta.ts` | Pure ETA trackers, EMA, priors, freeze, formatters |
+| `frontend/src/screens/downloadEta.test.ts` | EMA, priors, phase rate, freeze 30s, calculating |
+| `frontend/src/screens/Downloads.tsx` | Wire trackers on SSE; countdown + elapsed in metrics row |
+| `frontend/src/screens/Downloads.test.tsx` | Percent+countdown; hide phase-elapsed; torrent calculating then ~ETA |
+

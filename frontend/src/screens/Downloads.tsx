@@ -1,14 +1,15 @@
 // Downloads — the unified downloader's live queue (active + waiting + recent
-// stopped), fed by the SSE stream at GET /api/downloads/stream (same pattern as
+// Complete), fed by the SSE stream at GET /api/downloads/stream (same pattern as
 // Dashboard's sysinfo stream). Each event is a JSON array of the current
 // downloads. Per item: filename, a progress bar, speed, a status badge, and
 // pause/resume/cancel actions. This is NOT a mode-scoped screen (the download
 // engine is global, one queue for the whole app), so it registers no mode tabs.
 //
-// The screen reflects aria2's own queue directly — separate from Calendar's
+// The screen reflects the engine's own queue directly — separate from Calendar's
 // History view, which tracks the grab records SAK created. A completed download
-// here auto-imports server-side (the downloader's onComplete callback); this
-// screen just shows the engine's live state.
+// here auto-imports server-side (the downloader's onComplete callback). Complete
+// rows dismiss after a short glance window (~30s): Usenet on success, torrents
+// when seeding is off or after the seed window ends. Error rows stay until Cancel.
 
 import {
   type Component,

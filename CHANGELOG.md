@@ -8983,3 +8983,22 @@ stall then `—`. Tick every 1s. Paused/queued/complete/error hide the countdown
 | `frontend/src/screens/Downloads.tsx` | Wire trackers on SSE; countdown + elapsed in metrics row |
 | `frontend/src/screens/Downloads.test.tsx` | Percent+countdown; hide phase-elapsed; torrent calculating then ~ETA |
 
+## 2026-09-21 — Auto-dismiss Complete downloads after glance window
+
+**Problem:** Completed Usenet (and finished torrent) rows stayed on Downloads
+forever until Cancel, cluttering the live queue; Cancel also deletes staging.
+**Fix:** After marking Complete, schedule a ~30s `Forget` (drop from in-memory
+queue, keep files). Usenet: on `finalizeAssembled` success. Torrents: when
+seeding is off at Complete, or after `stopSeeding`. Errors are never
+auto-dismissed (`scheduleDismissComplete` only deletes status `complete`).
+**Outcome:** Unit tests green for dismiss delay + error retention.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/manager.go` | `dismissCompleteAfter` + `scheduleDismissComplete`; wire on finalize |
+| `internal/downloader/downloader.go` | `Forget`, schedule on non-seed Complete + seed-stop |
+| `internal/usenet/dismiss_complete_test.go` | Delay dismiss + keep errors |
+| `internal/downloader/dismiss_complete_test.go` | Forget + schedule dismiss + keep errors |
+| `frontend/src/screens/Downloads.tsx` | Header notes auto-dismiss glance window |

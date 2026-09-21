@@ -48,6 +48,13 @@ import (
 // progress to detect changes and fan out to SSE subscribers.
 const pollInterval = 500 * time.Millisecond
 
+// Claude 2026-09-21: how long a Complete row stays on Downloads before Forget.
+// Reason: operator wants a glance window after download (and after seeding
+//   ends); errors stay until Cancel. Mirrors usenet.dismissCompleteAfter.
+// Troubleshooting: Complete torrent rows lingering forever after seed stop.
+// Review if: Settings gains a dismiss-delay control.
+var dismissCompleteAfter = 30 * time.Second
+
 // Config parameterizes the Manager.
 //
 // Everything below StagingDir/MaxConc/MaxConn is an operator-tunable torrent
@@ -1143,6 +1150,48 @@ func (m *Manager) Cancel(gid string) error {
 	return nil
 }
 
+// Forget drops a TERMINAL (error/complete/removed) torrent from the in-memory
+// queue without touching disk or the torrent client. Returns false when the
+// entry is still active/waiting/paused or absent.
+//
+// Claude 2026-09-21: queue dismiss after Complete / seed-stop (not Cancel).
+// Reason: Cancel deletes staging files; Downloads just needs the row gone after
+//   a glance window. Seeding teardown already Drop'd the handle in stopSeeding.
+// Troubleshooting: Complete rows lingering on Downloads after seeding ends.
+// Review if: Cancel gains a "drop from queue, keep files" mode.
+func (m *Manager) Forget(gid string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.entries[gid]
+	if !ok {
+		return false
+	}
+	switch e.status {
+	case "error", "complete", "removed":
+		delete(m.entries, gid)
+		return true
+	default:
+		return false
+	}
+}
+
+// scheduleDismissComplete drops gid from the live queue after dismissCompleteAfter
+// if it is still complete. Used when seeding is off at Complete, and after
+// stopSeeding. Cancelled or error entries are left alone.
+func (m *Manager) scheduleDismissComplete(gid string) {
+	time.AfterFunc(dismissCompleteAfter, func() {
+		m.mu.Lock()
+		e, ok := m.entries[gid]
+		if !ok || e.status != "complete" {
+			m.mu.Unlock()
+			return
+		}
+		delete(m.entries, gid)
+		m.mu.Unlock()
+		log.Printf("downloader: dismissed completed download %s from queue", gid)
+	})
+}
+
 // deleteDownloadFiles removes each declared file path and best-effort prunes any
 // now-empty parent directories up to (but never including) the staging dir. Only
 // directories strictly under the staging dir are pruned, and only when empty, so
@@ -1316,6 +1365,7 @@ func (m *Manager) watchTorrent(t *torrentlib.Torrent, gid string) {
 		// copy against staging, and m.mu is the same mutex every downloads
 		// handler and the SSE fan-out take.
 		importPaths := files
+		willSeed := false
 		if seedingEnabled && len(files) > 0 {
 			copied, importRoot, err := m.stageImportCopy(gid, files)
 			if err != nil {
@@ -1328,12 +1378,20 @@ func (m *Manager) watchTorrent(t *torrentlib.Torrent, gid string) {
 				importPaths = copied
 				m.setImportPaths(gid, importRoot, copied)
 				m.beginSeeding(gid, t, files, total)
+				willSeed = true
 			}
 		}
 
 		filesCopy := append([]string(nil), importPaths...)
 		if m.onComplete != nil {
 			go m.onComplete(gid, filesCopy)
+		}
+		// Claude 2026-09-21: when not seeding, dismiss Complete after glance delay.
+		// Reason: Downloads is a live queue; finished torrents should leave like Usenet.
+		// Troubleshooting: Complete torrent rows lingering with seeding disabled.
+		// Review if: seeding-off still wants to keep Complete until manual Cancel.
+		if !willSeed {
+			m.scheduleDismissComplete(gid)
 		}
 	}
 }
@@ -1693,6 +1751,12 @@ func (m *Manager) stopSeeding(s seedStop) {
 	}
 
 	log.Printf("downloader: stopped seeding %s: %s", s.gid, s.reason)
+	// Claude 2026-09-21: dismiss Complete after seed window closes.
+	// Reason: seeding was the only reason to keep the row; operator still gets
+	//   a glance delay via scheduleDismissComplete.
+	// Troubleshooting: Complete rows lingering forever after ratio/duration stop.
+	// Review if: seed-stop should keep the row until manual Cancel.
+	m.scheduleDismissComplete(s.gid)
 }
 
 // importDirName is the staging subdirectory this feature exclusively owns.

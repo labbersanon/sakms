@@ -50,6 +50,29 @@ func (m *Manager) Forget(gid string) bool {
 	}
 }
 
+// Claude 2026-09-21: how long a Complete row stays on Downloads before Forget.
+// Reason: operator wants a glance window, then Usenet Complete (and torrents
+//   after seeding) should leave the live queue; errors stay until Cancel.
+// Troubleshooting: Complete rows lingering forever after import.
+// Review if: Settings gains a dismiss-delay control.
+var dismissCompleteAfter = 30 * time.Second
+
+// scheduleDismissComplete drops gid from the live queue after dismissCompleteAfter
+// if it is still complete. Cancelled or error entries are left alone.
+func (m *Manager) scheduleDismissComplete(gid string) {
+	time.AfterFunc(dismissCompleteAfter, func() {
+		m.mu.Lock()
+		dl, ok := m.downloads[gid]
+		if !ok || dl.status != "complete" {
+			m.mu.Unlock()
+			return
+		}
+		delete(m.downloads, gid)
+		m.mu.Unlock()
+		log.Printf("usenet: dismissed completed download %s from queue", gid)
+	})
+}
+
 // Download mirrors the downloader.Download shape so the api layer can build a
 // unified queue from both torrent and usenet downloads without a shared
 // interface. Usenet has no seeder concept, so it carries neither a seed-count
@@ -1347,6 +1370,7 @@ func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState
 	}
 
 	m.mu.Lock()
+	markedComplete := false
 	if dl.status != "removed" && dl.status != "paused" {
 		dl.status = "complete"
 		dl.setPhase("")
@@ -1363,12 +1387,16 @@ func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState
 		} else if dl.total > 0 && dl.completed > dl.total {
 			dl.completed = dl.total
 		}
+		markedComplete = true
 	}
 	m.mu.Unlock()
 
 	if m.onComplete != nil {
 		filesCopy := append([]string(nil), files...)
 		go m.onComplete(gid, filesCopy)
+	}
+	if markedComplete {
+		m.scheduleDismissComplete(gid)
 	}
 }
 

@@ -77,6 +77,17 @@ body {
   }
 }
 
+/* Claude 2026-09-21: thin black outline for neon Downloads phase pill text.
+   Reason: neon blue/red on soft cream chips was hard to read; operator asked
+     for a thin black outline + bold weight (contrast first).
+   Troubleshooting: Downloads Downloading/Stalled pills still wash out.
+   Review if: phase pills move off neon or gain a solid dark chip instead. */
+@utility pill-neon-outline {
+  font-weight: 700;
+  -webkit-text-stroke: 0.75px #000;
+  paint-order: stroke fill;
+}
+
 /* Claude 2026-08-14: Library in-app playback fullscreen was cream
    (--color-bg / bg-surface-2) in the pillarbox. Native <video> fullscreen
    paints the element's background in unused areas; the backdrop must be

@@ -249,6 +249,13 @@ const DownloadRow: Component<{
   // Troubleshooting: bar sitting at 100% while Repairing/Unpacking with no NN%.
   // Review if: torrents grow a comparable postprocess phase.
   const percent = () => {
+    // Claude 2026-09-21: Complete always reads as 100% in the bar.
+    // Reason: Usenet totalLength (NZB article bytes) can exceed decoded
+    //   completedLength even after a successful finalize; backend now aligns
+    //   totals, but keep this so stale SSE frames cannot flash a mid bar.
+    // Troubleshooting: Complete pill with a stuck mid progress bar.
+    // Review if: progress is segment-count based for Usenet.
+    if (props.dl.status === "complete") return 100;
     if (isPostprocess()) {
       const total = props.dl.phaseTotal ?? 0;
       const done = props.dl.phaseDone ?? 0;

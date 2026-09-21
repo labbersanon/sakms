@@ -124,6 +124,39 @@ func TestFinalizeAssembled_PAR2FailUnpackExtracts_MarksComplete(t *testing.T) {
 	}
 }
 
+func TestFinalizeAssembled_AlignsTotalToDecodedCompleted(t *testing.T) {
+	// NZB segment Bytes inflate TotalLength vs yEnc-decoded completed — a finished
+	// job must not leave the Downloads bar stuck mid-progress under Complete.
+	m := New(Config{StagingDir: t.TempDir(), MaxConcurrentDownloads: 1})
+	dl := registerFinalizeDL(t, m, "nzb-finalize-progress-align")
+	dl.total = 10_000_000
+	dl.completed = 8_500_000
+
+	mkv := filepath.Join(dl.stagingDir, "movie.mkv")
+	if err := os.WriteFile(mkv, []byte("fake-video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	m.SetOnComplete(func(gid string, _ []string) {
+		close(done)
+	})
+
+	m.finalizeAssembled(context.Background(), dl.gid, dl, []string{mkv})
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("onComplete did not fire")
+	}
+	if dl.status != "complete" {
+		t.Fatalf("status=%q want complete", dl.status)
+	}
+	if dl.total != dl.completed || dl.completed != 8_500_000 {
+		t.Fatalf("progress after complete=%d/%d want 8500000/8500000", dl.completed, dl.total)
+	}
+}
+
 func TestFinalizeAssembled_PAR2FailUnpackFails_ContentUnusable(t *testing.T) {
 	m := New(Config{StagingDir: t.TempDir(), MaxConcurrentDownloads: 1})
 	dl := registerFinalizeDL(t, m, "nzb-finalize-unpack-fail")

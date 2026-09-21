@@ -1351,6 +1351,18 @@ func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState
 		dl.status = "complete"
 		dl.setPhase("")
 		dl.files = files
+		// Claude 2026-09-21: align TotalLength to decoded completed bytes on success.
+		// Reason: dl.total is sum of NZB <segment bytes> (article size); dl.completed
+		//   sums yEnc-decoded lengths (and resume Length). Article Bytes systematically
+		//   overestimate payload, so a finished job showed status Complete with a stuck
+		//   mid progress bar (e.g. ~85–95%).
+		// Troubleshooting: Usenet row Complete while X/Y sizes still mid-progress.
+		// Review if: progress switches to segment-count based (NZBGet-style) instead.
+		if dl.completed > 0 && dl.completed < dl.total {
+			dl.total = dl.completed
+		} else if dl.total > 0 && dl.completed > dl.total {
+			dl.completed = dl.total
+		}
 	}
 	m.mu.Unlock()
 

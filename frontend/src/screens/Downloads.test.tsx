@@ -278,6 +278,25 @@ describe("Downloads — protocol-scoped metrics", () => {
     expect(screen.queryByLabelText("Estimated time remaining")).toBeNull();
   });
 
+  it("V-6b: Complete Usenet row forces 100% bar even when NZB total still exceeds completed", async () => {
+    stubPauseStateOnly();
+    render(() => <Downloads />);
+    MockEventSource.last!.emit([
+      dl({
+        protocol: "usenet",
+        status: "complete",
+        completedLength: 850 * 1024,
+        totalLength: 1000 * 1024,
+      }),
+    ]);
+
+    expect(await screen.findByLabelText("Download phase")).toHaveTextContent(
+      "Complete",
+    );
+    const bar = document.querySelector<HTMLElement>(".bg-accent");
+    expect(bar?.style.width).toBe("100%");
+  });
+
   it("V-7: filename, status badge, progress bytes, and progress bar are unchanged by protocol scoping", async () => {
     stubPauseStateOnly();
     render(() => <Downloads />);

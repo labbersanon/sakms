@@ -11,20 +11,127 @@ import (
 // Review if: indexer APIs expose structured audio language (drop title tokens).
 // Related: api/grablanguage.go; FilterReleases; RunAutoGrab.
 
-// knownLanguageTags are word-boundary tokens scene releases use for audio/sub
-// language. Unmarked titles (no tag) are treated as the English-assumed default.
-// MULTI is deliberately absent — it means bundled tracks, often including English.
-var knownLanguageTags = []string{
-	"english", "eng",
-	"french", "german", "spanish", "italian", "vostfr",
-	"russian", "hindi", "korean", "japanese",
-	"dutch", "polish", "swedish", "norwegian", "danish",
-	"portuguese", "brazilian", "latino", "castellano",
-	"chinese", "mandarin", "cantonese", "arabic", "turkish",
-	"hebrew", "thai", "vietnamese", "nordic",
+// LanguageGroup is one dropdown choice: selecting ID matches every Alias token
+// in a release title (abbreviations are implied, not separate options).
+type LanguageGroup struct {
+	ID      string   // canonical value stored + shown in Settings
+	Aliases []string // scene tokens that count as this language (includes ID)
 }
 
-var knownLanguagePattern = regexp.MustCompile(`(?i)\b(` + strings.Join(knownLanguageTags, "|") + `)\b`)
+// LanguageGroups is the Settings dropdown catalog. Order is display order.
+// MULTI is deliberately absent — it means bundled tracks, often including English.
+var LanguageGroups = []LanguageGroup{
+	{ID: "english", Aliases: []string{"english", "eng"}},
+	{ID: "french", Aliases: []string{"french"}},
+	{ID: "vostfr", Aliases: []string{"vostfr"}},
+	{ID: "german", Aliases: []string{"german"}},
+	{ID: "spanish", Aliases: []string{"spanish", "latino", "castellano"}},
+	{ID: "italian", Aliases: []string{"italian"}},
+	{ID: "russian", Aliases: []string{"russian"}},
+	{ID: "hindi", Aliases: []string{"hindi"}},
+	{ID: "korean", Aliases: []string{"korean"}},
+	{ID: "japanese", Aliases: []string{"japanese"}},
+	{ID: "dutch", Aliases: []string{"dutch"}},
+	{ID: "polish", Aliases: []string{"polish"}},
+	{ID: "swedish", Aliases: []string{"swedish"}},
+	{ID: "norwegian", Aliases: []string{"norwegian"}},
+	{ID: "danish", Aliases: []string{"danish"}},
+	{ID: "portuguese", Aliases: []string{"portuguese", "brazilian"}},
+	{ID: "chinese", Aliases: []string{"chinese", "mandarin", "cantonese"}},
+	{ID: "arabic", Aliases: []string{"arabic"}},
+	{ID: "turkish", Aliases: []string{"turkish"}},
+	{ID: "hebrew", Aliases: []string{"hebrew"}},
+	{ID: "thai", Aliases: []string{"thai"}},
+	{ID: "vietnamese", Aliases: []string{"vietnamese"}},
+	{ID: "nordic", Aliases: []string{"nordic"}},
+}
+
+// KnownLanguageTags is the flat token list used for title matching (all aliases).
+// Prefer LanguageGroups / LanguageOptionIDs for UI.
+var KnownLanguageTags = flattenLanguageAliases()
+
+// LanguageOptionIDs returns canonical dropdown values (no bare abbreviations).
+func LanguageOptionIDs() []string {
+	out := make([]string, len(LanguageGroups))
+	for i, g := range LanguageGroups {
+		out[i] = g.ID
+	}
+	return out
+}
+
+func flattenLanguageAliases() []string {
+	var out []string
+	seen := map[string]struct{}{}
+	for _, g := range LanguageGroups {
+		for _, a := range g.Aliases {
+			a = strings.ToLower(a)
+			if _, ok := seen[a]; ok {
+				continue
+			}
+			seen[a] = struct{}{}
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+var (
+	knownLanguagePattern = regexp.MustCompile(`(?i)\b(` + strings.Join(KnownLanguageTags, "|") + `)\b`)
+	aliasToGroupID       = buildAliasToGroupID()
+	englishAliases       = aliasSetFor("english")
+)
+
+func buildAliasToGroupID() map[string]string {
+	m := map[string]string{}
+	for _, g := range LanguageGroups {
+		for _, a := range g.Aliases {
+			m[strings.ToLower(a)] = g.ID
+		}
+	}
+	return m
+}
+
+func aliasSetFor(id string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, g := range LanguageGroups {
+		if g.ID != id {
+			continue
+		}
+		for _, a := range g.Aliases {
+			out[strings.ToLower(a)] = struct{}{}
+		}
+		break
+	}
+	return out
+}
+
+// CanonicalLanguageID maps a stored or typed token to its group ID.
+// Unknown tokens return "".
+func CanonicalLanguageID(token string) string {
+	return aliasToGroupID[strings.ToLower(strings.TrimSpace(token))]
+}
+
+// ExpandLanguagePreferences turns selected group IDs (or legacy aliases) into
+// the full set of scene tokens that should match a release title.
+func ExpandLanguagePreferences(preferred []string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, p := range preferred {
+		id := CanonicalLanguageID(p)
+		if id == "" {
+			continue
+		}
+		for _, g := range LanguageGroups {
+			if g.ID != id {
+				continue
+			}
+			for _, a := range g.Aliases {
+				out[strings.ToLower(a)] = struct{}{}
+			}
+			break
+		}
+	}
+	return out
+}
 
 // FindLanguageTags returns lowercased known language tokens present in title
 // (deduped, scene order not preserved).
@@ -51,20 +158,21 @@ func FindLanguageTags(title string) []string {
 //
 // Rules (Global preferred-languages setting):
 //   - No known language tag → allow (unmarked = English-assumed default).
-//   - Any preferred tag appears in the title → allow.
+//   - Any preferred language's aliases appear in the title → allow
+//     (e.g. selecting "english" also matches ENG).
 //   - Title has only non-preferred language tags → reject.
 //
 // Empty preferred keeps the historical English-assumed behaviour: allow
-// unmarked and english/eng tags; reject every other known language tag.
+// unmarked and english-group tags; reject every other known language tag.
 func TitleLanguageAllowed(title string, preferred []string) bool {
 	tags := FindLanguageTags(title)
 	if len(tags) == 0 {
 		return true
 	}
-	pref := normalizePreferredLanguages(preferred)
+	pref := ExpandLanguagePreferences(preferred)
 	if len(pref) == 0 {
 		for _, t := range tags {
-			if t != "english" && t != "eng" {
+			if _, ok := englishAliases[t]; !ok {
 				return false
 			}
 		}
@@ -76,16 +184,4 @@ func TitleLanguageAllowed(title string, preferred []string) bool {
 		}
 	}
 	return false
-}
-
-func normalizePreferredLanguages(in []string) map[string]struct{} {
-	out := map[string]struct{}{}
-	for _, p := range in {
-		p = strings.ToLower(strings.TrimSpace(p))
-		if p == "" {
-			continue
-		}
-		out[p] = struct{}{}
-	}
-	return out
 }

@@ -43,7 +43,7 @@ func TestGrabPreferredLanguagesHandlers(t *testing.T) {
 	mux.HandleFunc("GET /api/settings/grab-preferred-languages", getGrabPreferredLanguagesHandler(store))
 	mux.HandleFunc("PUT /api/settings/grab-preferred-languages", putGrabPreferredLanguagesHandler(store))
 
-	putReq := httptest.NewRequest(http.MethodPut, "/api/settings/grab-preferred-languages", bytes.NewBufferString(`{"languages":["German"," german ","FRENCH",""]}`))
+	putReq := httptest.NewRequest(http.MethodPut, "/api/settings/grab-preferred-languages", bytes.NewBufferString(`{"languages":["German"," eng ","FRENCH",""]}`))
 	putRec := httptest.NewRecorder()
 	mux.ServeHTTP(putRec, putReq)
 	if putRec.Code != http.StatusNoContent {
@@ -60,15 +60,31 @@ func TestGrabPreferredLanguagesHandlers(t *testing.T) {
 	if err := json.NewDecoder(getRec.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if len(body.Languages) != 2 || body.Languages[0] != "german" || body.Languages[1] != "french" {
+	// eng canonicalizes to english; options must not list bare abbreviations.
+	if len(body.Languages) != 3 || body.Languages[0] != "german" || body.Languages[1] != "english" || body.Languages[2] != "french" {
 		t.Fatalf("languages=%v", body.Languages)
+	}
+	if len(body.Options) == 0 {
+		t.Fatal("expected options catalog on GET")
+	}
+	for _, o := range body.Options {
+		if o == "eng" || o == "latino" || o == "brazilian" {
+			t.Fatalf("abbreviation %q must not appear in options", o)
+		}
 	}
 
 	loaded, err := loadPreferredLanguages(context.Background(), store)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded) != 2 {
+	if len(loaded) != 3 {
 		t.Fatalf("loaded=%v", loaded)
+	}
+
+	bad := httptest.NewRequest(http.MethodPut, "/api/settings/grab-preferred-languages", bytes.NewBufferString(`{"languages":["klingon"]}`))
+	badRec := httptest.NewRecorder()
+	mux.ServeHTTP(badRec, bad)
+	if badRec.Code != http.StatusBadRequest {
+		t.Fatalf("unknown language status=%d", badRec.Code)
 	}
 }

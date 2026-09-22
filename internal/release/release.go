@@ -155,10 +155,10 @@ func Score(info Info, prefs Profile) int {
 
 // Candidate is one search result's full scoring input — Info plus the
 // signals ScoreCandidate weighs beyond resolution/source/codec: how
-// established a torrent is (seeders) or a usenet post is (age), and any
-// indexer-reported trust signal. Kept separate from Info itself since Parse
-// only ever extracts what's encoded in a title string, never these
-// out-of-band fields.
+// established a torrent is (seeders) or how fresh a usenet post is (age),
+// and any indexer-reported trust signal. Kept separate from Info itself
+// since Parse only ever extracts what's encoded in a title string, never
+// these out-of-band fields.
 type Candidate struct {
 	Info Info
 	// Protocol is "torrent" or "usenet" — a plain string (matching
@@ -182,8 +182,9 @@ const (
 	// and 10 respectively) without letting seeders alone override a real
 	// quality-tier difference.
 	torrentSeederCap = 200
-	// usenetAgeCapDays bounds how many days of "more established" bonus a
-	// usenet post can earn.
+	// usenetAgeCapDays bounds how many days of freshness bonus a usenet
+	// post can earn. Brand-new (0 days) gets the max; posts at/over the
+	// cap get 0. Quality Score() still dominates (resolution 100 / source 10).
 	usenetAgeCapDays  = 30
 	usenetAgeWeight   = 3
 	indexerTrustBonus = 50
@@ -192,12 +193,13 @@ const (
 // ScoreCandidate ranks c against prefs exactly like Score, then adds:
 //   - torrent: a bonus for seeder count (capped), rewarding a well-seeded
 //     release over a barely-seeded one of otherwise similar quality;
-//   - usenet: a bonus for how many days old the post is (capped at 30),
-//     on the reasoning that a several-day-old post is more likely to be
-//     fully propagated and par2-verified than one posted minutes ago —
-//     this direction (older-is-safer, capped) is a judgment call, not a
-//     documented convention, and easy to invert if it proves backwards
-//     against real results;
+//   - usenet: a bonus for freshness within the same quality tier — newer
+//     beats older up to usenetAgeCapDays (0 days = max bonus, 30+ = 0).
+//     Claude 2026-09-22: inverted from older-is-safer (was days*weight).
+//     Reason: operators prefer a just-posted NZB over a 30-day-old copy of
+//     the same resolution/source/codec; retention is the real age risk and
+//     is handled by the STAT precheck, not ranking.
+//     Review if: live grab picks prefer stale copies of equal quality.
 //   - either protocol: a flat bonus if IndexerFlags marks the release as
 //     freeleech or internal — the one "reputation" signal, sourced
 //     entirely from Prowlarr, no additional lookup.
@@ -218,10 +220,13 @@ func ScoreCandidate(c Candidate, prefs Profile, now time.Time) int {
 		}
 	case "usenet":
 		if days, ok := daysSince(c.PublishDate, now); ok {
+			// Prefer newer: bonus = (usenetAgeCapDays - days) * weight when days <= cap
+			// brand new (0 days) gets max bonus; 30+ days gets 0
 			if days > usenetAgeCapDays {
 				days = usenetAgeCapDays
 			}
-			score += days * usenetAgeWeight
+			// score += days * usenetAgeWeight // Claude 2026-09-22: older-is-safer inverted
+			score += (usenetAgeCapDays - days) * usenetAgeWeight
 		}
 	}
 

@@ -127,7 +127,7 @@ func TestScoreCandidate_TorrentSeedersCapped(t *testing.T) {
 	}
 }
 
-func TestScoreCandidate_UsenetOlderPostScoresHigherUpToCap(t *testing.T) {
+func TestScoreCandidate_UsenetNewerPostScoresHigherUpToCap(t *testing.T) {
 	prefs := DefaultProfile()
 	now := time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC)
 	info := Info{Resolution: 1080, Source: "web-dl"}
@@ -137,11 +137,41 @@ func TestScoreCandidate_UsenetOlderPostScoresHigherUpToCap(t *testing.T) {
 	wayOverCap := ScoreCandidate(Candidate{Info: info, Protocol: "usenet", PublishDate: now.AddDate(0, 0, -365).Format(time.RFC3339)}, prefs, now)
 	atCap := ScoreCandidate(Candidate{Info: info, Protocol: "usenet", PublishDate: now.AddDate(0, 0, -usenetAgeCapDays).Format(time.RFC3339)}, prefs, now)
 
-	if weekOld <= brandNew {
-		t.Errorf("expected a week-old usenet post to outscore a brand-new one: week=%d new=%d", weekOld, brandNew)
+	if brandNew <= weekOld {
+		t.Errorf("expected a brand-new usenet post to outscore a week-old one of the same quality: new=%d week=%d", brandNew, weekOld)
 	}
 	if wayOverCap != atCap {
 		t.Errorf("expected the age bonus to be capped at %d days, got %d vs %d", usenetAgeCapDays, atCap, wayOverCap)
+	}
+}
+
+// Claude 2026-09-22: older-is-safer assertion inverted; kept for history.
+// func TestScoreCandidate_UsenetOlderPostScoresHigherUpToCap(t *testing.T) {
+// 	prefs := DefaultProfile()
+// 	now := time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC)
+// 	info := Info{Resolution: 1080, Source: "web-dl"}
+// 	brandNew := ScoreCandidate(Candidate{Info: info, Protocol: "usenet", PublishDate: now.Format(time.RFC3339)}, prefs, now)
+// 	weekOld := ScoreCandidate(Candidate{Info: info, Protocol: "usenet", PublishDate: now.AddDate(0, 0, -7).Format(time.RFC3339)}, prefs, now)
+// 	if weekOld <= brandNew {
+// 		t.Errorf("expected a week-old usenet post to outscore a brand-new one: week=%d new=%d", weekOld, brandNew)
+// 	}
+// }
+
+func TestScoreCandidate_UsenetAgeDoesNotOverrideResolution(t *testing.T) {
+	prefs := DefaultProfile()
+	now := time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC)
+
+	olderBetter := ScoreCandidate(Candidate{
+		Info: Info{Resolution: 1080, Source: "web-dl"}, Protocol: "usenet",
+		PublishDate: now.AddDate(0, 0, -usenetAgeCapDays).Format(time.RFC3339),
+	}, prefs, now)
+	newerWorse := ScoreCandidate(Candidate{
+		Info: Info{Resolution: 720, Source: "web-dl"}, Protocol: "usenet",
+		PublishDate: now.Format(time.RFC3339),
+	}, prefs, now)
+
+	if olderBetter <= newerWorse {
+		t.Errorf("expected older 1080p to still beat brand-new 720p: older1080=%d new720=%d", olderBetter, newerWorse)
 	}
 }
 

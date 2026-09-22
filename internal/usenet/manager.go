@@ -242,7 +242,14 @@ type Manager struct {
 	// Related: SetMaxConcurrentDownloads; runDownload releases before PAR2.
 	maxConcurrentDownloads int
 	semaphore              chan struct{}
-	rateCap                *xferlimit.Cap
+	// Claude 2026-09-22: independent precheck job queue (same capacity as downloads).
+	// Reason: full-NZB STAT must not steal download semaphore slots; overlapping
+	//   prechecks wait here while BODY fetches keep using m.semaphore.
+	// Troubleshooting: prechecks queued behind MaxConcurrentDownloads; journal
+	//   "usenet precheck:" after the slot is acquired.
+	// Review if: precheck concurrency gets its own settings knob.
+	precheckSem chan struct{}
+	rateCap     *xferlimit.Cap
 
 	// Claude 2026-09-21: hardware priors — calibrated REPLACE base + in-process EMA.
 	// Reason: settings persist the bench REPLACE; live Observe still refines
@@ -319,6 +326,7 @@ func New(cfg Config) *Manager {
 	}
 	m.pools = newPools(servers)
 	m.semaphore = make(chan struct{}, maxDL)
+	m.precheckSem = make(chan struct{}, maxDL)
 	return m
 }
 
@@ -397,10 +405,11 @@ func (m *Manager) SetSubscriptions(cfgs []ServerConfig) {
 	}
 }
 
-// SetMaxConcurrentDownloads replaces the NZB job semaphore capacity. Downloads
-// already holding a token release into the channel they took it from, so during
-// the overlap up to (held + newCapacity) NZBs can fetch concurrently. That is
-// transient and benign. n < 1 is clamped to DefaultMaxConcurrentDownloads.
+// SetMaxConcurrentDownloads replaces the NZB job semaphore capacity AND the
+// independent precheck semaphore (same capacity). Downloads/prechecks already
+// holding a token release into the channel they took it from, so during the
+// overlap up to (held + newCapacity) jobs can run. That is transient and
+// benign. n < 1 is clamped to DefaultMaxConcurrentDownloads.
 func (m *Manager) SetMaxConcurrentDownloads(n int) {
 	if n < 1 {
 		n = DefaultMaxConcurrentDownloads
@@ -408,6 +417,7 @@ func (m *Manager) SetMaxConcurrentDownloads(n int) {
 	m.mu.Lock()
 	m.maxConcurrentDownloads = n
 	m.semaphore = make(chan struct{}, n)
+	m.precheckSem = make(chan struct{}, n)
 	m.mu.Unlock()
 }
 
@@ -493,6 +503,13 @@ func (m *Manager) currentSemaphore() chan struct{} {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.semaphore
+}
+
+// currentPrecheckSemaphore returns the precheck job semaphore in force right now.
+func (m *Manager) currentPrecheckSemaphore() chan struct{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.precheckSem
 }
 
 // SetOnComplete wires the completion callback. Safe to call before Start.
@@ -1132,8 +1149,10 @@ func (m *Manager) FindByGID(gid string) (*Download, error) {
 
 // Claude 2026-09-22: NZB/release title for content-park fingerprints.
 // Reason: parkUsenetContentFailure must hash the same title filterExcludedReleases
-//   uses (Prowlarr/NZB name stored as Download.Filename), not grabs.Grab.Title
-//   (the media/show name). Empty when the engine no longer has gid.
+//
+//	uses (Prowlarr/NZB name stored as Download.Filename), not grabs.Grab.Title
+//	(the media/show name). Empty when the engine no longer has gid.
+//
 // Troubleshooting: 430 park excluded "Burn Notice" instead of the NZB name.
 // Review if: grabs persist the NZB title as its own column.
 func (m *Manager) FindFilename(gid string) string {

@@ -17,6 +17,14 @@ import (
 // Troubleshooting: journal "usenet precheck:"; AddNZB/RelaunchNZB return ErrArticlesUnavailable.
 // Review if: assembleFile ever tolerates missing segments (abort threshold could become %).
 // Related: docs/usenet-precheck.md, fetchSegmentAny, RunAutoGrab candidate loop.
+//
+// Claude 2026-09-22: sample/escalate replaced by a true full payload STAT.
+// Reason: assembleFile fail-closes on any hole; a 48-segment sample could miss
+//   a single 430/451 and still burn the download slot. Precheck jobs wait on
+//   precheckSem (capacity = MaxConcurrentDownloads), not the download semaphore.
+// Troubleshooting: journal "usenet precheck: abort — full missing="; overlapping
+//   AddNZB calls block on precheckSem rather than stealing BODY slots.
+// Review if: full STAT of huge NZBs needs a settings timeout/worker knob.
 
 // ErrArticlesUnavailable is returned when a pre-download STAT check finds
 // payload articles missing on every configured subscription. Callers that have
@@ -47,17 +55,46 @@ type precheckPolicy struct {
 	MaxWorkers       int
 }
 
-// Fixed policy — always on, no settings UI (operator choice 2026-09-15).
-// Escalation scope A: only files that missed in the sample (+ small re-sample).
-var defaultPrecheckPolicy = precheckPolicy{
-	ExactThreshold:   16,
-	SampleCap:        48,
-	InteriorSamples:  12,
-	LeaderCap:        32,
-	AbortSampleRatio: 0.25,
-	SampleTimeout:    15 * time.Second,
-	EscalateTimeout:  45 * time.Second,
-	MaxWorkers:       4,
+// Claude 2026-09-22: sample/escalate policy retained for the commented-out path.
+// Reason: never delete the 2026-09-15 hybrid gate; full STAT does not read these.
+// var defaultPrecheckPolicy = precheckPolicy{
+// 	ExactThreshold:   16,
+// 	SampleCap:        48,
+// 	InteriorSamples:  12,
+// 	LeaderCap:        32,
+// 	AbortSampleRatio: 0.25,
+// 	SampleTimeout:    15 * time.Second,
+// 	EscalateTimeout:  45 * time.Second,
+// 	MaxWorkers:       4,
+// }
+
+// Claude 2026-09-22: full-check timeout scales with segment count.
+// Reason: STAT is one RTT per article; a 50k-segment NZB cannot finish in the
+//
+//	old 15s sample timeout. Budget is sequential (base + per-seg) so fan-out
+//	only makes us finish earlier; the cap keeps a wedged provider from hanging
+//	AddNZB for hours.
+//
+// Troubleshooting: huge NZB precheck aborted with DeadlineExceeded while
+//
+//	articles were present — raise the max, not the sample timeout.
+//
+// Review if: operators need a settings knob for precheck timeout.
+const (
+	precheckTimeoutBase   = 15 * time.Second
+	precheckTimeoutPerSeg = 100 * time.Millisecond
+	precheckTimeoutMax    = 12 * time.Minute
+)
+
+func fullPrecheckTimeout(n int) time.Duration {
+	if n < 1 {
+		return precheckTimeoutBase
+	}
+	d := precheckTimeoutBase + time.Duration(n)*precheckTimeoutPerSeg
+	if d > precheckTimeoutMax {
+		return precheckTimeoutMax
+	}
+	return d
 }
 
 type sampledSeg struct {
@@ -65,16 +102,14 @@ type sampledSeg struct {
 	msgID   string
 }
 
-// precheckNZB STATs a sample of payload MsgIDs, escalating to the affected
-// files when misses are sparse. skip MsgIDs are treated as already present
-// (relaunch resume). Zero pools is a no-op so fixtures without NNTP stay green.
+// precheckNZB STATs every payload MsgID (skip meta via payloadFiles; honor skip
+// for resume). Zero pools is a no-op so fixtures without NNTP stay green.
 func (m *Manager) precheckNZB(ctx context.Context, nzb *NZB, skip map[string]bool) (PrecheckResult, error) {
 	var res PrecheckResult
 	if nzb == nil || len(m.currentPools()) == 0 {
 		res.Inconclusive = true
 		return res, nil
 	}
-	policy := defaultPrecheckPolicy
 
 	payload := payloadFiles(nzb)
 	if len(payload) == 0 {
@@ -105,83 +140,198 @@ func (m *Manager) precheckNZB(ctx context.Context, nzb *NZB, skip map[string]boo
 		return res, nil
 	}
 
-	sample := sampleSegments(payload, all, policy)
-	res.Sampled = len(sample)
+	sem := m.currentPrecheckSemaphore()
+	select {
+	case sem <- struct{}{}:
+	case <-ctx.Done():
+		res.Inconclusive = true
+		return res, nil
+	}
+	defer func() { <-sem }()
 
-	sampleCtx, cancel := context.WithTimeout(ctx, policy.SampleTimeout)
+	fullCtx, cancel := context.WithTimeout(ctx, fullPrecheckTimeout(len(all)))
 	defer cancel()
 
-	sampleMissing, sampleRemoved, sampleChecked, sampleInconc, err := m.statBatch(sampleCtx, sample)
-	res.Checked = sampleChecked
-	res.Inconclusive = sampleInconc
+	missing, removed, checked, inconc, err := m.statBatch(fullCtx, all)
+	res.Checked = checked
+	res.Inconclusive = inconc
 	if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		res.Inconclusive = true
 		return res, nil
 	}
 
-	if sampleRemoved > 0 {
-		res.Missing = sampleRemoved
-		log.Printf("usenet precheck: abort — %d sampled payload article(s) removed (451)", sampleRemoved)
+	missIDs := missingSegs(all, missing)
+	res.Missing = len(missIDs) + removed
+	if len(missIDs) > 0 || removed > 0 {
+		res.WorstFile = worstFileName(payload, missIDs)
+	}
+
+	if removed > 0 {
+		log.Printf("usenet precheck: abort — full missing=%d/%d worst=%q",
+			res.Missing, res.Checked, res.WorstFile)
 		return res, ErrArticlesUnavailable
 	}
 
-	sampleMissIDs := missingSegs(sample, sampleMissing)
-	res.SampleMissing = len(sampleMissIDs)
-	if len(sampleMissIDs) == 0 {
-		log.Printf("usenet precheck: ok sampled=%d payload=%d", res.Sampled, res.PayloadSegments)
+	if len(missIDs) == 0 {
+		log.Printf("usenet precheck: ok full checked=%d payload=%d", res.Checked, res.PayloadSegments)
 		return res, nil
 	}
 
 	// Mandatory BODY trust probe: some backends 430 STAT but serve BODY.
-	probeID := sampleMissIDs[0].msgID
-	if m.trustProbeBody(sampleCtx, probeID) {
+	probeID := missIDs[0].msgID
+	if m.trustProbeBody(fullCtx, probeID) {
 		m.markStatUnreliable()
 		res.StatUnreliable = true
 		log.Printf("usenet precheck: STAT unreliable (BODY ok for %s) — proceeding", probeID)
 		return res, nil
 	}
 
-	ratio := float64(len(sampleMissIDs)) / float64(len(sample))
-	if ratio >= policy.AbortSampleRatio {
-		res.Missing = len(sampleMissIDs)
-		res.WorstFile = worstFileName(payload, sampleMissIDs)
-		log.Printf("usenet precheck: abort — sample missing %.0f%% (%d/%d) worst=%q",
-			ratio*100, len(sampleMissIDs), len(sample), res.WorstFile)
-		return res, ErrArticlesUnavailable
-	}
-
-	// Escalate to every segment of the files that missed in the sample (option A).
-	res.Escalated = true
-	escalate := escalateSegments(all, sampleMissIDs)
-	escCtx, escCancel := context.WithTimeout(ctx, policy.EscalateTimeout)
-	defer escCancel()
-
-	escMissing, escRemoved, escChecked, escInconc, escErr := m.statBatch(escCtx, escalate)
-	res.Checked += escChecked
-	if escInconc {
-		res.Inconclusive = true
-	}
-	if escErr != nil && !errors.Is(escErr, context.DeadlineExceeded) && !errors.Is(escErr, context.Canceled) {
-		res.Inconclusive = true
-		return res, nil
-	}
-	if escRemoved > 0 || len(escMissing) > 0 {
-		res.Missing = len(escMissing) + escRemoved
-		res.WorstFile = worstFileName(payload, missingSegs(escalate, escMissing))
-		log.Printf("usenet precheck: abort after escalate — missing=%d checked=%d worst=%q",
-			res.Missing, res.Checked, res.WorstFile)
-		return res, ErrArticlesUnavailable
-	}
-
-	log.Printf("usenet precheck: ok after escalate sampled_miss=%d checked=%d", len(sampleMissIDs), res.Checked)
-	return res, nil
+	log.Printf("usenet precheck: abort — full missing=%d/%d worst=%q",
+		res.Missing, res.Checked, res.WorstFile)
+	return res, ErrArticlesUnavailable
 }
 
-// precheckConcurrency leaves one connection of the budget for real downloads.
+// Claude 2026-09-22: previous hybrid sample → 25% abort / option-A escalate.
+// Reason: replaced by full payload STAT above; kept for rollback context.
+// Troubleshooting: if full STAT is too slow, this path sampled ≤48 then
+//   escalated only files that missed in-sample.
+// Review if: assembleFile starts skipping holes and a sample gate is enough.
+//
+// func (m *Manager) precheckNZB(ctx context.Context, nzb *NZB, skip map[string]bool) (PrecheckResult, error) {
+// 	var res PrecheckResult
+// 	if nzb == nil || len(m.currentPools()) == 0 {
+// 		res.Inconclusive = true
+// 		return res, nil
+// 	}
+// 	policy := defaultPrecheckPolicy
+//
+// 	payload := payloadFiles(nzb)
+// 	if len(payload) == 0 {
+// 		res.Inconclusive = true
+// 		return res, nil
+// 	}
+//
+// 	var all []sampledSeg
+// 	for fi, f := range payload {
+// 		for _, s := range f.Segs {
+// 			id := strings.TrimSpace(s.MsgID)
+// 			if id == "" || skip[id] {
+// 				continue
+// 			}
+// 			all = append(all, sampledSeg{fileIdx: fi, msgID: id})
+// 		}
+// 	}
+// 	res.PayloadSegments = len(all)
+// 	if len(all) == 0 {
+// 		return res, nil
+// 	}
+//
+// 	if m.isStatUnreliable() {
+// 		res.StatUnreliable = true
+// 		res.Inconclusive = true
+// 		log.Printf("usenet precheck: skipped — STAT marked unreliable this process")
+// 		return res, nil
+// 	}
+//
+// 	sample := sampleSegments(payload, all, policy)
+// 	res.Sampled = len(sample)
+//
+// 	sampleCtx, cancel := context.WithTimeout(ctx, policy.SampleTimeout)
+// 	defer cancel()
+//
+// 	sampleMissing, sampleRemoved, sampleChecked, sampleInconc, err := m.statBatch(sampleCtx, sample)
+// 	res.Checked = sampleChecked
+// 	res.Inconclusive = sampleInconc
+// 	if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+// 		res.Inconclusive = true
+// 		return res, nil
+// 	}
+//
+// 	if sampleRemoved > 0 {
+// 		res.Missing = sampleRemoved
+// 		log.Printf("usenet precheck: abort — %d sampled payload article(s) removed (451)", sampleRemoved)
+// 		return res, ErrArticlesUnavailable
+// 	}
+//
+// 	sampleMissIDs := missingSegs(sample, sampleMissing)
+// 	res.SampleMissing = len(sampleMissIDs)
+// 	if len(sampleMissIDs) == 0 {
+// 		log.Printf("usenet precheck: ok sampled=%d payload=%d", res.Sampled, res.PayloadSegments)
+// 		return res, nil
+// 	}
+//
+// 	probeID := sampleMissIDs[0].msgID
+// 	if m.trustProbeBody(sampleCtx, probeID) {
+// 		m.markStatUnreliable()
+// 		res.StatUnreliable = true
+// 		log.Printf("usenet precheck: STAT unreliable (BODY ok for %s) — proceeding", probeID)
+// 		return res, nil
+// 	}
+//
+// 	ratio := float64(len(sampleMissIDs)) / float64(len(sample))
+// 	if ratio >= policy.AbortSampleRatio {
+// 		res.Missing = len(sampleMissIDs)
+// 		res.WorstFile = worstFileName(payload, sampleMissIDs)
+// 		log.Printf("usenet precheck: abort — sample missing %.0f%% (%d/%d) worst=%q",
+// 			ratio*100, len(sampleMissIDs), len(sample), res.WorstFile)
+// 		return res, ErrArticlesUnavailable
+// 	}
+//
+// 	res.Escalated = true
+// 	escalate := escalateSegments(all, sampleMissIDs)
+// 	escCtx, escCancel := context.WithTimeout(ctx, policy.EscalateTimeout)
+// 	defer escCancel()
+//
+// 	escMissing, escRemoved, escChecked, escInconc, escErr := m.statBatch(escCtx, escalate)
+// 	res.Checked += escChecked
+// 	if escInconc {
+// 		res.Inconclusive = true
+// 	}
+// 	if escErr != nil && !errors.Is(escErr, context.DeadlineExceeded) && !errors.Is(escErr, context.Canceled) {
+// 		res.Inconclusive = true
+// 		return res, nil
+// 	}
+// 	if escRemoved > 0 || len(escMissing) > 0 {
+// 		res.Missing = len(escMissing) + escRemoved
+// 		res.WorstFile = worstFileName(payload, missingSegs(escalate, escMissing))
+// 		log.Printf("usenet precheck: abort after escalate — missing=%d checked=%d worst=%q",
+// 			res.Missing, res.Checked, res.WorstFile)
+// 		return res, ErrArticlesUnavailable
+// 	}
+//
+// 	log.Printf("usenet precheck: ok after escalate sampled_miss=%d checked=%d", len(sampleMissIDs), res.Checked)
+// 	return res, nil
+// }
+
+// precheckConcurrency uses the whole MaxConns budget for STAT workers.
+//
+// Claude 2026-09-22: no longer min(budget-1, 4).
+// Reason: precheck jobs are gated on precheckSem (capacity = MaxConcurrentDownloads),
+//
+//	independent of the download semaphore, so they do not steal NZB fetch slots.
+//	Pool sockets are still shared: an in-flight download already holds live tokens;
+//	STAT is one RTT and returns the socket quickly. Using the old cap of 4 made a
+//	20k-segment full check take minutes.
+//
+// Troubleshooting: precheck and BODY contend when MaxConns is tiny (1) and a
+//
+//	download is already fetching — STAT waits on pool.getCtx.
+//
+// Review if: STAT should reserve sockets via a dedicated pool or MaxConns floor.
 func (m *Manager) precheckConcurrency() int {
-	n := concurrencyBudget(m.currentPools()) - 1
-	return min(max(n, 1), defaultPrecheckPolicy.MaxWorkers)
+	n := concurrencyBudget(m.currentPools())
+	if n < 1 {
+		n = 1
+	}
+	return n
 }
+
+// Claude 2026-09-15: previous worker cap left one socket for downloads and
+//   clamped at 4 because precheck was a short sample.
+// func (m *Manager) precheckConcurrency() int {
+// 	n := concurrencyBudget(m.currentPools()) - 1
+// 	return min(max(n, 1), defaultPrecheckPolicy.MaxWorkers)
+// }
 
 func (m *Manager) statBatch(ctx context.Context, segs []sampledSeg) (missing map[string]bool, removed, checked int, inconclusive bool, err error) {
 	missing = make(map[string]bool)
@@ -257,8 +407,10 @@ func (m *Manager) statBatch(ctx context.Context, segs []sampledSeg) (missing map
 //
 // Claude 2026-09-17: bounded reconnect (maxStatAttemptsPerServer = 2).
 // Reason: a stale-socket STAT failure (broken pipe on an idle connection)
-//   previously poisoned a precheck sample, making a healthy NZB look
-//   inconclusive. STAT is one round trip, so a single retry is cheap.
+//
+//	previously poisoned a precheck sample, making a healthy NZB look
+//	inconclusive. STAT is one round trip, so a single retry is cheap.
+//
 // Review if: maxStatAttemptsPerServer is exposed as a settings knob.
 func (m *Manager) statArticleAny(ctx context.Context, msgID string) (found, removed bool, err error) {
 	pools := m.currentPools()
@@ -413,80 +565,77 @@ func missingSegs(segs []sampledSeg, missing map[string]bool) []sampledSeg {
 	return out
 }
 
-// appendStride appends n evenly-spaced segments of all, skipping MsgIDs already
-// in seen. Spreads probes across the release instead of clustering at one file.
-func appendStride(out, all []sampledSeg, seen map[string]bool, n int) []sampledSeg {
-	if n <= 0 || len(all) < 2 {
-		return out
-	}
-	for i := 0; i < n; i++ {
-		s := all[(i*(len(all)-1))/n]
-		if seen[s.msgID] {
-			continue
-		}
-		seen[s.msgID] = true
-		out = append(out, s)
-	}
-	return out
-}
-
-func sampleSegments(payload []NZBFile, all []sampledSeg, policy precheckPolicy) []sampledSeg {
-	if len(all) <= policy.ExactThreshold {
-		return append([]sampledSeg(nil), all...)
-	}
-
-	seen := make(map[string]bool)
-	var out []sampledSeg
-
-	step := 1
-	if len(payload) > policy.LeaderCap {
-		step = (len(payload) + policy.LeaderCap - 1) / policy.LeaderCap
-	}
-	leaders := 0
-	for fi := 0; fi < len(payload) && leaders < policy.LeaderCap; fi += step {
-		f := payload[fi]
-		if len(f.Segs) == 0 {
-			continue
-		}
-		id := strings.TrimSpace(f.Segs[0].MsgID)
-		if id == "" || seen[id] {
-			continue
-		}
-		seen[id] = true
-		out = append(out, sampledSeg{fileIdx: fi, msgID: id})
-		leaders++
-	}
-
-	out = appendStride(out, all, seen, min(policy.InteriorSamples, len(all)))
-
-	if len(out) > policy.SampleCap {
-		out = out[:policy.SampleCap]
-	}
-	return out
-}
-
-// escalateSpotChecks is how many extra evenly-spaced segments the escalation
-// pass probes beyond the files that already missed in the sample.
-const escalateSpotChecks = 24
-
-func escalateSegments(all, sampleMiss []sampledSeg) []sampledSeg {
-	missFiles := make(map[int]bool)
-	for _, s := range sampleMiss {
-		missFiles[s.fileIdx] = true
-	}
-	seen := make(map[string]bool)
-	var out []sampledSeg
-	for _, s := range all {
-		if !missFiles[s.fileIdx] || seen[s.msgID] {
-			continue
-		}
-		seen[s.msgID] = true
-		out = append(out, s)
-	}
-	// Spot-check the rest of the release so a whole-NZB outage is caught even
-	// when only one file missed in the sample.
-	return appendStride(out, all, seen, min(escalateSpotChecks, len(all)))
-}
+// Claude 2026-09-22: sample/escalate helpers unused by full STAT; kept commented.
+// Reason: never delete the 2026-09-15 hybrid sampler.
+//
+// func appendStride(out, all []sampledSeg, seen map[string]bool, n int) []sampledSeg {
+// 	if n <= 0 || len(all) < 2 {
+// 		return out
+// 	}
+// 	for i := 0; i < n; i++ {
+// 		s := all[(i*(len(all)-1))/n]
+// 		if seen[s.msgID] {
+// 			continue
+// 		}
+// 		seen[s.msgID] = true
+// 		out = append(out, s)
+// 	}
+// 	return out
+// }
+//
+// func sampleSegments(payload []NZBFile, all []sampledSeg, policy precheckPolicy) []sampledSeg {
+// 	if len(all) <= policy.ExactThreshold {
+// 		return append([]sampledSeg(nil), all...)
+// 	}
+//
+// 	seen := make(map[string]bool)
+// 	var out []sampledSeg
+//
+// 	step := 1
+// 	if len(payload) > policy.LeaderCap {
+// 		step = (len(payload) + policy.LeaderCap - 1) / policy.LeaderCap
+// 	}
+// 	leaders := 0
+// 	for fi := 0; fi < len(payload) && leaders < policy.LeaderCap; fi += step {
+// 		f := payload[fi]
+// 		if len(f.Segs) == 0 {
+// 			continue
+// 		}
+// 		id := strings.TrimSpace(f.Segs[0].MsgID)
+// 		if id == "" || seen[id] {
+// 			continue
+// 		}
+// 		seen[id] = true
+// 		out = append(out, sampledSeg{fileIdx: fi, msgID: id})
+// 		leaders++
+// 	}
+//
+// 	out = appendStride(out, all, seen, min(policy.InteriorSamples, len(all)))
+//
+// 	if len(out) > policy.SampleCap {
+// 		out = out[:policy.SampleCap]
+// 	}
+// 	return out
+// }
+//
+// const escalateSpotChecks = 24
+//
+// func escalateSegments(all, sampleMiss []sampledSeg) []sampledSeg {
+// 	missFiles := make(map[int]bool)
+// 	for _, s := range sampleMiss {
+// 		missFiles[s.fileIdx] = true
+// 	}
+// 	seen := make(map[string]bool)
+// 	var out []sampledSeg
+// 	for _, s := range all {
+// 		if !missFiles[s.fileIdx] || seen[s.msgID] {
+// 			continue
+// 		}
+// 		seen[s.msgID] = true
+// 		out = append(out, s)
+// 	}
+// 	return appendStride(out, all, seen, min(escalateSpotChecks, len(all)))
+// }
 
 func worstFileName(payload []NZBFile, miss []sampledSeg) string {
 	counts := make(map[int]int)

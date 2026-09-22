@@ -9128,3 +9128,37 @@ the error until Cancel; journal shows the content-park reason.
 | `internal/api/useneterror_test.go` | 430 reason + log assertion |
 | `internal/api/usenetretry_test.go` | Sweep 430 expects content-park reason/keys |
 
+## 2026-09-22 — Usenet full-payload STAT precheck + invert age ranking
+
+**Problem:** Pre-download STAT only sampled ≤48 payload articles (then escalated
+files that missed in-sample). A single hole outside the sample still burned a
+download slot until assembleFile fail-closed. Separately, Search ranking gave
+older Usenet posts a `days*3` bonus (capped at 30), so a month-old NZB beat a
+same-quality copy posted today.
+**Fix:** `precheckNZB` STATs **every** remaining payload article (meta skipped;
+resume skip map honored). Abort on any confirmed 430/451. Independent
+`precheckSem` (capacity = `MaxConcurrentDownloads`) so prechecks wait on their
+own queue and do not steal download slots; `New` / `SetMaxConcurrentDownloads`
+resize both semaphores. Timeout is `15s + 100ms×N` capped at 12 minutes.
+STAT workers = `concurrencyBudget()` (all MaxConns); pool sockets remain shared
+with BODY. BODY-trust / STAT-unreliable latch unchanged. Sample/escalate path
+commented out, not deleted. Usenet age bonus inverted:
+`bonus = (30 - days) * 3` for `days ≤ 30` (0 days = 90, 30+ = 0). Quality
+`Score()` (resolution 100 / source 10 / codec 1) is unchanged and still
+dominates. Torrent seeder bonus unchanged.
+**Outcome:** Unit tests cover full-check ok, single-miss abort, semaphore
+capacity, overlapping precheck block, newer-beats-older same tier, and older
+1080p still beating brand-new 720p. Not deployed. Do not merge to main.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/precheck.go` | Full payload STAT; precheckSem acquire; scaled timeout; workers = MaxConns budget |
+| `internal/usenet/manager.go` | `precheckSem`; `New`/`SetMaxConcurrentDownloads` seed both |
+| `internal/usenet/precheck_test.go` | Full check / single miss / sem capacity / overlapping block |
+| `internal/usenet/usenet_test.go` | Default/Set also assert precheck semaphore cap |
+| `docs/usenet-precheck.md` | Document full STAT, timeout, workers, independent queue |
+| `internal/release/release.go` | Invert Usenet age bonus (newer within the same quality tier) |
+| `internal/release/release_test.go` | Newer scores higher; age cannot override resolution |
+

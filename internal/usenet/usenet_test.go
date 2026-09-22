@@ -1157,7 +1157,6 @@ func TestAddNZB_ReturnsOpaqueGID(t *testing.T) {
 	m.Cancel(gid)
 }
 
-
 func TestMaxConcurrentDownloads_DefaultAndSet(t *testing.T) {
 	m := New(Config{})
 	if got, want := m.MaxConcurrentDownloads(), DefaultMaxConcurrentDownloads; got != want {
@@ -1166,6 +1165,9 @@ func TestMaxConcurrentDownloads_DefaultAndSet(t *testing.T) {
 	if got, want := cap(m.currentSemaphore()), DefaultMaxConcurrentDownloads; got != want {
 		t.Fatalf("default semaphore cap = %d, want %d", got, want)
 	}
+	if got, want := cap(m.currentPrecheckSemaphore()), DefaultMaxConcurrentDownloads; got != want {
+		t.Fatalf("default precheck semaphore cap = %d, want %d", got, want)
+	}
 	m.SetMaxConcurrentDownloads(3)
 	if got, want := m.MaxConcurrentDownloads(), 3; got != want {
 		t.Fatalf("after Set: MaxConcurrentDownloads = %d, want %d", got, want)
@@ -1173,10 +1175,16 @@ func TestMaxConcurrentDownloads_DefaultAndSet(t *testing.T) {
 	if got, want := cap(m.currentSemaphore()), 3; got != want {
 		t.Fatalf("after Set: semaphore cap = %d, want %d", got, want)
 	}
+	if got, want := cap(m.currentPrecheckSemaphore()), 3; got != want {
+		t.Fatalf("after Set: precheck semaphore cap = %d, want %d", got, want)
+	}
 	// SetSubscriptions must leave the job cap alone.
 	m.SetSubscriptions([]ServerConfig{{Host: "x", Port: 119, MaxConns: 8}})
 	if got, want := cap(m.currentSemaphore()), 3; got != want {
 		t.Fatalf("SetSubscriptions resized job semaphore to %d, want %d", got, want)
+	}
+	if got, want := cap(m.currentPrecheckSemaphore()), 3; got != want {
+		t.Fatalf("SetSubscriptions resized precheck semaphore to %d, want %d", got, want)
 	}
 	m.SetMaxConcurrentDownloads(0) // clamp
 	if got, want := m.MaxConcurrentDownloads(), DefaultMaxConcurrentDownloads; got != want {

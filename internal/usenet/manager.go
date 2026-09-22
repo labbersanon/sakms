@@ -996,9 +996,19 @@ func (m *Manager) Pause(gid string) error {
 	dl.status = "paused"
 	dl.setPhase("")
 	gate := dl.gate
+	resume := dl.resume
 	m.mu.Unlock()
 	if gate != nil {
 		gate.Pause()
+	}
+	// Claude 2026-09-22: Flush resume on Pause — markSegment no longer persists every article.
+	// Reason: true pause blocks fetch without assembleFile returning; batched dirty would sit in RAM.
+	// Troubleshooting: Pause then kill; relaunch missing last <35 segments.
+	// Review if: a ContinuePartial ticker flushes while paused and this call is redundant.
+	if resume != nil {
+		if err := resume.Flush(); err != nil {
+			log.Printf("usenet: resume flush on pause %s: %v", gid, err)
+		}
 	}
 	return nil
 }
@@ -1244,6 +1254,15 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 	m.mu.Unlock()
 	m.logPhaseTiming(gid, phaseDownloading, dlBytes, dlStart, true)
 	if err != nil {
+		// Claude 2026-09-22: Flush resume on download error so batched marks survive relaunch.
+		// Reason: assembleFile may return with pendingMarks < 35 and last persist < 1s ago.
+		// Troubleshooting: error mid-file; sidecar missing the last dirty articles.
+		// Review if: assembleFile's deferred Flush covers every error return and this is redundant.
+		if dl.resume != nil {
+			if ferr := dl.resume.Flush(); ferr != nil {
+				log.Printf("usenet: resume flush on error %s: %v", gid, ferr)
+			}
+		}
 		failed := false
 		m.mu.Lock()
 		switch dl.status {
@@ -1539,6 +1558,7 @@ func (m *Manager) downloadAll(ctx context.Context, gid string, dl *dlState, nzb 
 //	the ordered writer commits; after this change staging should grow steadily.
 //
 // Review if: markSegment persist rate needs batching for very large NZBs.
+// Claude 2026-09-22: Review if met — persist is batched in resume.go (35 marks / 1s).
 //
 // Claude 2026-09-18: uniquify output names via usedNames (see downloadAll).
 // Reason: same yEnc name across NZB files must not share one staging path/resume key.
@@ -1572,6 +1592,17 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 	}
 
 	resume := dl.resume
+	// Claude 2026-09-22: Flush remaining dirty marks when assembleFile returns.
+	// Reason: setFileSize force-writes on success; error/cancel paths still need the batch.
+	// Troubleshooting: file-end sidecar missing last <35 articles until this Flush.
+	// Review if: setFileSize + error-path Flush make the success-path Flush redundant.
+	if resume != nil {
+		defer func() {
+			if err := resume.Flush(); err != nil {
+				log.Printf("usenet: resume flush %s: %v", gid, err)
+			}
+		}()
+	}
 	firstMsg := strings.TrimSpace(segs[0].MsgID)
 	var filename string
 	var priorDone int

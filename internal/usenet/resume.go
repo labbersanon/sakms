@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // Claude 2026-09-11: durable usenet segment-resume sidecar (Phase 2)
@@ -39,6 +40,13 @@ const resumeTmpName = ".sakms-resume.json.tmp"
 // Review if: a future schema needs another wipe policy.
 const resumeSchemaVersion = 3
 
+// Claude 2026-09-22: SAB/NZBGet-style batched resume persist.
+// Reason: pretty rewrite after every segment made persist writer-bound at MaxConns=50 (HDD thrash).
+// Troubleshooting: .sakms-resume.json write rate vs article rate; journal "usenet: resume persist".
+// Review if: SAB article-cache (35) or NZBGet ContinuePartial (1s) need retune for this disk.
+const resumeFlushMarks = 35
+const resumeFlushInterval = time.Second
+
 type ResumeSnapshot struct {
 	Version int                    `json:"v"`
 	GID     string                 `json:"gid"`
@@ -62,6 +70,18 @@ type resumeTracker struct {
 	gid      string
 	snap     ResumeSnapshot
 	disabled bool // force-full / resume off — never write
+
+	// Claude 2026-09-22: dirty/pending/lastPersist — markSegment schedules, persistLocked flushes.
+	// Reason: MaxConns=50 was HDD-bound rewriting pretty JSON per article; SAB flushes ~35, NZBGet ~1s.
+	// Troubleshooting: persistWrites in tests; sidecar mtime vs segment count.
+	// Review if: a background ContinuePartial ticker is added (check-on-mark would still be correct).
+	dirty         bool
+	pendingMarks  int
+	lastPersist   time.Time
+	now           func() time.Time // injectable clock for tests; nil → time.Now
+	flushMarks    int              // 0 → resumeFlushMarks
+	flushInterval time.Duration    // 0 → resumeFlushInterval
+	persistWrites int              // successful persistLocked calls (tests)
 }
 
 func loadResumeTracker(dir, gid string, disabled bool) *resumeTracker {
@@ -228,6 +248,11 @@ func (t *resumeTracker) setFileSize(filename string, size int64) {
 		t.snap.Files[filename] = f
 	}
 	f.Size = size
+	// Claude 2026-09-22: force flush on TRUNC/file-end even if below batch thresholds.
+	// Reason: assembled size must be durable immediately; batched marks ride along.
+	// Troubleshooting: relaunch after last-file TRUNC with stale Size in sidecar.
+	// Review if: Flush() at assembleFile return is enough and this eager write is redundant.
+	t.dirty = true
 	if err := t.persistLocked(); err != nil {
 		log.Printf("usenet: resume persist size %s: %v", filename, err)
 	}
@@ -256,13 +281,64 @@ func (t *resumeTracker) markSegment(filename, msgID string, number int, offset i
 		f.Size = fileSize
 	}
 	f.Done[msgID] = ResumeSeg{Number: number, Offset: offset, Length: length}
+	// return t.persistLocked()
+	// Claude 2026-09-22: per-segment persist thrashed HDD at MaxConns=50; schedule + maybe flush.
+	t.dirty = true
+	t.pendingMarks++
+	return t.flushIfDueLocked()
+}
+
+func (t *resumeTracker) nowLocked() time.Time {
+	if t.now != nil {
+		return t.now()
+	}
+	return time.Now()
+}
+
+// flushIfDueLocked persists when pending marks hit the SAB ballpark or the
+// NZBGet ContinuePartial interval has elapsed since the last successful write.
+// lastPersist zero (never written) is treated as due so the first mark is durable.
+func (t *resumeTracker) flushIfDueLocked() error {
+	if !t.dirty || t.disabled {
+		return nil
+	}
+	marks := t.flushMarks
+	if marks <= 0 {
+		marks = resumeFlushMarks
+	}
+	interval := t.flushInterval
+	if interval <= 0 {
+		interval = resumeFlushInterval
+	}
+	if t.pendingMarks < marks && t.nowLocked().Sub(t.lastPersist) < interval {
+		return nil
+	}
+	return t.persistLocked()
+}
+
+// Flush persists remaining dirty resume state. Call at file-end, download
+// error, pause, and complete paths that still want a relaunch sidecar.
+func (t *resumeTracker) Flush() error {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.disabled || !t.dirty {
+		return nil
+	}
 	return t.persistLocked()
 }
 
 func (t *resumeTracker) persistLocked() error {
 	path := filepath.Join(t.dir, ResumeFileName)
 	tmp := filepath.Join(t.dir, resumeTmpName)
-	data, err := json.MarshalIndent(t.snap, "", "  ")
+	// data, err := json.MarshalIndent(t.snap, "", "  ")
+	// Claude 2026-09-22: compact json.Marshal — pretty indent doubled write volume per persist.
+	// Reason: HDD thrash at MaxConns=50 was writer-bound on pretty .sakms-resume.json.
+	// Troubleshooting: sidecar has no `\n  ` indent; schema v stays 3 (format compatible).
+	// Review if: operators need a pretty sidecar for debugging (read via jq, do not re-indent on write).
+	data, err := json.Marshal(t.snap)
 	if err != nil {
 		return err
 	}
@@ -273,6 +349,10 @@ func (t *resumeTracker) persistLocked() error {
 		_ = os.Remove(tmp)
 		return err
 	}
+	t.dirty = false
+	t.pendingMarks = 0
+	t.lastPersist = t.nowLocked()
+	t.persistWrites++
 	return nil
 }
 

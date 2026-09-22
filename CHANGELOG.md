@@ -9073,3 +9073,30 @@ sakms-auto-update). Do not merge to main.
 | `frontend/src/screens/settings/Usenet.tsx` | Recalibrate hardware on Downloads card |
 | `frontend/src/screens/Settings.test.tsx` | defaultGet eta-priors stub; Recalibrate click |
 
+## 2026-09-22 — SAB-style batched compact resume persist
+
+**Problem:** `.sakms-resume.json` was pretty-printed (`json.MarshalIndent`) and
+rewritten after every assembled segment. At MaxConns=50 that persist path was
+writer-bound and thrashed the staging HDD. MaxConns is unchanged.
+**Fix:** Compact `json.Marshal` (schema v stays 3). `markSegment` updates memory
+and a dirty/pending counter; `persistLocked` runs when pending marks ≥ 35 (SAB
+article-cache flusher ballpark) or ≥ 1s since the last successful persist
+(NZBGet ContinuePartial cadence). `setFileSize` (TRUNC / file-end) always
+force-writes if dirty. Public `Flush()` persists remaining dirty state and is
+called when `assembleFile` returns, on download error, and on Pause. First mark
+after a never-written tracker still persists immediately (`lastPersist` zero is
+due).
+**Outcome:** Unit tests cover mark-threshold batching, compact sidecar (no
+pretty `\n  ` indent), Flush of leftover dirty marks, setFileSize force-write,
+and the 1s time threshold with an injectable clock. Not deployed. Do not merge
+to main.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/resume.go` | dirty/pending/lastPersist; compact Marshal; Flush; flushIfDueLocked |
+| `internal/usenet/manager.go` | Flush after assembleFile, download error, Pause |
+| `internal/usenet/resume_test.go` | Batch / compact / Flush / setFileSize / 1s tests |
+| `internal/usenet/pipeline_resume_test.go` | Mid-flight proof is WriteAt size; sidecar may lag the batch |
+

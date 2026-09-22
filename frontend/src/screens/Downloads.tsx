@@ -120,6 +120,11 @@ const PHASE_BADGE: Record<string, string> = {
   // Troubleshooting: Downloads → Precheck pill during full STAT.
   // Review if: warn token changes and contrast fails WCAG.
   precheck: "bg-surface text-warn font-semibold",
+  // Claude 2026-09-22: muted Waiting after STAT when BODY slots are full.
+  // Reason: distinct from Precheck and from status=waiting → Queued.
+  // Troubleshooting: Downloads stuck after Precheck with 0 B/s — expect Waiting.
+  // Review if: Waiting should share Precheck warn styling instead.
+  waiting: "bg-surface-2 text-muted font-semibold",
   repairing: "bg-surface text-status-blue font-semibold",
   unpacking: "bg-surface text-status-blue font-semibold",
   downloading: "bg-surface text-status-blue font-semibold",
@@ -133,6 +138,7 @@ const PHASE_BADGE: Record<string, string> = {
 const PHASE_LABEL: Record<string, string> = {
   stalled: "Stalled",
   precheck: "Precheck",
+  waiting: "Waiting",
   repairing: "Repairing",
   unpacking: "Unpacking",
   downloading: "Downloading",
@@ -149,17 +155,19 @@ function isActiveish(d: Download): boolean {
   return (
     d.status === "active" ||
     d.phase === "precheck" ||
+    d.phase === "waiting" ||
     d.phase === "downloading" ||
     d.phase === "repairing" ||
     d.phase === "unpacking"
   );
 }
 
-// Stalled only overrides the downloading label — PAR2/unpack/precheck often
-// have downloadSpeed 0 by design and must keep their own labels.
+// Stalled only overrides the downloading label — PAR2/unpack/precheck/waiting
+// often have downloadSpeed 0 by design and must keep their own labels.
 function isStallCandidate(d: Download): boolean {
   if (
     d.phase === "precheck" ||
+    d.phase === "waiting" ||
     d.phase === "repairing" ||
     d.phase === "unpacking"
   ) {
@@ -171,6 +179,7 @@ function isStallCandidate(d: Download): boolean {
 function phaseKind(d: Download, stalled: boolean): string {
   if (stalled && isStallCandidate(d)) return "stalled";
   if (d.phase === "precheck") return "precheck";
+  if (d.phase === "waiting") return "waiting";
   if (d.phase === "repairing") return "repairing";
   if (d.phase === "unpacking") return "unpacking";
   switch (d.status) {

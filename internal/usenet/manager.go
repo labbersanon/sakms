@@ -99,8 +99,8 @@ type Download struct {
 	//   wire value for fetching vs repairing vs unpacking.
 	// Troubleshooting: Downloads showing raw "active" during PAR2/unrar.
 	// Review if: torrents grow a comparable postprocess phase.
-	// Wire values: "precheck" | "downloading" | "repairing" | "unpacking". Empty when
-	// paused/error/complete/removed.
+	// Wire values: "precheck" | "waiting" | "downloading" | "repairing" | "unpacking".
+	// Empty when paused/error/complete/removed.
 	Phase string
 	// Claude 2026-09-21: Downloads postprocess progress (repairing/unpacking).
 	// Reason: work units + phase start so the UI can show NN% and an elapsed timer
@@ -128,6 +128,12 @@ type Download struct {
 // Review if: a new postprocess step is added between assembly and complete.
 const (
 	phasePrecheck    = "precheck"
+	// Claude 2026-09-22: post-STAT wait for a MaxConcurrentDownloads BODY slot.
+	// Reason: precheck uses its own semaphore; when BODY slots are full the row
+	//   must not look like Downloading. UI shows Waiting until acquire succeeds.
+	// Troubleshooting: Downloads stuck on Precheck after STAT ok — expect waiting.
+	// Review if: waiting is also used for pause-queue or torrent parity.
+	phaseWaiting     = "waiting"
 	phaseDownloading = "downloading"
 	phaseRepairing   = "repairing"
 	phaseUnpacking   = "unpacking"
@@ -842,12 +848,11 @@ func (m *Manager) AddArticleSet(ctx context.Context, nzb *NZB, name string) (str
 		m.dropPrecheckFailed(gid, cancel, dlDir)
 		return "", err
 	}
-
-	m.mu.Lock()
-	if cur := m.downloads[gid]; cur != nil {
-		cur.setPhase(phaseDownloading)
-	}
-	m.mu.Unlock()
+	// Claude 2026-09-22: leave phase=precheck until runDownload acquires a BODY
+	//   slot (or flips to waiting when MaxConcurrentDownloads is full).
+	// Reason: forcing downloading here lied when the job semaphore was saturated.
+	// Troubleshooting: Precheck→Waiting→Downloading; never skip Waiting when blocked.
+	// Review if: AddNZB should block until the download slot is taken.
 
 	go m.runDownload(dlCtx, gid, dl, nzb)
 	return gid, nil
@@ -970,12 +975,10 @@ func (m *Manager) RelaunchArticleSet(ctx context.Context, gid string, nzb *NZB, 
 		// Keep existing staging/resume on disk for a later attempt.
 		return err
 	}
-
-	m.mu.Lock()
-	if cur := m.downloads[gid]; cur != nil {
-		cur.setPhase(phaseDownloading)
-	}
-	m.mu.Unlock()
+	// Claude 2026-09-22: same as AddArticleSet — runDownload owns waiting/downloading.
+	// Reason: relaunch must not flash Downloading while blocked on the BODY semaphore.
+	// Troubleshooting: reconcile relaunch with full slots shows Waiting after STAT.
+	// Review if: AddNZB should block until the download slot is taken.
 
 	go m.runDownload(dlCtx, gid, dl, nzb)
 	return nil
@@ -1252,6 +1255,33 @@ func (m *Manager) Subscribe() (<-chan []Download, func()) {
 	}
 }
 
+// acquireDownloadSlot takes one MaxConcurrentDownloads BODY slot. If the
+// semaphore is already full, the row flips to phase=waiting until a slot frees
+// or ctx is cancelled. On success the phase becomes downloading. Returns false
+// when cancelled before acquire (caller must not release the semaphore).
+func (m *Manager) acquireDownloadSlot(ctx context.Context, gid string, dl *dlState, sem chan struct{}) bool {
+	select {
+	case sem <- struct{}{}:
+	default:
+		m.mu.Lock()
+		if cur := m.downloads[gid]; cur != nil && cur.status == "active" {
+			cur.setPhase(phaseWaiting)
+		}
+		m.mu.Unlock()
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			return false
+		}
+	}
+	m.mu.Lock()
+	if cur := m.downloads[gid]; cur != nil && cur.status == "active" {
+		cur.setPhase(phaseDownloading)
+	}
+	m.mu.Unlock()
+	return true
+}
+
 // runDownload is the per-download background goroutine. It drives the full
 // pipeline: download all segments → assemble files → optional par2 repair →
 // unpack archives → fire onComplete callback.
@@ -1262,7 +1292,14 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 	// Troubleshooting: one NZB repairing blocked every other NZB from starting.
 	// Review if: repair gets its own concurrency cap.
 	sem := m.currentSemaphore()
-	sem <- struct{}{}
+	// Claude 2026-09-22: non-blocking try → Waiting → block → Downloading.
+	// Reason: precheck finished but MaxConcurrentDownloads may still be full;
+	//   Downloads must show Waiting, not Downloading, until BODY can start.
+	// Troubleshooting: Precheck ok then stuck "Downloading" at 0 B/s — expect waiting.
+	// Review if: Resume should also go through acquireWaitingSlot.
+	if !m.acquireDownloadSlot(ctx, gid, dl, sem) {
+		return
+	}
 	released := false
 	defer func() {
 		if !released {

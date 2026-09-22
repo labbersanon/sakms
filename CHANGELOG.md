@@ -9162,3 +9162,17 @@ capacity, overlapping precheck block, newer-beats-older same tier, and older
 | `internal/release/release.go` | Invert Usenet age bonus (newer within the same quality tier) |
 | `internal/release/release_test.go` | Newer scores higher; age cannot override resolution |
 
+## 2026-09-22 — Fix flaky TestPipeline_WritesAndMarksIncrementally
+
+**Problem:** GitHub go-test failed on main after full-precheck: mid-flight WriteAt
+missing at fileSize=2560 with a fixed 6 BODY tokens + 5s wait.
+**Fix:** Keep feeding paced BODY tokens until 6×512 bytes are on disk (cap 12),
+20s deadline, blocking allow with short wait — still leaves segments blocked so
+status stays active.
+**Outcome:** 50× local stress green.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/pipeline_resume_test.go` | Robust mid-flight BODY pacing |

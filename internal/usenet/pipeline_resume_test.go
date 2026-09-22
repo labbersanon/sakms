@@ -33,32 +33,46 @@ func TestPipeline_WritesAndMarksIncrementally(t *testing.T) {
 	dir := filepath.Join(staging, gid)
 	out := filepath.Join(dir, p.filename)
 
-	for i := 0; i < 6; i++ {
-		select {
-		case srv.bodyAllow <- struct{}{}:
-		case <-time.After(5 * time.Second):
-			t.Fatalf("timed out pacing BODY %d", i)
-		}
-	}
-
-	deadline := time.Now().Add(5 * time.Second)
+	// Claude 2026-09-22: CI flake — releasing exactly 6 BODY tokens sometimes
+	//   left only 5 contiguous WriteAts (HOL: out-of-order fetch window) while
+	//   the 5s wait expired at fileSize=2560. Keep feeding tokens until mid-flight
+	//   size is reached, but stop well before the full 16-seg file completes.
+	// Reason: full-payload precheck + MaxConns=2 fan-out made the old fixed-6
+	//   pace brittle on GitHub runners.
+	// Troubleshooting: TestPipeline_WritesAndMarksIncrementally mid-flight WriteAt missing.
+	// Review if: assembleFile fetches strictly in NZB order again.
+	const (
+		segBytes   = 512
+		wantBytes  = int64(6 * segBytes)
+		maxRelease = 12 // leave ≥4 segments blocked so status stays active
+	)
+	released := 0
+	deadline := time.Now().Add(20 * time.Second)
 	var done int
 	var size int64
 	for time.Now().Before(deadline) {
-		done = resumeDoneCount(t, dir)
 		if fi, err := os.Stat(out); err == nil {
 			size = fi.Size()
 		}
+		done = resumeDoneCount(t, dir)
 		// Claude 2026-09-22: resume persist is batched (35 marks / 1s), so the
 		// sidecar may lag in-memory marks while WriteAt still grows the file.
 		// Incremental pipeline proof is on-disk payload size, not sidecar count.
-		if size >= int64(6*512) {
+		if size >= wantBytes {
 			break
+		}
+		if released < maxRelease {
+			select {
+			case srv.bodyAllow <- struct{}{}:
+				released++
+			case <-time.After(50 * time.Millisecond):
+				// Fetcher not waiting on BODY yet — retry next loop.
+			}
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if size < int64(6*512) {
-		t.Fatalf("mid-flight WriteAt missing: resumeDone=%d fileSize=%d (still active download)", done, size)
+	if size < wantBytes {
+		t.Fatalf("mid-flight WriteAt missing: resumeDone=%d fileSize=%d released=%d (still active download)", done, size, released)
 	}
 	d, _ := m.FindByGID(gid)
 	if d == nil || d.Status != "active" {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 
@@ -271,6 +272,14 @@ func importGrabMovies(ctx context.Context, libStore *library.Store, g *grabs.Gra
 		return nil, fmt.Errorf("resolving the video file failed: %w", err)
 	}
 	year := movieYearFromTMDB(ctx, sess, g.TMDBID)
+	// Claude 2026-09-22: capture prior library path before Upsert replaces it.
+	// Reason: quality-upgrade re-grabs left the inferior movie file on disk.
+	// Troubleshooting: importGrabMovies retires old path after successful Upsert.
+	// Review if: library_item_files needs the same Delete-by-path cleanup.
+	var priorPath string
+	if existing, err := libStore.GetByTMDBID(ctx, mode.Movies, g.TMDBID); err == nil && existing.FilePath != "" {
+		priorPath = existing.FilePath
+	}
 	destPath, err := rename.RelocateMovie(videoPath, g.RootFolderPath, g.Title, year, g.TMDBID, preset)
 	if err != nil {
 		return nil, fmt.Errorf("download completed but import failed: %w", err)
@@ -288,6 +297,7 @@ func importGrabMovies(ctx context.Context, libStore *library.Store, g *grabs.Gra
 	}); err != nil {
 		return changes, fmt.Errorf("file relocated but recording it in the library failed: %w", err)
 	}
+	changes = append(changes, retireReplacedMovieFile(ctx, libStore, priorPath, destPath)...)
 	return changes, nil
 }
 
@@ -317,6 +327,18 @@ func importGrabSeries(ctx context.Context, libStore *library.Store, g *grabs.Gra
 			}
 			season, episodes = g.SeasonNumber, []int{g.EpisodeNumber}
 		}
+		// Claude 2026-09-22: capture prior paths before Upsert overwrites file_path.
+		// Reason: quality-upgrade re-grabs left the old episode file on disk while
+		//   library_episodes pointed at the new path (UniquePath sidestep).
+		// Troubleshooting: retireReplacedEpisodeFiles after successful upserts.
+		priorPaths := map[string]struct{}{}
+		for _, episode := range episodes {
+			existing, err := libStore.GetEpisode(ctx, series.ID, season, episode)
+			if err != nil || existing.FilePath == "" {
+				continue
+			}
+			priorPaths[existing.FilePath] = struct{}{}
+		}
 		destPath, err := rename.RelocateEpisodeRange(videoPath, g.RootFolderPath, g.Title, seriesYear, g.TMDBID, season, episodes, "", preset)
 		if err != nil {
 			return changes, fmt.Errorf("download completed but import failed: %w", err)
@@ -335,6 +357,7 @@ func importGrabSeries(ctx context.Context, libStore *library.Store, g *grabs.Gra
 				return changes, fmt.Errorf("file relocated but recording episode s%de%d failed: %w", season, episode, err)
 			}
 		}
+		changes = append(changes, retireReplacedEpisodeFiles(ctx, libStore, priorPaths, destPath)...)
 	}
 	if len(changes) == 0 {
 		// Claude 2026-08-12: no episodes were parseable — return success with
@@ -347,6 +370,50 @@ func importGrabSeries(ctx context.Context, libStore *library.Store, g *grabs.Gra
 		return nil, nil
 	}
 	return changes, nil
+}
+
+// retireReplacedEpisodeFiles deletes prior library files that no episode row
+// still references after a successful upgrade/re-grab import. Skips destPath
+// and any path still shared by another episode (CountEpisodesByFilePath > 0).
+func retireReplacedEpisodeFiles(ctx context.Context, libStore *library.Store, priorPaths map[string]struct{}, destPath string) []mode.PathChange {
+	var changes []mode.PathChange
+	for old := range priorPaths {
+		if old == "" || old == destPath {
+			continue
+		}
+		refCount, err := libStore.CountEpisodesByFilePath(ctx, old)
+		if err != nil {
+			log.Printf("import: checking references for replaced episode %s: %v", old, err)
+			continue
+		}
+		if refCount > 0 {
+			continue
+		}
+		if err := os.Remove(old); err != nil && !os.IsNotExist(err) {
+			log.Printf("import: removing replaced episode file %s: %v", old, err)
+			continue
+		}
+		if err := libStore.DeleteEpisodeFileByPath(ctx, old); err != nil {
+			log.Printf("import: clearing library_episode_files for %s: %v", old, err)
+		}
+		libStore.PruneVMAFScoresForPath(ctx, old)
+		changes = append(changes, mode.PathChange{Path: old, Kind: mode.Deleted})
+	}
+	return changes
+}
+
+// retireReplacedMovieFile deletes the prior movie file after a successful
+// re-grab import when the new path differs.
+func retireReplacedMovieFile(ctx context.Context, libStore *library.Store, priorPath, destPath string) []mode.PathChange {
+	if priorPath == "" || priorPath == destPath {
+		return nil
+	}
+	if err := os.Remove(priorPath); err != nil && !os.IsNotExist(err) {
+		log.Printf("import: removing replaced movie file %s: %v", priorPath, err)
+		return nil
+	}
+	libStore.PruneVMAFScoresForPath(ctx, priorPath)
+	return []mode.PathChange{{Path: priorPath, Kind: mode.Deleted}}
 }
 
 func importGrabAdult(ctx context.Context, libStore *library.Store, g *grabs.Grab, contentPath, tier string, sess *mode.Session, videoHasher rename.PHasher, prober dedup.Prober) ([]mode.PathChange, error) {

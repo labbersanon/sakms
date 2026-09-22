@@ -102,6 +102,23 @@ export function putUsenetBlockedReleaseGroups(groups: string[]): Promise<void> {
   });
 }
 
+// Claude 2026-09-22: Global preferred grab languages (multi-row include).
+// Reason: hard-exclude non-matching language tags on autograb + Discover.
+// Troubleshooting: GET/PUT /api/settings/grab-preferred-languages.
+// Review if: per-series language overrides land.
+export function fetchGrabPreferredLanguages(): Promise<string[]> {
+  return api<{ languages: string[] }>(
+    "/api/settings/grab-preferred-languages",
+  ).then((r) => r.languages ?? []);
+}
+
+export function putGrabPreferredLanguages(languages: string[]): Promise<void> {
+  return api<void>("/api/settings/grab-preferred-languages", {
+    method: "PUT",
+    body: JSON.stringify({ languages }),
+  });
+}
+
 // fetchUsenetSegmentResume — GET /api/settings/usenet-segment-resume.
 // Defaults enabled=true, forceFull=false.
 export function fetchUsenetSegmentResume(): Promise<{

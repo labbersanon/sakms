@@ -696,6 +696,8 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("PUT /api/settings/usenet-off-data-staging", putUsenetOffDataStagingHandler(settingsStore, nzb))
 	mux.HandleFunc("GET /api/settings/usenet-blocked-release-groups", getUsenetBlockedReleaseGroupsHandler(settingsStore))
 	mux.HandleFunc("PUT /api/settings/usenet-blocked-release-groups", putUsenetBlockedReleaseGroupsHandler(settingsStore))
+	mux.HandleFunc("GET /api/settings/grab-preferred-languages", getGrabPreferredLanguagesHandler(settingsStore))
+	mux.HandleFunc("PUT /api/settings/grab-preferred-languages", putGrabPreferredLanguagesHandler(settingsStore))
 	mux.HandleFunc("GET /api/settings/usenet-segment-resume", getUsenetSegmentResumeHandler(settingsStore))
 	mux.HandleFunc("PUT /api/settings/usenet-segment-resume", putUsenetSegmentResumeHandler(settingsStore, nzb))
 	mux.HandleFunc("GET /api/settings/usenet-nntp-native", getUsenetNNTPNativeHandler(settingsStore, nil))

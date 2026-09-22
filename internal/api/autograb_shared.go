@@ -420,6 +420,15 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 			pr.releases = filterBlockedReleaseGroups(pr.releases, blocked)
 		}
 
+		// Claude 2026-09-22: Global preferred languages on unattended grabs.
+		// Reason: Discover FilterReleases used to be the only language gate; German
+		//   Leverage NZBs dispatched via drain because autograb never filtered.
+		// Troubleshooting: Settings → Advanced → Global → Preferred grab languages.
+		// Review if: grabOneBatchItem is the only other copy that needs the same call.
+		if preferred, err := loadPreferredLanguages(ctx, deps.SettingsStore); err == nil {
+			pr.releases = filterPreferredLanguages(pr.releases, preferred)
+		}
+
 		if req.Mode == mode.Series {
 			pr.releases = FilterSeasonScope(pr.releases, req.Season, req.Episode, req.SeasonSpecified)
 		}

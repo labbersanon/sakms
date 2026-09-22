@@ -226,7 +226,8 @@ func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections
 			runtimeSeconds = seriesSeasonTotalRuntimeSeconds(ctx, sess, req.TMDBID, req.SeasonNumber)
 		}
 
-		filtered := FilterReleases(ctx, releases, title, m, sess.MainstreamAI)
+		preferredLangs, _ := loadPreferredLanguages(ctx, settingsStore)
+		filtered := FilterReleases(ctx, releases, title, m, sess.MainstreamAI, preferredLangs)
 		if m == mode.Series {
 			// See FilterSeasonScope's doc (releasematch.go) — drops any
 			// release whose title carries a recognizable, CONFLICTING season

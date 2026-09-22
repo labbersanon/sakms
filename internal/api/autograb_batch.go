@@ -353,6 +353,14 @@ func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, stor
 		releases = FilterSeasonScope(releases, req.SeasonNumber, req.EpisodeNumber, req.SeasonSpecified)
 	}
 
+	// Claude 2026-09-22: same Global language gate as RunAutoGrab (batch bypasses it).
+	// Reason: grabOneBatchItem reimplements score-and-dispatch; language must apply here too.
+	// Troubleshooting: Discover bulk grab still picks GERMAN → check this filter.
+	// Review if: grabOneBatchItem delegates to RunAutoGrab (then delete this copy).
+	if preferred, err := loadPreferredLanguages(ctx, settingsStore); err == nil {
+		releases = filterPreferredLanguages(releases, preferred)
+	}
+
 	neutralizeSeasonPacks := m == mode.Series && runtimeSeconds > 0
 	cands := buildAutoGrabCandidates(releases, runtimeSeconds, neutralizeSeasonPacks)
 	sel := autograb.SelectBest(cands, autoGrabTiers(ctx, settingsStore, m), minSeedersFor(m))

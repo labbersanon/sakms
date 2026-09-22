@@ -13,6 +13,7 @@ import (
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/prowlarr"
+	"github.com/labbersanon/sakms/internal/release"
 )
 
 // titleSimilarityFloor mirrors internal/identify.ExtractFromSearch's own
@@ -53,31 +54,11 @@ const (
 // enforced without a real ~20s test run.
 var aiEscalationTimeout = 20 * time.Second
 
-// languageTagPattern is a small, explicit, deterministic token list marking
-// a release title as carrying a non-English language tag — English is the
-// assumed unmarked default (the same convention scene-release naming already
-// uses), so a release is only rejected when one of these tags is actually
-// present in the title, never guessed absent. This is NOT a user-facing
-// preference/setting (the plan is explicit: "don't build speculative config
-// ahead of proven need") — easy to make configurable later if it's ever
-// wrong for someone. Word-boundary matched, case-insensitive, mirroring
-// internal/release.Parse's own regexp convention for title-token matching.
-//
-// Deliberately does NOT include "multi": an earlier version of this list
-// did, which was a real bug (found via a "nothing is being found to grab"
-// report) — MULTI in scene-release naming means "multiple audio tracks
-// bundled," not "no English track." For the English-original content this
-// app targets (TMDB movies/shows), a MULTI release routinely still includes
-// English as one of the bundled tracks, unlike FRENCH/GERMAN/etc., which
-// really do mean "this release's only audio is that other language."
-// Treating MULTI the same as those was silently excluding good releases.
-var languageTagPattern = regexp.MustCompile(`(?i)\b(french|german|spanish|italian|vostfr|russian|hindi|korean|japanese)\b`)
-
-// hasLanguageTag reports whether title carries one of languageTagPattern's
-// non-English tags.
-func hasLanguageTag(title string) bool {
-	return languageTagPattern.MatchString(title)
-}
+// Claude 2026-09-22: language filtering moved to release.TitleLanguageAllowed
+//   (Global preferred-languages setting). Keep MULTI out of that catalog.
+// Reason: hard-coded English-only filter here never ran on autograb.
+// Troubleshooting: Settings → Advanced → Global → Preferred grab languages.
+// Review if: this file reintroduces a private language regex — delete it.
 
 // titleWordPattern splits a title into word tokens for singleWordTitleMatches
 // — deliberately a plain local regex rather than reusing
@@ -157,13 +138,14 @@ func singleWordTitleMatches(targetTitle, releaseTitle string) bool {
 // score low on.
 //
 // Then, regardless of which title-match stage produced the surviving set, a
-// deterministic language-tag filter (hasLanguageTag) drops any release
-// carrying a non-English tag. Order preserved; prowlarr.Release fields are
-// passed through unchanged so the caller can still pair filtered releases'
-// indices 1:1 with a derived []autograb.Candidate slice (see
-// buildAutoGrabCandidates's existing index-pairing convention, which this
-// filter's output feeds into unchanged).
-func FilterReleases(ctx context.Context, releases []prowlarr.Release, targetTitle string, m mode.Mode, aiClient identify.AIClient) []prowlarr.Release {
+// deterministic language-tag filter (release.TitleLanguageAllowed) drops any
+// release whose language tags do not match the Global preferred include list
+// (empty preferred = English-assumed: unmarked + english/eng only). Order
+// preserved; prowlarr.Release fields are passed through unchanged so the
+// caller can still pair filtered releases' indices 1:1 with a derived
+// []autograb.Candidate slice (see buildAutoGrabCandidates's existing
+// index-pairing convention, which this filter's output feeds into unchanged).
+func FilterReleases(ctx context.Context, releases []prowlarr.Release, targetTitle string, m mode.Mode, aiClient identify.AIClient, preferredLanguages []string) []prowlarr.Release {
 	fastMatched := make([]prowlarr.Release, 0, len(releases))
 	for _, rel := range releases {
 		if identify.TitleSimilarity(targetTitle, rel.Title) >= titleSimilarityFloor || singleWordTitleMatches(targetTitle, rel.Title) {
@@ -183,7 +165,7 @@ func FilterReleases(ctx context.Context, releases []prowlarr.Release, targetTitl
 
 	out := make([]prowlarr.Release, 0, len(matched))
 	for _, rel := range matched {
-		if !hasLanguageTag(rel.Title) {
+		if release.TitleLanguageAllowed(rel.Title, preferredLanguages) {
 			out = append(out, rel)
 		}
 	}

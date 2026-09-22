@@ -25,10 +25,9 @@ import {
   putAllSeasonsMonitoredFor,
   putSeasonMonitoredFor,
 } from "../api/seasons";
-import type { TitleQualityKey } from "../api/titlequality";
 import { fetchUsenetAutoGrabEnabled } from "../api/usenet";
 import { ErrorText, Muted, Switch } from "./ui";
-import { TitleQualityPrefs } from "./TitleQualityPrefs";
+import ChevronDown from "lucide-solid/icons/chevron-down";
 import Info from "lucide-solid/icons/info";
 
 // SEASON_UNMONITORED_COPY / SEASON_AUTOGRAB_COPY are the two honesty lines for
@@ -60,6 +59,12 @@ export const SeasonsPanel: Component<SeasonKey> = (props) => {
   const [busy, setBusy] = createSignal(false);
   const [writeError, setWriteError] = createSignal("");
   const [helpOpen, setHelpOpen] = createSignal(false);
+  // Claude 2026-09-22: per-season rows start collapsed; Monitor all stays visible.
+  // Reason: operator asked the info screen to keep one Monitor All switch and
+  //   hide the season list until expanded.
+  // Troubleshooting: long season lists crowded poster/description/quality.
+  // Review if: a series with one season should auto-expand.
+  const [listOpen, setListOpen] = createSignal(false);
 
   // Claude 2026-08-14: switches stay off until Settings auto-grab is on.
   // Reason: monitoring a season does nothing while usenet auto-grab is off,
@@ -103,15 +108,8 @@ export const SeasonsPanel: Component<SeasonKey> = (props) => {
   const allMonitored = () =>
     rows().length > 0 && rows().every((s) => s.monitored);
 
-  const qualityKey = (): TitleQualityKey =>
-    props.seriesID != null
-      ? { seriesID: props.seriesID }
-      : { tmdbId: props.tmdbId! };
-
   return (
-    <>
-      <TitleQualityPrefs mode="series" titleKey={qualityKey()} />
-      <div class="mb-3 border-t border-border pt-3">
+    <div class="mb-3 border-t border-border pt-3">
       <div class="mb-1 flex items-center gap-1">
         <p class="text-[11px] font-medium uppercase tracking-wide text-muted">
           Seasons
@@ -157,36 +155,51 @@ export const SeasonsPanel: Component<SeasonKey> = (props) => {
             }
           />
         </div>
-        <For each={rows()}>
-          {(s) => (
-            <div class="flex items-center justify-between gap-2 py-1">
-              <div class="min-w-0">
-                <p class="truncate text-xs text-fg">
-                  {seasonLabel(s.seasonNumber)}
-                </p>
-                {/* episodeCount is every episode ROW the season has, on disk or
-                    not — it is NOT an on-disk count. Labelled as the total, with
-                    missing shown beside it, so downloaded reads as the
-                    difference rather than being misreported. */}
-                <p class="text-[11px] text-muted">
-                  {`${s.episodeCount} episodes · ${s.missingCount} missing`}
-                </p>
-              </div>
-              <Switch
-                checked={s.monitored}
-                disabled={switchesDisabled()}
-                ariaLabel={`Monitor ${seasonLabel(s.seasonNumber)}`}
-                onChange={(next) =>
-                  void write(() =>
-                    putSeasonMonitoredFor(key(), s.seasonNumber, next),
-                  )
-                }
-              />
-            </div>
-          )}
-        </For>
+        <button
+          type="button"
+          class="mb-1 flex w-full items-center justify-between gap-2 rounded px-0.5 py-1 text-xs text-muted hover:text-fg"
+          aria-expanded={listOpen()}
+          aria-controls="season-monitor-list"
+          onClick={() => setListOpen((open) => !open)}
+        >
+          <span>{listOpen() ? "Hide seasons" : "Show seasons"}</span>
+          <ChevronDown
+            class={`h-3.5 w-3.5 shrink-0 transition-transform ${listOpen() ? "rotate-180" : ""}`}
+          />
+        </button>
+        <Show when={listOpen()}>
+          <div id="season-monitor-list">
+            <For each={rows()}>
+              {(s) => (
+                <div class="flex items-center justify-between gap-2 py-1">
+                  <div class="min-w-0">
+                    <p class="truncate text-xs text-fg">
+                      {seasonLabel(s.seasonNumber)}
+                    </p>
+                    {/* episodeCount is every episode ROW the season has, on disk or
+                        not — it is NOT an on-disk count. Labelled as the total, with
+                        missing shown beside it, so downloaded reads as the
+                        difference rather than being misreported. */}
+                    <p class="text-[11px] text-muted">
+                      {`${s.episodeCount} episodes · ${s.missingCount} missing`}
+                    </p>
+                  </div>
+                  <Switch
+                    checked={s.monitored}
+                    disabled={switchesDisabled()}
+                    ariaLabel={`Monitor ${seasonLabel(s.seasonNumber)}`}
+                    onChange={(next) =>
+                      void write(() =>
+                        putSeasonMonitoredFor(key(), s.seasonNumber, next),
+                      )
+                    }
+                  />
+                </div>
+              )}
+            </For>
+          </div>
+        </Show>
       </Show>
     </div>
-    </>
   );
 };

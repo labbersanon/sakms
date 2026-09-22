@@ -84,8 +84,10 @@ const emptyTitleDetail = (): TitleDetail => ({
 });
 
 // libraryEnrichmentResponse answers Discover's trailer/detail/description
-// fetches that Library now fires on card click. Availability and quality-prefs
-// are deliberately NOT stubbed: a Grab-path leak must fail as unexpected fetch.
+// fetches that Library now fires on card click. Mode-level quality-prefs
+// (Grab path) are deliberately NOT stubbed: a Grab-path leak must fail as
+// unexpected fetch. Per-title library/.../quality-prefs is answered — the
+// info-screen TitleQualityPrefs mounts for movies/series track popups.
 const libraryEnrichmentResponse = (url: string): Response | null => {
   if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
   if (url.includes("/discover/detail")) return jsonResponse(emptyTitleDetail());
@@ -93,6 +95,14 @@ const libraryEnrichmentResponse = (url: string): Response | null => {
     return jsonResponse({ text: "", source: "" });
   if (url.includes("/usenet-autograb-enabled"))
     return jsonResponse({ enabled: false });
+  if (url.includes("/library/") && url.includes("/quality-prefs")) {
+    return jsonResponse({
+      floor: "high",
+      minResolution: 0,
+      tiers: ["high", "lossless"],
+      inherited: true,
+    });
+  }
   return null;
 };
 
@@ -262,7 +272,14 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
     expect(calls.some((c) => c.url.includes("/discover/availability"))).toBe(
       false,
     );
-    expect(calls.some((c) => c.url.includes("/quality-prefs"))).toBe(false);
+    // Mode-level Grab prefs must stay off; per-title library/.../quality-prefs
+    // is expected from TitleQualityPrefs on the info screen.
+    expect(
+      calls.some(
+        (c) =>
+          c.url.includes("/quality-prefs") && !c.url.includes("/library/"),
+      ),
+    ).toBe(false);
     fireEvent.click(dialog.parentElement!);
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument(),
@@ -824,12 +841,24 @@ describe("Library — per-season monitoring (Series only)", () => {
 
   const switchOf = (label: string) => screen.getByLabelText(label);
 
+  const expandSeasonList = async () => {
+    const toggle = await screen.findByRole("button", { name: "Show seasons" });
+    fireEvent.click(toggle);
+    expect(
+      await screen.findByRole("button", { name: "Hide seasons" }),
+    ).toBeInTheDocument();
+  };
+
   it("lists each season with its counts and monitored state", async () => {
     stubFetch(makeHandler([], { series: [breakingBad], seasons }));
     await openSeriesDetail();
 
-    expect(await screen.findByLabelText("Monitor Season 1")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Monitor all seasons")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Monitor Season 1")).toBeNull();
     expect(screen.queryByText("Play Show →")).toBeNull();
+    await expandSeasonList();
+
+    expect(await screen.findByLabelText("Monitor Season 1")).toBeInTheDocument();
     // Season 0 is LISTED as Specials, not filtered out — "All seasons" would
     // otherwise touch a season no visible row accounts for.
     expect(switchOf("Monitor Specials")).toBeInTheDocument();
@@ -878,6 +907,10 @@ describe("Library — per-season monitoring (Series only)", () => {
     });
     await openSeriesDetail();
 
+    await waitFor(() =>
+      expect(switchOf("Monitor all seasons")).not.toBeDisabled(),
+    );
+    await expandSeasonList();
     await waitFor(() =>
       expect(screen.getByLabelText("Monitor Season 1")).not.toBeDisabled(),
     );
@@ -938,6 +971,7 @@ describe("Library — per-season monitoring (Series only)", () => {
     });
 
     await openSeriesDetail();
+    await expandSeasonList();
     await waitFor(() =>
       expect(switchOf("Monitor Specials")).not.toBeDisabled(),
     );
@@ -1003,6 +1037,7 @@ describe("Library — per-season monitoring (Series only)", () => {
         "true",
       ),
     );
+    await expandSeasonList();
     expect(switchOf("Monitor Specials").getAttribute("aria-checked")).toBe("true");
   });
 
@@ -1055,6 +1090,7 @@ describe("Library — per-season monitoring (Series only)", () => {
     expect(puts[0]!.url).toBe("/api/modes/series/library/77/seasons/monitored");
     expect(puts[0]!.body).toEqual({ monitored: false });
 
+    await expandSeasonList();
     await waitFor(() =>
       expect(switchOf("Monitor Season 1").getAttribute("aria-checked")).toBe(
         "false",
@@ -1082,6 +1118,7 @@ describe("Library — per-season monitoring (Series only)", () => {
     });
 
     await openSeriesDetail();
+    await expandSeasonList();
     await waitFor(() =>
       expect(switchOf("Monitor Specials")).not.toBeDisabled(),
     );
@@ -1563,14 +1600,17 @@ describe("Library — detail section order", () => {
     const rating = await within(dialog).findByText("Rating");
     const cast = await within(dialog).findByText("Cast");
     const streaming = await within(dialog).findByText("Currently Streaming On");
+    const quality = within(dialog).getByText("Quality");
     const files = within(dialog).getByText("Files");
     const tags = within(dialog).getByText("Tags");
     const more = await within(dialog).findByText("More like this");
-    expect(follows(rating, cast)).toBe(true);
-    expect(follows(cast, streaming)).toBe(true);
-    expect(follows(streaming, files)).toBe(true);
+    // Claude 2026-09-22: quality/files/tags sit under poster, before Cast.
+    expect(follows(rating, quality)).toBe(true);
+    expect(follows(quality, files)).toBe(true);
     expect(follows(files, tags)).toBe(true);
-    expect(follows(tags, more)).toBe(true);
+    expect(follows(tags, cast)).toBe(true);
+    expect(follows(cast, streaming)).toBe(true);
+    expect(follows(streaming, more)).toBe(true);
   });
 });
 

@@ -21,6 +21,14 @@ export function seriesMonitorDefaults(
   if (url.includes("/usenet-autograb-enabled")) {
     return jsonResponse({ enabled: true });
   }
+  if (url.includes("/library/") && url.includes("/quality-prefs")) {
+    return jsonResponse({
+      floor: "high",
+      minResolution: 0,
+      tiers: ["high", "lossless"],
+      inherited: true,
+    });
+  }
   if (url.includes("/usenet-autograb-slots")) {
     return jsonResponse({ perCycle: 20, perSeries: 5 });
   }

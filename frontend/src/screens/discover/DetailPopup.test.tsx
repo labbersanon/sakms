@@ -383,9 +383,11 @@ describe("DetailPopup — selector disabled-state derivation (rendered)", () => 
     // At the new (720, high, torrent) combination: "medium" and "usenet"
     // only have a candidate at a DIFFERENT combination (720/medium/usenet),
     // not this one — both must now be disabled.
-    expect(screen.getByRole("button", { name: "Medium" })).toBeDisabled();
+    // TitleQualityPrefs also renders Medium/High — scope to the Grab picker.
+    const grabTier = screen.getByText("Quality tier").parentElement!;
+    expect(within(grabTier).getByRole("button", { name: "Medium" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Usenet" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "High" })).not.toBeDisabled();
+    expect(within(grabTier).getByRole("button", { name: "High" })).not.toBeDisabled();
     expect(screen.getByRole("button", { name: "Torrent" })).not.toBeDisabled();
   });
 
@@ -585,6 +587,8 @@ describe("DetailPopup — ExpandableClampedText More/Less", () => {
     render(() => <DetailPopup target={target} onClose={() => {}} />);
 
     expect(await screen.findByLabelText("Monitor all seasons")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Monitor Season 1")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show seasons" }));
     expect(screen.getByLabelText("Monitor Season 1")).toBeInTheDocument();
     expect(screen.getByLabelText("Monitor Specials")).toBeInTheDocument();
     expect(screen.getByLabelText("Monitor Season 1").getAttribute("aria-checked")).toBe(
@@ -1964,9 +1968,10 @@ describe("DetailPopup — lead and children order", () => {
     const streaming = screen.getByText("Currently Streaming On");
     const footer = screen.getByText("Library footer");
     const more = screen.getByText("More like this");
-    expect(follows(lead, cast)).toBe(true);
+    // Claude 2026-09-22: Library children sit under poster/quality, before Cast.
+    expect(follows(lead, footer)).toBe(true);
+    expect(follows(footer, cast)).toBe(true);
     expect(follows(cast, streaming)).toBe(true);
-    expect(follows(streaming, footer)).toBe(true);
-    expect(follows(footer, more)).toBe(true);
+    expect(follows(streaming, more)).toBe(true);
   });
 });

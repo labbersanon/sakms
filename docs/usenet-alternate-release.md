@@ -51,12 +51,17 @@ and passed to `scoreOnePhase → filterExcludedReleases`.
 
 ---
 
-## MaxAlternateReleaseAttempts = 3
+## Cap retired (2026-09-22)
 
-The attempt count is the number of distinct `u:` entries in
-`tried_release_keys`. At three attempts the cap falls through to the days
-ladder (`SetPendingRetry` with normal backoff), which clears
-`tried_release_keys` to end the alternate-release episode.
+<!-- Claude 2026-09-22: MaxAlternateReleaseAttempts=3 removed.
+Reason: precheck exhausts the full graded list each cycle; tried_release_keys
+exclude dead NZBs. Download-time "3 then days ladder" duplicated that role.
+Review if: a hard park-episode cap returns for pathological indexer churn. -->
+
+Former behaviour: after three distinct `u:` parks, fall through to the days
+ladder (which cleared `tried_release_keys`). Now content/430 failures always
+requeue via `ParkForAlternateRelease` (due-now) until search+precheck find a
+live NZB or `RunAutoGrab` returns NoMatch → `parkPendingRetry`.
 
 `Relaunch` (dispatching the new release) deliberately **preserves**
 `tried_release_keys` so two bad NZBs cannot alternate forever.

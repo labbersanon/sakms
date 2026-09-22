@@ -9,6 +9,15 @@ package grabs
 // Related files: internal/api/usenetcontent.go (routing + park call),
 //   internal/api/autograbdrain.go (drainAlternateReleaseRetries),
 //   internal/api/autograb_shared.go (ExcludeReleaseKeys filter).
+//
+// Claude 2026-09-22: MaxAlternateReleaseAttempts retired — precheck owns source pick.
+// Reason: download-time "try 3 alternates then days ladder" duplicated what full-list
+//   precheck + ExcludeReleaseKeys already do; operator asked download fallbacks to go
+//   away and requeue through precheck instead.
+// Troubleshooting: content/430 parks due-now until search+precheck find a live NZB
+//   or NoMatch → parkPendingRetry (days ladder).
+// Review if: a hard park-episode cap returns for pathological indexer churn.
+// const MaxAlternateReleaseAttempts = 3
 
 import (
 	"context"
@@ -19,12 +28,6 @@ import (
 
 	"github.com/labbersanon/sakms/internal/dbutil"
 )
-
-// MaxAlternateReleaseAttempts is the maximum number of content-unusable parks
-// allowed for one grab's current alternate-release episode (= number of "u:"
-// entries in tried_release_keys). When reached, parkUsenetContentFailure falls
-// through to the days ladder, which clears the keys and ends the episode.
-const MaxAlternateReleaseAttempts = 3
 
 // ReleaseKeys returns the two fingerprint keys for a release: one derived from
 // the download URL and one from the normalised title. Empty inputs are skipped.

@@ -397,7 +397,12 @@ func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, stor
 		gid            string
 	)
 	order := qualifiedCandidateOrder(sel)
-	for _, idx := range order[:min(len(order), maxDispatchAttempts)] {
+	// Claude 2026-09-22: same as RunAutoGrab — exhaust qualified list via precheck.
+	// Reason: batch Grab must not stop early when runners-up exist; precheck owns
+	//   source selection (download-time alternate caps retired).
+	// Troubleshooting: batch returns pick-list only after every qualified NZB fails STAT.
+	// Review if: batch should park pending_retry instead of returning a pick list.
+	for _, idx := range order {
 		picked = releases[idx]
 		downloadClient, gid, _, err = dispatchToDownloadClient(ctx, settingsStore, sess, m, nzb, nil, string(picked.Protocol), picked.DownloadURL, picked.Title)
 		if err == nil {
@@ -407,6 +412,7 @@ func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, stor
 		if !errors.Is(err, usenet.ErrArticlesUnavailable) {
 			return nil, false, false, nil, "", err
 		}
+		log.Printf("usenet precheck: batch candidate %d (%s) unavailable — trying next", idx, picked.Title)
 	}
 	// Only ErrArticlesUnavailable survives the loop; every other error returned above.
 	if err != nil {

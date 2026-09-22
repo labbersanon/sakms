@@ -340,6 +340,37 @@ func grabHandler(httpClient *http.Client, connStore *connections.Store, scStore 
 
 		downloadClient, gid, status, err := dispatchToDownloadClient(ctx, settingsStore, sess, m, nzb, nil, req.Protocol, req.DownloadURL, req.Title)
 		if err != nil {
+			// Claude 2026-09-22: manual pick precheck miss → requeue through precheck.
+			// Reason: operator asked Search&pick to walk alternates like auto-grab;
+			//   bare 409 left a dead NZB with no pending_retry / ExcludeReleaseKeys.
+			// Troubleshooting: Grab returns pending_retry grab JSON; drainAlternateReleaseRetries
+			//   RunAutoGrab-searches with this URL fingerprinted out.
+			// Review if: UI should still show a toast to pick manually while retry runs.
+			if errors.Is(err, usenet.ErrArticlesUnavailable) {
+				created, cerr := grabsStore.Create(ctx, grabs.Grab{
+					Mode: m, Title: req.Title, TMDBID: req.TMDBID, TVDBID: req.TVDBID,
+					SeasonNumber: req.SeasonNumber, EpisodeNumber: req.EpisodeNumber, SeasonSpecified: req.SeasonSpecified,
+					QualityProfileID: req.QualityProfileID, Indexer: req.Indexer, Protocol: req.Protocol,
+					RootFolderPath: req.RootFolderPath, DownloadURL: req.DownloadURL,
+				})
+				if cerr != nil {
+					http.Error(w, cerr.Error(), http.StatusInternalServerError)
+					return
+				}
+				keys := grabs.ReleaseKeys(req.DownloadURL, req.Title)
+				if perr := grabsStore.ParkForAlternateRelease(ctx, created.ID, time.Now(), articlesUnavailableReason, keys); perr != nil {
+					http.Error(w, perr.Error(), http.StatusInternalServerError)
+					return
+				}
+				parked, gerr := grabsStore.Get(ctx, created.ID)
+				if gerr != nil {
+					http.Error(w, gerr.Error(), http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(parked)
+				return
+			}
 			http.Error(w, err.Error(), status)
 			return
 		}
@@ -453,10 +484,13 @@ func dispatchToDownloadClient(ctx context.Context, settingsStore *settings.Store
 		}
 		gid, err := nzb.AddNZB(ctx, downloadURL, title)
 		if err != nil {
-			// Claude 2026-09-15: precheck rejection is a client conflict, not a gateway error.
-			// Reason: Search & pick has no runners-up; 409 tells the UI to choose another release.
-			// Troubleshooting: Grab returns 409 with ErrArticlesUnavailable message.
-			// Review if: Search & pick gains multi-candidate retry like RunAutoGrab.
+			// Claude 2026-09-15: precheck rejection used to be a bare 409 for Search & pick.
+			// Claude 2026-09-22: ErrArticlesUnavailable is handled in grabHandler (requeue);
+			//   other callers (RunAutoGrab) still branch on this sentinel.
+			// Reason: Search & pick now parks pending_retry with tried keys so drain
+			//   can precheck alternate NZBs — same role download fallbacks used to own.
+			// Troubleshooting: Grab returns pending_retry JSON, not 409, on dead NZB.
+			// Review if: torrent path ever needs a parallel "source unavailable" park.
 			if errors.Is(err, usenet.ErrArticlesUnavailable) {
 				return "", "", http.StatusConflict, errors.New("this release's articles aren't on your subscriptions — pick another")
 			}

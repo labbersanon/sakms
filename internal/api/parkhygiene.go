@@ -14,10 +14,21 @@ import (
 )
 
 // RunBootParkHygiene is the exported entry point that cmd/sakms/main.go calls
-// once at boot, next to ReconcileInFlightDownloads. It runs runParkHygiene with
-// the current time and logs on each stranded/malformed row it repairs.
+// once at boot, next to ReconcileInFlightDownloads. It first resumes any
+// transport/shutdown-parked grabs that are due, then runs runParkHygiene.
 func RunBootParkHygiene(ctx context.Context, deps AutoGrabDeps) {
-	runParkHygiene(ctx, deps, time.Now())
+	now := time.Now()
+	// Claude 2026-09-22: resume due transport/shutdown parks at boot.
+	// Reason: fireOnError sync-parks context.Canceled into pending_retry; those
+	//   rows are invisible to ReconcileInFlightDownloads (queued/downloading only).
+	// Troubleshooting: after deploy, remux stays pending_retry until drain tick.
+	// Review if: ReconcileInFlightDownloads also walks transport-parked GIDs.
+	var eng usenetResumeEngine
+	if deps.NZB != nil {
+		eng = deps.NZB
+	}
+	resumeDueTransportRetries(ctx, deps, eng, map[string]bool{}, now)
+	runParkHygiene(ctx, deps, now)
 }
 
 // testParkReapedReason is the retry_reason written when a hygiene reap flips

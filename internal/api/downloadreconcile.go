@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -112,6 +113,13 @@ func reconcileInFlightPass(ctx context.Context, deps DownloadReconcileDeps) (def
 			log.Printf("download reconcile: listing %s grabs: %v", m, err)
 			continue
 		}
+		// Claude 2026-09-22: relaunch grabs with resume progress before empty ones.
+		// Reason: boot with MaxConcurrentDownloads=1 gave a fresh grab the slot while
+		//   a 31G sidecar-backed remux sat deferred (Stranger Things S01E01).
+		// Troubleshooting: journal "starting (resume enabled, no prior segments)" while
+		//   another nzb-* has .sakms-resume.json + large staging.
+		// Review if: List gains a SQL ORDER BY and this sort becomes redundant.
+		sortUsenetReconcilePriority(deps.NZB, list)
 		for i := range list {
 			if reconcileOneInFlight(ctx, deps, &list[i], &budget) {
 				deferred++
@@ -119,6 +127,79 @@ func reconcileInFlightPass(ctx context.Context, deps DownloadReconcileDeps) (def
 		}
 	}
 	return deferred
+}
+
+// sortUsenetReconcilePriority orders in-flight usenet grabs so resume-sidecar
+// (and then non-empty staging) relaunch before empty/fresh ones. Non-usenet or
+// terminal rows sort last; ties break by ascending ID for stability.
+func sortUsenetReconcilePriority(nzb *usenet.Manager, list []grabs.Grab) {
+	if len(list) < 2 {
+		return
+	}
+	root := ""
+	if nzb != nil {
+		root = nzb.StagingDir()
+	}
+	sort.SliceStable(list, func(i, j int) bool {
+		pi := usenetResumeRelaunchPriority(root, &list[i])
+		pj := usenetResumeRelaunchPriority(root, &list[j])
+		if pi != pj {
+			return pi > pj
+		}
+		return list[i].ID < list[j].ID
+	})
+}
+
+// usenetResumeRelaunchPriority ranks a grab for post-restart relaunch:
+//   - 2: .sakms-resume.json present (partial BODY progress)
+//   - 1: owned staging has payload bytes but no sidecar
+//   - 0: usenet in-flight with empty/missing staging
+//   - -1: not a usenet relaunch candidate (torrent, terminal, no GID)
+func usenetResumeRelaunchPriority(stagingRoot string, g *grabs.Grab) int {
+	if g == nil {
+		return -1
+	}
+	if g.Status != grabs.Queued && g.Status != grabs.Downloading {
+		return -1
+	}
+	if !strings.HasPrefix(g.DownloadGID, usenetGIDPrefix) {
+		return -1
+	}
+	if stagingRoot == "" || g.DownloadGID == "" {
+		return 0
+	}
+	dir := filepath.Join(stagingRoot, g.DownloadGID)
+	if _, err := os.Stat(filepath.Join(dir, usenet.ResumeFileName)); err == nil {
+		return 2
+	}
+	if stagingHasPayload(dir) {
+		return 1
+	}
+	return 0
+}
+
+// stagingHasPayload reports whether dir holds any non-meta file (assembled
+// segments, video, par2) worth preferring over an empty relaunch.
+func stagingHasPayload(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if name == usenet.ResumeFileName || name == usenet.OwnedMarkerFile ||
+			strings.HasSuffix(name, ".tmp") {
+			continue
+		}
+		if e.IsDir() {
+			return true
+		}
+		info, err := e.Info()
+		if err == nil && info.Size() > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // startUsenetReconcileDrain runs a single background loop that re-runs

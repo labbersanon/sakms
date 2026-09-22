@@ -18,6 +18,11 @@ import (
 // on Requests and must never carry a host, username, or URL fragment.
 const transportRetryReason = "the connection to the usenet server dropped — resuming shortly"
 
+// shutdownResumeReason is parked when a download's context is canceled (process
+// restart / deploy). Same GID-preserving park as transport; due immediately so
+// the next drain tick can resume without waiting the live-socket backoff.
+const shutdownResumeReason = "download interrupted by a restart — resuming shortly"
+
 // parkUsenetTransportFailure decides whether a retrieval failure should be
 // short-parked for a transport resume rather than falling through to today's
 // ParkWithBackoff (multi-day re-search ladder). Returns (true, nil) when the
@@ -25,7 +30,7 @@ const transportRetryReason = "the connection to the usenet server dropped — re
 // qualify and the caller should continue with its normal park logic.
 //
 // Fail-closed: returns false (caller falls through) unless ALL four hold:
-//  1. errors.Is(failure, usenet.ErrTransport)
+//  1. errors.Is(failure, usenet.ErrTransport) OR errors.Is(failure, context.Canceled)
 //  2. g.DownloadGID has the "nzb-" prefix (a dispatched usenet grab)
 //  3. g.DownloadURL is non-empty (needed for RelaunchNZB)
 //  4. g.TransportRetryCount < grabs.MaxTransportRetries
@@ -35,8 +40,15 @@ const transportRetryReason = "the connection to the usenet server dropped — re
 //   park that cleared the GID would orphan the sidecar on the 7-day timer.
 // Review if: a resume_gid column is added (currently unnecessary; existing
 //   column semantics already cover the requirement).
+//
+// Claude 2026-09-22: context.Canceled also qualifies (restart / deploy kill).
+// Reason: days-ladder ParkWithBackoff clears download_gid and orphans staging;
+//   shutdown cancel must keep the GID like a dropped socket.
+// Troubleshooting: after sakms recreate, remux resumes from .sakms-resume.json.
+// Review if: fireOnError sync-parks cancel — see usenet.Manager.fireOnError.
 func parkUsenetTransportFailure(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, failure error, now time.Time) (bool, error) {
-	if !errors.Is(failure, usenet.ErrTransport) {
+	shutdown := errors.Is(failure, context.Canceled)
+	if !errors.Is(failure, usenet.ErrTransport) && !shutdown {
 		return false, nil
 	}
 	if !strings.HasPrefix(g.DownloadGID, usenetGIDPrefix) {
@@ -49,12 +61,20 @@ func parkUsenetTransportFailure(ctx context.Context, deps AutoGrabDeps, g grabs.
 		return false, nil
 	}
 	attempt := g.TransportRetryCount + 1
-	backoff := grabs.TransportBackoff(attempt)
-	if err := deps.GrabsStore.ParkForTransportResume(ctx, g.ID, now.Add(backoff), transportRetryReason); err != nil {
+	reason := transportRetryReason
+	after := now.Add(grabs.TransportBackoff(attempt))
+	if shutdown {
+		// Due immediately — deploy restart should resume on the next drain tick,
+		// not after the 2m transport backoff meant for live socket flaps.
+		reason = shutdownResumeReason
+		after = now
+	}
+	if err := deps.GrabsStore.ParkForTransportResume(ctx, g.ID, after, reason); err != nil {
 		return false, fmt.Errorf("transport park grab %d: %w", g.ID, err)
 	}
+	wait := after.Sub(now).Round(time.Second)
 	log.Printf("usenet transport: grab %d (%s) parked for resume in %s (attempt %d/%d)",
-		g.ID, g.Title, backoff, attempt, grabs.MaxTransportRetries)
+		g.ID, g.Title, wait, attempt, grabs.MaxTransportRetries)
 	return true, nil
 }
 

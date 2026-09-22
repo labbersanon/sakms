@@ -41,6 +41,7 @@ import { useSearchParams } from "@solidjs/router";
 import type { AdultDiscoverItem, DiscoverItem, Mode } from "../api/discover";
 import { fetchTitleCard, fetchTitlePoster, proxyImage, tmdbPoster } from "../api/discover";
 import { SeasonsPanel } from "../components/SeasonsPanel";
+import { TitleQualityPrefs } from "../components/TitleQualityPrefs";
 import {
   type TrackedItem,
   addTag,
@@ -583,6 +584,16 @@ const DetailPanel: Component<{
           the routes behind this panel carry a literal `series` path segment. */}
       <Show when={props.mode === "series"}>
         <SeasonsPanel seriesID={props.item.id} />
+      </Show>
+      {/* Claude 2026-09-22: movie track quality override (series lives in SeasonsPanel).
+          Reason: per-title prefs for unattended grabs; UI defaults from Settings.
+          Troubleshooting: TitleQualityPrefs; library_quality_prefs.
+          Review if: tracked movie rows lack tmdbId. */}
+      <Show when={props.mode === "movies" && (props.item.tmdbId ?? 0) > 0}>
+        <TitleQualityPrefs
+          mode="movies"
+          titleKey={{ tmdbId: props.item.tmdbId! }}
+        />
       </Show>
 
       {/* Tags — mutable */}

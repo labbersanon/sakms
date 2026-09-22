@@ -15,6 +15,7 @@ import (
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/downloader"
 	"github.com/labbersanon/sakms/internal/grabs"
+	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/prowlarr"
 	"github.com/labbersanon/sakms/internal/quality"
@@ -116,7 +117,7 @@ func indexerOrFeed(indexer string) string {
 // mechanism, called with TriggerOperator — the one UNGATED trigger. The
 // usenet_autograb_enabled toggle must never apply here: this feature already
 // ships, and the operator's click is the approval.
-func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store, store *adultnewest.ReleaseStore) http.HandlerFunc {
+func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store, store *adultnewest.ReleaseStore, libStore *library.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		ctx := r.Context()
@@ -149,7 +150,7 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, scSt
 					// pending_retry row. Passing the cached release as Releases is
 					// what makes RunAutoGrab skip its internal autoGrabSearch.
 					out, err := RunAutoGrab(ctx, AutoGrabDeps{
-						SettingsStore: settingsStore, NZB: nzb, GrabsStore: grabsStore, ReleaseStore: store,
+						SettingsStore: settingsStore, NZB: nzb, GrabsStore: grabsStore, ReleaseStore: store, LibStore: libStore,
 					}, sess, AutoGrabRequest{
 						Mode: m, Title: req.Title, Studio: req.Studio,
 						DurationSeconds: req.DurationSeconds,
@@ -216,7 +217,7 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, scSt
 			return
 		}
 
-		out, err := RunAutoGrab(ctx, AutoGrabDeps{SettingsStore: settingsStore, NZB: nzb, GrabsStore: grabsStore, ReleaseStore: store}, sess, AutoGrabRequest{
+		out, err := RunAutoGrab(ctx, AutoGrabDeps{SettingsStore: settingsStore, NZB: nzb, GrabsStore: grabsStore, ReleaseStore: store, LibStore: libStore}, sess, AutoGrabRequest{
 			Mode: m, Title: req.Title, TMDBID: req.TMDBID,
 			Season: req.SeasonNumber, Episode: req.EpisodeNumber, SeasonSpecified: req.SeasonSpecified,
 			Studio: req.Studio, ReleaseTitle: req.ReleaseTitle, DurationSeconds: req.DurationSeconds,

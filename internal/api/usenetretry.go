@@ -217,7 +217,7 @@ func RunUsenetRetry(ctx context.Context, interval time.Duration, httpClient *htt
 		return // opt-in gate: off by default, honoring "manual first"
 	}
 
-	deps := AutoGrabDeps{SettingsStore: settingsStore, NZB: nzb, GrabsStore: grabsStore, Webhooks: whStore}
+	deps := AutoGrabDeps{SettingsStore: settingsStore, NZB: nzb, GrabsStore: grabsStore, Webhooks: whStore, LibStore: libStore}
 	// dl, not nil: a retry re-runs the whole pipeline from the search, so its
 	// winner may well be a torrent, and dispatchToDownloadClient rejects a
 	// torrent dispatch on a nil Session.Downloader.

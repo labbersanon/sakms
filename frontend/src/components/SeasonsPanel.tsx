@@ -25,8 +25,10 @@ import {
   putAllSeasonsMonitoredFor,
   putSeasonMonitoredFor,
 } from "../api/seasons";
+import type { TitleQualityKey } from "../api/titlequality";
 import { fetchUsenetAutoGrabEnabled } from "../api/usenet";
 import { ErrorText, Muted, Switch } from "./ui";
+import { TitleQualityPrefs } from "./TitleQualityPrefs";
 import Info from "lucide-solid/icons/info";
 
 // SEASON_UNMONITORED_COPY / SEASON_AUTOGRAB_COPY are the two honesty lines for
@@ -101,8 +103,15 @@ export const SeasonsPanel: Component<SeasonKey> = (props) => {
   const allMonitored = () =>
     rows().length > 0 && rows().every((s) => s.monitored);
 
+  const qualityKey = (): TitleQualityKey =>
+    props.seriesID != null
+      ? { seriesID: props.seriesID }
+      : { tmdbId: props.tmdbId! };
+
   return (
-    <div class="mb-3 border-t border-border pt-3">
+    <>
+      <TitleQualityPrefs mode="series" titleKey={qualityKey()} />
+      <div class="mb-3 border-t border-border pt-3">
       <div class="mb-1 flex items-center gap-1">
         <p class="text-[11px] font-medium uppercase tracking-wide text-muted">
           Seasons
@@ -178,5 +187,6 @@ export const SeasonsPanel: Component<SeasonKey> = (props) => {
         </For>
       </Show>
     </div>
+    </>
   );
 };

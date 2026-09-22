@@ -3154,6 +3154,32 @@ type SetSeasonMonitoredRequest struct {
 	Monitored bool `json:"monitored"`
 }
 
+// Claude 2026-09-22: per-title quality prefs on monitor/track surfaces.
+// Reason: unattended drain must honor title overrides; UI lights defaults from
+//   mode settings when Inherited is true.
+// Troubleshooting: GET/PUT .../quality-prefs under library series/movie routes.
+// Review if: response grows protocol preference per title.
+// Related files: api/titlequality.go; library/quality_prefs.go
+
+// TitleQualityPrefsResponse is GET for one series or movie title's quality
+// prefs. When Inherited is true, Tiers/MaxResolution are the mode defaults
+// (so the UI can light the same pills as Settings) and no override row exists.
+type TitleQualityPrefsResponse struct {
+	Tiers         []string `json:"tiers"`
+	MaxResolution int      `json:"maxResolution"`
+	Inherited     bool     `json:"inherited"`
+	UpgradeQueued int      `json:"upgradeQueued,omitempty"`
+}
+
+// TitleQualityPrefsRequest is PUT body. Clear=true deletes the override
+// (back to mode defaults). Otherwise Tiers is required; MaxResolution is
+// always stored when Clear is false (0 = no cap, same as mode prefs).
+type TitleQualityPrefsRequest struct {
+	Tiers         []string `json:"tiers"`
+	MaxResolution int      `json:"maxResolution"`
+	Clear         bool     `json:"clear,omitempty"`
+}
+
 // SeriesNewSeasonDiscoveryResponse / SeriesNewSeasonDiscoveryRequest back
 // GET/PUT /api/settings/series-new-season-discovery — off by default.
 //

@@ -11,6 +11,7 @@ import (
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/autograb"
 	"github.com/labbersanon/sakms/internal/grabs"
+	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/prowlarr"
 	"github.com/labbersanon/sakms/internal/settings"
@@ -137,6 +138,11 @@ type AutoGrabDeps struct {
 	NZB           *usenet.Manager
 	GrabsStore    *grabs.Store
 	Webhooks      *webhooks.Store
+	// Claude 2026-09-22: library store for per-title quality prefs.
+	// Reason: resolveAutoGrabTiersForTitle needs library_quality_prefs.
+	// Troubleshooting: nil LibStore → mode defaults only (tests without library).
+	// Review if: every AutoGrabDeps construction site passes libStore.
+	LibStore *library.Store
 	// ReleaseStore is the Adult release cache store; nil degrades to a live
 	// Prowlarr search on every call.
 	ReleaseStore *adultnewest.ReleaseStore
@@ -438,7 +444,15 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 
 		neutralizeSeasonPacks := req.Mode == mode.Series && pr.runtimeSeconds > 0
 		candidates := buildAutoGrabCandidates(pr.releases, pr.runtimeSeconds, neutralizeSeasonPacks)
-		pr.sel = autograb.SelectBest(candidates, autoGrabTiers(ctx, deps.SettingsStore, req.Mode), minSeedersFor(req.Mode))
+		// Claude 2026-09-22: title override tiers + soft max-resolution prefer.
+		// Reason: monitor UI persists per-title prefs; mode defaults alone let
+		//   one show fall to 480p after HD STAT misses.
+		// Troubleshooting: library_quality_prefs; resolveAutoGrabTiersForTitle.
+		// Review if: AutoGrabRequest carries explicit tiers from the Grab pills.
+		tiers := resolveAutoGrabTiersForTitle(ctx, deps.LibStore, deps.SettingsStore, req.Mode, req.TMDBID)
+		maxRes := resolveMaxResolutionForTitle(ctx, deps.LibStore, deps.SettingsStore, req.Mode, req.TMDBID)
+		candidates = softPreferMaxResolution(candidates, maxRes)
+		pr.sel = autograb.SelectBest(candidates, tiers, minSeedersFor(req.Mode))
 		return pr, nil
 	}
 

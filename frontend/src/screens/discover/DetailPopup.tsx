@@ -83,6 +83,7 @@ import { Button, ErrorText, Muted, PillSelector, yearOf } from "../../components
 import { PlayFullscreenLink } from "../../components/TrackedPlayback";
 import { MediaFallbackTile } from "../../components/media";
 import { SeasonsPanel } from "../../components/SeasonsPanel";
+import { TitleQualityPrefs } from "../../components/TitleQualityPrefs";
 import { type GrabTarget, FallbackPickList, Modal } from "./shared";
 import { PosterCard } from "./Mainstream";
 import { SeasonEpisodePicker } from "./SeasonEpisodePicker";
@@ -1063,6 +1064,16 @@ export const DetailPopup: Component<{
           Review if: Library stops nesting DetailPanel under this popup. */}
       <Show when={allowGrab() && mode() === "series"}>
         <SeasonsPanel tmdbId={(item() as DiscoverItem).id} />
+      </Show>
+      {/* Claude 2026-09-22: movie quality override on Discover track/grab popup.
+          Reason: same per-title prefs as Library; series mounts via SeasonsPanel.
+          Troubleshooting: PUT movies/.../quality-prefs.
+          Review if: Discover movie cards lack numeric TMDB id. */}
+      <Show when={allowGrab() && mode() === "movies"}>
+        <TitleQualityPrefs
+          mode="movies"
+          titleKey={{ tmdbId: (item() as DiscoverItem).id }}
+        />
       </Show>
       {/* Claude 2026-09-01: poster + synopsis + More/Trailer/Play sit ABOVE
           the Series ready() gate. Discover Series used to hide this whole

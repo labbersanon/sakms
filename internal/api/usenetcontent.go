@@ -96,14 +96,21 @@ type contentForgetEngine interface {
 
 var _ contentForgetEngine = (*usenet.Manager)(nil)
 
-// parkUsenetContentFailure parks g for a different-release Usenet retry.
-// Returns (true, nil) when the park was written; (false, nil) when a fail-closed
-// guard rejected it — the caller should fall through to park() (days ladder).
+// parkUsenetContentFailure parks g for a different-release Usenet retry that
+// will re-enter RunAutoGrab (precheck owns picking the next NZB). Returns
+// (true, nil) when the park was written; (false, nil) when a fail-closed guard
+// rejected it — the caller should fall through to park() (days ladder).
 //
 // Fail-closed guards:
 //  1. g.DownloadGID must have the "nzb-" prefix.
 //  2. g.DownloadURL must be non-empty (the "u:" key requires it).
-//  3. AlternateAttempts(existing keys) < MaxAlternateReleaseAttempts.
+//
+// Claude 2026-09-22: MaxAlternateReleaseAttempts gate removed.
+// Reason: precheck exhausts the graded list each cycle; tried_release_keys
+//   exclude dead NZBs. A hard "3 alt parks" cap was a download-time fallback
+//   the operator retired — requeue through precheck instead.
+// Troubleshooting: content/430 → pending_retry due-now → drainAlternateReleaseRetries.
+// Review if: a park-episode cap returns for indexer churn.
 //
 // Side effects on success (best-effort — failure is logged, not fatal):
 //   - clearOwnedUsenetStaging: the staged bytes are proven useless; leaving
@@ -124,13 +131,6 @@ func parkUsenetContentFailure(
 	if strings.TrimSpace(g.DownloadURL) == "" {
 		return false, nil
 	}
-	attempts := grabs.AlternateAttempts(grabs.ParseTriedReleaseKeys(g.TriedReleaseKeys))
-	if attempts >= grabs.MaxAlternateReleaseAttempts {
-		log.Printf("usenet content: grab %d (%s) cap reached (%d/%d) — falling back to days ladder",
-			g.ID, g.Title, attempts, grabs.MaxAlternateReleaseAttempts)
-		return false, nil
-	}
-
 	// Claude 2026-09-22: fingerprint the NZB/release title, never g.Title.
 	// Reason: g.Title is the media/show name (e.g. "Burn Notice"); filterExcludedReleases
 	//   hashes r.Title which is the Prowlarr/NZB release name. Hashing the show name
@@ -149,8 +149,8 @@ func parkUsenetContentFailure(
 		return false, fmt.Errorf("content park grab %d: %w", g.ID, err)
 	}
 
-	log.Printf("usenet content: grab %d (%s) parked for alternate release (attempt %d/%d) — %s",
-		g.ID, g.Title, attempts+1, grabs.MaxAlternateReleaseAttempts, reason)
+	log.Printf("usenet content: grab %d (%s) requeued for precheck (alternate release) — %s",
+		g.ID, g.Title, reason)
 
 	if engine != nil {
 		// Claude 2026-09-22: do not Forget the error row on content park.

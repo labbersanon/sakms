@@ -92,9 +92,12 @@ const (
 	// articlesUnavailableReason is the retry_reason for a retrieval failure
 	// where every configured subscription answered 430.
 	articlesUnavailableReason = "no configured usenet subscription holds this release's articles"
-	// maxDispatchAttempts caps how many ranked candidates one RunAutoGrab
-	// cycle will try when precheck rejects NZBs (indexer grab-quota bound).
-	maxDispatchAttempts = 3
+	// Claude 2026-09-22: maxDispatchAttempts retired — precheck owns source selection.
+	// Reason: operator asked to exhaust the full graded list (not cap at 3) then
+	//   park/NoMatch; download-time alternate caps are also gone for the same reason.
+	// Troubleshooting: journal "usenet precheck: candidate N unavailable — trying next".
+	// Review if: indexer grab-quota needs a settings-bounded dispatch cap again.
+	// maxDispatchAttempts = 3
 	// weakIdentityReason is the retry_reason when Adult identity signals are
 	// too thin for silent unattended dispatch (adultIdentityWeak returned true).
 	//
@@ -512,7 +515,12 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 		err            error
 	)
 	order := qualifiedCandidateOrder(sel)
-	for _, idx := range order[:min(len(order), maxDispatchAttempts)] {
+	// Claude 2026-09-22: walk every qualified runner-up; precheck is the source gate.
+	// Reason: capping at 3 left working NZBs untried while download-time fallbacks
+	//   still hunted alternates — precheck now owns that role end-to-end.
+	// Troubleshooting: one cycle STATs many NZBs; exhaustion → parkPendingRetry/NoMatch.
+	// Review if: a settings-bounded dispatch cap returns for indexer quota.
+	for _, idx := range order {
 		picked = releases[idx]
 		var status int
 		downloadClient, gid, status, err = dispatchToDownloadClient(ctx, deps.SettingsStore, sess, req.Mode, deps.NZB, deps.UsenetSearch, string(picked.Protocol), picked.DownloadURL, picked.Title)

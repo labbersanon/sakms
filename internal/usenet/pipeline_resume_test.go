@@ -19,8 +19,16 @@ func TestPipeline_WritesAndMarksIncrementally(t *testing.T) {
 	srv.serveAll(p)
 	nzbHTTP := nzbServer(t, p)
 	staging := t.TempDir()
+	// Claude 2026-09-22: MaxConns=1 so the assemble sliding window cannot spend
+	//   a paced BODY token on seg N+1 while N is still blocked (HOL left
+	//   fileSize=2560 after exactly 6 releases on CI with MaxConns=2).
+	// Reason: concurrencyBudget == Σ MaxConns; window [nextWrite, nextWrite+maxConc)
+	//   lets an out-of-order fetch steal a pace token from the writer’s next index.
+	// Troubleshooting: TestPipeline_WritesAndMarksIncrementally mid-flight WriteAt
+	//   missing / go-test hang after 2s finish feeder abandoned bodyAllow waiters.
+	// Review if: assembleFile fetches strictly in NZB order with no sliding window.
 	m := New(Config{
-		Servers:       []ServerConfig{srv.cfgWith(2)},
+		Servers:       []ServerConfig{srv.cfgWith(1)},
 		StagingDir:    staging,
 		HTTPClient:    nzbHTTP.Client(),
 		SegmentResume: true,
@@ -33,21 +41,19 @@ func TestPipeline_WritesAndMarksIncrementally(t *testing.T) {
 	dir := filepath.Join(staging, gid)
 	out := filepath.Join(dir, p.filename)
 
-	// Claude 2026-09-22: CI flake — releasing exactly 6 BODY tokens sometimes
-	//   left only 5 contiguous WriteAts (HOL: out-of-order fetch window) while
-	//   the 5s wait expired at fileSize=2560. Keep feeding tokens until mid-flight
-	//   size is reached, but stop well before the full 16-seg file completes.
-	// Reason: full-payload precheck + MaxConns=2 fan-out made the old fixed-6
-	//   pace brittle on GitHub runners.
-	// Troubleshooting: TestPipeline_WritesAndMarksIncrementally mid-flight WriteAt missing.
-	// Review if: assembleFile fetches strictly in NZB order again.
 	const (
-		segBytes   = 512
-		wantBytes  = int64(6 * segBytes)
-		maxRelease = 12 // leave ≥4 segments blocked so status stays active
+		segBytes  = 512
+		wantBytes = int64(6 * segBytes)
+		midSegs   = 6
 	)
-	released := 0
-	deadline := time.Now().Add(20 * time.Second)
+	for i := 0; i < midSegs; i++ {
+		select {
+		case srv.bodyAllow <- struct{}{}:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("BODY waiter missing for mid-flight token %d/%d", i+1, midSegs)
+		}
+	}
+	deadline := time.Now().Add(10 * time.Second)
 	var done int
 	var size int64
 	for time.Now().Before(deadline) {
@@ -61,31 +67,27 @@ func TestPipeline_WritesAndMarksIncrementally(t *testing.T) {
 		if size >= wantBytes {
 			break
 		}
-		if released < maxRelease {
-			select {
-			case srv.bodyAllow <- struct{}{}:
-				released++
-			case <-time.After(50 * time.Millisecond):
-				// Fetcher not waiting on BODY yet — retry next loop.
-			}
-		}
 		time.Sleep(5 * time.Millisecond)
 	}
 	if size < wantBytes {
-		t.Fatalf("mid-flight WriteAt missing: resumeDone=%d fileSize=%d released=%d (still active download)", done, size, released)
+		t.Fatalf("mid-flight WriteAt missing: resumeDone=%d fileSize=%d (still active download)", done, size)
 	}
 	d, _ := m.FindByGID(gid)
 	if d == nil || d.Status != "active" {
 		t.Fatalf("expected download still active during paced fetch, got %+v", d)
 	}
 
-	// Unblock the remainder and finish.
+	// Keep pacing until terminal — a short idle timeout previously abandoned
+	// bodyAllow waiters under CI load and hung go test until the suite timeout.
+	stopFeed := make(chan struct{})
+	defer close(stopFeed)
 	go func() {
 		for {
 			select {
-			case srv.bodyAllow <- struct{}{}:
-			case <-time.After(2 * time.Second):
+			case <-stopFeed:
 				return
+			case srv.bodyAllow <- struct{}{}:
+			case <-time.After(50 * time.Millisecond):
 			}
 		}
 	}()

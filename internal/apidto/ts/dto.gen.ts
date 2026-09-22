@@ -2707,7 +2707,7 @@ export interface Download {
    *   distinct wire field for downloading vs repairing vs unpacking.
    * Troubleshooting: Downloads showing raw "active" during PAR2/unrar.
    * Review if: torrents grow a comparable postprocess phase.
-   * Wire values: "precheck" | "downloading" | "repairing" | "unpacking". Empty when
+   * Wire values: "precheck" | "waiting" | "downloading" | "repairing" | "unpacking". Empty when
    * paused/error/complete/removed (UI derives those from status). Torrents
    * leave this empty.
    */
@@ -2726,6 +2726,11 @@ export interface Download {
    * Reason: Downloads shows a Precheck pill while full-payload STAT runs.
    * Troubleshooting: empty Downloads during long precheck — expect phase=precheck.
    * Review if: precheck progress (checked/total) is plumbed into PhaseDone/Total.
+   * Claude 2026-09-22: Phase may also be "waiting" (STAT done, BODY slot blocked).
+   * Reason: precheck and download use separate semaphores; UI must not say
+   *   Downloading while MaxConcurrentDownloads is saturated.
+   * Troubleshooting: Precheck finishes then 0 B/s — expect phase=waiting until a slot frees.
+   * Review if: torrents reuse the same waiting phase wire value.
    */
   phaseDone?: number /* int64 */;
   phaseTotal?: number /* int64 */;

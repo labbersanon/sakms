@@ -477,6 +477,25 @@ describe("Downloads — phase tags", () => {
     expect(phase.className).toContain("text-warn");
   });
 
+  it("shows Waiting after precheck when a download slot is blocked", async () => {
+    stubPauseStateOnly();
+    render(() => <Downloads />);
+    MockEventSource.last!.emit([
+      dl({
+        gid: "nzb-wait",
+        protocol: "usenet",
+        status: "active",
+        phase: "waiting",
+        downloadSpeed: 0,
+      }),
+    ]);
+
+    const phase = await screen.findByLabelText("Download phase");
+    expect(phase).toHaveTextContent("Waiting");
+    expect(phase.className).toContain("bg-surface-2");
+    expect(phase.className).toContain("text-muted");
+  });
+
   it("maps waiting to Queued, error to Failed, and unpacking phase", async () => {
     stubPauseStateOnly();
     render(() => <Downloads />);

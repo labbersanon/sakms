@@ -840,6 +840,65 @@ func TestAddNZB_ExposesPrecheckPhase(t *testing.T) {
 	}
 }
 
+// TestAddNZB_ExposesWaitingPhase: after STAT succeeds, a saturated download
+// semaphore must surface phase=waiting (not downloading) until a BODY slot frees.
+func TestAddNZB_ExposesWaitingPhase(t *testing.T) {
+	p := makePayload(t, 2, 512)
+	srv := newFakeNNTP(t)
+	srv.serveAll(p)
+	nzbHTTP := nzbServer(t, p)
+	m := New(Config{
+		Servers:                []ServerConfig{srv.cfgWith(1)},
+		StagingDir:             t.TempDir(),
+		HTTPClient:             nzbHTTP.Client(),
+		MaxConcurrentDownloads: 1,
+	})
+
+	sem := m.currentSemaphore()
+	sem <- struct{}{} // saturate BODY slots; precheckSem stays free
+
+	errCh := make(chan error, 1)
+	var gid string
+	go func() {
+		var err error
+		gid, err = m.AddNZB(context.Background(), nzbHTTP.URL, "Waiting Visible")
+		errCh <- err
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	var sawWaiting bool
+	for time.Now().Before(deadline) {
+		for _, d := range m.List() {
+			if d.Phase == phaseWaiting && d.Status == "active" {
+				sawWaiting = true
+				break
+			}
+			if d.Phase == phaseDownloading {
+				t.Fatalf("phase flipped to downloading while BODY semaphore was held")
+			}
+		}
+		if sawWaiting {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !sawWaiting {
+		t.Fatal("expected List() to show phase=waiting while download semaphore is full")
+	}
+
+	<-sem // free the BODY slot
+	if err := <-errCh; err != nil {
+		t.Fatalf("AddNZB: %v", err)
+	}
+	if gid == "" {
+		t.Fatal("empty gid")
+	}
+	d := waitTerminal(t, m, gid)
+	if d.Status != "complete" {
+		t.Fatalf("status=%q err=%q", d.Status, d.ErrorMessage)
+	}
+}
+
 // TestAddNZB_EveryPool430_IsArticlesUnavailable proves the pre-download STAT
 // gate rejects an NZB whose payload articles are gone on every subscription,
 // before a durable queue row sticks. Mid-download classification of 430 remains

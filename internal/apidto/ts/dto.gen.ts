@@ -3154,23 +3154,26 @@ export interface SetSeasonMonitoredRequest {
 }
 /**
  * TitleQualityPrefsResponse is GET for one series or movie title's quality
- * prefs. When Inherited is true, Tiers/MaxResolution are the mode defaults
- * (so the UI can light the same pills as Settings) and no override row exists.
+ * prefs. When Inherited is true, Tiers are the mode defaults and MinResolution
+ * is 0 (any) — mode soft-max is a separate Settings control. Floor is the
+ * lowest accepted tier (the minimum quality), for single-pill UI binding.
  */
 export interface TitleQualityPrefsResponse {
   tiers: string[];
-  maxResolution: number /* int */;
+  floor: string;
+  minResolution: number /* int */;
   inherited: boolean;
   upgradeQueued?: number /* int */;
 }
 /**
  * TitleQualityPrefsRequest is PUT body. Clear=true deletes the override
- * (back to mode defaults). Otherwise Tiers is required; MaxResolution is
- * always stored when Clear is false (0 = no cap, same as mode prefs).
+ * (back to mode defaults). Otherwise Floor (preferred) or Tiers is required;
+ * a single Floor is expanded to that tier and above. MinResolution 0 = any.
  */
 export interface TitleQualityPrefsRequest {
-  tiers: string[];
-  maxResolution: number /* int */;
+  floor?: string;
+  tiers?: string[];
+  minResolution: number /* int */;
   clear?: boolean;
 }
 /**

@@ -1,18 +1,21 @@
 // Per-title quality prefs (series monitor + movie track).
+// Resolution and quality are MINIMUM floors for unattended grabs.
 
 import { api } from "./client";
 import type { Mode } from "./discover";
 
 export type TitleQualityPrefsResponse = {
   tiers: string[];
-  maxResolution: number;
+  floor: string;
+  minResolution: number;
   inherited: boolean;
   upgradeQueued?: number;
 };
 
 export type TitleQualityPrefsRequest = {
-  tiers: string[];
-  maxResolution: number;
+  floor?: string;
+  tiers?: string[];
+  minResolution: number;
   clear?: boolean;
 };
 

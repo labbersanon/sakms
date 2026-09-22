@@ -450,8 +450,8 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 		// Troubleshooting: library_quality_prefs; resolveAutoGrabTiersForTitle.
 		// Review if: AutoGrabRequest carries explicit tiers from the Grab pills.
 		tiers := resolveAutoGrabTiersForTitle(ctx, deps.LibStore, deps.SettingsStore, req.Mode, req.TMDBID)
-		maxRes := resolveMaxResolutionForTitle(ctx, deps.LibStore, deps.SettingsStore, req.Mode, req.TMDBID)
-		candidates = softPreferMaxResolution(candidates, maxRes)
+		minRes := resolveMinResolutionForTitle(ctx, deps.LibStore, req.Mode, req.TMDBID)
+		candidates = requireMinResolution(candidates, minRes)
 		pr.sel = autograb.SelectBest(candidates, tiers, minSeedersFor(req.Mode))
 		return pr, nil
 	}

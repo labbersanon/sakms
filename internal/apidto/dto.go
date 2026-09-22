@@ -3160,23 +3160,32 @@ type SetSeasonMonitoredRequest struct {
 // Troubleshooting: GET/PUT .../quality-prefs under library series/movie routes.
 // Review if: response grows protocol preference per title.
 // Related files: api/titlequality.go; library/quality_prefs.go
+//
+// Claude 2026-09-22: MinResolution is a hard floor (0 = any), not a soft max.
+// Reason: selecting 1080p means reject below 1080; Tiers are a floor expanded
+//   upward (high → high+lossless).
+// Troubleshooting: requireMinResolution; TitleQualityPrefs "Minimum" labels.
+// Review if: mode Settings max_resolution adopts the same minimum semantics.
 
 // TitleQualityPrefsResponse is GET for one series or movie title's quality
-// prefs. When Inherited is true, Tiers/MaxResolution are the mode defaults
-// (so the UI can light the same pills as Settings) and no override row exists.
+// prefs. When Inherited is true, Tiers are the mode defaults and MinResolution
+// is 0 (any) — mode soft-max is a separate Settings control. Floor is the
+// lowest accepted tier (the minimum quality), for single-pill UI binding.
 type TitleQualityPrefsResponse struct {
 	Tiers         []string `json:"tiers"`
-	MaxResolution int      `json:"maxResolution"`
+	Floor         string   `json:"floor"`
+	MinResolution int      `json:"minResolution"`
 	Inherited     bool     `json:"inherited"`
 	UpgradeQueued int      `json:"upgradeQueued,omitempty"`
 }
 
 // TitleQualityPrefsRequest is PUT body. Clear=true deletes the override
-// (back to mode defaults). Otherwise Tiers is required; MaxResolution is
-// always stored when Clear is false (0 = no cap, same as mode prefs).
+// (back to mode defaults). Otherwise Floor (preferred) or Tiers is required;
+// a single Floor is expanded to that tier and above. MinResolution 0 = any.
 type TitleQualityPrefsRequest struct {
-	Tiers         []string `json:"tiers"`
-	MaxResolution int      `json:"maxResolution"`
+	Floor         string   `json:"floor,omitempty"`
+	Tiers         []string `json:"tiers,omitempty"`
+	MinResolution int      `json:"minResolution"`
 	Clear         bool     `json:"clear,omitempty"`
 }
 

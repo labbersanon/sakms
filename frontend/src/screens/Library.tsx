@@ -528,6 +528,30 @@ const DetailPanel: Component<{
         </div>
       </Show>
 
+      {/* Claude 2026-09-22: quality prefs then seasons sit at top of Library
+          children (DetailPopup already showed poster/description above).
+          Reason: same info-screen order as Discover — quality, then Monitor All.
+          Troubleshooting: quality lived below Files; seasons were always expanded.
+          Review if: Files should return above quality. */}
+      <Show
+        when={
+          (props.mode === "movies" || props.mode === "series") &&
+          (props.item.tmdbId ?? 0) > 0
+        }
+      >
+        <TitleQualityPrefs
+          mode={props.mode as "movies" | "series"}
+          titleKey={
+            props.mode === "series"
+              ? { seriesID: props.item.id }
+              : { tmdbId: props.item.tmdbId! }
+          }
+        />
+      </Show>
+      <Show when={props.mode === "series"}>
+        <SeasonsPanel seriesID={props.item.id} />
+      </Show>
+
       {/* Files — Movies primary + alternates (bitrate/codec/resolution) */}
       {/* Claude 2026-08-14: Play + Fullscreen live on each playable file row.
           Reason: GET /tracked/{id}/video now serves movies; the player is
@@ -578,22 +602,6 @@ const DetailPanel: Component<{
             </For>
           </ul>
         </div>
-      </Show>
-
-      {/* Per-season monitoring — SERIES ONLY. Movies/Adult have no seasons, and
-          the routes behind this panel carry a literal `series` path segment. */}
-      <Show when={props.mode === "series"}>
-        <SeasonsPanel seriesID={props.item.id} />
-      </Show>
-      {/* Claude 2026-09-22: movie track quality override (series lives in SeasonsPanel).
-          Reason: per-title prefs for unattended grabs; UI defaults from Settings.
-          Troubleshooting: TitleQualityPrefs; library_quality_prefs.
-          Review if: tracked movie rows lack tmdbId. */}
-      <Show when={props.mode === "movies" && (props.item.tmdbId ?? 0) > 0}>
-        <TitleQualityPrefs
-          mode="movies"
-          titleKey={{ tmdbId: props.item.tmdbId! }}
-        />
       </Show>
 
       {/* Tags — mutable */}

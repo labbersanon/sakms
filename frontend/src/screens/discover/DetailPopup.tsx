@@ -1054,27 +1054,6 @@ export const DetailPopup: Component<{
 
   return (
     <Modal title={item().title} onClose={props.onClose}>
-      {/* Claude 2026-08-19: Discover shows the same per-season monitors as
-          Library. allowGrab is Discover's grab path; Library already mounts
-          SeasonsPanel in DetailPanel children (library series id) and must
-          not get a second copy keyed by TMDB id.
-          Reason: operator asked the monitor setting on Discover, bound to
-          the same library_season_monitored rows.
-          Troubleshooting: Discover had no switches; Library did.
-          Review if: Library stops nesting DetailPanel under this popup. */}
-      <Show when={allowGrab() && mode() === "series"}>
-        <SeasonsPanel tmdbId={(item() as DiscoverItem).id} />
-      </Show>
-      {/* Claude 2026-09-22: movie quality override on Discover track/grab popup.
-          Reason: same per-title prefs as Library; series mounts via SeasonsPanel.
-          Troubleshooting: PUT movies/.../quality-prefs.
-          Review if: Discover movie cards lack numeric TMDB id. */}
-      <Show when={allowGrab() && mode() === "movies"}>
-        <TitleQualityPrefs
-          mode="movies"
-          titleKey={{ tmdbId: (item() as DiscoverItem).id }}
-        />
-      </Show>
       {/* Claude 2026-09-01: poster + synopsis + More/Trailer/Play sit ABOVE
           the Series ready() gate. Discover Series used to hide this whole
           header until a season was picked, so the description the card hover
@@ -1163,6 +1142,28 @@ export const DetailPopup: Component<{
         </div>
       </div>
 
+      {/* Claude 2026-09-22: quality prefs + season monitors sit UNDER poster/
+          synopsis. Library passes the same blocks via children (seriesID key)
+          and must not get a second Discover TMDB-keyed copy.
+          Reason: operator asked poster/description first, then quality prefs,
+          then Monitor All with seasons collapsed.
+          Troubleshooting: SeasonsPanel/TitleQualityPrefs used to mount above
+          the header tile.
+          Review if: Library stops nesting DetailPanel under this popup. */}
+      <Show when={allowGrab() && (mode() === "movies" || mode() === "series")}>
+        <TitleQualityPrefs
+          mode={mode() as "movies" | "series"}
+          titleKey={{ tmdbId: (item() as DiscoverItem).id }}
+        />
+      </Show>
+      <Show when={allowGrab() && mode() === "series"}>
+        <SeasonsPanel tmdbId={(item() as DiscoverItem).id} />
+      </Show>
+      {/* Claude 2026-09-22: Library children (quality/seasons/files/tags) follow
+          poster + Discover quality/seasons so the info screen stays top-down.
+          Reason: children used to render after Cast/Streaming.
+          Review if: Library grows its own early slot separate from children. */}
+      {props.children}
 
       <Show
         when={ready()}
@@ -1574,11 +1575,10 @@ export const DetailPopup: Component<{
             );
           }}
         </Show>
-        {props.children}
-        {/* Claude 2026-08-14: More like this is last, after Library children.
+        {/* Claude 2026-08-14: More like this is last.
             Reason: operator asked the rail at the bottom of the detail body.
-            Discover has no children, so Cast → Streaming → rail is unchanged.
-            Review if: Library children move into the F1 block. */}
+            Claude 2026-09-22: Library children moved up under poster/quality.
+            Review if: recommendations should follow Library tags again. */}
         <Show when={mode() !== "adult" && detail()}>
           {(d) => (
             <Show when={d().recommendations?.length}>

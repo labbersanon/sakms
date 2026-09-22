@@ -1,9 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"strings"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/grabs"
@@ -30,7 +33,7 @@ func TestHandleUsenetError_ClassifiesFailures(t *testing.T) {
 			name:       "430 parks for retry",
 			failure:    fmt.Errorf("segment: %w", usenet.ErrArticleNotFound),
 			wantStatus: grabs.PendingRetry,
-			wantReason: articlesUnavailableReason,
+			wantReason: contentArticlesMissingReason,
 		},
 		{
 			name:       "unclassified parks for retry",
@@ -147,5 +150,36 @@ func TestHandleUsenetError_ThenSweepDoesNotDoublePark(t *testing.T) {
 	}
 	if afterSweep.RetryCount != afterHandler.RetryCount {
 		t.Fatalf("sweep double-parked: retry_count %d → %d", afterHandler.RetryCount, afterSweep.RetryCount)
+	}
+}
+
+// TestHandleUsenetError_ContentParkLogsRetryReason is the misleading-log
+// regression: a 430 content park must log parked.RetryReason, not
+// usenetRetrievalReason (the days-ladder "no configured usenet subscription…" copy).
+func TestHandleUsenetError_ContentParkLogsRetryReason(t *testing.T) {
+	ctx := context.Background()
+	deps, grabsStore := usenetErrorDeps(t)
+	g := dispatchedUsenetGrab(t, grabsStore, "nzb-log-430")
+
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prev)
+
+	handleUsenetError(ctx, deps, "nzb-log-430", fmt.Errorf("segment: %w", usenet.ErrArticleNotFound), parkGrabForRetry)
+
+	got, err := grabsStore.Get(ctx, g.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RetryReason != contentArticlesMissingReason {
+		t.Fatalf("retryReason = %q, want %q", got.RetryReason, contentArticlesMissingReason)
+	}
+	out := buf.String()
+	if !strings.Contains(out, contentArticlesMissingReason) {
+		t.Errorf("log missing parked content reason %q; got %q", contentArticlesMissingReason, out)
+	}
+	if strings.Contains(out, articlesUnavailableReason) {
+		t.Errorf("log still used usenetRetrievalReason days-ladder copy %q; got %q", articlesUnavailableReason, out)
 	}
 }

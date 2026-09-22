@@ -1130,6 +1130,23 @@ func (m *Manager) FindByGID(gid string) (*Download, error) {
 	return nil, nil
 }
 
+// Claude 2026-09-22: NZB/release title for content-park fingerprints.
+// Reason: parkUsenetContentFailure must hash the same title filterExcludedReleases
+//   uses (Prowlarr/NZB name stored as Download.Filename), not grabs.Grab.Title
+//   (the media/show name). Empty when the engine no longer has gid.
+// Troubleshooting: 430 park excluded "Burn Notice" instead of the NZB name.
+// Review if: grabs persist the NZB title as its own column.
+func (m *Manager) FindFilename(gid string) string {
+	if m == nil || gid == "" {
+		return ""
+	}
+	d, err := m.FindByGID(gid)
+	if err != nil || d == nil {
+		return ""
+	}
+	return d.Filename
+}
+
 // InjectDownloadForTest registers a live download entry so API tests can
 // simulate "engine still knows this GID" without driving a real NZB fetch.
 // SetForceFullForTest sets the live force-full flag without sweeping.

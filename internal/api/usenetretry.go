@@ -467,9 +467,14 @@ func parkRetrievalFailure(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, 
 		}
 		// Cap / fail-closed: still wipe hollow staging before days-ladder park.
 		if engine != nil && strings.HasPrefix(g.DownloadGID, usenetGIDPrefix) {
-			if !engine.Forget(g.DownloadGID) {
-				log.Printf("usenet content: Forget(%s) on days-ladder fallthrough for grab %d returned false", g.DownloadGID, g.ID)
-			}
+			// Claude 2026-09-22: keep the error row on days-ladder fallthrough too.
+			// Reason: same silent-Downloads failure as the content-park success path;
+			//   operator asked to keep errors visible until dismiss/cancel.
+			// Troubleshooting: applyUsenetFailure cap-reached 430 still shows on Downloads.
+			// Review if: days-ladder fallthrough should Forget after a glance window.
+			// if !engine.Forget(g.DownloadGID) {
+			// 	log.Printf("usenet content: Forget(%s) on days-ladder fallthrough for grab %d returned false", g.DownloadGID, g.ID)
+			// }
 			clearOwnedUsenetStagingEngine(engine, g.DownloadGID)
 		}
 	}

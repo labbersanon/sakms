@@ -9100,3 +9100,31 @@ to main.
 | `internal/usenet/resume_test.go` | Batch / compact / Flush / setFileSize / 1s tests |
 | `internal/usenet/pipeline_resume_test.go` | Mid-flight proof is WriteAt size; sidecar may lag the batch |
 
+## 2026-09-22 — Usenet 430 silent park: NZB-title keys + keep error row
+
+**Problem:** A 430 (and other content parks) looked silent on Downloads because
+`parkUsenetContentFailure` called `engine.Forget`, dropping the error row. The
+same park hashed `g.Title` (the media/show name, e.g. "Burn Notice") into
+`tried_release_keys`, so `filterExcludedReleases` never matched the Prowlarr
+NZB title. The error-handler log still printed `usenetRetrievalReason` ("no
+configured usenet subscription holds…") after a successful content park.
+**Fix:** Fingerprint `engine.FindFilename(gid)` (NZB/release display name
+stored as `usenet.Download.Filename`) with URL-only fallback when empty — never
+`g.Title`. Comment out Forget on content-park success and days-ladder
+fallthrough; still wipe owned staging. Log `parked.RetryReason`. No auto-dismiss
+of errors. Not deployed. Do not merge to main.
+**Outcome:** Alternate-release exclusion keys match NZB titles; Downloads keeps
+the error until Cancel; journal shows the content-park reason.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/manager.go` | `FindFilename` from live `Download.Filename` |
+| `internal/api/usenetcontent.go` | NZB-title `ReleaseKeys`; Forget commented out; staging still wiped |
+| `internal/api/usenetretry.go` | Days-ladder fallthrough Forget commented out |
+| `internal/api/useneterror.go` | Log `parked.RetryReason` |
+| `internal/api/usenetcontent_test.go` | NZB title vs media title; no Forget; staging cleared |
+| `internal/api/useneterror_test.go` | 430 reason + log assertion |
+| `internal/api/usenetretry_test.go` | Sweep 430 expects content-park reason/keys |
+

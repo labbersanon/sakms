@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -13,17 +15,39 @@ import (
 )
 
 // fakeForgetEngine satisfies contentForgetEngine for tests. No real staging
-// dirs are created — only the in-memory state is tracked.
+// dirs are created unless the test seeds them under stagingDir.
 type fakeForgetEngine struct {
 	forgotGIDs []string
 	stagingDir string
+	filenames  map[string]string
 }
 
 func (f *fakeForgetEngine) Forget(gid string) bool {
 	f.forgotGIDs = append(f.forgotGIDs, gid)
 	return true
 }
+func (f *fakeForgetEngine) FindFilename(gid string) string {
+	if f.filenames == nil {
+		return ""
+	}
+	return f.filenames[gid]
+}
 func (f *fakeForgetEngine) StagingDir() string { return f.stagingDir }
+
+func seedOwnedStaging(t *testing.T, root, gid string) string {
+	t.Helper()
+	dir := filepath.Join(root, gid)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, usenet.OwnedMarkerFile), []byte("sakms\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "payload.bin"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
 
 // TestContentUnusableFailure is the 5-arm routing table that pins every branch
 // of contentUnusableFailure.
@@ -75,7 +99,8 @@ func TestContentUnusableFailure(t *testing.T) {
 }
 
 // TestParkUsenetContentFailure_HappyPath asserts the park write: due-now,
-// GID cleared, transport_retry_count=0, keys appended, Forget called.
+// GID cleared, transport_retry_count=0, keys appended, Forget NOT called,
+// owned staging wiped.
 func TestParkUsenetContentFailure_HappyPath(t *testing.T) {
 	ctx := context.Background()
 	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
@@ -89,7 +114,9 @@ func TestParkUsenetContentFailure_HappyPath(t *testing.T) {
 		t.Fatalf("GetByDownloadGID: %v", err)
 	}
 	g := *gLoaded
-	eng := &fakeForgetEngine{stagingDir: t.TempDir()}
+	root := t.TempDir()
+	gidDir := seedOwnedStaging(t, root, "nzb-happy")
+	eng := &fakeForgetEngine{stagingDir: root}
 
 	before := time.Now()
 	handled, err := parkUsenetContentFailure(ctx, deps, g, usenet.ErrContentUnusable, eng)
@@ -124,8 +151,98 @@ func TestParkUsenetContentFailure_HappyPath(t *testing.T) {
 	if grabs.AlternateAttempts(grabs.ParseTriedReleaseKeys(got.TriedReleaseKeys)) != 1 {
 		t.Errorf("AlternateAttempts = %d, want 1 (u: entry added)", grabs.AlternateAttempts(grabs.ParseTriedReleaseKeys(got.TriedReleaseKeys)))
 	}
-	if len(eng.forgotGIDs) == 0 || eng.forgotGIDs[0] != "nzb-happy" {
-		t.Errorf("engine.Forget not called with %q; got %v", "nzb-happy", eng.forgotGIDs)
+	if len(eng.forgotGIDs) != 0 {
+		t.Errorf("engine.Forget called on content park; got %v (error row must stay on Downloads)", eng.forgotGIDs)
+	}
+	if _, err := os.Stat(gidDir); !os.IsNotExist(err) {
+		t.Errorf("owned staging %s still present after content park: %v", gidDir, err)
+	}
+}
+
+// TestParkUsenetContentFailure_ReleaseKeysUseNZBTitleNotMediaTitle is the
+// silent-exclusion regression: g.Title is the show name; keys must match
+// filterExcludedReleases hashing the Prowlarr/NZB title (engine Filename).
+func TestParkUsenetContentFailure_ReleaseKeysUseNZBTitleNotMediaTitle(t *testing.T) {
+	ctx := context.Background()
+	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
+	deps := AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore}
+
+	_ = dispatchedUsenetGrab(t, grabsStore, "nzb-nzbtitle")
+	gLoaded, err := grabsStore.GetByDownloadGID(ctx, "nzb-nzbtitle")
+	if err != nil {
+		t.Fatalf("GetByDownloadGID: %v", err)
+	}
+	g := *gLoaded
+	if g.Title != "Some Movie" {
+		t.Fatalf("fixture Title = %q, want media title Some Movie", g.Title)
+	}
+	nzbTitle := "Burn.Notice.S01E01.1080p.WEB-DL-GROUP"
+	eng := &fakeForgetEngine{
+		stagingDir: t.TempDir(),
+		filenames:  map[string]string{"nzb-nzbtitle": nzbTitle},
+	}
+
+	handled, err := parkUsenetContentFailure(ctx, deps, g, usenet.ErrArticleNotFound, eng)
+	if err != nil {
+		t.Fatalf("parkUsenetContentFailure: %v", err)
+	}
+	if !handled {
+		t.Fatal("handled = false, want true")
+	}
+
+	got, err := grabsStore.Get(ctx, g.ID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	want := grabs.FormatTriedReleaseKeys(grabs.ReleaseKeys(g.DownloadURL, nzbTitle))
+	if got.TriedReleaseKeys != want {
+		t.Errorf("tried_release_keys = %q, want NZB-title keys %q", got.TriedReleaseKeys, want)
+	}
+	mediaKeys := grabs.FormatTriedReleaseKeys(grabs.ReleaseKeys(g.DownloadURL, g.Title))
+	if got.TriedReleaseKeys == mediaKeys {
+		t.Error("tried_release_keys hashed media/show title; must use NZB/release title")
+	}
+	if len(eng.forgotGIDs) != 0 {
+		t.Errorf("Forget called; got %v", eng.forgotGIDs)
+	}
+}
+
+// TestParkUsenetContentFailure_EmptyReleaseTitleKeysURLOnly asserts that when
+// the engine has no Filename we still store the URL key and never hash g.Title.
+func TestParkUsenetContentFailure_EmptyReleaseTitleKeysURLOnly(t *testing.T) {
+	ctx := context.Background()
+	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
+	deps := AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore}
+
+	_ = dispatchedUsenetGrab(t, grabsStore, "nzb-nourlname")
+	gLoaded, err := grabsStore.GetByDownloadGID(ctx, "nzb-nourlname")
+	if err != nil {
+		t.Fatalf("GetByDownloadGID: %v", err)
+	}
+	g := *gLoaded
+	eng := &fakeForgetEngine{stagingDir: t.TempDir()}
+
+	handled, err := parkUsenetContentFailure(ctx, deps, g, usenet.ErrContentUnusable, eng)
+	if err != nil {
+		t.Fatalf("parkUsenetContentFailure: %v", err)
+	}
+	if !handled {
+		t.Fatal("handled = false, want true")
+	}
+
+	got, err := grabsStore.Get(ctx, g.ID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	want := grabs.FormatTriedReleaseKeys(grabs.ReleaseKeys(g.DownloadURL, ""))
+	if got.TriedReleaseKeys != want {
+		t.Errorf("tried_release_keys = %q, want URL-only %q", got.TriedReleaseKeys, want)
+	}
+	parsed := grabs.ParseTriedReleaseKeys(got.TriedReleaseKeys)
+	for _, k := range parsed {
+		if len(k) >= 2 && k[:2] == "t:" {
+			t.Errorf("unexpected t: key %q from media title fallback", k)
+		}
 	}
 }
 
@@ -316,6 +433,9 @@ func TestParkContentFailureOrDaysLadder_CapFallsToDaysLadder(t *testing.T) {
 	// tried_release_keys cleared by SetPendingRetry / ParkWithBackoff.
 	if got.TriedReleaseKeys != "" {
 		t.Errorf("tried_release_keys = %q, want cleared after days-ladder fallthrough", got.TriedReleaseKeys)
+	}
+	if len(eng.forgotGIDs) != 0 {
+		t.Errorf("Forget called on content park or days-ladder fallthrough; got %v", eng.forgotGIDs)
 	}
 }
 

@@ -102,11 +102,18 @@ func TestSweepUsenetFailuresClassifiesRetrievalErrors(t *testing.T) {
 			if got.DownloadGID != "" {
 				t.Errorf("parked with a stale GID %q — DueForRetry filters on download_gid = ''", got.DownloadGID)
 			}
-			if got.RetryCount != 1 {
-				t.Errorf("retryCount = %d, want 1 (the attempt must be counted so maxRetryAttempts can cap it)", got.RetryCount)
+			// Claude 2026-09-22: 430 takes the content park, not the days ladder.
+			// Reason: missing articles are a property of THIS NZB; retry_count stays
+			//   0 (days-ladder driver) and tried_release_keys records the attempt.
+			// Review if: 430 is split back to a days-ladder-only path.
+			if got.RetryCount != 0 {
+				t.Errorf("retryCount = %d, want 0 (content park does not advance the days ladder)", got.RetryCount)
 			}
-			if got.RetryReason != articlesUnavailableReason {
-				t.Errorf("retryReason = %q, want %q", got.RetryReason, articlesUnavailableReason)
+			if got.RetryReason != contentArticlesMissingReason {
+				t.Errorf("retryReason = %q, want %q", got.RetryReason, contentArticlesMissingReason)
+			}
+			if grabs.AlternateAttempts(grabs.ParseTriedReleaseKeys(got.TriedReleaseKeys)) != 1 {
+				t.Errorf("tried_release_keys attempts = %d, want 1 after 430 content park", grabs.AlternateAttempts(grabs.ParseTriedReleaseKeys(got.TriedReleaseKeys)))
 			}
 		})
 	}

@@ -88,8 +88,13 @@ func contentFailureReason(failure error) string {
 // from the usenet Manager. *usenet.Manager satisfies it.
 type contentForgetEngine interface {
 	Forget(gid string) bool
+	// FindFilename is the NZB/release display name (AddNZB name / X-DNZB-Name),
+	// not grabs.Grab.Title. Empty when gid is unknown.
+	FindFilename(gid string) string
 	StagingDir() string
 }
+
+var _ contentForgetEngine = (*usenet.Manager)(nil)
 
 // parkUsenetContentFailure parks g for a different-release Usenet retry.
 // Returns (true, nil) when the park was written; (false, nil) when a fail-closed
@@ -100,11 +105,12 @@ type contentForgetEngine interface {
 //  2. g.DownloadURL must be non-empty (the "u:" key requires it).
 //  3. AlternateAttempts(existing keys) < MaxAlternateReleaseAttempts.
 //
-// Side effects on success (both best-effort — failure is logged, not fatal):
-//   - engine.Forget(gid): drops the terminal in-memory entry so the engine's
-//     queue and usenetRelaunchSlots do not carry a dead download.
+// Side effects on success (best-effort — failure is logged, not fatal):
 //   - clearOwnedUsenetStaging: the staged bytes are proven useless; leaving
 //     them would trigger hollow reconcile imports on restart.
+//   - The engine error row is kept on Downloads (no Forget) so 430/unpack
+//     failures are visible until the operator Cancels. Complete rows still
+//     auto-dismiss via scheduleDismissComplete.
 func parkUsenetContentFailure(
 	ctx context.Context,
 	deps AutoGrabDeps,
@@ -125,7 +131,19 @@ func parkUsenetContentFailure(
 		return false, nil
 	}
 
-	newKeys := grabs.ReleaseKeys(g.DownloadURL, g.Title)
+	// Claude 2026-09-22: fingerprint the NZB/release title, never g.Title.
+	// Reason: g.Title is the media/show name (e.g. "Burn Notice"); filterExcludedReleases
+	//   hashes r.Title which is the Prowlarr/NZB release name. Hashing the show name
+	//   excludes every candidate for that title. Engine Filename is the name passed to
+	//   AddNZB/AddArticleSet (picked.Title / X-DNZB-Name). Empty filename → URL key only.
+	// Troubleshooting: 430 parks then the next search still picks the same NZB, or
+	//   every NZB for the show is excluded via a t: key of the show name.
+	// Review if: grabs persist the NZB title as its own column.
+	releaseTitle := ""
+	if engine != nil {
+		releaseTitle = engine.FindFilename(g.DownloadGID)
+	}
+	newKeys := grabs.ReleaseKeys(g.DownloadURL, releaseTitle)
 	reason := contentFailureReason(failure)
 	if err := deps.GrabsStore.ParkForAlternateRelease(ctx, g.ID, time.Now(), reason, newKeys); err != nil {
 		return false, fmt.Errorf("content park grab %d: %w", g.ID, err)
@@ -135,9 +153,16 @@ func parkUsenetContentFailure(
 		g.ID, g.Title, attempts+1, grabs.MaxAlternateReleaseAttempts, reason)
 
 	if engine != nil {
-		if !engine.Forget(g.DownloadGID) {
-			log.Printf("usenet content: Forget(%s) for grab %d returned false (already absent)", g.DownloadGID, g.ID)
-		}
+		// Claude 2026-09-22: do not Forget the error row on content park.
+		// Reason: Forget dropped the terminal engine entry so Downloads looked silent
+		//   after 430/unpack/no-video; the operator asked to keep the error visible
+		//   until manual Cancel. Staging bytes are still useless and are wiped below.
+		// Troubleshooting: 430 parks grab pending_retry but Downloads still shows the
+		//   error until Cancel. Complete rows still auto-dismiss via scheduleDismissComplete.
+		// Review if: operator wants errors auto-forgotten after a glance window.
+		// if !engine.Forget(g.DownloadGID) {
+		// 	log.Printf("usenet content: Forget(%s) for grab %d returned false (already absent)", g.DownloadGID, g.ID)
+		// }
 		clearOwnedUsenetStagingEngine(engine, g.DownloadGID)
 	}
 
@@ -170,12 +195,17 @@ func parkContentFailureOrDaysLadder(ctx context.Context, deps AutoGrabDeps, g gr
 	if handled {
 		return nil
 	}
-	// Cap / fail-closed decline: parkUsenetContentFailure skipped Forget+wipe.
+	// Cap / fail-closed decline: parkUsenetContentFailure skipped wipe.
 	// The staging is still hollow — clean it before the days-ladder park.
 	if engine != nil && strings.HasPrefix(g.DownloadGID, usenetGIDPrefix) {
-		if !engine.Forget(g.DownloadGID) {
-			log.Printf("usenet content: Forget(%s) on days-ladder fallthrough for grab %d returned false", g.DownloadGID, g.ID)
-		}
+		// Claude 2026-09-22: keep the error row on days-ladder fallthrough too.
+		// Reason: same silent-Downloads failure as the content-park success path;
+		//   operator asked to keep errors visible until dismiss/cancel.
+		// Troubleshooting: cap-reached 430 still shows on Downloads until Cancel.
+		// Review if: days-ladder fallthrough should Forget after a glance window.
+		// if !engine.Forget(g.DownloadGID) {
+		// 	log.Printf("usenet content: Forget(%s) on days-ladder fallthrough for grab %d returned false", g.DownloadGID, g.ID)
+		// }
 		clearOwnedUsenetStagingEngine(engine, g.DownloadGID)
 	}
 	return parkGrabForRetry(ctx, deps, g.ID, usenetRetrievalReason(failure))

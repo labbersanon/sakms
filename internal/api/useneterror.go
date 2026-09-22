@@ -20,7 +20,8 @@ import (
 // Deliberate differences from handleStaleTorrent:
 //   - No Cancel and no file deletion — the download is already terminal;
 //     staging cleanup belongs to stagingsweep (except content parks, which
-//     Forget + clear owned staging via deps.NZB — see parkUsenetContentFailure).
+//     wipe owned staging via deps.NZB but leave the error row on Downloads —
+//     see parkUsenetContentFailure).
 //   - No nzb- GID prefix check — the caller is the usenet engine.
 //   - Dispatches nothing, so usenet_autograb_enabled is honored for free
 //     (parked rows wait for retryDueGrabs → RunAutoGrab).
@@ -65,8 +66,14 @@ func handleUsenetError(ctx context.Context, deps AutoGrabDeps, gid string, failu
 		if parked, err := deps.GrabsStore.Get(ctx, g.ID); err != nil {
 			log.Printf("usenet error: grab %d parked, but re-reading it for the log failed: %v", g.ID, err)
 		} else {
+			// Claude 2026-09-22: log the reason that was actually parked.
+			// Reason: usenetRetrievalReason(failure) always says "no configured usenet
+			//   subscription holds this release's articles" for 430, even after a
+			//   successful content park wrote contentArticlesMissingReason.
+			// Troubleshooting: journal showed the days-ladder copy after an alternate-release park.
+			// Review if: sweepUsenetFailures (usenetretry.go) is updated the same way.
 			log.Printf("usenet error: grab %d (%s) parked as %s — %s (re-search due %s)",
-				g.ID, g.Title, parked.Status, usenetRetrievalReason(failure), parked.RetryAfter)
+				g.ID, g.Title, parked.Status, parked.RetryReason, parked.RetryAfter)
 		}
 	case grabs.Failed:
 		log.Printf("usenet error: grab %d (%s) failed permanently: %v", g.ID, g.Title, failure)

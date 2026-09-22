@@ -1,11 +1,10 @@
-// TitleQualityPrefs — quality tier + max resolution for one monitored/
-// tracked title. Defaults light up from mode Settings when Inherited.
-// Saving a higher preference queues upgrades for on-disk files below the
-// new highest tier.
+// TitleQualityPrefs — minimum quality tier + minimum resolution for one
+// monitored/tracked title. Defaults light up from mode Settings (quality
+// floor) when Inherited; resolution minimum defaults to Any (0).
+// Saving a higher floor queues upgrades for on-disk files below it.
 
 import {
   type Component,
-  For,
   Show,
   createEffect,
   createResource,
@@ -29,7 +28,7 @@ const TIER_LABELS: Record<string, string> = {
 };
 const RESOLUTION_OPTIONS = MAX_RESOLUTIONS.map(String);
 const RESOLUTION_LABELS: Record<string, string> = Object.fromEntries(
-  MAX_RESOLUTIONS.map((r) => [String(r), r === 0 ? "No cap" : `${r}p`]),
+  MAX_RESOLUTIONS.map((r) => [String(r), r === 0 ? "Any" : `${r}p+`]),
 );
 
 export const TitleQualityPrefs: Component<{
@@ -40,8 +39,8 @@ export const TitleQualityPrefs: Component<{
   const [prefs, { refetch }] = createResource(resourceKey, (k) =>
     fetchTitleQualityPrefs(k.mode, k),
   );
-  const [tiers, setTiers] = createSignal<string[]>([]);
-  const [maxRes, setMaxRes] = createSignal(0);
+  const [floor, setFloor] = createSignal("high");
+  const [minRes, setMinRes] = createSignal(0);
   const [busy, setBusy] = createSignal(false);
   const [writeError, setWriteError] = createSignal("");
   const [upgradeNote, setUpgradeNote] = createSignal("");
@@ -49,8 +48,8 @@ export const TitleQualityPrefs: Component<{
   createEffect(
     on(prefs, (p) => {
       if (!p) return;
-      setTiers(p.tiers?.length ? [...p.tiers] : ["high", "lossless"]);
-      setMaxRes(p.maxResolution ?? 0);
+      setFloor(p.floor || "high");
+      setMinRes(p.minResolution ?? 0);
       setWriteError("");
       setUpgradeNote("");
     }),
@@ -59,16 +58,7 @@ export const TitleQualityPrefs: Component<{
   const dirty = () => {
     const p = prefs();
     if (!p) return false;
-    const a = [...tiers()].sort().join(",");
-    const b = [...(p.tiers ?? [])].sort().join(",");
-    return a !== b || maxRes() !== p.maxResolution;
-  };
-
-  const toggleTier = (t: string, on: boolean) => {
-    setTiers((cur) => {
-      if (on) return cur.includes(t) ? cur : [...cur, t];
-      return cur.filter((x) => x !== t);
-    });
+    return floor() !== (p.floor || "high") || minRes() !== (p.minResolution ?? 0);
   };
 
   const save = async () => {
@@ -77,12 +67,12 @@ export const TitleQualityPrefs: Component<{
     setUpgradeNote("");
     try {
       const out = await putTitleQualityPrefs(props.mode, props.titleKey, {
-        tiers: tiers(),
-        maxResolution: maxRes(),
+        floor: floor(),
+        minResolution: minRes(),
       });
       if (out.upgradeQueued) {
         setUpgradeNote(
-          `Queued ${out.upgradeQueued} upgrade search${out.upgradeQueued === 1 ? "" : "es"} for lower-quality files.`,
+          `Queued ${out.upgradeQueued} upgrade search${out.upgradeQueued === 1 ? "" : "es"} for below-minimum files.`,
         );
       }
       await refetch();
@@ -99,8 +89,8 @@ export const TitleQualityPrefs: Component<{
     setUpgradeNote("");
     try {
       await putTitleQualityPrefs(props.mode, props.titleKey, {
-        tiers: [],
-        maxResolution: 0,
+        floor: "high",
+        minResolution: 0,
         clear: true,
       });
       await refetch();
@@ -122,41 +112,28 @@ export const TitleQualityPrefs: Component<{
       <Show when={!prefs.loading && prefs()}>
         <Muted class="mb-2">
           {prefs()!.inherited
-            ? "Using Settings defaults — change below to override for this title."
-            : "Custom override for this title."}
+            ? "Using Settings quality floor — resolution minimum is Any until you override."
+            : "Minimum quality and resolution for unattended grabs of this title."}
         </Muted>
         <PillSelector
-          label="Resolution"
+          label="Minimum resolution"
           options={RESOLUTION_OPTIONS}
           optionLabels={RESOLUTION_LABELS}
-          selected={String(maxRes())}
-          onSelect={(r) => setMaxRes(Number(r))}
+          selected={String(minRes())}
+          onSelect={(r) => setMinRes(Number(r))}
         />
-        <div class="mb-2">
-          <span class="mb-1 block text-[11px] font-medium uppercase tracking-wide text-muted">
-            Quality tier
-          </span>
-          <div class="mt-1 flex flex-wrap gap-3">
-            <For each={[...QUALITY_TIERS]}>
-              {(t) => (
-                <label class="flex items-center gap-1.5 text-sm text-fg">
-                  <input
-                    type="checkbox"
-                    aria-label={`Quality tier ${TIER_LABELS[t]}`}
-                    checked={tiers().includes(t)}
-                    onChange={(e) => toggleTier(t, e.currentTarget.checked)}
-                  />
-                  {TIER_LABELS[t]}
-                </label>
-              )}
-            </For>
-          </div>
-        </div>
+        <PillSelector
+          label="Minimum quality"
+          options={[...QUALITY_TIERS]}
+          optionLabels={TIER_LABELS}
+          selected={floor()}
+          onSelect={setFloor}
+        />
         <div class="mt-2 flex flex-wrap items-center gap-2">
           <button
             type="button"
             class="rounded bg-accent px-2 py-1 text-xs text-accent-fg disabled:opacity-50"
-            disabled={busy() || !dirty() || tiers().length === 0}
+            disabled={busy() || !dirty()}
             onClick={() => void save()}
           >
             {busy() ? "Saving…" : "Save"}

@@ -556,3 +556,40 @@ func TestResumeDueTransportRetries_NilEngine_IsNoOp(t *testing.T) {
 	// Must not panic.
 	resumeDueTransportRetries(ctx, deps, nil, map[string]bool{}, time.Now())
 }
+
+// TestApplyUsenetFailure_ContextCanceled parks for immediate resume (GID kept)
+// instead of the days ladder that would clear download_gid.
+func TestApplyUsenetFailure_ContextCanceled(t *testing.T) {
+	ctx := context.Background()
+	deps, grabsStore := transportDeps(t)
+	g := dispatchedTransportGrab(t, grabsStore, "nzb-shutdown-10")
+	before, err := grabsStore.Get(ctx, g.ID)
+	if err != nil {
+		t.Fatalf("get before: %v", err)
+	}
+	now := time.Now()
+	status, err := applyUsenetFailure(ctx, deps, *before, context.Canceled, parkGrabForRetry)
+	if err != nil {
+		t.Fatalf("applyUsenetFailure: %v", err)
+	}
+	if status != grabs.PendingRetry {
+		t.Fatalf("status = %q, want pending_retry", status)
+	}
+	got, err := grabsStore.Get(ctx, g.ID)
+	if err != nil {
+		t.Fatalf("get after: %v", err)
+	}
+	if got.DownloadGID != "nzb-shutdown-10" {
+		t.Errorf("download_gid = %q, want preserved", got.DownloadGID)
+	}
+	if got.RetryReason != shutdownResumeReason {
+		t.Errorf("retry_reason = %q, want %q", got.RetryReason, shutdownResumeReason)
+	}
+	retryT, parseErr := grabs.ParseTime(got.RetryAfter)
+	if parseErr != nil {
+		t.Fatalf("retry_after: %v", parseErr)
+	}
+	if retryT.After(now.Add(5 * time.Second)) {
+		t.Errorf("retry_after %v should be due immediately (within 5s of now)", retryT)
+	}
+}

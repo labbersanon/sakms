@@ -387,3 +387,66 @@ func TestReconcileInFlightDownloads_DrainResumesWhenSlotFrees(t *testing.T) {
 	}
 	t.Fatalf("drain did not relaunch a deferred grab after slot freed; list=%v", nzb.List())
 }
+
+// TestReconcileInFlightDownloads_PrefersResumeSidecar: with one slot, the grab
+// that already has .sakms-resume.json relaunches before an empty staging peer.
+func TestReconcileInFlightDownloads_PrefersResumeSidecar(t *testing.T) {
+	resetUsenetReconcileDrainForTest()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
+	srv := startNZBFixture(t)
+	staging := t.TempDir()
+	nzb := usenet.New(usenet.Config{
+		StagingDir: staging, HTTPClient: srv.Client(), MaxConcurrentDownloads: 1,
+	})
+	go nzb.Start(ctx)
+
+	emptyGID := "nzb-aaaaaaaaaaaaaaaa"
+	resumeGID := "nzb-bbbbbbbbbbbbbbbb"
+	_ = forgottenUsenetGrab(t, grabsStore, staging, emptyGID, srv.URL)
+	_ = forgottenUsenetGrab(t, grabsStore, staging, resumeGID, srv.URL)
+	if err := os.WriteFile(filepath.Join(staging, resumeGID, usenet.ResumeFileName), []byte(`{"v":3}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ReconcileInFlightDownloads(ctx, DownloadReconcileDeps{
+		SettingsStore: settingsStore, GrabsStore: grabsStore, NZB: nzb,
+	})
+
+	list := nzb.List()
+	if len(list) != 1 {
+		t.Fatalf("engine downloads = %d, want 1; list=%v", len(list), list)
+	}
+	if list[0].GID != resumeGID {
+		t.Fatalf("relaunched %q, want resume-sidecar grab %q", list[0].GID, resumeGID)
+	}
+}
+
+// TestSortUsenetReconcilePriority_OrdersSidecarFirst pins the pure sort helper.
+func TestSortUsenetReconcilePriority_OrdersSidecarFirst(t *testing.T) {
+	staging := t.TempDir()
+	nzb := usenet.New(usenet.Config{StagingDir: staging})
+	sidecarGID := "nzb-sidecar00000001"
+	emptyGID := "nzb-empty0000000002"
+	for _, gid := range []string{sidecarGID, emptyGID} {
+		dir := filepath.Join(staging, gid)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, usenet.OwnedMarkerFile), []byte("sakms\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(staging, sidecarGID, usenet.ResumeFileName), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	list := []grabs.Grab{
+		{ID: 2, Status: grabs.Queued, DownloadGID: emptyGID},
+		{ID: 1, Status: grabs.Queued, DownloadGID: sidecarGID},
+	}
+	sortUsenetReconcilePriority(nzb, list)
+	if list[0].DownloadGID != sidecarGID {
+		t.Fatalf("first = %q, want sidecar %q", list[0].DownloadGID, sidecarGID)
+	}
+}

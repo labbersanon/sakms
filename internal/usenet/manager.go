@@ -531,16 +531,26 @@ func (m *Manager) SetOnError(fn func(gid string, failure error)) {
 	m.onError = fn
 }
 
-// fireOnError invokes onError asynchronously when set. Never call under m.mu.
+// fireOnError invokes onError when set. Never call under m.mu.
 //
-// Claude 2026-09-15: ctx.Err guard keeps shutdown cancel from parking rows
-// Reason: a cancelled ctx is a shutdown, not a retrieval failure — those rows
-// are ReconcileInFlightDownloads' to relaunch. downloadAll rarely consults ctx
-// today, so a cancelled download can still reach here with an error.
-// Troubleshooting: grab parked for re-search across a restart instead of relaunching
+// Claude 2026-09-15: ctx.Err guard kept shutdown cancel from parking rows.
+// Claude 2026-09-22: context.Canceled now parks synchronously for transport
+// resume (GID kept). Other failures during shutdown still skip — those rows
+// stay queued/downloading for ReconcileInFlightDownloads.
+// Reason: ParkWithBackoff on cancel cleared download_gid and orphaned staging;
+//   sync park lets the next drain tick resume into .sakms-resume.json.
+// Troubleshooting: journal "download interrupted by a restart"; usenet transport park.
 // Review if: onError also covers AddNZB/RelaunchNZB sync failures
 func (m *Manager) fireOnError(ctx context.Context, gid string, failure error) {
-	if m.onError == nil || failure == nil || ctx.Err() != nil {
+	if m.onError == nil || failure == nil {
+		return
+	}
+	if errors.Is(failure, context.Canceled) {
+		// Sync: process may exit immediately after shutdown cancel.
+		m.onError(gid, failure)
+		return
+	}
+	if ctx.Err() != nil {
 		return
 	}
 	go m.onError(gid, failure)

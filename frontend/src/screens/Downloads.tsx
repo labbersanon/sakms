@@ -115,6 +115,11 @@ const PHASE_BADGE: Record<string, string> = {
   // Troubleshooting: Downloads phase pill contrast.
   // Review if: solid filled chips (B/C/F) are preferred instead.
   stalled: "bg-surface text-status-red font-semibold",
+  // Claude 2026-09-22: white chip + dark yellow for Usenet STAT precheck.
+  // Reason: operator asked for precheck visibility distinct from downloading.
+  // Troubleshooting: Downloads → Precheck pill during full STAT.
+  // Review if: warn token changes and contrast fails WCAG.
+  precheck: "bg-surface text-warn font-semibold",
   repairing: "bg-surface text-status-blue font-semibold",
   unpacking: "bg-surface text-status-blue font-semibold",
   downloading: "bg-surface text-status-blue font-semibold",
@@ -127,6 +132,7 @@ const PHASE_BADGE: Record<string, string> = {
 
 const PHASE_LABEL: Record<string, string> = {
   stalled: "Stalled",
+  precheck: "Precheck",
   repairing: "Repairing",
   unpacking: "Unpacking",
   downloading: "Downloading",
@@ -142,21 +148,29 @@ const STALL_MS = 5 * 60 * 1000;
 function isActiveish(d: Download): boolean {
   return (
     d.status === "active" ||
+    d.phase === "precheck" ||
     d.phase === "downloading" ||
     d.phase === "repairing" ||
     d.phase === "unpacking"
   );
 }
 
-// Stalled only overrides the downloading label — PAR2/unpack often have
-// downloadSpeed 0 by design and must stay Repairing/Unpacking.
+// Stalled only overrides the downloading label — PAR2/unpack/precheck often
+// have downloadSpeed 0 by design and must keep their own labels.
 function isStallCandidate(d: Download): boolean {
-  if (d.phase === "repairing" || d.phase === "unpacking") return false;
+  if (
+    d.phase === "precheck" ||
+    d.phase === "repairing" ||
+    d.phase === "unpacking"
+  ) {
+    return false;
+  }
   return d.status === "active" || d.phase === "downloading";
 }
 
 function phaseKind(d: Download, stalled: boolean): string {
   if (stalled && isStallCandidate(d)) return "stalled";
+  if (d.phase === "precheck") return "precheck";
   if (d.phase === "repairing") return "repairing";
   if (d.phase === "unpacking") return "unpacking";
   switch (d.status) {

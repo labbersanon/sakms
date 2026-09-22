@@ -458,6 +458,25 @@ describe("Downloads — phase tags", () => {
     expect(screen.getByLabelText("Resume mode resumed")).toBeInTheDocument();
   });
 
+  it("shows Precheck as a white pill with warn (dark yellow) text", async () => {
+    stubPauseStateOnly();
+    render(() => <Downloads />);
+    MockEventSource.last!.emit([
+      dl({
+        gid: "nzb-pre",
+        protocol: "usenet",
+        status: "active",
+        phase: "precheck",
+        downloadSpeed: 0,
+      }),
+    ]);
+
+    const phase = await screen.findByLabelText("Download phase");
+    expect(phase).toHaveTextContent("Precheck");
+    expect(phase.className).toContain("bg-surface");
+    expect(phase.className).toContain("text-warn");
+  });
+
   it("maps waiting to Queued, error to Failed, and unpacking phase", async () => {
     stubPauseStateOnly();
     render(() => <Downloads />);

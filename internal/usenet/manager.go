@@ -99,7 +99,7 @@ type Download struct {
 	//   wire value for fetching vs repairing vs unpacking.
 	// Troubleshooting: Downloads showing raw "active" during PAR2/unrar.
 	// Review if: torrents grow a comparable postprocess phase.
-	// Wire values: "downloading" | "repairing" | "unpacking". Empty when
+	// Wire values: "precheck" | "downloading" | "repairing" | "unpacking". Empty when
 	// paused/error/complete/removed.
 	Phase string
 	// Claude 2026-09-21: Downloads postprocess progress (repairing/unpacking).
@@ -127,6 +127,7 @@ type Download struct {
 // Reason: Downloads tags distinguish fetch vs PAR2 vs unpack while status=active.
 // Review if: a new postprocess step is added between assembly and complete.
 const (
+	phasePrecheck    = "precheck"
 	phaseDownloading = "downloading"
 	phaseRepairing   = "repairing"
 	phaseUnpacking   = "unpacking"
@@ -782,15 +783,6 @@ func (m *Manager) AddArticleSet(ctx context.Context, nzb *NZB, name string) (str
 		name = "usenet-download"
 	}
 
-	// Claude 2026-09-15: pre-download STAT gate before staging.
-	// Reason: abort dead NZBs before allocateStaging so no dir is left behind and
-	//   RunAutoGrab can try the next ranked candidate in the same cycle.
-	// Troubleshooting: AddNZB returns ErrArticlesUnavailable; journal "usenet precheck:".
-	// Review if: precheck moves behind a settings toggle (currently always on).
-	if _, err := m.precheckNZB(ctx, nzb, nil); err != nil {
-		return "", err
-	}
-
 	// Claude 2026-08-29: opaque nzb-<16 hex> GIDs, not a process-local nzb-N counter
 	// Reason: nextGID reset to 0 on every container restart, so AddNZB reused nzb-1
 	//   and ActiveByDownloadGID treated a new series as already grabbing (Furious
@@ -815,16 +807,20 @@ func (m *Manager) AddArticleSet(ctx context.Context, nzb *NZB, name string) (str
 	dlCtx, cancel := context.WithCancel(base)
 	now := time.Now()
 	dl := &dlState{
-		gid:                  gid,
-		name:                 name,
-		stagingDir:           dlDir,
-		status:               "active",
-		phase:                phaseDownloading,
-		total:                totalBytes,
-		cancel:               cancel,
-		gate:                 newPauseGate(),
-		addedAt:              now,
-		downloadPhaseStarted: now,
+		gid:        gid,
+		name:       name,
+		stagingDir: dlDir,
+		status:     "active",
+		// Claude 2026-09-22: register before STAT so Downloads can show Precheck.
+		// Reason: precheck used to run before allocateStaging — no GID/row for
+		//   minutes on large NZBs; UI looked idle while STAT ran.
+		// Troubleshooting: Downloads empty during long precheck; look for phase=precheck.
+		// Review if: precheck moves to a settings-gated background job.
+		phase:   phasePrecheck,
+		total:   totalBytes,
+		cancel:  cancel,
+		gate:    newPauseGate(),
+		addedAt: now,
 	}
 
 	m.mu.Lock()
@@ -837,8 +833,34 @@ func (m *Manager) AddArticleSet(ctx context.Context, nzb *NZB, name string) (str
 	m.downloads[gid] = dl
 	m.mu.Unlock()
 
+	// Claude 2026-09-15: pre-download STAT gate (row already visible as precheck).
+	// Reason: abort dead NZBs before BODY fetch so RunAutoGrab can try the next
+	//   ranked candidate in the same cycle.
+	// Troubleshooting: AddNZB returns ErrArticlesUnavailable; journal "usenet precheck:".
+	// Review if: precheck moves behind a settings toggle (currently always on).
+	if _, err := m.precheckNZB(ctx, nzb, nil); err != nil {
+		m.dropPrecheckFailed(gid, cancel, dlDir)
+		return "", err
+	}
+
+	m.mu.Lock()
+	if cur := m.downloads[gid]; cur != nil {
+		cur.setPhase(phaseDownloading)
+	}
+	m.mu.Unlock()
+
 	go m.runDownload(dlCtx, gid, dl, nzb)
 	return gid, nil
+}
+
+// dropPrecheckFailed removes a precheck-only queue row and its empty staging
+// dir so a failed STAT gate does not leave a Failed pill or orphan nzb-* folder.
+func (m *Manager) dropPrecheckFailed(gid string, cancel context.CancelFunc, dlDir string) {
+	cancel()
+	m.mu.Lock()
+	delete(m.downloads, gid)
+	m.mu.Unlock()
+	_ = os.RemoveAll(dlDir)
 }
 
 // Claude 2026-09-11: RelaunchNZB — post-restart attach into an existing nzb-* dir
@@ -888,18 +910,6 @@ func (m *Manager) RelaunchArticleSet(ctx context.Context, gid string, nzb *NZB, 
 		name = "usenet-download"
 	}
 
-	// Claude 2026-09-15: precheck the still-needed articles on relaunch.
-	// Reason: aged NZBs often fall out of retention; fail closed before burning
-	//   the download slot again. Segments already resumable are not re-STATed.
-	// Troubleshooting: reconcile parks on ErrArticlesUnavailable.
-	var skip map[string]bool
-	if enabled, forceFull := m.ResumePolicy(); enabled && !forceFull {
-		skip = completedMsgIDsFromDir(filepath.Join(m.stagingDir, gid))
-	}
-	if _, err := m.precheckNZB(ctx, nzb, skip); err != nil {
-		return err
-	}
-
 	if err := os.MkdirAll(m.stagingDir, 0o755); err != nil {
 		return fmt.Errorf("usenet: creating staging dir %s: %w", m.stagingDir, err)
 	}
@@ -923,16 +933,16 @@ func (m *Manager) RelaunchArticleSet(ctx context.Context, gid string, nzb *NZB, 
 	dlCtx, cancel := context.WithCancel(base)
 	now := time.Now()
 	dl := &dlState{
-		gid:                  gid,
-		name:                 name,
-		stagingDir:           dlDir,
-		status:               "active",
-		phase:                phaseDownloading,
-		total:                totalBytes,
-		cancel:               cancel,
-		gate:                 newPauseGate(),
-		addedAt:              now,
-		downloadPhaseStarted: now,
+		gid:        gid,
+		name:       name,
+		stagingDir: dlDir,
+		status:     "active",
+		// Claude 2026-09-22: show Precheck on relaunch too (same Downloads pill).
+		phase:   phasePrecheck,
+		total:   totalBytes,
+		cancel:  cancel,
+		gate:    newPauseGate(),
+		addedAt: now,
 	}
 
 	m.mu.Lock()
@@ -942,6 +952,29 @@ func (m *Manager) RelaunchArticleSet(ctx context.Context, gid string, nzb *NZB, 
 		return nil
 	}
 	m.downloads[gid] = dl
+	m.mu.Unlock()
+
+	// Claude 2026-09-15: precheck the still-needed articles on relaunch.
+	// Reason: aged NZBs often fall out of retention; fail closed before burning
+	//   the download slot again. Segments already resumable are not re-STATed.
+	// Troubleshooting: reconcile parks on ErrArticlesUnavailable.
+	var skip map[string]bool
+	if enabled, forceFull := m.ResumePolicy(); enabled && !forceFull {
+		skip = completedMsgIDsFromDir(dlDir)
+	}
+	if _, err := m.precheckNZB(ctx, nzb, skip); err != nil {
+		cancel()
+		m.mu.Lock()
+		delete(m.downloads, gid)
+		m.mu.Unlock()
+		// Keep existing staging/resume on disk for a later attempt.
+		return err
+	}
+
+	m.mu.Lock()
+	if cur := m.downloads[gid]; cur != nil {
+		cur.setPhase(phaseDownloading)
+	}
 	m.mu.Unlock()
 
 	go m.runDownload(dlCtx, gid, dl, nzb)

@@ -346,6 +346,8 @@ type fakeNNTP struct {
 	blocked chan struct{}
 	// bodyAllow, when non-nil, requires one receive per BODY (test-paced).
 	bodyAllow chan struct{}
+	// statAllow, when non-nil, requires one receive per STAT (test-paced).
+	statAllow chan struct{}
 }
 
 func newFakeNNTP(t *testing.T) *fakeNNTP {
@@ -457,6 +459,12 @@ func (f *fakeNNTP) serve(c net.Conn) {
 }
 
 func (f *fakeNNTP) serveStat(w *bufio.Writer, id string) {
+	if f.statAllow != nil {
+		_, ok := <-f.statAllow
+		if !ok {
+			return
+		}
+	}
 	f.statCount.Add(1)
 	f.mu.Lock()
 	a, ok := f.articles[id]
@@ -770,9 +778,71 @@ func TestFetchSegmentAny_FallsBackAcrossPools(t *testing.T) {
 	}
 }
 
+// TestAddNZB_ExposesPrecheckPhase: Downloads can observe phase=precheck while
+// the full STAT gate is still running (before BODY fetch starts).
+func TestAddNZB_ExposesPrecheckPhase(t *testing.T) {
+	p := makePayload(t, 4, 512)
+	srv := newFakeNNTP(t)
+	srv.serveAll(p)
+	srv.statAllow = make(chan struct{})
+	nzbHTTP := nzbServer(t, p)
+	m := New(Config{
+		Servers:    []ServerConfig{srv.cfgWith(1)},
+		StagingDir: t.TempDir(),
+		HTTPClient: nzbHTTP.Client(),
+	})
+
+	errCh := make(chan error, 1)
+	var gid string
+	go func() {
+		var err error
+		gid, err = m.AddNZB(context.Background(), nzbHTTP.URL, "Precheck Visible")
+		errCh <- err
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	var sawPrecheck bool
+	for time.Now().Before(deadline) {
+		for _, d := range m.List() {
+			if d.Phase == phasePrecheck && d.Status == "active" {
+				sawPrecheck = true
+				break
+			}
+		}
+		if sawPrecheck {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !sawPrecheck {
+		t.Fatal("expected List() to show phase=precheck while STAT is gated")
+	}
+
+	// Unblock STAT + BODY so AddNZB can finish.
+	go func() {
+		for {
+			select {
+			case srv.statAllow <- struct{}{}:
+			case <-time.After(2 * time.Second):
+				return
+			}
+		}
+	}()
+	if err := <-errCh; err != nil {
+		t.Fatalf("AddNZB: %v", err)
+	}
+	if gid == "" {
+		t.Fatal("empty gid")
+	}
+	d := waitTerminal(t, m, gid)
+	if d.Status != "complete" {
+		t.Fatalf("status=%q err=%q", d.Status, d.ErrorMessage)
+	}
+}
+
 // TestAddNZB_EveryPool430_IsArticlesUnavailable proves the pre-download STAT
 // gate rejects an NZB whose payload articles are gone on every subscription,
-// before staging is allocated. Mid-download classification of 430 remains
+// before a durable queue row sticks. Mid-download classification of 430 remains
 // covered by TestFetchSegmentAny_ErrorPrecedence.
 func TestAddNZB_EveryPool430_IsArticlesUnavailable(t *testing.T) {
 	p := makePayload(t, 2, 1024)
@@ -791,11 +861,14 @@ func TestAddNZB_EveryPool430_IsArticlesUnavailable(t *testing.T) {
 		t.Fatalf("AddNZB err = %v, want ErrArticlesUnavailable", err)
 	}
 	if gid != "" {
-		t.Fatalf("gid = %q, want empty (no staging allocated)", gid)
+		t.Fatalf("gid = %q, want empty after precheck abort cleanup", gid)
 	}
 	entries, _ := os.ReadDir(staging)
 	if len(entries) != 0 {
 		t.Fatalf("staging should be empty after precheck abort, got %v", entries)
+	}
+	if got := m.List(); len(got) != 0 {
+		t.Fatalf("List()=%d after failed precheck, want 0", len(got))
 	}
 }
 

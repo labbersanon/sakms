@@ -726,6 +726,7 @@ func run() error {
 			SettingsStore: settingsStore,
 			NZB:           nzbManager,
 			GrabsStore:    grabsStore,
+			LibStore:      libStore,
 			UsenetSearch:  nntpSearch,
 		},
 		HTTPClient:   &http.Client{Timeout: outboundTimeout},

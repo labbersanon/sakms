@@ -3153,6 +3153,27 @@ export interface SetSeasonMonitoredRequest {
   monitored: boolean;
 }
 /**
+ * TitleQualityPrefsResponse is GET for one series or movie title's quality
+ * prefs. When Inherited is true, Tiers/MaxResolution are the mode defaults
+ * (so the UI can light the same pills as Settings) and no override row exists.
+ */
+export interface TitleQualityPrefsResponse {
+  tiers: string[];
+  maxResolution: number /* int */;
+  inherited: boolean;
+  upgradeQueued?: number /* int */;
+}
+/**
+ * TitleQualityPrefsRequest is PUT body. Clear=true deletes the override
+ * (back to mode defaults). Otherwise Tiers is required; MaxResolution is
+ * always stored when Clear is false (0 = no cap, same as mode prefs).
+ */
+export interface TitleQualityPrefsRequest {
+  tiers: string[];
+  maxResolution: number /* int */;
+  clear?: boolean;
+}
+/**
  * SeriesNewSeasonDiscoveryResponse / SeriesNewSeasonDiscoveryRequest back
  * GET/PUT /api/settings/series-new-season-discovery — off by default.
  * It governs ONLY entirely-new seasons (a season TMDB reports that has no

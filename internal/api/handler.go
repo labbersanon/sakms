@@ -231,7 +231,20 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// Reason: Requests needs per-episode Grab; MissingEpisodes was store-only.
 	mux.HandleFunc("GET /api/modes/series/library/tmdb/{tmdbId}/missing-episodes", missingEpisodesByTMDBHandler(libStore))
 	mux.HandleFunc("PUT /api/modes/series/library/tmdb/{tmdbId}/seasons", putAllSeasonsMonitoredByTMDBHandler(seasons, grabsStore))
-	mux.HandleFunc("PUT /api/modes/series/library/tmdb/{tmdbId}/seasons/{seasonNumber}/monitored", putSeasonMonitoredByTMDBHandler(seasons, grabsStore))
+		mux.HandleFunc("PUT /api/modes/series/library/tmdb/{tmdbId}/seasons/{seasonNumber}/monitored", putSeasonMonitoredByTMDBHandler(seasons, grabsStore))
+
+	// Claude 2026-09-22: per-title quality prefs (series + movies).
+	// Reason: monitor/track surfaces need the same quality+resolution controls
+	//   as grab pills, persisted for unattended drain.
+	// Troubleshooting: TitleQualityPrefs UI; library_quality_prefs table.
+	// Review if: adult titles join these routes.
+	tq := titleQualityDeps{lib: libStore, settings: settingsStore, grabs: grabsStore}
+	mux.HandleFunc("GET /api/modes/series/library/{seriesID}/quality-prefs", getSeriesQualityPrefsByIDHandler(tq))
+	mux.HandleFunc("PUT /api/modes/series/library/{seriesID}/quality-prefs", putSeriesQualityPrefsByIDHandler(tq))
+	mux.HandleFunc("GET /api/modes/series/library/tmdb/{tmdbId}/quality-prefs", getSeriesQualityPrefsByTMDBHandler(tq))
+	mux.HandleFunc("PUT /api/modes/series/library/tmdb/{tmdbId}/quality-prefs", putSeriesQualityPrefsByTMDBHandler(tq))
+	mux.HandleFunc("GET /api/modes/movies/library/tmdb/{tmdbId}/quality-prefs", getMovieQualityPrefsByTMDBHandler(tq))
+	mux.HandleFunc("PUT /api/modes/movies/library/tmdb/{tmdbId}/quality-prefs", putMovieQualityPrefsByTMDBHandler(tq))
 
 	// Server-side directory browser for the Settings root-folder pickers +
 	// their as-you-type autocomplete — restricted to the mounted roots (see
@@ -538,7 +551,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// Auto-grab is Discover's one-click unattended grab (Stage 2): search +
 	// bitrate-quality-floor scoring, then either grab the top qualifier or
 	// return the ranked manual pick list. Exactly one release per call.
-	mux.HandleFunc("POST /api/modes/{mode}/autograb", autoGrabHandler(httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore, adultNewestReleaseStore))
+	mux.HandleFunc("POST /api/modes/{mode}/autograb", autoGrabHandler(httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore, adultNewestReleaseStore, libStore))
 	// Bulk auto-grab: a bounded, user-approved multi-select exception to the
 	// single route's "one release per call". Cross-mode (each item carries its
 	// own mode, so NOT under /modes/{mode}); items are grabbed SEQUENTIALLY (max

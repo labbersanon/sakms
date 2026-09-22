@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,7 +17,24 @@ import (
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/usenet"
 )
+
+// TestDispatchArticlesUnavailableWrapPreservesSentinel is the regression for
+// RunAutoGrab's "try next ranked NZB" loop: dispatch MUST wrap
+// ErrArticlesUnavailable, never replace it with errors.New. A plain New made
+// errors.Is fail so the first precheck miss aborted the grab and re-queued
+// instead of exhausting alternates.
+func TestDispatchArticlesUnavailableWrapPreservesSentinel(t *testing.T) {
+	wrapped := fmt.Errorf("this release's articles aren't on your subscriptions — pick another: %w", usenet.ErrArticlesUnavailable)
+	if !errors.Is(wrapped, usenet.ErrArticlesUnavailable) {
+		t.Fatalf("wrapped err must match ErrArticlesUnavailable for the alternate loop")
+	}
+	broken := errors.New("this release's articles aren't on your subscriptions — pick another")
+	if errors.Is(broken, usenet.ErrArticlesUnavailable) {
+		t.Fatal("plain errors.New must not match — that was the production bug")
+	}
+}
 
 func fakeProwlarr(t *testing.T, body string) *httptest.Server {
 	t.Helper()

@@ -475,8 +475,14 @@ func dispatchToDownloadClient(ctx context.Context, settingsStore *settings.Store
 			}
 			gid, err := nzb.AddArticleSet(ctx, article, title)
 			if err != nil {
+				// Claude 2026-09-22: wrap ErrArticlesUnavailable — never replace it.
+				// Reason: RunAutoGrab's alternate loop uses errors.Is on this sentinel;
+				//   a plain errors.New broke the chain so the first dead NZB aborted
+				//   the whole grab and parked, instead of trying ranked runners-up.
+				// Troubleshooting: precheck abort then park with no "trying next" log.
+				// Review if: HTTP clients need a stable message without the wrap suffix.
 				if errors.Is(err, usenet.ErrArticlesUnavailable) {
-					return "", "", http.StatusConflict, errors.New("this release's articles aren't on your subscriptions — pick another")
+					return "", "", http.StatusConflict, fmt.Errorf("this release's articles aren't on your subscriptions — pick another: %w", usenet.ErrArticlesUnavailable)
 				}
 				return "", "", http.StatusBadGateway, err
 			}
@@ -491,8 +497,9 @@ func dispatchToDownloadClient(ctx context.Context, settingsStore *settings.Store
 			//   can precheck alternate NZBs — same role download fallbacks used to own.
 			// Troubleshooting: Grab returns pending_retry JSON, not 409, on dead NZB.
 			// Review if: torrent path ever needs a parallel "source unavailable" park.
+			// Claude 2026-09-22: MUST wrap the sentinel (see AddArticleSet branch above).
 			if errors.Is(err, usenet.ErrArticlesUnavailable) {
-				return "", "", http.StatusConflict, errors.New("this release's articles aren't on your subscriptions — pick another")
+				return "", "", http.StatusConflict, fmt.Errorf("this release's articles aren't on your subscriptions — pick another: %w", usenet.ErrArticlesUnavailable)
 			}
 			return "", "", http.StatusBadGateway, err
 		}

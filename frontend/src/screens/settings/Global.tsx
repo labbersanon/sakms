@@ -868,17 +868,23 @@ const UsenetBlockedGroupsSection: Component = () => {
 //   and Discover availability (empty list = English-assumed unmarked titles).
 // Troubleshooting: German/French NZBs still grab → check rows + Save.
 // Review if: per-title language overrides are added.
+// Claude 2026-09-22: rows are <select> dropdowns from the known-tag catalog.
+// Reason: free-text invited typos that never match scene tokens.
+// Troubleshooting: empty options → GET /api/settings/grab-preferred-languages.
+// Review if: catalog gains aliases beyond release.KnownLanguageTags.
 const GrabPreferredLanguagesSection: Component = () => {
   const [rows, setRows] = createSignal<string[]>([""]);
+  const [options, setOptions] = createSignal<string[]>([]);
   const [dirty, setDirty] = createSignal(false);
   const [loadError, setLoadError] = createSignal<string | null>(null);
   const status = useSaveStatus();
 
   createResource(async () => {
     try {
-      const languages = await fetchGrabPreferredLanguages();
-      setRows(languages.length > 0 ? languages : [""]);
-      return languages;
+      const data = await fetchGrabPreferredLanguages();
+      setOptions(data.options);
+      setRows(data.languages.length > 0 ? data.languages : [""]);
+      return data;
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : String(e));
       throw e;
@@ -913,14 +919,28 @@ const GrabPreferredLanguagesSection: Component = () => {
     save,
   });
 
+  const optionsForRow = (index: number) => {
+    const selectedElsewhere = new Set(
+      rows()
+        .map((r, i) => (i === index ? "" : r.trim()))
+        .filter(Boolean),
+    );
+    const current = rows()[index]?.trim() ?? "";
+    return options().filter(
+      (opt) => opt === current || !selectedElsewhere.has(opt),
+    );
+  };
+
   return (
     <Card title="Preferred grab languages — global">
       <Muted class="mb-3">
         Autograb and Discover availability only keep releases that are unmarked
         (no language tag — treated as English) or that include at least one of
-        these language tokens in the title. Non-matching language tags are
-        hard-excluded. Empty list keeps English-assumed behaviour. Examples:
-        german, french, english. MULTI is never treated as a language tag.
+        these languages in the title. Abbreviations are implied by the
+        selection (english also matches ENG; spanish also matches LATINO /
+        CASTELLANO). Non-matching languages are hard-excluded. Empty list
+        keeps English-assumed behaviour. MULTI is never treated as a language
+        tag.
       </Muted>
       <Show when={loadError()}>
         <span class="mb-2 block text-sm text-danger">{loadError()}</span>
@@ -929,19 +949,22 @@ const GrabPreferredLanguagesSection: Component = () => {
         <For each={rows()}>
           {(row, i) => (
             <div class="flex items-center gap-2">
-              <input
-                type="text"
+              <select
                 class={`${inputClass} !w-56 font-mono text-sm`}
                 aria-label={`Preferred language ${i() + 1}`}
-                placeholder="e.g. german"
                 value={row}
-                onInput={(e) => {
+                onChange={(e) => {
                   const next = rows().slice();
                   next[i()] = e.currentTarget.value;
                   setRows(next);
                   markDirty();
                 }}
-              />
+              >
+                <option value="">Select language…</option>
+                <For each={optionsForRow(i())}>
+                  {(opt) => <option value={opt}>{opt}</option>}
+                </For>
+              </select>
               <Button
                 variant="secondary"
                 disabled={rows().length <= 1 && !row.trim()}
@@ -960,6 +983,10 @@ const GrabPreferredLanguagesSection: Component = () => {
       <div class="mb-3">
         <Button
           variant="secondary"
+          disabled={
+            options().length > 0 &&
+            rows().filter((r) => r.trim()).length >= options().length
+          }
           onClick={() => {
             setRows([...rows(), ""]);
             markDirty();

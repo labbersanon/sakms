@@ -23,6 +23,9 @@ const GrabPreferredLanguagesKey = "grab_preferred_languages"
 
 type grabPreferredLanguagesBody struct {
 	Languages []string `json:"languages"`
+	// Options is the canonical dropdown catalog (GET only) — abbreviations
+	// are implied by selection and are not listed separately.
+	Options []string `json:"options,omitempty"`
 }
 
 func getGrabPreferredLanguagesHandler(settingsStore *settings.Store) http.HandlerFunc {
@@ -32,7 +35,10 @@ func getGrabPreferredLanguagesHandler(settingsStore *settings.Store) http.Handle
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, grabPreferredLanguagesBody{Languages: langs})
+		writeJSON(w, grabPreferredLanguagesBody{
+			Languages: langs,
+			Options:   release.LanguageOptionIDs(),
+		})
 	}
 }
 
@@ -43,7 +49,11 @@ func putGrabPreferredLanguagesHandler(settingsStore *settings.Store) http.Handle
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		cleaned := normalizePreferredLanguageList(req.Languages)
+		cleaned, err := normalizePreferredLanguageList(req.Languages)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		// Store even when empty — empty means English-assumed unmarked-only.
 		if err := settingsStore.Set(r.Context(), GrabPreferredLanguagesKey, strings.Join(cleaned, "\n")); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -64,25 +74,57 @@ func loadPreferredLanguages(ctx context.Context, store *settings.Store) ([]strin
 	if err != nil {
 		return nil, err
 	}
-	return normalizePreferredLanguageList(usenetsearch.ParseGroups(raw)), nil
+	cleaned, err := normalizePreferredLanguageList(usenetsearch.ParseGroups(raw))
+	if err != nil {
+		return filterKnownOnly(usenetsearch.ParseGroups(raw)), nil
+	}
+	return cleaned, nil
 }
 
-func normalizePreferredLanguageList(in []string) []string {
+func filterKnownOnly(in []string) []string {
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(in))
+	for _, g := range in {
+		id := release.CanonicalLanguageID(g)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+// normalizePreferredLanguageList canonicalizes to group IDs (eng → english)
+// and rejects unknown tokens on PUT. Load path uses filterKnownOnly to drop
+// garbage without failing the whole list.
+func normalizePreferredLanguageList(in []string) ([]string, error) {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(in))
+	var unknown []string
 	for _, g := range in {
 		g = strings.TrimSpace(g)
 		if g == "" {
 			continue
 		}
-		key := strings.ToLower(g)
-		if _, ok := seen[key]; ok {
+		id := release.CanonicalLanguageID(g)
+		if id == "" {
+			unknown = append(unknown, g)
 			continue
 		}
-		seen[key] = struct{}{}
-		out = append(out, strings.ToLower(g))
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
 	}
-	return out
+	if len(unknown) > 0 {
+		return nil, errors.New("unknown language: " + unknown[0])
+	}
+	return out, nil
 }
 
 func filterPreferredLanguages(releases []prowlarr.Release, preferred []string) []prowlarr.Release {

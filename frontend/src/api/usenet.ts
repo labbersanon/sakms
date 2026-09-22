@@ -106,10 +106,18 @@ export function putUsenetBlockedReleaseGroups(groups: string[]): Promise<void> {
 // Reason: hard-exclude non-matching language tags on autograb + Discover.
 // Troubleshooting: GET/PUT /api/settings/grab-preferred-languages.
 // Review if: per-series language overrides land.
-export function fetchGrabPreferredLanguages(): Promise<string[]> {
-  return api<{ languages: string[] }>(
+export type GrabPreferredLanguages = {
+  languages: string[];
+  options: string[];
+};
+
+export function fetchGrabPreferredLanguages(): Promise<GrabPreferredLanguages> {
+  return api<GrabPreferredLanguages>(
     "/api/settings/grab-preferred-languages",
-  ).then((r) => r.languages ?? []);
+  ).then((r) => ({
+    languages: r.languages ?? [],
+    options: r.options ?? [],
+  }));
 }
 
 export function putGrabPreferredLanguages(languages: string[]): Promise<void> {

@@ -286,20 +286,25 @@ func forgottenUsenetGrab(t *testing.T, grabsStore *grabs.Store, staging, gid, nz
 	return g
 }
 
-// TestUsenetRelaunchSlots_CountsActiveOnly ensures terminal downloads free slots.
-func TestUsenetRelaunchSlots_CountsActiveOnly(t *testing.T) {
+// TestUsenetRelaunchSlots_CountsPipelineOnly: relaunch capacity tracks
+// precheck|waiting, not BODY downloading (precheck-ahead).
+func TestUsenetRelaunchSlots_CountsPipelineOnly(t *testing.T) {
 	resetUsenetReconcileDrainForTest()
 	nzb := usenet.New(usenet.Config{StagingDir: t.TempDir(), MaxConcurrentDownloads: 2})
 	if got := usenetRelaunchSlots(nzb); got != 2 {
 		t.Fatalf("empty manager slots = %d, want 2", got)
 	}
-	nzb.InjectDownloadForTest("nzb-aaaaaaaaaaaaaaaa")
-	if got := usenetRelaunchSlots(nzb); got != 1 {
-		t.Fatalf("one active slots = %d, want 1", got)
+	nzb.InjectDownloadForTest("nzb-aaaaaaaaaaaaaaaa") // downloading — does not fill pipeline
+	if got := usenetRelaunchSlots(nzb); got != 2 {
+		t.Fatalf("one downloading slots = %d, want 2 (pipeline free)", got)
 	}
-	nzb.InjectDownloadForTest("nzb-bbbbbbbbbbbbbbbb")
+	nzb.InjectDownloadPhaseForTest("nzb-bbbbbbbbbbbbbbbb", "waiting")
+	if got := usenetRelaunchSlots(nzb); got != 1 {
+		t.Fatalf("one waiting slots = %d, want 1", got)
+	}
+	nzb.InjectDownloadPhaseForTest("nzb-cccccccccccccccc", "precheck")
 	if got := usenetRelaunchSlots(nzb); got != 0 {
-		t.Fatalf("two active slots = %d, want 0", got)
+		t.Fatalf("waiting+precheck slots = %d, want 0", got)
 	}
 }
 
@@ -333,7 +338,8 @@ func TestReconcileInFlightDownloads_ThrottlesUsenetRelaunches(t *testing.T) {
 }
 
 // TestReconcileInFlightDownloads_DrainResumesWhenSlotFrees ensures deferred
-// relaunches are not stuck until the 24h retry tick.
+// relaunches are not stuck until the 24h retry tick. Pipeline full (Waiting)
+// blocks further relaunches; freeing it lets the drain proceed.
 func TestReconcileInFlightDownloads_DrainResumesWhenSlotFrees(t *testing.T) {
 	resetUsenetReconcileDrainForTest()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -355,17 +361,17 @@ func TestReconcileInFlightDownloads_DrainResumesWhenSlotFrees(t *testing.T) {
 		forgottenUsenetGrab(t, grabsStore, staging, gid, srv.URL)
 	}
 
-	// Occupy the only slot so the first pass defers everything.
-	nzb.InjectDownloadForTest("nzb-occupiedoccupied")
+	// Fill the precheck pipeline so relaunches defer (BODY can still be free).
+	nzb.InjectDownloadPhaseForTest("nzb-occupiedoccupied", "waiting")
 
 	ReconcileInFlightDownloads(ctx, DownloadReconcileDeps{
 		SettingsStore: settingsStore, GrabsStore: grabsStore, NZB: nzb,
 	})
 	if got := len(nzb.List()); got != 1 {
-		t.Fatalf("after throttled pass List len = %d, want 1 (only injected)", got)
+		t.Fatalf("after throttled pass List len = %d, want 1 (only injected Waiting)", got)
 	}
 
-	// Free the slot; drain should relaunch one deferred grab.
+	// Free the pipeline slot; drain should relaunch one deferred grab.
 	if err := nzb.Cancel("nzb-occupiedoccupied"); err != nil {
 		t.Fatal(err)
 	}

@@ -1217,6 +1217,12 @@ func (m *Manager) SetForceFullForTest(v bool) {
 }
 
 func (m *Manager) InjectDownloadForTest(gid string) {
+	m.InjectDownloadPhaseForTest(gid, phaseDownloading)
+}
+
+// InjectDownloadPhaseForTest registers a live download with an explicit phase
+// (precheck|waiting|downloading) for API slot-accounting tests.
+func (m *Manager) InjectDownloadPhaseForTest(gid, phase string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.downloads == nil {
@@ -1229,7 +1235,7 @@ func (m *Manager) InjectDownloadForTest(gid string) {
 		gid:    gid,
 		name:   "test",
 		status: "active",
-		phase:  phaseDownloading,
+		phase:  phase,
 		cancel: func() {},
 		gate:   newPauseGate(),
 	}

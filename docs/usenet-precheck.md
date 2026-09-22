@@ -9,6 +9,8 @@ Reason: assembleFile fail-closes on any hole; a 48-segment sample could miss a s
 Reason: precheck owns source selection; download-time alternate caps retired. -->
 **Candidate retries:** every qualified runner-up in the graded list per `RunAutoGrab` / batch cycle, then park / NoMatch.
 
+**Precheck-ahead pipeline:** while Requests still has work, drain keeps up to `MaxConcurrentDownloads` jobs in `phase=precheck|waiting` **in parallel with** BODY downloads (also capped at `MaxConcurrentDownloads`). So a vetted NZB can sit Waiting and start the moment a download slot opens.
+
 ## Why
 
 Dead NZBs were consuming the single concurrent Usenet slot for ~10 minutes before failing mid-download (430 / unrepairable PAR2). SABnzbd-style “check before download” rejects those NZBs via NNTP `STAT` before BODY. A sample of 48 segments was not enough: one missing payload article still fails assembly.
@@ -26,6 +28,7 @@ Precheck is also the **source-selection** gate: when one NZB fails STAT (or late
 7. On STAT ok: if a BODY slot is free → `downloading`; if `MaxConcurrentDownloads` is full → `waiting`, then `downloading` when a slot opens.
 8. **BODY trust probe:** if STAT says 430 but BODY works, mark STAT unreliable for the process and proceed (skip the gate for the rest of the process lifetime).
 9. Zero NNTP pools → no-op (keeps unit fixtures green).
+10. **Drain** gates on **pipeline** free slots (`precheck|waiting < MaxConcurrentDownloads`), not BODY-only — so the next Request can enter Precheck while current NZBs download.
 
 <!-- Claude 2026-09-22: previous hybrid sample path (do not restore without revisiting assembleFile holes).
 2. Sample up to **48** payload segments (skip `.par2` / `.nfo` / images when identifiable).

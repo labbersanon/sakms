@@ -12,20 +12,17 @@
 //
 // Design decisions recorded rather than inferred:
 //
-//  1. One item at a time (locked decision #2). After each dispatch the slot
-//     census is recomputed before the next candidate, so the count cannot
-//     drift between a dispatch and the next free-slot check.
+//  1. Fill the precheck pipeline each tick (up to MaxConcurrentDownloads of
+//     phase=precheck|waiting) while Requests still has work. After each
+//     dispatch the pipeline census is recomputed before the next candidate.
 //
-//  2. Slot accounting reads grabs table rows (queued+downloading by protocol),
-//     never the in-memory usenet engine queue. The engine queues internally and
-//     accepts jobs beyond the configured concurrency, making its own queue
-//     length useless as a census. The grabs table is the restart-surviving
-//     source of truth (Risk 5 in the plan: over-count on a slow import flip is
-//     the safe direction — the drain waits rather than double-dispatches).
+//  2. Slot accounting: BODY slots = engine phase=downloading; pipeline slots =
+//     phase=precheck|waiting. Both caps = MaxConcurrentDownloads. Grabs-table
+//     fallback remains when the engine pointer is nil (unit tests).
 //
-//  3. Usenet-first slot semantics: if Usenet slots are full, the drain WAITS.
-//     It does not escalate to torrent merely because the Usenet engine is busy.
-//     Protocol choice is about where the release lives, not queue length.
+//  3. Usenet-first pipeline semantics: if the precheck pipeline is full, the
+//     drain WAITS. It does not escalate to torrent merely because BODY downloads
+//     are busy — Precheck is supposed to run alongside them.
 //
 //  4. Catalog sync is NOT here. The drain is library-only: MonitoredSeasons +
 //     MissingEpisodes + eligibleEpisodes. Zero TMDB calls per candidate beyond
@@ -270,14 +267,19 @@ func runAutoGrabDrainCycle(
 	drainAlternateReleaseRetries(ctx, deps, build, usenetBudget, excluded, now)
 
 	for {
-		// Gate 3: slot census — recomputed before every potential dispatch.
-		usenetFree, slotErr := freeUsenetSlots(ctx, deps.GrabsStore, deps.SettingsStore)
+		// Claude 2026-09-22: gate on pipeline slots, not BODY-only.
+		// Reason: Precheck must run while downloads hold BODY so a Waiting NZB
+		//   is ready when a slot opens (capacity = MaxConcurrentDownloads).
+		// Troubleshooting: drain returned early with freeUsenetSlots=0 while
+		//   Requests still had work — use freeUsenetPipelineSlots.
+		// Review if: drain should also require pending_retry/missing>0 explicitly.
+		pipelineFree, slotErr := freeUsenetPipelineSlots(ctx, deps.SettingsStore, deps.NZB)
 		if slotErr != nil {
-			log.Printf("autograb drain: counting in-flight slots: %v", slotErr)
+			log.Printf("autograb drain: counting pipeline slots: %v", slotErr)
 			return
 		}
-		if usenetFree <= 0 {
-			// Usenet slots full — wait; do not escalate to torrent (plan Risk 3/doc #3).
+		if pipelineFree <= 0 {
+			// Precheck/Waiting pipeline full — wait; do not escalate to torrent.
 			return
 		}
 
@@ -333,9 +335,17 @@ func runAutoGrabDrainCycle(
 		case out.AlreadyGrabbing:
 			log.Printf("autograb drain: %s s%02de%02d — already being downloaded", c.series.Title, c.episode.SeasonNumber, c.episode.EpisodeNumber)
 		case out.Grabbed:
-			log.Printf("autograb drain: %s s%02de%02d dispatched", c.series.Title, c.episode.SeasonNumber, c.episode.EpisodeNumber)
-			// A dispatch consumed a slot — stop this tick and wait for next.
-			return
+			log.Printf("autograb drain: %s s%02de%02d dispatched (precheck-ahead pipeline)", c.series.Title, c.episode.SeasonNumber, c.episode.EpisodeNumber)
+			// Claude 2026-09-22: keep filling pipeline this tick (was: return after one).
+			// Reason: one Grabbed may be Waiting while BODY is busy; more Requests
+			//   should still enter Precheck up to MaxConcurrentDownloads.
+			// Troubleshooting: only one Precheck while many pending_retry rows.
+			// Review if: indexer quota needs a per-tick dispatch cap again.
+			seriesList = drainWithoutSeries(seriesList, c.series.ID)
+			if len(seriesList) == 0 {
+				return
+			}
+			continue
 		default:
 			// NoMatch: parked for re-search. No slot consumed; continue to next candidate.
 			log.Printf("autograb drain: %s s%02de%02d — no qualifying candidate, parked", c.series.Title, c.episode.SeasonNumber, c.episode.EpisodeNumber)
@@ -343,7 +353,6 @@ func runAutoGrabDrainCycle(
 
 		// On a miss (or error), remove this candidate's series from consideration
 		// for this tick so the next iteration picks from a different series.
-		// activeSeriesGrabKeys is rebuilt at the top of each iteration.
 		seriesList = drainWithoutSeries(seriesList, c.series.ID)
 		if len(seriesList) == 0 {
 			return
@@ -378,8 +387,8 @@ func drainEscalatedDueRetries(
 		if excluded[excludes.Key(string(g.Mode), g.TMDBID, g.Title)] {
 			continue
 		}
-		// Slot check before each escalated dispatch.
-		usenetFree, slotErr := freeUsenetSlots(ctx, deps.GrabsStore, deps.SettingsStore)
+		// Slot check before each escalated dispatch (BODY — torrent path).
+		usenetFree, slotErr := freeUsenetSlots(ctx, deps.GrabsStore, deps.SettingsStore, deps.NZB)
 		if slotErr != nil || usenetFree <= 0 {
 			return // wait for next tick
 		}
@@ -427,12 +436,12 @@ func drainEscalatedDueRetries(
 //   - worklist-excluded: skip (unchanged)
 //   - slots full or budget exhausted: return without parking (row re-tried next tick)
 //   - RunAutoGrab error or AlreadyGrabbing: reparkFailedRetry (days ladder, keys cleared)
-//   - Grabbed: return (slot consumed)
+//   - Grabbed: continue filling precheck pipeline this tick
 //   - NoMatch: RunAutoGrab already parked via parkPendingRetry → days ladder, keys cleared
 //   - Gated: return
 //
-// "Stops after one dispatch" matches drainEscalatedDueRetries' semantics: one
-// slot was consumed and a fresh slot census would be needed.
+// Claude 2026-09-22: no longer "stops after one dispatch" — pipeline capacity
+// is MaxConcurrentDownloads of precheck|waiting alongside BODY downloads.
 //
 // Claude 2026-09-17: all modes, Usenet-only phases, slot- and budget-gated.
 // Reason: movie and Adult scene failures use the same content-failure path as
@@ -458,13 +467,16 @@ func drainAlternateReleaseRetries(
 		if excluded[excludes.Key(string(g.Mode), g.TMDBID, g.Title)] {
 			continue
 		}
-		// Slot gate — honour freeUsenetSlots; do not escalate to torrent.
-		usenetFree, slotErr := freeUsenetSlots(ctx, deps.GrabsStore, deps.SettingsStore)
+		// Claude 2026-09-22: pipeline gate — Precheck while BODY downloads are busy.
+		// Reason: alternate-release retries must STAT ahead so Waiting is ready.
+		// Troubleshooting: drainAlternateReleaseRetries idle with pending tried keys.
+		// Review if: alternate retries should compete with missing-episode pipeline.
+		pipelineFree, slotErr := freeUsenetPipelineSlots(ctx, deps.SettingsStore, deps.NZB)
 		if slotErr != nil {
 			log.Printf("autograb drain: counting slots for alternate retry: %v", slotErr)
 			return
 		}
-		if usenetFree <= 0 {
+		if pipelineFree <= 0 {
 			return // wait for next tick
 		}
 		// Budget gate.
@@ -508,8 +520,9 @@ func drainAlternateReleaseRetries(
 			reparkFailedRetry(ctx, deps.AutoGrabDeps, g, fmt.Errorf("already downloading by %s", duplicate))
 			return
 		case out.Grabbed:
-			log.Printf("autograb drain: alternate retry grab %d (%s) dispatched", g.ID, g.Title)
-			return // slot consumed — stop this tick
+			log.Printf("autograb drain: alternate retry grab %d (%s) dispatched (precheck-ahead)", g.ID, g.Title)
+			// Claude 2026-09-22: keep filling pipeline (was: return after one).
+			continue
 		default:
 			// NoMatch: RunAutoGrab already parked via parkPendingRetry → days ladder, keys cleared.
 			log.Printf("autograb drain: alternate retry grab %d (%s) — no qualifying alternate candidate, parked on days ladder", g.ID, g.Title)
@@ -517,14 +530,54 @@ func drainAlternateReleaseRetries(
 	}
 }
 
-// freeUsenetSlots counts how many Usenet download slots are available. Slot
-// accounting reads the grabs table (queued+downloading rows with
-// protocol='usenet'), not the in-memory usenet engine queue. Returns free
-// Usenet slot count and any store error.
-func freeUsenetSlots(ctx context.Context, grabsStore *grabs.Store, settingsStore *settings.Store) (int, error) {
+// Claude 2026-09-22: slot model — BODY vs precheck pipeline.
+// Reason: operator wants Precheck ahead of open BODY slots so a vetted NZB is
+//   Waiting when a download finishes. freeUsenetSlots (BODY) and
+//   freeUsenetPipelineSlots (precheck|waiting) are both capped at
+//   MaxConcurrentDownloads → up to 2× NZBs in the engine (N downloading + N ready).
+// Troubleshooting: drain idle while Downloads shows Downloading and Requests
+//   has pending_retry — check freeUsenetPipelineSlots, not only BODY.
+// Review if: pipeline depth becomes a separate settings knob.
+// Related: acquireDownloadSlot Waiting; precheckSem; drainAlternateReleaseRetries.
+
+// usenetEngineOccupancy counts active engine rows by phase.
+// body = phase downloading (holds MaxConcurrentDownloads BODY semaphore).
+// pipeline = phase precheck|waiting (holds precheck-ahead capacity).
+// repairing/unpacking released the BODY slot already — not counted.
+func usenetEngineOccupancy(nzb *usenet.Manager) (body, pipeline int) {
+	if nzb == nil {
+		return 0, 0
+	}
+	for _, d := range nzb.List() {
+		if d.Status != "active" {
+			continue
+		}
+		switch d.Phase {
+		case "downloading":
+			body++
+		case "precheck", "waiting":
+			pipeline++
+		}
+	}
+	return body, pipeline
+}
+
+// freeUsenetSlots counts how many BODY download slots are available.
+// Prefer the live engine (phase=downloading) when nzb != nil so Waiting/Precheck
+// rows do not look like they consume BODY capacity. Falls back to grabs-table
+// queued+downloading counts when the engine is unavailable (tests).
+func freeUsenetSlots(ctx context.Context, grabsStore *grabs.Store, settingsStore *settings.Store, nzb *usenet.Manager) (int, error) {
 	maxUsenet, err := getSettingInt(ctx, settingsStore, UsenetMaxConcurrentDownloadsKey, usenet.DefaultMaxConcurrentDownloads)
 	if err != nil {
 		return 0, err
+	}
+	if nzb != nil {
+		body, _ := usenetEngineOccupancy(nzb)
+		free := maxUsenet - body
+		if free < 0 {
+			free = 0
+		}
+		return free, nil
 	}
 	inFlight := 0
 	for _, m := range usenetRetryModes {
@@ -539,6 +592,22 @@ func freeUsenetSlots(ctx context.Context, grabsStore *grabs.Store, settingsStore
 		}
 	}
 	free := maxUsenet - inFlight
+	if free < 0 {
+		free = 0
+	}
+	return free, nil
+}
+
+// freeUsenetPipelineSlots counts how many Precheck/Waiting pipeline slots are
+// free. Drain uses this (not BODY free) so it can STAT the next request while
+// downloads hold every BODY slot.
+func freeUsenetPipelineSlots(ctx context.Context, settingsStore *settings.Store, nzb *usenet.Manager) (int, error) {
+	maxUsenet, err := getSettingInt(ctx, settingsStore, UsenetMaxConcurrentDownloadsKey, usenet.DefaultMaxConcurrentDownloads)
+	if err != nil {
+		return 0, err
+	}
+	_, pipeline := usenetEngineOccupancy(nzb)
+	free := maxUsenet - pipeline
 	if free < 0 {
 		free = 0
 	}

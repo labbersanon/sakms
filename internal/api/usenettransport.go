@@ -99,7 +99,7 @@ func resumeDueTransportRetries(ctx context.Context, deps AutoGrabDeps, engine us
 			continue
 		}
 
-		free, slotErr := freeUsenetSlots(ctx, deps.GrabsStore, deps.SettingsStore)
+		free, slotErr := freeUsenetSlots(ctx, deps.GrabsStore, deps.SettingsStore, deps.NZB)
 		if slotErr != nil {
 			log.Printf("usenet transport: counting in-flight slots: %v", slotErr)
 			return

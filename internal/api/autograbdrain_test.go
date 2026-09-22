@@ -132,9 +132,8 @@ func TestTwoPhaseUsenetMissSearchesTorrent(t *testing.T) {
 	}
 }
 
-// TestSlotGateBlocksDispatchWhenFull verifies that freeUsenetSlots returns 0
-// when grabs rows fill the configured concurrency, and that the drain cycle
-// exits without dispatching.
+// TestSlotGateBlocksDispatchWhenFull verifies grabs-table fallback when nzb=nil,
+// and engine BODY occupancy when nzb is provided.
 func TestSlotGateBlocksDispatchWhenFull(t *testing.T) {
 	ctx := context.Background()
 	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
@@ -144,7 +143,7 @@ func TestSlotGateBlocksDispatchWhenFull(t *testing.T) {
 		t.Fatalf("setting max concurrent downloads: %v", err)
 	}
 
-	// Fill both slots with in-flight Usenet grabs.
+	// Fill both slots with in-flight Usenet grabs (grabs-table fallback, nzb=nil).
 	for i := range 2 {
 		g, err := grabsStore.Create(ctx, grabs.Grab{
 			Mode: mode.Series, Title: "Slot Filler", TMDBID: 900 + i,
@@ -164,7 +163,7 @@ func TestSlotGateBlocksDispatchWhenFull(t *testing.T) {
 	}
 
 	deps := AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore}
-	free, err := freeUsenetSlots(ctx, grabsStore, settingsStore)
+	free, err := freeUsenetSlots(ctx, grabsStore, settingsStore, nil)
 	if err != nil {
 		t.Fatalf("freeUsenetSlots: %v", err)
 	}
@@ -177,12 +176,47 @@ func TestSlotGateBlocksDispatchWhenFull(t *testing.T) {
 	if err := grabsStore.UpdateStatus(ctx, list[0].ID, grabs.Completed); err != nil {
 		t.Fatalf("completing grab: %v", err)
 	}
-	free, err = freeUsenetSlots(ctx, deps.GrabsStore, deps.SettingsStore)
+	free, err = freeUsenetSlots(ctx, deps.GrabsStore, deps.SettingsStore, nil)
 	if err != nil {
 		t.Fatalf("freeUsenetSlots after completion: %v", err)
 	}
 	if free != 1 {
 		t.Errorf("expected 1 free slot after one completion, got %d", free)
+	}
+}
+
+// TestPipelineSlotsAllowPrecheckWhileBodyFull: BODY can be saturated while
+// pipeline still has room for Precheck/Waiting (precheck-ahead).
+func TestPipelineSlotsAllowPrecheckWhileBodyFull(t *testing.T) {
+	ctx := context.Background()
+	_, _, settingsStore, _, _, _, _, _, _, _ := testStores(t)
+	if err := settingsStore.Set(ctx, UsenetMaxConcurrentDownloadsKey, "1"); err != nil {
+		t.Fatalf("set max: %v", err)
+	}
+	nzb := usenet.New(usenet.Config{StagingDir: t.TempDir(), MaxConcurrentDownloads: 1})
+	nzb.InjectDownloadForTest("nzb-bodyfull0000001") // downloading
+
+	bodyFree, err := freeUsenetSlots(ctx, nil, settingsStore, nzb)
+	if err != nil {
+		t.Fatalf("freeUsenetSlots: %v", err)
+	}
+	if bodyFree != 0 {
+		t.Errorf("BODY free = %d, want 0", bodyFree)
+	}
+	pipeFree, err := freeUsenetPipelineSlots(ctx, settingsStore, nzb)
+	if err != nil {
+		t.Fatalf("freeUsenetPipelineSlots: %v", err)
+	}
+	if pipeFree != 1 {
+		t.Errorf("pipeline free = %d, want 1 (precheck-ahead while BODY busy)", pipeFree)
+	}
+	nzb.InjectDownloadPhaseForTest("nzb-waiting000000001", "waiting")
+	pipeFree, err = freeUsenetPipelineSlots(ctx, settingsStore, nzb)
+	if err != nil {
+		t.Fatalf("freeUsenetPipelineSlots: %v", err)
+	}
+	if pipeFree != 0 {
+		t.Errorf("pipeline free after Waiting = %d, want 0", pipeFree)
 	}
 }
 

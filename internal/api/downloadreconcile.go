@@ -66,22 +66,14 @@ var usenetReconcileDrainRunning atomic.Bool
 var usenetReconcileDrainInterval = 15 * time.Second
 
 // usenetRelaunchSlots is how many RelaunchNZB calls reconcile may start now:
-// the cap minus downloads that still hold a fetch slot. Terminal downloads
-// released theirs already, so they do not block a relaunch.
+// pipeline capacity (precheck|waiting), not BODY — relaunch can Wait ahead.
 func usenetRelaunchSlots(nzb *usenet.Manager) int {
 	if nzb == nil {
 		return 0
 	}
-	active := 0
-	for _, d := range nzb.List() {
-		switch d.Status {
-		case "complete", "error", "paused", "removed":
-			// terminal — the fetch slot is already released
-		default:
-			active++
-		}
-	}
-	slots := nzb.MaxConcurrentDownloads() - active
+	max := nzb.MaxConcurrentDownloads()
+	_, pipeline := usenetEngineOccupancy(nzb)
+	slots := max - pipeline
 	if slots < 0 {
 		return 0
 	}

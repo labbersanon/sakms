@@ -115,6 +115,7 @@ const TERMINAL_STATUSES = new Set([
 
 export function showsCountdown(d: EtaInput): boolean {
   if (TERMINAL_STATUSES.has(d.status)) return false;
+  if (d.phase === "precheck") return false;
   return (
     d.status === "active" ||
     d.phase === "downloading" ||

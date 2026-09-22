@@ -41,8 +41,10 @@ import {
 import {
   fetchUsenetBlockedReleaseGroups,
   fetchUsenetOffDataStaging,
+  fetchGrabPreferredLanguages,
   putUsenetBlockedReleaseGroups,
   putUsenetOffDataStaging,
+  putGrabPreferredLanguages,
 } from "../../api/usenet";
 import { ApiError } from "../../api/client";
 import { FolderPicker } from "../../components/FolderPicker";
@@ -861,6 +863,127 @@ const UsenetBlockedGroupsSection: Component = () => {
   );
 };
 
+// Claude 2026-09-22: Global preferred grab languages — multi-row include.
+// Reason: operator must hard-exclude non-matching language tags on autograb
+//   and Discover availability (empty list = English-assumed unmarked titles).
+// Troubleshooting: German/French NZBs still grab → check rows + Save.
+// Review if: per-title language overrides are added.
+const GrabPreferredLanguagesSection: Component = () => {
+  const [rows, setRows] = createSignal<string[]>([""]);
+  const [dirty, setDirty] = createSignal(false);
+  const [loadError, setLoadError] = createSignal<string | null>(null);
+  const status = useSaveStatus();
+
+  createResource(async () => {
+    try {
+      const languages = await fetchGrabPreferredLanguages();
+      setRows(languages.length > 0 ? languages : [""]);
+      return languages;
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : String(e));
+      throw e;
+    }
+  });
+
+  const markDirty = () => {
+    setDirty(true);
+    status.set("");
+  };
+
+  const save = async () => {
+    try {
+      const languages = rows()
+        .map((r) => r.trim())
+        .filter(Boolean);
+      await putGrabPreferredLanguages(languages);
+      setRows(languages.length > 0 ? languages : [""]);
+      setDirty(false);
+      status.set("✓ saved");
+    } catch (e) {
+      status.failed(e);
+      throw e;
+    }
+  };
+
+  const batched = useSectionSaveItem({
+    id: "grab-preferred-languages",
+    label: "preferred grab languages",
+    dirty,
+    valid: () => true,
+    save,
+  });
+
+  return (
+    <Card title="Preferred grab languages — global">
+      <Muted class="mb-3">
+        Autograb and Discover availability only keep releases that are unmarked
+        (no language tag — treated as English) or that include at least one of
+        these language tokens in the title. Non-matching language tags are
+        hard-excluded. Empty list keeps English-assumed behaviour. Examples:
+        german, french, english. MULTI is never treated as a language tag.
+      </Muted>
+      <Show when={loadError()}>
+        <span class="mb-2 block text-sm text-danger">{loadError()}</span>
+      </Show>
+      <div class="mb-3 space-y-2">
+        <For each={rows()}>
+          {(row, i) => (
+            <div class="flex items-center gap-2">
+              <input
+                type="text"
+                class={`${inputClass} !w-56 font-mono text-sm`}
+                aria-label={`Preferred language ${i() + 1}`}
+                placeholder="e.g. german"
+                value={row}
+                onInput={(e) => {
+                  const next = rows().slice();
+                  next[i()] = e.currentTarget.value;
+                  setRows(next);
+                  markDirty();
+                }}
+              />
+              <Button
+                variant="secondary"
+                disabled={rows().length <= 1 && !row.trim()}
+                onClick={() => {
+                  const next = rows().filter((_, idx) => idx !== i());
+                  setRows(next.length > 0 ? next : [""]);
+                  markDirty();
+                }}
+              >
+                Remove
+              </Button>
+            </div>
+          )}
+        </For>
+      </div>
+      <div class="mb-3">
+        <Button
+          variant="secondary"
+          onClick={() => {
+            setRows([...rows(), ""]);
+            markDirty();
+          }}
+        >
+          Add language
+        </Button>
+      </div>
+      <Show when={!batched()}>
+        <div class="flex items-center gap-2">
+          <Button
+            variant="primary"
+            disabled={!dirty()}
+            onClick={() => void save().catch(() => {})}
+          >
+            Save
+          </Button>
+          <SaveStatus text={status.status().text} error={status.status().error} />
+        </div>
+      </Show>
+    </Card>
+  );
+};
+
 export const GlobalSection: Component = () => (
   <>
     <APISection />
@@ -869,6 +992,7 @@ export const GlobalSection: Component = () => (
     <DownloadRateLimitSection />
     <UsenetOffDataStagingSection />
     <UsenetBlockedGroupsSection />
+    <GrabPreferredLanguagesSection />
     <RecheckSection />
     <DiscoverRefreshSection />
     <EntityDatabaseSection />

@@ -98,7 +98,7 @@ func TestFilterReleases_FastPathTitleAndLanguage(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := FilterReleases(context.Background(), []prowlarr.Release{tc.release}, tc.targetTitle, mode.Movies, nil)
+			got := FilterReleases(context.Background(), []prowlarr.Release{tc.release}, tc.targetTitle, mode.Movies, nil, nil)
 			gotKept := len(got) == 1
 			if gotKept != tc.wantKept {
 				t.Errorf("FilterReleases(%q, %q) kept=%v, want kept=%v", tc.release.Title, tc.targetTitle, gotKept, tc.wantKept)
@@ -129,7 +129,7 @@ func TestFilterReleases_Adult_CoryChaseTargetSurvivesNoise(t *testing.T) {
 	}
 	control := prowlarr.Release{GUID: "control", Title: "The.Dark.Knight.2008.1080p.BluRay.x264-GROUP", Protocol: prowlarr.Torrent}
 
-	got := FilterReleases(context.Background(), append(append([]prowlarr.Release{}, targets...), control), displayTitle, mode.Adult, nil)
+	got := FilterReleases(context.Background(), append(append([]prowlarr.Release{}, targets...), control), displayTitle, mode.Adult, nil, nil)
 
 	kept := map[string]bool{}
 	for _, r := range got {
@@ -153,7 +153,7 @@ func TestFilterReleases_AIEscalation_NilClientDegradesCleanly(t *testing.T) {
 	releases := []prowlarr.Release{
 		{GUID: "1", Title: "xXx.RandomRelease.Whatever.2020-GROUP"},
 	}
-	got := FilterReleases(context.Background(), releases, "Obscure Title Nobody Knows", mode.Movies, nil)
+	got := FilterReleases(context.Background(), releases, "Obscure Title Nobody Knows", mode.Movies, nil, nil)
 	if len(got) != 0 {
 		t.Fatalf("expected zero candidates with a nil AI client, got %+v", got)
 	}
@@ -170,7 +170,7 @@ func TestFilterReleases_AIEscalation_SkippedWhenFastPathMatches(t *testing.T) {
 	releases := []prowlarr.Release{
 		{GUID: "1", Title: "The.Dark.Knight.2008.1080p.BluRay.x264-GROUP"},
 	}
-	got := FilterReleases(context.Background(), releases, "The Dark Knight", mode.Movies, ai)
+	got := FilterReleases(context.Background(), releases, "The Dark Knight", mode.Movies, ai, nil)
 	if len(got) != 1 {
 		t.Fatalf("expected the fast-path match to survive, got %+v", got)
 	}
@@ -190,7 +190,7 @@ func TestFilterReleases_AIEscalation_MoviesGuessTitleFindsMatch(t *testing.T) {
 	releases := []prowlarr.Release{
 		{GUID: "1", Title: "tdk.2008.rip-XYZ"}, // too abbreviated for the fast path
 	}
-	got := FilterReleases(context.Background(), releases, "The Dark Knight", mode.Movies, ai)
+	got := FilterReleases(context.Background(), releases, "The Dark Knight", mode.Movies, ai, nil)
 	if len(got) != 1 {
 		t.Fatalf("expected AI-escalation (GuessTitle) to recover the match, got %+v", got)
 	}
@@ -210,7 +210,7 @@ func TestFilterReleases_AIEscalation_AdultParseFilenameFindsMatch(t *testing.T) 
 	releases := []prowlarr.Release{
 		{GUID: "1", Title: "somestudio.wld.scn.ttl.2020.mp4"},
 	}
-	got := FilterReleases(context.Background(), releases, "Wild Scene Title", mode.Adult, ai)
+	got := FilterReleases(context.Background(), releases, "Wild Scene Title", mode.Adult, ai, nil)
 	if len(got) != 1 {
 		t.Fatalf("expected AI-escalation (ParseFilename) to recover the match, got %+v", got)
 	}
@@ -235,7 +235,7 @@ func TestFilterReleases_AIEscalation_PerCandidateErrorSkipsOnlyThatCandidate(t *
 		{GUID: "1", Title: "bad-release-XYZ"},
 		{GUID: "2", Title: "good-release-XYZ"},
 	}
-	got := FilterReleases(context.Background(), releases, "The Dark Knight", mode.Movies, ai)
+	got := FilterReleases(context.Background(), releases, "The Dark Knight", mode.Movies, ai, nil)
 	if len(got) != 1 || got[0].GUID != "2" {
 		t.Fatalf("expected only the second (successfully-cleaned) candidate to survive, got %+v", got)
 	}
@@ -270,35 +270,8 @@ func TestSingleWordTitleMatches(t *testing.T) {
 	}
 }
 
-// TestHasLanguageTag is a direct table-driven check of the deterministic
-// language-tag token list, independent of title-similarity scoring.
-func TestHasLanguageTag(t *testing.T) {
-	cases := []struct {
-		title string
-		want  bool
-	}{
-		{"Some.Movie.2020.1080p.BluRay.x264-GROUP", false},
-		{"Some.Movie.2020.FRENCH.1080p.BluRay.x264-GROUP", true},
-		{"Some.Movie.2020.GERMAN.1080p-GROUP", true},
-		// MULTI means "multiple audio tracks bundled" (usually including
-		// English for English-original content), not "no English track" —
-		// must NOT be rejected. See languageTagPattern's doc comment.
-		{"Some.Movie.2020.MULTI.1080p-GROUP", false},
-		{"Some.Movie.2020.VOSTFR.1080p-GROUP", true},
-		{"FrenchConnection.2020.1080p-GROUP", false}, // "French" is not a whole word here
-		{"Some.Movie.2020.JAPANESE.1080p-GROUP", true},
-		{"Some.Movie.2020.KOREAN.1080p-GROUP", true},
-		{"Some.Movie.2020.HINDI.1080p-GROUP", true},
-		{"Some.Movie.2020.RUSSIAN.1080p-GROUP", true},
-		{"Some.Movie.2020.ITALIAN.1080p-GROUP", true},
-		{"Some.Movie.2020.SPANISH.1080p-GROUP", true},
-	}
-	for _, tc := range cases {
-		if got := hasLanguageTag(tc.title); got != tc.want {
-			t.Errorf("hasLanguageTag(%q) = %v, want %v", tc.title, got, tc.want)
-		}
-	}
-}
+// Language-tag allow/deny lives in internal/release (TitleLanguageAllowed).
+// See release/language_test.go — FilterReleases delegates to that helper.
 
 // delayedFakeAI is a ctx-aware AIClient fake for proving the three
 // AI-escalation bounds actually hold: it sleeps `delay` per call (respecting
@@ -343,7 +316,7 @@ func TestFilterReleases_AIEscalation_CapsCandidateCount(t *testing.T) {
 	for i := range releases {
 		releases[i] = prowlarr.Release{GUID: fmt.Sprintf("%d", i), Title: fmt.Sprintf("release-%d-XYZ", i)}
 	}
-	FilterReleases(context.Background(), releases, "Obscure Title Nobody Knows", mode.Movies, ai)
+	FilterReleases(context.Background(), releases, "Obscure Title Nobody Knows", mode.Movies, ai, nil)
 	if got := atomic.LoadInt32(&ai.calls); got != maxAIEscalationCandidates {
 		t.Errorf("expected exactly %d AI calls (the cap), got %d for %d input releases", maxAIEscalationCandidates, got, len(releases))
 	}
@@ -359,7 +332,7 @@ func TestFilterReleases_AIEscalation_BoundsConcurrency(t *testing.T) {
 	for i := range releases {
 		releases[i] = prowlarr.Release{GUID: fmt.Sprintf("%d", i), Title: fmt.Sprintf("release-%d-XYZ", i)}
 	}
-	FilterReleases(context.Background(), releases, "Obscure Title Nobody Knows", mode.Movies, ai)
+	FilterReleases(context.Background(), releases, "Obscure Title Nobody Knows", mode.Movies, ai, nil)
 	if ai.maxConcurrent > aiEscalationConcurrency {
 		t.Errorf("observed %d AI calls in flight at once, want <= %d", ai.maxConcurrent, aiEscalationConcurrency)
 	}
@@ -388,7 +361,7 @@ func TestFilterReleases_AIEscalation_RespectsOverallTimeout(t *testing.T) {
 	}
 
 	start := time.Now()
-	got := FilterReleases(context.Background(), releases, "Obscure Title Nobody Knows", mode.Movies, ai)
+	got := FilterReleases(context.Background(), releases, "Obscure Title Nobody Knows", mode.Movies, ai, nil)
 	elapsed := time.Since(start)
 
 	// Generous upper bound (not tied tightly to the 100ms deadline) so this

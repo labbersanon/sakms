@@ -1137,6 +1137,35 @@ func proposeOneEpisodeLibrary(
 		// Review if: operators report unwanted alternates accumulating and want
 		//   same-slot duplicates declined again.
 		isDuplicateSlot := tracked[episodeKey{tmdbID: hint.TMDBID, season: season, episode: episode}]
+		if hint.TMDBID < 0 {
+			// Claude 2026-09-23: keep anthology synthetic TMDB ids off FindTVByTVDBID.
+			// Reason: Laurel & Hardy (1919) nfo is tmdb -1498833576 / tvdb 73910;
+			//   TVDB→TMDB previously returned the 1966 cartoon (117523).
+			// Review if: a real positive TMDB TV id exists for the 1919 shorts.
+			title := strings.TrimSpace(hint.Title)
+			if title == "" {
+				title = showFolderName(videoPath, roots)
+			}
+			targetRoot := generalRoot
+			if sess != nil && foundRoot == sess.KidsRootPath {
+				targetRoot = foundRoot
+			}
+			p.Status = proposals.Pending
+			p.Title = title
+			p.TMDBID = hint.TMDBID
+			p.TVDBID = hint.TVDBID
+			p.Year = hint.Year
+			p.SeasonNumber = season
+			p.EpisodeNumber = episode
+			if len(extraEpisodes) > 0 {
+				p.ExtraEpisodeNumbers = extraEpisodes
+			}
+			p.RootFolderPath = targetRoot
+			if isDuplicateSlot {
+				acceptDuplicatePendingEpisode(&p, title, season, episode)
+			}
+			return p, false
+		}
 		// Claude 2026-08-06: NFO season-confirm miss falls through to TMDB/TVDB/web
 		// Reason: wrong or incomplete TMDB seasons in sidecars (e.g. Monster S02)
 		//   used to hard-unmatch before TVDB/search could recover.

@@ -204,6 +204,41 @@ func TestCatalogEpisodeAtPath_NestedDiscYearFolder(t *testing.T) {
 	}
 }
 
+func TestCatalogEpisodeAtPath_KeepsAnthologyNegativeTMDBID(t *testing.T) {
+	root := t.TempDir()
+	season := filepath.Join(root, "Laurel & Hardy (1919)", "Season 06")
+	if err := os.MkdirAll(season, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Laurel & Hardy (1919)", "tvshow.nfo"), []byte(
+		`<tvshow><tmdbid>-1498833576</tmdbid><tvdbid>73910</tvdbid><title>Laurel &amp; Hardy</title><year>1919</year></tvshow>`,
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(season, "Laurel & Hardy S06E08 Another Fine Mess.mp4")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// FindTVByTVDBID hits /find/ — unexpected path fatals. A call would remap
+	// TVDB 73910 to the 1966 cartoon.
+	sess := &mode.Session{Mode: mode.Series, TMDB: fakeTMDBSeriesServer(t, map[string]string{}, nil)}
+	libStore := newTestLibraryStore(t)
+	ok, err := catalogEpisodeAtPath(context.Background(), sess, libStore, video, root, []string{root})
+	if err != nil || !ok {
+		t.Fatalf("catalog ok=%v err=%v", ok, err)
+	}
+	series, err := libStore.GetSeriesByTMDBID(context.Background(), -1498833576)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if series.TVDBID != 73910 || series.Title != "Laurel & Hardy" {
+		t.Fatalf("series = %+v", series)
+	}
+	if _, err := libStore.GetEpisode(context.Background(), series.ID, 6, 8); err != nil {
+		t.Fatalf("episode: %v", err)
+	}
+}
+
 func TestCatalogPendingSeries_WritesLibrary(t *testing.T) {
 	root := t.TempDir()
 	video := filepath.Join(root, "Curious George", "01-Rescue.mkv")

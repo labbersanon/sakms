@@ -85,16 +85,7 @@ func catalogEpisodeAtPath(ctx context.Context, sess *mode.Session, libStore *lib
 	}
 	showFolder := showFolderName(videoPath, roots)
 	hint := trustedSeriesSidecar(videoPath, showFolder, foundRoot)
-	tmdbID := hint.TMDBID
-	if tmdbID <= 0 {
-		tmdbID = naming.TMDBIDFromPath(videoPath)
-	}
-	if tmdbID <= 0 {
-		tmdbID = naming.TMDBIDFromPath(filepath.Dir(videoPath))
-	}
-	if tmdbID <= 0 && sess != nil && sess.TMDB != nil {
-		tmdbID = resolveTMDBFromTVDB(ctx, sess.TMDB, hint.TVDBID)
-	}
+	tmdbID := catalogShowTMDBID(ctx, sess, hint, videoPath)
 	if tmdbID == 0 {
 		return false, nil
 	}

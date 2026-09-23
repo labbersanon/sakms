@@ -9338,3 +9338,17 @@ status stays active.
 | `internal/rename/catalog.go` | Trusted sidecar, nested nfo, kids tag |
 | `internal/rename/catalog_pending.go` | Persist Pending series in place |
 | `internal/dedup/dedup_phash_primary.go` | Phash-only grouping |
+
+## 2026-09-23 — Keep anthology synthetic TMDB ids on catalog
+
+**Problem:** Laurel & Hardy (1919) tvshow.nfo stores tmdb `-1498833576` and tvdb `73910`. Catalog treated TMDB ≤ 0 as missing and called FindTVByTVDBID, which previously returned the 1966 cartoon.
+**Fix:** A non-zero sidecar TMDB id — including a negative anthology synthetic — is kept. TVDB→TMDB runs only when the nfo has no TMDB id. Organize accepts the same nfo without a TMDB details lookup.
+**Outcome:** Unit tests catalog S06E08 under `-1498833576` without calling TMDB.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/rename/catalog_show.go` | `catalogShowTMDBID` keeps negatives |
+| `internal/rename/catalog.go` | Use `catalogShowTMDBID` |
+| `internal/rename/rename.go` | Pending from negative nfo TMDB without TVDetails |

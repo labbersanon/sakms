@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/labbersanon/sakms/internal/library"
+	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/naming"
 	"github.com/labbersanon/sakms/internal/nfo"
 	"github.com/labbersanon/sakms/internal/tmdb"
 )
@@ -58,6 +60,30 @@ func readSeriesSidecarNested(videoPath, root string) nfo.SeriesNFO {
 		dir = next
 	}
 	return nfo.SeriesNFO{}
+}
+
+// catalogShowTMDBID keeps a sidecar TMDB id when it is anything other than 0,
+// including a negative anthology synthetic. Path [tmdbid-N] and TVDB→TMDB
+// run only when the nfo has no TMDB id at all.
+//
+// Claude 2026-09-23: do not treat anthology synthetic ids as missing.
+// Reason: Laurel & Hardy (1919) tvshow.nfo stores tmdb -1498833576 / tvdb
+//   73910. FindTVByTVDBID(73910) previously returned the 1966 cartoon.
+// Review if: a real positive TMDB TV id exists for the 1919 shorts series.
+func catalogShowTMDBID(ctx context.Context, sess *mode.Session, hint nfo.SeriesNFO, videoPath string) int {
+	if hint.TMDBID != 0 {
+		return hint.TMDBID
+	}
+	if id := naming.TMDBIDFromPath(videoPath); id != 0 {
+		return id
+	}
+	if id := naming.TMDBIDFromPath(filepath.Dir(videoPath)); id != 0 {
+		return id
+	}
+	if sess != nil && sess.TMDB != nil {
+		return resolveTMDBFromTVDB(ctx, sess.TMDB, hint.TVDBID)
+	}
+	return 0
 }
 
 func resolveTMDBFromTVDB(ctx context.Context, client *tmdb.Client, tvdbID int) int {

@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/dedup"
@@ -49,9 +51,20 @@ func getKidsRootPathHandler(settingsStore *settings.Store) http.HandlerFunc {
 // path is accepted (turns the feature back off) — unlike the AI model
 // setting, "off" is a perfectly normal, common choice here, not a mistake to
 // reject.
-func putKidsRootPathHandler(settingsStore *settings.Store) http.HandlerFunc {
+func putKidsRootPathHandler(
+	httpClient *http.Client,
+	connStore *connections.Store,
+	scStore *serviceconn.Store,
+	settingsStore *settings.Store,
+	propStore *proposals.Store,
+	libStore *library.Store,
+	prober dedup.Prober,
+	videoHasher rename.PHasher,
+	entityStore parseentity.EntityStore,
+) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		key, ok := mode.Mode(r.PathValue("mode")).KidsRootPathKey()
+		m := mode.Mode(r.PathValue("mode"))
+		key, ok := m.KidsRootPathKey()
 		if !ok {
 			http.Error(w, "kids root path isn't applicable to this mode", http.StatusBadRequest)
 			return
@@ -64,6 +77,13 @@ func putKidsRootPathHandler(settingsStore *settings.Store) http.HandlerFunc {
 		if err := settingsStore.Set(r.Context(), key, req.Path); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		requestWatchReload()
+		// Claude 2026-09-23: saving a kids root scans existing files.
+		// Reason: PUT previously stored the path only; Library stayed empty.
+		// Review if: empty path (feature off) should cancel an in-flight scan.
+		if strings.TrimSpace(req.Path) != "" {
+			go scanFromWatcher(context.Background(), m, httpClient, connStore, scStore, settingsStore, propStore, libStore, videoHasher, prober, entityStore)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}
@@ -124,11 +144,14 @@ func renameScanHandler(httpClient *http.Client, connStore *connections.Store, sc
 				http.Error(w, ctErr.Error(), http.StatusInternalServerError)
 				return
 			}
+			renameScans.start(m)
+			matchCfg.OnProgress = renameScans.progress(m)
 			if m == mode.Movies {
 				found, err = rename.ScanLibrary(ctx, sess, libStore, rootPath, preset, matchCfg, prober)
 			} else {
 				found, err = rename.ScanLibrarySeries(ctx, sess, libStore, rootPath, preset, matchCfg, prober)
 			}
+			renameScans.done(m, len(found), err)
 		} else {
 			// Adult owns its own library now too (Whisparr eliminated, Stage 4):
 			// dispatch to the library-backed sibling, the mirror image of the

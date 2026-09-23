@@ -134,6 +134,9 @@ func Classify(rawPath string) Set {
 		// its own credentials from an otherwise-unlocked Settings screen.
 		// Review if: the registry ever gains a mode-scoped route.
 		out.Add(SectionSettings)
+	case "library":
+		// Claude 2026-09-23: GET /api/library/scan-status — Library banner.
+		out.Add(SectionLibrary)
 	case "images", "posters", "notifications", "apikey", "auth", "setup",
 		"section-lock", "openapi.yaml":
 		// Deliberately unclassified, each for its own reason:

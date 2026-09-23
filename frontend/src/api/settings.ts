@@ -542,6 +542,27 @@ export function putKidsRootPath(mode: Mode, path: string): Promise<void> {
   });
 }
 
+// Claude 2026-09-23: kids-root save starts a catalog scan; Library polls this.
+export type RenameScanStatus = {
+  running: boolean;
+  phase?: string;
+  current?: number;
+  total?: number;
+  name?: string;
+  error?: string;
+  proposals?: number;
+};
+
+export function fetchRenameScanStatus(mode: Mode): Promise<RenameScanStatus> {
+  return api<RenameScanStatus>(`/api/modes/${mode}/rename/scan/status`);
+}
+
+export function fetchLibraryScanStatus(): Promise<
+  Record<string, RenameScanStatus>
+> {
+  return api<Record<string, RenameScanStatus>>("/api/library/scan-status");
+}
+
 // --- Advanced Settings (new UI over existing routes) ------------------------
 
 // Per-mode Dedup perceptual-hash similarity threshold (0–256, backend-validated).

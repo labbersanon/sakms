@@ -50,6 +50,7 @@ import {
   removeTag,
 } from "../api/tag";
 import { setItemRating } from "../api/rating";
+import { fetchLibraryScanStatus } from "../api/settings";
 import {
   Button,
   // Card, // Claude 2026-08-13: only the commented-out AdultMoviesPlaceholder used this.
@@ -708,6 +709,7 @@ const LibraryView: Component<{
   // Review if: GET /tracked gains server-side filter params (move filter server-side).
   // No scheduler, no goroutine, no ticker added — purely a local signal.
   const [monitoredOnly, setMonitoredOnly] = createSignal(false);
+  const [scanBanner, setScanBanner] = createSignal("");
   // detailDraft is the add-tag input value in the DetailPanel.
   const [detailDraft, setDetailDraft] = createSignal("");
 
@@ -834,8 +836,38 @@ const LibraryView: Component<{
     return t.item.id === (item.tmdbId ?? 0);
   };
 
+  onMount(() => {
+    let sawRunning = false;
+    const tick = () => {
+      void fetchLibraryScanStatus()
+        .then((all) => {
+          const st = all[props.mode];
+          if (st?.running) {
+            sawRunning = true;
+            const n = st.total ? `${st.current ?? 0}/${st.total}` : "…";
+            setScanBanner(`Scanning library ${n}${st.name ? ` · ${st.name}` : ""}`);
+            return;
+          }
+          if (sawRunning) {
+            sawRunning = false;
+            setScanBanner("");
+            void refresh();
+          }
+        })
+        .catch(() => {});
+    };
+    tick();
+    const id = window.setInterval(tick, 2000);
+    onCleanup(() => window.clearInterval(id));
+  });
+
   return (
     <div>
+      <Show when={scanBanner()}>
+        <p class="mb-3 text-sm text-fg" aria-live="polite">
+          {scanBanner()}
+        </p>
+      </Show>
       <Show when={actionError()}>
         <ErrorText>{actionError()}</ErrorText>
       </Show>

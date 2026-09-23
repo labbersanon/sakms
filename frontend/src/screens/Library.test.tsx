@@ -51,6 +51,9 @@ const stubFetch = (handler: Handler) => {
       method: (init?.method ?? "GET").toUpperCase(),
       body: init?.body ? JSON.parse(init.body as string) : undefined,
     });
+    if (url.includes("/api/library/scan-status")) {
+      return jsonResponse({});
+    }
     return handler(url, init);
   });
   vi.stubGlobal("fetch", fn);
@@ -194,6 +197,7 @@ const makeHandler = (
 ) => {
   return (url: string, init?: RequestInit): Response => {
     const method = (init?.method ?? "GET").toUpperCase();
+    if (url.includes("/api/library/scan-status")) return jsonResponse({});
     if (url.includes("/api/modes/movies/tags")) return jsonResponse(vocab(["hd"]));
     if (url.includes("/api/modes/movies/tracked")) return jsonResponse(movies);
     if (url.includes("/api/modes/series/tags")) return jsonResponse(vocab([]));

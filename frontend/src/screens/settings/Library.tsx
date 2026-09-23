@@ -15,6 +15,7 @@ import {
   createResource,
   createSignal,
   on,
+  onCleanup,
   onMount,
   For,
   Show,
@@ -31,6 +32,7 @@ import {
   QUALITY_TIERS,
   fetchKidsRootPath,
   fetchLibraryRootFolder,
+  fetchRenameScanStatus,
   fetchNamingPreset,
   fetchQualityPrefs,
   putKidsRootPath,
@@ -473,11 +475,46 @@ export const KidsRootPathSection: Component<{ mode: () => Mode }> = (props) => {
     }),
   );
   const status = useSaveStatus();
+  const [scanLine, setScanLine] = createSignal("");
+  let scanTimer: number | undefined;
+  const stopScanPoll = () => {
+    if (scanTimer !== undefined) {
+      window.clearInterval(scanTimer);
+      scanTimer = undefined;
+    }
+  };
+  const pollScan = () => {
+    stopScanPoll();
+    scanTimer = window.setInterval(() => {
+      void fetchRenameScanStatus(props.mode()).then((s) => {
+        if (s.running) {
+          const n = s.total ? `${s.current ?? 0}/${s.total}` : "…";
+          setScanLine(`Scanning ${n}${s.name ? ` · ${s.name}` : ""}`);
+          return;
+        }
+        stopScanPoll();
+        if (s.phase === "error") {
+          setScanLine(s.error || "Scan failed");
+          return;
+        }
+        if (s.phase === "done") {
+          setScanLine("Scan finished — identified titles are in Library.");
+        }
+      });
+    }, 1000);
+  };
+  onCleanup(stopScanPoll);
   const save = async () => {
     try {
       await putKidsRootPath(props.mode(), path());
       setDirty(false);
       status.saved();
+      if (path().trim() !== "") {
+        setScanLine("Starting scan…");
+        pollScan();
+      } else {
+        setScanLine("");
+      }
     } catch (e) {
       status.failed(e);
       throw e;
@@ -517,9 +554,15 @@ export const KidsRootPathSection: Component<{ mode: () => Mode }> = (props) => {
           />
         </div>
       </form>
+      <Show when={scanLine()}>
+        <p class="mt-2 text-sm text-fg" aria-live="polite">
+          {scanLine()}
+        </p>
+      </Show>
       <Muted class="mt-2">
-        Leave blank to turn Kids classification off. Applies to both newly-found
-        files and already-tracked items whose classification has drifted.
+        Saving a path scans that folder. Titles with a TMDB id in an .nfo or
+        [tmdbid-N] tag appear in Library. Leave blank to turn Kids
+        classification off.
       </Muted>
     </Card>
   );

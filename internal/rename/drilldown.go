@@ -27,10 +27,16 @@ const (
 	MaxDurationTolerancePct     = 50
 )
 
+// ProgressFunc reports one ScanLibrary / ScanLibrarySeries unit. total may
+// be 0 until the walk finishes counting.
+type ProgressFunc func(current, total int, name string)
+
 // MatchConfig is the operator-tunable drilldown cut for Movies/Series Rename.
 type MatchConfig struct {
 	CandidateN           int
 	DurationTolerancePct int
+	// OnProgress is not a stored setting — scan callers attach it per run.
+	OnProgress ProgressFunc
 }
 
 // DefaultMatchConfig returns N=5 and ±5% duration tolerance.

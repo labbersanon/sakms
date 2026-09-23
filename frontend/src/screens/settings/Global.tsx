@@ -339,11 +339,10 @@ const WatchFoldersSection: Component = () => {
   return (
     <Card title="Watch Folders — global">
       <p class="mb-3 text-sm text-muted">
-        When enabled, SAK monitors each mode's configured library root folder
+        When enabled, SAK monitors each mode's library root and kids root
         for new content and automatically runs a Rename Scan. Only Scan is
-        triggered — proposals still require a human Apply click. Takes effect
-        within one config-poll interval (default 30s, configurable below) of
-        toggling.
+        triggered — proposals still require a human Apply click. A kids-root
+        save reloads the watcher immediately.
       </p>
       <label class="mb-3 flex items-center gap-2">
         <input

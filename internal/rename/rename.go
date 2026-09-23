@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -200,13 +201,29 @@ func ScanLibrary(ctx context.Context, sess *mode.Session, libStore *library.Stor
 		roots = append(roots, sess.KidsRootPath)
 	}
 
-	var out []proposals.Proposal
+	type rootBatch struct {
+		root    string
+		entries []library.UnmappedEntry
+	}
+	var batches []rootBatch
+	total := 0
 	for _, root := range roots {
 		entries, err := library.ScanRootFolder(root, known)
 		if err != nil {
 			return nil, fmt.Errorf("scanning %s: %w", root, err)
 		}
-		for _, entry := range entries {
+		batches = append(batches, rootBatch{root: root, entries: entries})
+		total += len(entries)
+	}
+
+	var out []proposals.Proposal
+	n := 0
+	for _, batch := range batches {
+		for _, entry := range batch.entries {
+			n++
+			if cfg.OnProgress != nil {
+				cfg.OnProgress(n, total, entry.Name)
+			}
 			if config.SidecarExts[strings.ToLower(filepath.Ext(entry.Name))] {
 				continue
 			}
@@ -225,13 +242,20 @@ func ScanLibrary(ctx context.Context, sess *mode.Session, libStore *library.Stor
 				// Review if: sample detection moves into ResolveVideoFile
 				continue
 			}
+			// Claude 2026-09-23: nfo/[tmdbid] orphans enter Library without Apply.
+			// Reason: kids-root save is not a Rename Apply; schema-matched files
+			//   were skipped and never tracked.
+			// Review if: catalog grows a title-search fallback.
+			if _, catErr := catalogMovieAtPath(ctx, libStore, videoPath, batch.root); catErr != nil {
+				log.Printf("rename catalog movie %q: %v", videoPath, catErr)
+			}
 			// Schema check needs the atomic folder (or file) entry, not the resolved video path —
 			// MatchesMovieSchema only recognizes organized movie directories.
 			if naming.MatchesMovieSchema(entry.Path, preset) {
 				continue // already organized under the active preset — nothing to propose
 			}
 			// Keep entry.Name for TMDB search (folder release names); Path is the video file.
-			out = append(out, proposeOneLibrary(ctx, sess, byTMDB, rootFolderPath, root, library.UnmappedEntry{
+			out = append(out, proposeOneLibrary(ctx, sess, byTMDB, rootFolderPath, batch.root, library.UnmappedEntry{
 				Name: entry.Name,
 				Path: videoPath,
 			}, cfg, prober))
@@ -822,18 +846,34 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 		}
 	}
 
+	type seriesRootBatch struct {
+		root    string
+		entries []library.UnmappedEntry
+	}
+	var seriesBatches []seriesRootBatch
+	seriesTotal := 0
+	for _, root := range roots {
+		entries, err := library.ScanRootFolder(root, known)
+		if err != nil {
+			return nil, fmt.Errorf("scanning %s: %w", root, err)
+		}
+		seriesBatches = append(seriesBatches, seriesRootBatch{root: root, entries: entries})
+		seriesTotal += len(entries)
+	}
+
 	var out []proposals.Proposal
 	// anthologyIdx holds indices into out for rows that came from
 	// proposeOneEpisodeLibrary's season/episode PARSE-FAILURE branch, supplied
 	// structurally by that function's second return value — never re-derived
 	// by matching on Reason (autopilot-impl.md §3.3).
 	var anthologyIdx []int
-	for _, root := range roots {
-		entries, err := library.ScanRootFolder(root, known)
-		if err != nil {
-			return nil, fmt.Errorf("scanning %s: %w", root, err)
-		}
-		for _, entry := range entries {
+	seriesN := 0
+	for _, batch := range seriesBatches {
+		for _, entry := range batch.entries {
+			seriesN++
+			if cfg.OnProgress != nil {
+				cfg.OnProgress(seriesN, seriesTotal, entry.Name)
+			}
 			if config.SidecarExts[strings.ToLower(filepath.Ext(entry.Name))] {
 				continue
 			}
@@ -842,6 +882,12 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 				continue // silent omit — non-video / empty of video (Jellyfin VideoExts gate)
 			}
 			for _, videoPath := range videoFiles {
+				// Claude 2026-09-23: tvshow.nfo orphans enter Library without Apply.
+				// Reason: kids-root save left 1000+ identified episodes untracked.
+				// Review if: catalog grows a title-search fallback.
+				if _, catErr := catalogEpisodeAtPath(ctx, libStore, videoPath, batch.root); catErr != nil {
+					log.Printf("rename catalog episode %q: %v", videoPath, catErr)
+				}
 				if naming.MatchesSeriesSchema(videoPath, preset) {
 					continue // already organized under the active preset — nothing to propose
 				}
@@ -854,7 +900,7 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 						}
 					}
 				}
-				p, parseFailed := proposeOneEpisodeLibrary(ctx, sess, tracked, pin, rootFolderPath, root, videoPath, roots, cfg, prober)
+				p, parseFailed := proposeOneEpisodeLibrary(ctx, sess, tracked, pin, rootFolderPath, batch.root, videoPath, roots, cfg, prober)
 				out = append(out, p)
 				if parseFailed {
 					anthologyIdx = append(anthologyIdx, len(out)-1)

@@ -42,6 +42,50 @@ const defaultWatchPollInterval = 30 * time.Second
 // poll cadence, in whole seconds.
 const watchPollIntervalKey = "watch_folders_poll_interval_seconds"
 
+// watchReload wakes RunWatchFolders so a kids/root path save is watched
+// without waiting for the config-poll interval (24h in production).
+var watchReload = make(chan struct{}, 1)
+
+func requestWatchReload() {
+	select {
+	case watchReload <- struct{}{}:
+	default:
+	}
+}
+
+// watchPath is one filesystem root the watcher should sit on.
+type watchPath struct {
+	Mode mode.Mode
+	Key  string
+	Path string
+}
+
+// collectWatchPaths returns main roots plus kids roots (when set).
+func collectWatchPaths(ctx context.Context, settingsStore *settings.Store) []watchPath {
+	var out []watchPath
+	for _, m := range []mode.Mode{mode.Movies, mode.Series, mode.Adult} {
+		key, ok := libraryRootFolderKey(m)
+		if !ok {
+			continue
+		}
+		path, err := settingsStore.Get(ctx, key)
+		if err != nil || path == "" {
+			continue
+		}
+		out = append(out, watchPath{Mode: m, Key: string(m), Path: path})
+		kidsKey, kidsOK := m.KidsRootPathKey()
+		if !kidsOK {
+			continue
+		}
+		kidsPath, kidsErr := settingsStore.Get(ctx, kidsKey)
+		if kidsErr != nil || kidsPath == "" || kidsPath == path {
+			continue
+		}
+		out = append(out, watchPath{Mode: m, Key: string(m) + "_kids", Path: kidsPath})
+	}
+	return out
+}
+
 // pollInterval reads the configured config-poll cadence, substituting the
 // default for any unset/0/negative/unparseable value, so a timer duration
 // derived from it can never be zero (which would busy-loop).
@@ -71,6 +115,11 @@ func RunWatchFolders(ctx context.Context, httpClient *http.Client, connStore *co
 		})
 	}
 
+	// Claude 2026-09-23: boot scan when a kids root is set but Library is empty.
+	// Reason: paths were saved before scan-on-save existed.
+	// Review if: kids titles exist and this is only dead weight.
+	go catchUpEmptyKidsRoots(ctx, httpClient, connStore, scStore, settingsStore, propStore, libStore, videoHasher, prober, entityStore)
+
 	for {
 		d := pollInterval(ctx, settingsStore)
 
@@ -79,39 +128,24 @@ func RunWatchFolders(ctx context.Context, httpClient *http.Client, connStore *co
 			select {
 			case <-ctx.Done():
 				return
+			case <-watchReload:
 			case <-time.After(d):
 			}
 			continue
 		}
 
-		// Collect configured root paths for all three modes.
-		roots := map[mode.Mode]string{}
-		for _, m := range []mode.Mode{mode.Movies, mode.Series, mode.Adult} {
-			key, ok := libraryRootFolderKey(m)
-			if !ok {
-				continue
-			}
-			path, err := settingsStore.Get(ctx, key)
-			if errors.Is(err, settings.ErrNotFound) || path == "" {
-				continue
-			}
-			if err != nil {
-				log.Printf("watchfolders: reading root for %s: %v", m, err)
-				continue
-			}
-			roots[m] = path
-		}
-
-		if len(roots) == 0 {
+		paths := collectWatchPaths(ctx, settingsStore)
+		if len(paths) == 0 {
 			select {
 			case <-ctx.Done():
 				return
+			case <-watchReload:
 			case <-time.After(d):
 			}
 			continue
 		}
 
-		runWatcher(ctx, roots, httpClient, connStore, scStore, settingsStore, propStore, libStore, videoHasher, prober, entityStore, d)
+		runWatcher(ctx, paths, httpClient, connStore, scStore, settingsStore, propStore, libStore, videoHasher, prober, entityStore, d)
 
 		if ctx.Err() != nil {
 			return
@@ -124,7 +158,7 @@ func RunWatchFolders(ctx context.Context, httpClient *http.Client, connStore *co
 // until ctx is cancelled or the poll interval fires (so the caller can re-read
 // settings and restart with updated paths). pollEvery is the caller's
 // already-resolved poll cadence (see pollInterval) — always > 0.
-func runWatcher(ctx context.Context, roots map[mode.Mode]string, httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store, videoHasher rename.PHasher, prober dedup.Prober, entityStore parseentity.EntityStore, pollEvery time.Duration) {
+func runWatcher(ctx context.Context, paths []watchPath, httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store, videoHasher rename.PHasher, prober dedup.Prober, entityStore parseentity.EntityStore, pollEvery time.Duration) {
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
 		log.Printf("watchfolders: creating watcher: %v", err)
@@ -132,15 +166,15 @@ func runWatcher(ctx context.Context, roots map[mode.Mode]string, httpClient *htt
 	}
 	defer w.Close()
 
-	// pathToMode maps a watched root path back to its mode.
+	// pathToMode maps a watched root path back to its mode (main and kids).
 	pathToMode := map[string]mode.Mode{}
-	for m, path := range roots {
-		if err := w.Add(path); err != nil {
-			log.Printf("watchfolders: watching %s (%s): %v", path, m, err)
+	for _, wp := range paths {
+		if err := w.Add(wp.Path); err != nil {
+			log.Printf("watchfolders: watching %s (%s): %v", wp.Path, wp.Key, err)
 			continue
 		}
-		pathToMode[path] = m
-		log.Printf("watchfolders: watching %s (%s)", path, m)
+		pathToMode[wp.Path] = wp.Mode
+		log.Printf("watchfolders: watching %s (%s)", wp.Path, wp.Key)
 	}
 
 	// Per-mode debounce timers: the timer fires watchDebounce after the last
@@ -161,6 +195,12 @@ func runWatcher(ctx context.Context, roots map[mode.Mode]string, httpClient *htt
 	for {
 		select {
 		case <-ctx.Done():
+			for _, t := range timers {
+				t.Stop()
+			}
+			return
+
+		case <-watchReload:
 			for _, t := range timers {
 				t.Stop()
 			}
@@ -205,10 +245,18 @@ func runWatcher(ctx context.Context, roots map[mode.Mode]string, httpClient *htt
 // automation, never an Apply. Errors are logged and dropped; the user's
 // manual Scan button always remains the fallback.
 func scanFromWatcher(ctx context.Context, m mode.Mode, httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store, videoHasher rename.PHasher, prober dedup.Prober, entityStore parseentity.EntityStore) {
+	if !renameScans.start(m) {
+		log.Printf("watchfolders: %s scan already running", m)
+		return
+	}
 	log.Printf("watchfolders: scan triggered for %s", m)
+	var scanErr error
+	var savedN int
+	defer func() { renameScans.done(m, savedN, scanErr) }()
 
 	sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, m)
 	if err != nil {
+		scanErr = err
 		log.Printf("watchfolders: building session for %s: %v", m, err)
 		return
 	}
@@ -242,8 +290,10 @@ func scanFromWatcher(ctx context.Context, m mode.Mode, httpClient *http.Client, 
 			log.Printf("watchfolders: resolving match config for %s: %v", m, err)
 			return
 		}
+		matchCfg.OnProgress = renameScans.progress(m)
 		found, err = rename.ScanLibrary(ctx, sess, libStore, rootPath, preset, matchCfg, prober)
 		if err != nil {
+			scanErr = err
 			log.Printf("watchfolders: scan movies: %v", err)
 			return
 		}
@@ -258,8 +308,10 @@ func scanFromWatcher(ctx context.Context, m mode.Mode, httpClient *http.Client, 
 			log.Printf("watchfolders: resolving match config for %s: %v", m, err)
 			return
 		}
+		matchCfg.OnProgress = renameScans.progress(m)
 		found, err = rename.ScanLibrarySeries(ctx, sess, libStore, rootPath, preset, matchCfg, prober)
 		if err != nil {
+			scanErr = err
 			log.Printf("watchfolders: scan series: %v", err)
 			return
 		}
@@ -287,6 +339,7 @@ func scanFromWatcher(ctx context.Context, m mode.Mode, httpClient *http.Client, 
 			log.Printf("watchfolders: saving proposals for %s: %v", m, err)
 		}
 	} else {
+		savedN = len(saved)
 		log.Printf("watchfolders: %s scan complete, %d proposals", m, len(saved))
 		if m == mode.Adult {
 			maybeAutoApplyAdultLibrary(ctx, sess, settingsStore, propStore, libStore, prober, saved)
@@ -317,18 +370,8 @@ func getWatchFoldersHandler(settingsStore *settings.Store) http.HandlerFunc {
 			return
 		}
 		roots := map[string]string{}
-		for _, m := range []mode.Mode{mode.Movies, mode.Series, mode.Adult} {
-			key, ok := libraryRootFolderKey(m)
-			if !ok {
-				continue
-			}
-			path, err := settingsStore.Get(ctx, key)
-			if errors.Is(err, settings.ErrNotFound) || path == "" {
-				continue
-			}
-			if err == nil {
-				roots[string(m)] = path
-			}
+		for _, wp := range collectWatchPaths(ctx, settingsStore) {
+			roots[wp.Key] = wp.Path
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(watchFoldersStatusResponse{Enabled: enabled, Roots: roots})
@@ -401,4 +444,49 @@ func putWatchFoldersPollIntervalHandler(settingsStore *settings.Store) http.Hand
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+func catchUpEmptyKidsRoots(ctx context.Context, httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, propStore *proposals.Store, libStore *library.Store, videoHasher rename.PHasher, prober dedup.Prober, entityStore parseentity.EntityStore) {
+	for _, m := range []mode.Mode{mode.Movies, mode.Series} {
+		key, ok := m.KidsRootPathKey()
+		if !ok {
+			continue
+		}
+		kidsPath, err := settingsStore.Get(ctx, key)
+		if err != nil || kidsPath == "" {
+			continue
+		}
+		if kidsLibraryHasRows(ctx, libStore, m, kidsPath) {
+			continue
+		}
+		log.Printf("watchfolders: kids root %s is empty in Library — scanning %s", kidsPath, m)
+		scanFromWatcher(ctx, m, httpClient, connStore, scStore, settingsStore, propStore, libStore, videoHasher, prober, entityStore)
+	}
+}
+
+func kidsLibraryHasRows(ctx context.Context, libStore *library.Store, m mode.Mode, kidsPath string) bool {
+	prefix := strings.TrimRight(kidsPath, string(os.PathSeparator)) + string(os.PathSeparator)
+	switch m {
+	case mode.Movies:
+		items, err := libStore.List(ctx, mode.Movies)
+		if err != nil {
+			return true
+		}
+		for _, it := range items {
+			if it.RootFolderPath == kidsPath || strings.HasPrefix(it.FilePath, prefix) {
+				return true
+			}
+		}
+	case mode.Series:
+		all, err := libStore.ListSeries(ctx)
+		if err != nil {
+			return true
+		}
+		for _, s := range all {
+			if s.RootFolderPath == kidsPath || strings.HasPrefix(s.RootFolderPath, prefix) {
+				return true
+			}
+		}
+	}
+	return false
 }

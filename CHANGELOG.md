@@ -9294,6 +9294,22 @@ status stays active.
 | `internal/api/autograb_shared.go` | Fill a missing id before the movie gate |
 | `internal/grabs/grabs.go` | `SetTMDBID` |
 
+## 2026-09-23 — Kids library folders scan into Library
+
+**Problem:** Saving Movies/Series kids roots stored the path only. Library stayed empty (0 kids titles) with no progress. Watch folders ignored kids roots and only reloaded on a 24h poll.
+**Fix:** PUT kids-root-path starts a Rename scan that catalogs .nfo / [tmdbid-N] files in place. Watch folders include kids roots and reload on save. Settings and Library show scan progress.
+**Outcome:** Unit tests cover nfo catalog, no primary overwrite, kids watch paths, and section-lock classification.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/rename/catalog.go` | In-place catalog from nfo/tmdbid |
+| `internal/api/watchfolders.go` | Watch kids + reload |
+| `internal/api/rename.go` | Scan on kids save |
+| `frontend/src/screens/settings/Library.tsx` | Progress line |
+| `frontend/src/screens/Library.tsx` | Scan banner |
+
 ## 2026-09-23 — Monitored chip matches Movies/Series tab size
 
 **Problem:** The Monitored filter chip on Discover and Library used `text-xs`. Movies and Series tabs use `text-sm`.

@@ -286,7 +286,9 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// POST /api/proposals/{id}/undo does — see rename_undo.go's file doc.
 	mux.HandleFunc("GET /api/modes/{mode}/rename/recently-applied", recentlyAppliedHandler())
 	mux.HandleFunc("GET /api/modes/{mode}/rename/kids-root-path", getKidsRootPathHandler(settingsStore))
-	mux.HandleFunc("PUT /api/modes/{mode}/rename/kids-root-path", putKidsRootPathHandler(settingsStore))
+	mux.HandleFunc("PUT /api/modes/{mode}/rename/kids-root-path", putKidsRootPathHandler(httpClient, connStore, scStore, settingsStore, propStore, libStore, prober, videoHasher, entityStore))
+	mux.HandleFunc("GET /api/modes/{mode}/rename/scan/status", getRenameScanStatusHandler())
+	mux.HandleFunc("GET /api/library/scan-status", getLibraryScanStatusHandler())
 	// Adult Review: preview (GET) and confirm (POST) for web-identified-only
 	// Unmatched Adult proposals. Mode-scoped so Layer 1's Adult section-lock
 	// classification fires via classifyModes — see adult_review.go's file doc

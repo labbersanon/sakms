@@ -156,6 +156,8 @@ function defaultGet(url: string): Response | undefined {
     });
   if (url.includes("/naming-preset")) return jsonResponse({ preset: "jellyfin" });
   if (url.includes("/rename/kids-root-path")) return jsonResponse({ path: "" });
+  if (url.includes("/rename/scan/status") || url.includes("/library/scan-status"))
+    return jsonResponse({});
   if (url.includes("/phash-threshold")) return jsonResponse({ threshold: 8 });
   if (url.includes("/rename-match-config"))
     return jsonResponse({ candidateN: 5, durationTolerancePct: 5 });

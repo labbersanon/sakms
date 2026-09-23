@@ -26,6 +26,13 @@ import (
 // Troubleshooting: POST /api/admin/posters/backfill; progress every title in logs.
 // Review if: gap tuned differently or AI fallback disabled during backfill.
 // Related files: internal/api/poster.go, internal/library/library_poster.go
+//
+// Claude 2026-09-23: movie identity repair falls through to SearXNG grounding.
+// Reason: GuessTitle→TMDB misses the same messy names Rename Phase 2 recovers.
+// Troubleshooting: movie_id_repaired stays 0 with web search configured → check
+//   "web-search" log line; nil WebSearch or MainstreamAI skips this step.
+// Review if: series repair grows the same grounding path.
+// Related files: internal/identify/mainstream_prompts.go, internal/rename/rename.go
 
 // posterBackfillGap spaces TMDB/TVDB/AI calls so a full-library pass cannot
 // stampede outbound APIs the way the unthrottled mediafolder boot sweep did.
@@ -187,25 +194,35 @@ func repairMovieIdentity(ctx context.Context, libStore *library.Store, sess *mod
 		}
 		return commitMovieIdentityRepair(ctx, libStore, sess, it, hint.TMDBID, title, year, "nfo")
 	}
-	// 3) GuessTitle → TMDB (decline-heavy; year used when present)
-	if sess.MainstreamAI == nil {
-		return false
-	}
+	// 3) GuessTitle → TMDB. A title without a dot beats the release filename.
 	seed := filepath.Base(it.FilePath)
 	if it.Title != "" && !strings.Contains(it.Title, ".") {
 		seed = it.Title
 	}
-	g, err := identify.GuessTitle(ctx, sess.MainstreamAI, seed)
-	if err != nil || g.Title == "" {
+	query := seed
+	if sess.MainstreamAI != nil {
+		g, err := identify.GuessTitle(ctx, sess.MainstreamAI, seed)
+		if err == nil && g.Title != "" {
+			query = g.Title
+			if tmdbID, title, year, err := rename.ResolveMovieTMDBFromTags(ctx, sess.TMDB, mediainfo.Tags{
+				Title: g.Title, Year: g.Year,
+			}); err == nil && tmdbID > 0 {
+				return commitMovieIdentityRepair(ctx, libStore, sess, it, tmdbID, title, year, "guess-title")
+			}
+		}
+	}
+	// 4) Web search → TMDB when the guess missed or was declined.
+	grounded, err := identify.GroundTitleViaSearch(ctx, sess.WebSearch, sess.MainstreamAI, query)
+	if err != nil || grounded.Title == "" {
 		return false
 	}
 	tmdbID, title, year, err := rename.ResolveMovieTMDBFromTags(ctx, sess.TMDB, mediainfo.Tags{
-		Title: g.Title, Year: g.Year,
+		Title: grounded.Title, Year: grounded.Year,
 	})
 	if err != nil || tmdbID <= 0 {
 		return false
 	}
-	return commitMovieIdentityRepair(ctx, libStore, sess, it, tmdbID, title, year, "guess-title")
+	return commitMovieIdentityRepair(ctx, libStore, sess, it, tmdbID, title, year, "web-search")
 }
 
 func commitMovieIdentityRepair(ctx context.Context, libStore *library.Store, sess *mode.Session, it library.Item, tmdbID int, title string, year int, via string) bool {

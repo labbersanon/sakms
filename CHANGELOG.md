@@ -9176,3 +9176,17 @@ status stays active.
 | File | Change |
 |---|---|
 | `internal/usenet/pipeline_resume_test.go` | Robust mid-flight BODY pacing |
+
+## 2026-09-23 — Movie identity repair grounds via web search
+
+**Problem:** Library movies with `tmdb_id ≤ 0` stopped after GuessTitle. Rename already recovers those names by searching the web and sending the official title to TMDB; backfill did not.
+**Fix:** After tags, NFO, and a GuessTitle miss or decline, `repairMovieIdentity` calls `GroundTitleViaSearch` (SearXNG primary) and resolves that title+year on TMDB. Logged as `web-search`.
+**Outcome:** Unit test covers a declined guess recovered from a search snippet.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/poster_backfill.go` | Web-search fallthrough on movie identity repair |
+| `internal/api/poster_backfill_test.go` | Declined guess + snippet → TMDB id |
+| `docs/jellyfin-metadata.md` | Document the movie repair order |

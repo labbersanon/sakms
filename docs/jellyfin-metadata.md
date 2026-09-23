@@ -51,5 +51,8 @@ poster backfill: done movies_ok=… movies_fail=… series_ok=… series_fail=�
 Rename/scan and poster backfill prefer **ffprobe format.tags** before NFO and
 filename: TMDB/IMDb ids when present, otherwise title + year → TMDB search.
 Tracked Movies rows with `tmdb_id ≤ 0` are repaired the same way when the
-file still has usable tags.
+file still has usable tags. If tags, NFO, and GuessTitle still produce no
+TMDB id, backfill searches the web (SearXNG when configured), asks the local
+model to read the snippets, and sends that title and year to TMDB. Series
+repair stays NFO-only.
 

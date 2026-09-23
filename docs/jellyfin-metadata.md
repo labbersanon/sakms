@@ -17,6 +17,14 @@ its own `folder.jpg` / NFO on disk; sakms does **not** write sidecars.
 Series with `tmdb_id=0` are repaired from an **existing** `tvshow.nfo` when
 present (read-only), then art is resolved.
 
+## TMDB rate limit
+
+All live TMDB HTTP calls (Rename, Discover, `/poster`, backfill, etc.) share
+one process-wide limiter: **40 requests / 10 seconds** (token bucket, burst
+40). Callers **block/wait** until a token is available (or their context
+cancels). Cache hits do not consume a token. The poster backfill’s 2s gap
+remains as extra pacing for TVDB/AI, not a substitute for this limit.
+
 ## Admin trigger
 
 ```http

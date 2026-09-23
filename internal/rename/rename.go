@@ -346,9 +346,10 @@ func proposeOneLibrary(
 		// Review if: no-signal web Pending false-positives need a stricter gate
 		guessed := ""
 		if sess.MainstreamAI != nil {
-			if g, gerr := identify.GuessTitle(ctx, sess.MainstreamAI, entry.Name); gerr == nil && g != "" {
-				guessed = g
-				if got := tryMovieQueries(ctx, sess, sig, cfg, acceptMovie, searchterm.SearchQueries(guessed)); got != nil {
+			if g, gerr := identify.GuessTitle(ctx, sess.MainstreamAI, entry.Name); gerr == nil && g.Title != "" {
+				var queries []string
+				sig, guessed, queries = applyGuessTitle(sig, g)
+				if got := tryMovieQueries(ctx, sess, sig, cfg, acceptMovie, queries); got != nil {
 					return *got
 				}
 			}
@@ -422,9 +423,10 @@ func proposeOneLibrary(
 	// Review if: Brave runs before GuessTitle
 	guessed := ""
 	if sess.MainstreamAI != nil {
-		if g, gerr := identify.GuessTitle(ctx, sess.MainstreamAI, entry.Name); gerr == nil && g != "" {
-			guessed = g
-			if got := tryMovieQueries(ctx, sess, sig, cfg, acceptMovie, searchterm.SearchQueries(guessed)); got != nil {
+		if g, gerr := identify.GuessTitle(ctx, sess.MainstreamAI, entry.Name); gerr == nil && g.Title != "" {
+			var queries []string
+			sig, guessed, queries = applyGuessTitle(sig, g)
+			if got := tryMovieQueries(ctx, sess, sig, cfg, acceptMovie, queries); got != nil {
 				return *got
 			}
 		}
@@ -1258,9 +1260,10 @@ func proposeOneEpisodeLibrary(
 	if !sig.HasAny() {
 		guessed := ""
 		if sess.MainstreamAI != nil {
-			if g, gerr := identify.GuessTitle(ctx, sess.MainstreamAI, looseTitle); gerr == nil && g != "" {
-				guessed = g
-				if got := trySeriesQueries(ctx, sess, sig, cfg, acceptSeries, gate.withSeed(guessed), season, episode, searchterm.SearchQueries(guessed)); got != nil {
+			if g, gerr := identify.GuessTitle(ctx, sess.MainstreamAI, looseTitle); gerr == nil && g.Title != "" {
+				var queries []string
+				sig, guessed, queries = applyGuessTitle(sig, g)
+				if got := trySeriesQueries(ctx, sess, sig, cfg, acceptSeries, gate.withSeed(guessed), season, episode, queries); got != nil {
 					return *got, false
 				}
 			}
@@ -1388,9 +1391,10 @@ func proposeOneEpisodeLibrary(
 	// basename must not reach GuessTitle/bravePhase2Series raw).
 	guessed := ""
 	if sess.MainstreamAI != nil {
-		if g, gerr := identify.GuessTitle(ctx, sess.MainstreamAI, looseTitle); gerr == nil && g != "" {
-			guessed = g
-			if got := trySeriesQueries(ctx, sess, sig, cfg, acceptSeries, gate.withSeed(guessed), season, episode, searchterm.SearchQueries(guessed)); got != nil {
+		if g, gerr := identify.GuessTitle(ctx, sess.MainstreamAI, looseTitle); gerr == nil && g.Title != "" {
+			var queries []string
+			sig, guessed, queries = applyGuessTitle(sig, g)
+			if got := trySeriesQueries(ctx, sess, sig, cfg, acceptSeries, gate.withSeed(guessed), season, episode, queries); got != nil {
 				return *got, false
 			}
 		}

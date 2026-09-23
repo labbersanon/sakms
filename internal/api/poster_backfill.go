@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/labbersanon/sakms/internal/connections"
@@ -89,7 +90,7 @@ func RunPosterBackfill(
 					log.Printf("poster backfill: cancelled during identity repair after %d", i)
 					return
 				}
-				if repairMovieIdentityFromTags(ctx, libStore, sess, prober, it) {
+				if repairMovieIdentity(ctx, libStore, sess, prober, it) {
 					idRepaired++
 				}
 				if err := sleepBackfillGap(ctx); err != nil {
@@ -163,23 +164,56 @@ func RunPosterBackfill(
 		moviesOK, moviesFail, seriesOK, seriesFail, repaired, idRepaired)
 }
 
-func repairMovieIdentityFromTags(ctx context.Context, libStore *library.Store, sess *mode.Session, prober *mediainfo.Prober, it library.Item) bool {
-	if it.FilePath == "" || prober == nil || sess == nil || sess.TMDB == nil {
+func repairMovieIdentity(ctx context.Context, libStore *library.Store, sess *mode.Session, prober *mediainfo.Prober, it library.Item) bool {
+	if it.FilePath == "" || sess == nil || sess.TMDB == nil {
 		return false
 	}
-	probe, err := prober.Probe(ctx, it.FilePath)
-	if err != nil || probe == nil || !probe.Tags.HasIdentity() {
+	// 1) Embedded tags
+	if prober != nil {
+		if probe, err := prober.Probe(ctx, it.FilePath); err == nil && probe != nil && probe.Tags.HasIdentity() {
+			if tmdbID, title, year, err := rename.ResolveMovieTMDBFromTags(ctx, sess.TMDB, probe.Tags); err == nil && tmdbID > 0 {
+				return commitMovieIdentityRepair(ctx, libStore, sess, it, tmdbID, title, year, "embedded tags")
+			}
+		}
+	}
+	// 2) Existing movie.nfo (read-only)
+	if hint := nfo.ReadSidecar(it.FilePath); hint.TMDBID > 0 {
+		title, year := hint.Title, hint.Year
+		if details, err := sess.TMDB.MovieDetails(ctx, hint.TMDBID); err == nil {
+			title = details.Title
+			if year == 0 {
+				year = parseYearPrefix(details.ReleaseDate)
+			}
+		}
+		return commitMovieIdentityRepair(ctx, libStore, sess, it, hint.TMDBID, title, year, "nfo")
+	}
+	// 3) GuessTitle → TMDB (decline-heavy; year used when present)
+	if sess.MainstreamAI == nil {
 		return false
 	}
-	tmdbID, title, year, err := rename.ResolveMovieTMDBFromTags(ctx, sess.TMDB, probe.Tags)
+	seed := filepath.Base(it.FilePath)
+	if it.Title != "" && !strings.Contains(it.Title, ".") {
+		seed = it.Title
+	}
+	g, err := identify.GuessTitle(ctx, sess.MainstreamAI, seed)
+	if err != nil || g.Title == "" {
+		return false
+	}
+	tmdbID, title, year, err := rename.ResolveMovieTMDBFromTags(ctx, sess.TMDB, mediainfo.Tags{
+		Title: g.Title, Year: g.Year,
+	})
 	if err != nil || tmdbID <= 0 {
 		return false
 	}
+	return commitMovieIdentityRepair(ctx, libStore, sess, it, tmdbID, title, year, "guess-title")
+}
+
+func commitMovieIdentityRepair(ctx context.Context, libStore *library.Store, sess *mode.Session, it library.Item, tmdbID int, title string, year int, via string) bool {
 	if err := libStore.SetMovieTMDBID(ctx, it.ID, tmdbID, title, year); err != nil {
 		log.Printf("poster backfill: repair movie id=%d → tmdb=%d: %v", it.ID, tmdbID, err)
 		return false
 	}
-	log.Printf("poster backfill: repaired movie %q id=%d → tmdb=%d (embedded tags)", it.Title, it.ID, tmdbID)
+	log.Printf("poster backfill: repaired movie %q id=%d → tmdb=%d (%s)", it.Title, it.ID, tmdbID, via)
 	ensureImportPoster(ctx, libStore, sess, mode.Movies, tmdbID)
 	return true
 }

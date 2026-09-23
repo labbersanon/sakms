@@ -10,33 +10,92 @@ import (
 	"github.com/labbersanon/sakms/internal/websearch"
 )
 
-// GuessTitle asks Ollama to guess the real title of a movie or TV series from
-// a messy file/folder name that didn't produce a usable Sonarr/Radarr lookup
-// match on its own — Rename's AI fallback for Movies/Series, the mainstream
-// counterpart to the Adult pipeline's ParseFilename/ExtractFromSearch.
+// GuessTitle asks the mainstream AI to recover a movie/TV title (and year
+// when confident) from a messy file/folder name — Rename's AI fallback and
+// identity-repair fallback when embedded tags / NFO are absent.
 //
-// For a genuinely opaque name with no real signal, the model does not
-// reliably decline to answer — it can fabricate a plausible-sounding but
-// entirely unrelated title instead. The prompt explicitly gives it an "I
-// don't know" escape valve, and ollama.NormalizeField treats that as absent,
-// so a hallucinated title can't go on to match an unrelated lookup result and
-// get registered as a real identification.
-func GuessTitle(ctx context.Context, client AIClient, name string) (string, error) {
-	prompt := fmt.Sprintf(`This is a filename or folder name for a movie or TV series, possibly with release-scene noise mixed in (resolution, codec, source, release group tags): %q
+// Claude 2026-09-23: structured {title,year}; decline-heavy prompt (C/C/C).
+// Reason: year was mentioned in prose but discarded; hallucinations matched
+//   wrong TMDB rows; backfill never called GuessTitle for tmdb_id≤0 movies.
+// Troubleshooting: opaque release names fabricating titles → force null.
+// Review if: vision/OCR title-card path supersedes filename GuessTitle.
+// Related files: rename.go, api/poster_backfill.go, releasematch.go
+func GuessTitle(ctx context.Context, client AIClient, name string) (TitleGrounding, error) {
+	if client == nil {
+		return TitleGrounding{}, fmt.Errorf("AI title guess: no client")
+	}
+	prompt := fmt.Sprintf(`You identify movies and TV series from messy filenames/folder names.
 
-If you can confidently determine the real title from this name, respond with a JSON object of the form {"title": "..."} (include the year if you can tell what it is). If the name is too generic, abbreviated, or opaque to confidently identify — do NOT guess or fabricate a plausible-sounding title — respond with {"title": null} instead.
+Filename/folder: %q
 
-Respond with ONLY the JSON object, no other text.`, name)
+Rules (follow strictly):
+1. Respond with ONLY JSON: {"title":"...","year":1986} or {"title":null,"year":null}.
+2. "title" must be the official work title ONLY — do NOT put the year inside the title string.
+3. "year" is the first-release / first-air year as an integer, or null if you are not sure.
+4. Strip release-scene noise (resolution, codec, source, group tags, "WEB-DL", "BluRay", etc.).
+5. If the name is abbreviated, hashed, generic, multi-title ambiguous, or you are less than highly confident — do NOT invent a plausible title. Respond with {"title":null,"year":null}.
+6. Prefer declining over a wrong guess. A null decline is success; a fabricated title is failure.
+
+Examples of decline: random hashes, single generic words, unreadable abbreviations with no clear expansion.`, name)
 
 	resp, err := client.ChatJSON(ctx, prompt)
 	if err != nil {
-		return "", fmt.Errorf("AI title guess failed: %w", err)
+		return TitleGrounding{}, fmt.Errorf("AI title guess failed: %w", err)
 	}
 	title := ollama.NormalizeField(resp["title"])
 	if title == "" {
-		return "", fmt.Errorf("AI could not confidently determine a title (or declined to guess) for %q", name)
+		return TitleGrounding{}, fmt.Errorf("AI could not confidently determine a title (or declined to guess) for %q", name)
 	}
-	return title, nil
+	// Strip a trailing "(YYYY)" if the model ignored rule 2.
+	year := parseGuessYear(resp["year"])
+	if year == 0 {
+		if y, clean := splitTrailingYear(title); y > 0 {
+			year, title = y, clean
+		}
+	} else {
+		title = strings.TrimSpace(strings.ReplaceAll(title, fmt.Sprintf("(%d)", year), ""))
+	}
+	return TitleGrounding{Title: title, Year: year}, nil
+}
+
+func parseGuessYear(v any) int {
+	switch y := v.(type) {
+	case float64:
+		n := int(y)
+		if n >= 1888 && n <= 2100 {
+			return n
+		}
+	case string:
+		n, _ := strconv.Atoi(strings.TrimSpace(y))
+		if n >= 1888 && n <= 2100 {
+			return n
+		}
+	}
+	return 0
+}
+
+func splitTrailingYear(title string) (year int, clean string) {
+	title = strings.TrimSpace(title)
+	if len(title) < 7 {
+		return 0, title
+	}
+	// "... (1999)" or "... 1999"
+	if strings.HasSuffix(title, ")") {
+		open := strings.LastIndex(title, "(")
+		if open > 0 {
+			inner := strings.TrimSpace(title[open+1 : len(title)-1])
+			if y, err := strconv.Atoi(inner); err == nil && y >= 1888 && y <= 2100 {
+				return y, strings.TrimSpace(title[:open])
+			}
+		}
+	}
+	parts := strings.Fields(title)
+	if len(parts) >= 2 {
+		if y, err := strconv.Atoi(parts[len(parts)-1]); err == nil && y >= 1888 && y <= 2100 {
+			return y, strings.TrimSpace(strings.Join(parts[:len(parts)-1], " "))
+		}
+	}
+	return 0, title
 }
 
 // TitleGrounding is the mainstream (Movies/Series) result of Brave-grounded extract.

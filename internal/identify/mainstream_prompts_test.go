@@ -10,19 +10,36 @@ func TestGuessTitle_ParsesConfidentGuess(t *testing.T) {
 	var seenPrompt string
 	client, closeSrv := fakeOllama(t, func(prompt string) string {
 		seenPrompt = prompt
-		return `{"title":"Breaking Bad (2008)"}`
+		return `{"title":"Breaking Bad","year":2008}`
 	})
 	defer closeSrv()
 
-	title, err := GuessTitle(context.Background(), client, "brba.s01e01.720p-GROUP")
+	got, err := GuessTitle(context.Background(), client, "brba.s01e01.720p-GROUP")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if title != "Breaking Bad (2008)" {
-		t.Fatalf("got %q", title)
+	if got.Title != "Breaking Bad" || got.Year != 2008 {
+		t.Fatalf("got %+v", got)
 	}
 	if !strings.Contains(seenPrompt, "brba.s01e01.720p-GROUP") {
 		t.Error("expected the original name to be embedded in the prompt")
+	}
+	if !strings.Contains(seenPrompt, "null") {
+		t.Error("expected decline-heavy prompt to mention null")
+	}
+}
+
+func TestGuessTitle_StripsYearFromTitleField(t *testing.T) {
+	client, closeSrv := fakeOllama(t, func(prompt string) string {
+		return `{"title":"The Matrix (1999)","year":null}`
+	})
+	defer closeSrv()
+	got, err := GuessTitle(context.Background(), client, "matrix.1999.1080p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != "The Matrix" || got.Year != 1999 {
+		t.Fatalf("got %+v", got)
 	}
 }
 
@@ -31,7 +48,7 @@ func TestGuessTitle_ParsesConfidentGuess(t *testing.T) {
 // that could go on to match an unrelated Lookup result.
 func TestGuessTitle_DeclinesOnOpaqueName(t *testing.T) {
 	client, closeSrv := fakeOllama(t, func(prompt string) string {
-		return `{"title":null}`
+		return `{"title":null,"year":null}`
 	})
 	defer closeSrv()
 

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/labbersanon/sakms/internal/classify"
+	"github.com/labbersanon/sakms/internal/identify"
 	"github.com/labbersanon/sakms/internal/mediainfo"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/proposals"
@@ -187,4 +188,20 @@ func acceptEmbeddedMovie(
 		p.Cast = names
 	}
 	return &p
+}
+
+// applyGuessTitle merges an AI GuessTitle result into file signals and builds
+// TMDB search queries (title+year first when year is known).
+func applyGuessTitle(sig FileSignals, g identify.TitleGrounding) (FileSignals, string, []string) {
+	if strings.TrimSpace(g.Title) == "" {
+		return sig, "", nil
+	}
+	if g.Year > 0 && sig.Year == 0 {
+		sig.Year = g.Year
+	}
+	queries := searchterm.SearchQueries(g.Title)
+	if g.Year > 0 {
+		queries = append([]string{fmt.Sprintf("%s %d", strings.TrimSpace(g.Title), g.Year)}, queries...)
+	}
+	return sig, g.Title, queries
 }

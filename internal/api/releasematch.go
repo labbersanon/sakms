@@ -257,7 +257,11 @@ func cleanReleaseTitle(ctx context.Context, releaseTitle string, m mode.Mode, ai
 		}
 		return parsed.Title, nil
 	}
-	return identify.GuessTitle(ctx, aiClient, releaseTitle)
+	g, err := identify.GuessTitle(ctx, aiClient, releaseTitle)
+	if err != nil {
+		return "", err
+	}
+	return g.Title, nil
 }
 
 // Claude 2026-08-03: added FilterSeasonScope + seasonOnlyPattern/

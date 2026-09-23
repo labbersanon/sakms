@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -207,5 +208,43 @@ func TestRepairSeriesIdentity_KnownYearRejectsOtherPremiere(t *testing.T) {
 	}
 	if repairSeriesIdentity(ctx, store, sess, ser) {
 		t.Fatal("expected the 1966 premiere to be declined for a 1919 series")
+	}
+}
+
+func TestCommitMovieIdentityRepair_LinksDuplicateFile(t *testing.T) {
+	store := library.New(dbtest.New(t))
+	ctx := context.Background()
+	owner, err := store.Upsert(ctx, library.Item{
+		Mode: mode.Movies, TMDBID: 1723460, Title: "A Toxic Love Story", Year: 2026,
+		FilePath: "/movies/A Toxic Love Story (2026) [tmdbid-1723460].mkv", RootFolderPath: "/movies",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	orphan, err := store.Upsert(ctx, library.Item{
+		Mode: mode.Movies, TMDBID: -9, Title: "A.Toxic.Love.Story.2026.2160p.mp4",
+		FilePath: "/movies/A Toxic Love Story (2026)/A.Toxic.Love.Story.2026.2160p.mp4", RootFolderPath: "/movies",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !commitMovieIdentityRepair(ctx, store, &mode.Session{}, orphan, 1723460, "A Toxic Love Story", 2026, "nfo") {
+		t.Fatal("expected the second file to link onto the existing movie")
+	}
+	if _, err := store.Get(ctx, orphan.ID); !errors.Is(err, library.ErrNotFound) {
+		t.Fatalf("orphan still present: %v", err)
+	}
+	files, err := store.ListFiles(ctx, owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var linked bool
+	for _, f := range files {
+		if f.FilePath == orphan.FilePath && !f.IsPrimary {
+			linked = true
+		}
+	}
+	if !linked {
+		t.Fatalf("owner files: %+v", files)
 	}
 }

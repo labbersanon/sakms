@@ -9218,3 +9218,16 @@ status stays active.
 |---|---|
 | `internal/api/poster_backfill.go` | TVDB find first; year mismatch declines |
 | `internal/api/poster_backfill_test.go` | 1966 hit does not repair a 1919 series |
+
+## 2026-09-23 — Link a second copy when the TMDB id is already in the library
+
+**Problem:** A Toxic Love Story's NFO already says TMDB 1723460. Repair found that id and refused to save it because the other file owns the row. The two Red Skelton specials have IMDb ids (tt2201189, and tt2215439 from the title) that TMDB does not catalog, so a title search cannot assign them.
+**Fix:** When the resolved TMDB id belongs to another movie row, attach this file as a non-primary `library_item_files` row and retire the unidentified row. An NFO with only an IMDb id is resolved through `FindMovieByIMDBID` before GuessTitle.
+**Outcome:** Unit test links the second file and removes the orphan row.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/poster_backfill.go` | Duplicate link; NFO IMDb lookup |
+| `internal/api/poster_backfill_test.go` | Second file attaches to the owning movie |

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -207,16 +208,29 @@ func repairMovieIdentity(ctx context.Context, libStore *library.Store, sess *mod
 			}
 		}
 	}
-	// 2) Existing movie.nfo (read-only)
-	if hint := nfo.ReadSidecar(it.FilePath); hint.TMDBID > 0 {
+	// 2) Existing movie.nfo (read-only). IMDb is used when the file has no TMDB id.
+	if hint := nfo.ReadSidecar(it.FilePath); hint.TMDBID > 0 || hint.IMDBID != "" {
+		tmdbID := hint.TMDBID
 		title, year := hint.Title, hint.Year
-		if details, err := sess.TMDB.MovieDetails(ctx, hint.TMDBID); err == nil {
-			title = details.Title
-			if year == 0 {
-				year = parseYearPrefix(details.ReleaseDate)
+		via := "nfo"
+		if tmdbID <= 0 {
+			id, err := sess.TMDB.FindMovieByIMDBID(ctx, hint.IMDBID)
+			if err != nil || id <= 0 {
+				tmdbID = 0
+			} else {
+				tmdbID = id
+				via = "nfo-imdb"
 			}
 		}
-		return commitMovieIdentityRepair(ctx, libStore, sess, it, hint.TMDBID, title, year, "nfo")
+		if tmdbID > 0 {
+			if details, err := sess.TMDB.MovieDetails(ctx, tmdbID); err == nil {
+				title = details.Title
+				if year == 0 {
+					year = parseYearPrefix(details.ReleaseDate)
+				}
+			}
+			return commitMovieIdentityRepair(ctx, libStore, sess, it, tmdbID, title, year, via)
+		}
 	}
 	// 3) GuessTitle → TMDB. A title without a dot beats the release filename.
 	seed := filepath.Base(it.FilePath)
@@ -250,12 +264,40 @@ func repairMovieIdentity(ctx context.Context, libStore *library.Store, sess *mod
 }
 
 func commitMovieIdentityRepair(ctx context.Context, libStore *library.Store, sess *mode.Session, it library.Item, tmdbID int, title string, year int, via string) bool {
+	// Claude 2026-09-23: a second file of a movie already in the library is linked, not rekeyed.
+	// Reason: A Toxic Love Story's NFO id 1723460 is already row 197; SetMovieTMDBID conflicts.
+	// Troubleshooting: movie stays tmdb_id<=0 with "could not set tmdb_id" → owner row missing.
+	// Review if: duplicate copies should replace the primary file instead of attaching.
+	if owner, err := libStore.GetByTMDBID(ctx, mode.Movies, tmdbID); err == nil && owner.ID != it.ID {
+		return linkDuplicateMovie(ctx, libStore, it, owner, tmdbID, via)
+	} else if err != nil && !errors.Is(err, library.ErrNotFound) {
+		log.Printf("poster backfill: lookup movie tmdb=%d: %v", tmdbID, err)
+		return false
+	}
 	if err := libStore.SetMovieTMDBID(ctx, it.ID, tmdbID, title, year); err != nil {
 		log.Printf("poster backfill: repair movie id=%d → tmdb=%d: %v", it.ID, tmdbID, err)
 		return false
 	}
 	log.Printf("poster backfill: repaired movie %q id=%d → tmdb=%d (%s)", it.Title, it.ID, tmdbID, via)
 	ensureImportPoster(ctx, libStore, sess, mode.Movies, tmdbID)
+	return true
+}
+
+func linkDuplicateMovie(ctx context.Context, libStore *library.Store, it library.Item, owner *library.Item, tmdbID int, via string) bool {
+	if it.FilePath == "" || it.FilePath == owner.FilePath {
+		return false
+	}
+	if _, err := libStore.UpsertFile(ctx, library.ItemFile{
+		ItemID: owner.ID, FilePath: it.FilePath, IsPrimary: false,
+	}); err != nil {
+		log.Printf("poster backfill: link %q onto movie id=%d: %v", it.FilePath, owner.ID, err)
+		return false
+	}
+	if err := libStore.Delete(ctx, it.ID); err != nil {
+		log.Printf("poster backfill: retire duplicate movie id=%d: %v", it.ID, err)
+		return false
+	}
+	log.Printf("poster backfill: linked %q id=%d onto movie %q id=%d tmdb=%d (%s)", it.FilePath, it.ID, owner.Title, owner.ID, tmdbID, via)
 	return true
 }
 

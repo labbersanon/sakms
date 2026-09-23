@@ -766,12 +766,18 @@ export const FilterChip: Component<{
   label: string;
   active: () => boolean;
   onToggle: () => void;
+  // Claude 2026-09-23: optional size so Monitored can match Movies/Series tabs.
+  // Reason: default text-xs sat next to ScreenTabBar text-sm on Discover/Library.
+  // Review if: FilterChip is only used beside tab pills and this default can become sm.
+  size?: "xs" | "sm";
 }> = (props) => (
   <button
     type="button"
     aria-pressed={props.active()}
-    class="rounded-md px-3 py-1 text-xs font-medium transition"
+    class="rounded-md px-3 font-medium transition"
     classList={{
+      "py-1 text-xs": (props.size ?? "xs") === "xs",
+      "py-1.5 text-sm": props.size === "sm",
       "bg-accent text-accent-fg": props.active(),
       "bg-surface-2 text-muted hover:text-fg": !props.active(),
     }}

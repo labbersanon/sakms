@@ -964,6 +964,7 @@ const LibraryView: Component<{
               <div class="flex items-end sm:self-end">
                 <FilterChip
                   label="Monitored"
+                  size="sm"
                   active={monitoredOnly}
                   onToggle={() => {
                     setMonitoredOnly((v) => !v);

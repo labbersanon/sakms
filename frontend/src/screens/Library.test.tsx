@@ -1619,6 +1619,17 @@ describe("Library — detail section order", () => {
 //   absent in Adult Library.
 // Review if: monitoredOnly logic moves server-side.
 describe("Library — Monitored chip", () => {
+  it("uses the same text-sm pill size as Movies/Series", async () => {
+    stubFetch(makeHandler([inception({ id: 11, title: "Monitored Movie", monitored: true })]));
+    renderLibrary();
+    await screen.findByRole("button", { name: "Monitored Movie" });
+    const movies = screen.getByRole("button", { name: "Movies" });
+    const monitored = screen.getByRole("button", { name: "Monitored" });
+    expect(monitored.className).toContain("text-sm");
+    expect(movies.className).toContain("text-sm");
+    expect(monitored.className).not.toContain("text-xs");
+  });
+
   it("chip filters grid to monitored===true rows; toggling off restores all", async () => {
     const monitoredItem = inception({ id: 11, title: "Monitored Movie", monitored: true });
     const unmonitored = inception({ id: 12, title: "Unmonitored Movie", monitored: undefined });

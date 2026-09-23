@@ -9293,3 +9293,17 @@ status stays active.
 | `internal/api/autograb_tmdbid.go` | Exact-title TMDB resolve |
 | `internal/api/autograb_shared.go` | Fill a missing id before the movie gate |
 | `internal/grabs/grabs.go` | `SetTMDBID` |
+
+## 2026-09-23 — Monitored chip matches Movies/Series tab size
+
+**Problem:** The Monitored filter chip on Discover and Library used `text-xs`. Movies and Series tabs use `text-sm`.
+**Fix:** FilterChip accepts `size="sm"` and both Monitored chips use it. Requests chips stay `text-xs`.
+**Outcome:** Unit tests assert Monitored and Movies share `text-sm`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/components/ui.tsx` | FilterChip `size` |
+| `frontend/src/screens/discover/Mainstream.tsx` | Monitored `size="sm"` |
+| `frontend/src/screens/Library.tsx` | Monitored `size="sm"` |

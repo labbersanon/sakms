@@ -68,6 +68,22 @@ afterEach(() => {
 });
 
 describe("Discover Mainstream — Monitored chip", () => {
+  it("uses the same text-sm pill size as Movies/Series", () => {
+    stubFetch((url) => {
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      if (url.includes("/tracked")) return jsonResponse([]);
+      if (url.includes("/api/requests")) return jsonResponse(emptyRequests());
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => <DiscoverMainstream />);
+    const movies = screen.getByRole("button", { name: "Movies" });
+    const monitored = screen.getByRole("button", { name: "Monitored" });
+    expect(monitored.className).toContain("text-sm");
+    expect(movies.className).toContain("text-sm");
+    expect(monitored.className).not.toContain("text-xs");
+  });
+
   it("chip on: shows a tracked title with monitored=true", async () => {
     const tracked = trackedItem({ id: 10, title: "Monitored Movie", tmdbId: 100, monitored: true });
     stubFetch((url) => {

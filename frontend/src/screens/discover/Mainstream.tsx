@@ -1189,6 +1189,7 @@ export const MainstreamDiscover: Component<{
         </For>
         <FilterChip
           label="Monitored"
+          size="sm"
           active={monitoredOnly}
           onToggle={() => {
             const turningOn = !monitoredOnly();

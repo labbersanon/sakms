@@ -9205,3 +9205,16 @@ status stays active.
 | `internal/library/library_series_ids.go` | `ListSeriesNeedingIdentity` |
 | `internal/api/poster_backfill_test.go` | Series web-search repair test |
 | `docs/jellyfin-metadata.md` | Series repair order |
+
+## 2026-09-23 — Series title search declines a year mismatch
+
+**Problem:** The first series repair assigned Laurel & Hardy (year 1919, TVDB 73910) to TMDB 117523, the 1966 cartoon, because no search hit matched 1919 and the first result was kept.
+**Fix:** When the series already has a TVDB id, resolve TMDB with `FindTVByTVDBID` before GuessTitle. A title search with a known year returns no id when no result premiered that year.
+**Outcome:** Unit test rejects the 1966 premiere for a 1919 series.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/poster_backfill.go` | TVDB find first; year mismatch declines |
+| `internal/api/poster_backfill_test.go` | 1966 hit does not repair a 1919 series |

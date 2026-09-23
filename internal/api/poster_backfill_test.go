@@ -175,3 +175,37 @@ func TestRepairSeriesIdentity_WebSearchAfterGuessDecline(t *testing.T) {
 		t.Fatalf("search query = %q", search.query)
 	}
 }
+
+func TestRepairSeriesIdentity_KnownYearRejectsOtherPremiere(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(r.URL.Path, "/search/tv") {
+			_, _ = w.Write([]byte(`{"results":[{"id":117523,"name":"Laurel & Hardy","first_air_date":"1966-09-10"}]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	store := library.New(dbtest.New(t))
+	ctx := context.Background()
+	ser, err := store.UpsertSeries(ctx, library.Series{
+		TMDBID: -43, Title: "Laurel & Hardy", Year: 1919, RootFolderPath: "/tv",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := &mode.Session{
+		TMDB: tmdb.New(tmdb.Config{BaseURL: srv.URL, APIKey: "test", BypassCache: true}, srv.Client()),
+		MainstreamAI: &scriptedIdentityAI{ground: map[string]any{
+			"title": "Laurel & Hardy",
+			"year":  float64(1919),
+		}},
+		WebSearch: &scriptedSearch{res: []websearch.Result{{
+			Title: "Laurel & Hardy", Description: "1919 shorts", URL: "https://example.test/lh",
+		}}},
+	}
+	if repairSeriesIdentity(ctx, store, sess, ser) {
+		t.Fatal("expected the 1966 premiere to be declined for a 1919 series")
+	}
+}

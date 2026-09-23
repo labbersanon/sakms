@@ -279,6 +279,12 @@ func repairSeriesIdentity(ctx context.Context, libStore *library.Store, sess *mo
 	if sess == nil || sess.TMDB == nil {
 		return false
 	}
+	// A stored TVDB id is a stronger key than a title search.
+	if ser.TVDBID > 0 {
+		if id, err := sess.TMDB.FindTVByTVDBID(ctx, ser.TVDBID); err == nil && id > 0 {
+			return commitSeriesIdentityRepair(ctx, libStore, sess, ser, id, "tvdb")
+		}
+	}
 	seed := seriesIdentitySeed(ctx, libStore, ser)
 	query := seed
 	if sess.MainstreamAI != nil && seed != "" {
@@ -333,16 +339,17 @@ func searchSeriesTMDB(ctx context.Context, client *tmdb.Client, title string, ye
 	if err != nil || len(items) == 0 {
 		return 0, err
 	}
-	pick := items[0]
-	if year > 0 {
-		for _, it := range items {
-			if parseYearPrefix(it.ReleaseDate) == year {
-				pick = it
-				break
-			}
+	if year <= 0 {
+		return items[0].ID, nil
+	}
+	for _, it := range items {
+		if parseYearPrefix(it.ReleaseDate) == year {
+			return it.ID, nil
 		}
 	}
-	return pick.ID, nil
+	// A known year that matches nothing is a decline. Taking items[0] assigned
+	// the 1919 Hal Roach series to the 1966 cartoon.
+	return 0, nil
 }
 
 func commitSeriesIdentityRepair(ctx context.Context, libStore *library.Store, sess *mode.Session, ser library.Series, tmdbID int, via string) bool {

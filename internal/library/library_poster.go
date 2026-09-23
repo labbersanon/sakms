@@ -15,6 +15,7 @@ const (
 	PosterSourceTMDB  = "tmdb"
 	PosterSourceTVDB  = "tvdb"
 	PosterSourceAI    = "ai"
+	PosterSourceImage = "image"
 	PosterSourceLocal = "local"
 )
 
@@ -197,6 +198,32 @@ func (s *Store) SetSeriesPosterArt(ctx context.Context, tmdbID int, url, source 
 	n, err := res.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("setting series poster art for tmdb %d: %w", tmdbID, err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetSeriesPosterByID writes poster_url on one library_series row. Used when
+// the show has no TMDB id, so SetSeriesPosterArt cannot address it.
+func (s *Store) SetSeriesPosterByID(ctx context.Context, seriesID int64, url, source string) error {
+	url = strings.TrimSpace(url)
+	source = strings.TrimSpace(source)
+	if seriesID == 0 || url == "" {
+		return nil
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE library_series
+		SET poster_url = ?, poster_source = ?, updated_at = sakms_now()
+		WHERE id = ?
+	`, url, source, seriesID)
+	if err != nil {
+		return fmt.Errorf("setting series poster art for id %d: %w", seriesID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
 	}
 	if n == 0 {
 		return ErrNotFound

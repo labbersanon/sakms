@@ -12,7 +12,7 @@ type stubClient struct {
 }
 
 func (s stubClient) Search(context.Context, string, int) ([]Result, error) { return s.res, s.err }
-func (s stubClient) Ping(context.Context) error                           { return s.err }
+func (s stubClient) Ping(context.Context) error                            { return s.err }
 
 func TestFailover_PrimaryEmptyUsesFallback(t *testing.T) {
 	f := &Failover{Clients: []Client{
@@ -21,6 +21,26 @@ func TestFailover_PrimaryEmptyUsesFallback(t *testing.T) {
 	}}
 	got, err := f.Search(context.Background(), "q", 5)
 	if err != nil || len(got) != 1 || got[0].Title != "ok" {
+		t.Fatalf("got %+v err=%v", got, err)
+	}
+}
+
+type imageStub struct {
+	stubClient
+	images []Result
+}
+
+func (s imageStub) SearchImages(context.Context, string, int) ([]Result, error) {
+	return s.images, nil
+}
+
+func TestFailover_SearchImagesSkipsTextClient(t *testing.T) {
+	f := &Failover{Clients: []Client{
+		stubClient{res: []Result{{URL: "https://example.test/page"}}},
+		imageStub{images: []Result{{URL: "https://img.example/p.jpg"}}},
+	}}
+	got, err := f.SearchImages(context.Background(), "poster", 5)
+	if err != nil || len(got) != 1 || got[0].URL != "https://img.example/p.jpg" {
 		t.Fatalf("got %+v err=%v", got, err)
 	}
 }

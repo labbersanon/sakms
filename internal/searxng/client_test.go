@@ -33,6 +33,43 @@ func TestClient_SearchParsesJSON(t *testing.T) {
 	}
 }
 
+func TestClient_SearchImagesUsesImgSrc(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("categories") != "images" {
+			t.Fatalf("categories=%s", r.URL.Query().Get("categories"))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{
+				{
+					"title":   "proxy",
+					"url":     "https://example.test/page",
+					"img_src": srvImage(r, "/image_proxy?x=1"),
+				},
+				{
+					"title":         "poster",
+					"url":           "https://example.test/article",
+					"img_src":       "http://insecure.example/p.jpg",
+					"thumbnail_src": "https://upload.wikimedia.org/wikipedia/poster.jpg",
+				},
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	c := New(srv.URL, srv.Client())
+	got, err := c.SearchImages(context.Background(), "Funny Faces poster", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].URL != "https://upload.wikimedia.org/wikipedia/poster.jpg" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func srvImage(r *http.Request, path string) string {
+	return "https://" + r.Host + path
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || len(sub) == 0 ||
 		(func() bool {

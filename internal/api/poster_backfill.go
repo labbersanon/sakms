@@ -120,7 +120,7 @@ func RunPosterBackfill(
 				log.Printf("poster backfill: cancelled after %d movies", i)
 				return
 			}
-			if it.TMDBID > 0 {
+			if it.TMDBID != 0 {
 				out := resolvePoster(ctx, mode.Movies, it.TMDBID, httpClient, connStore, scStore, settingsStore, libStore)
 				if out.PosterURL != "" {
 					moviesOK++
@@ -130,6 +130,13 @@ func RunPosterBackfill(
 					}
 					continue
 				}
+			} else if applyImageSearchPoster(ctx, libStore, moviePosterSession(ctx, httpClient, connStore, scStore, settingsStore), it) {
+				moviesOK++
+				if err := sleepBackfillGap(ctx); err != nil {
+					log.Printf("poster backfill: cancelled during movies gap")
+					return
+				}
+				continue
 			}
 			if applyLocalFilmPoster(ctx, libStore, it) {
 				moviesOK++
@@ -182,8 +189,12 @@ func RunPosterBackfill(
 					repaired++
 				}
 			}
-			if tmdbID <= 0 {
-				seriesFail++
+			if tmdbID == 0 {
+				if applySeriesImagePoster(ctx, libStore, seriesPosterSession(ctx, httpClient, connStore, scStore, settingsStore), ser) {
+					seriesOK++
+				} else {
+					seriesFail++
+				}
 				if err := sleepBackfillGap(ctx); err != nil {
 					return
 				}
@@ -530,9 +541,51 @@ func ensureImportPoster(ctx context.Context, libStore *library.Store, sess *mode
 	if m == mode.Series {
 		kind = "series"
 	}
-	if title != "" && sess.WebSearch != nil && sess.MainstreamAI != nil {
-		if url, err := identify.PickPosterURL(ctx, sess.WebSearch, sess.MainstreamAI, title, year, kind); err == nil && url != "" {
-			persistPoster(ctx, libStore, m, tmdbID, url, library.PosterSourceAI)
-		}
+	if url := searchedPoster(ctx, sess, title, year, kind); url != "" {
+		persistPoster(ctx, libStore, m, tmdbID, url, library.PosterSourceImage)
 	}
+}
+
+func moviePosterSession(ctx context.Context, httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store) *mode.Session {
+	sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, mode.Movies)
+	if err != nil || sess == nil {
+		log.Printf("poster backfill: movie image search session: %v", err)
+		return nil
+	}
+	return sess
+}
+
+func seriesPosterSession(ctx context.Context, httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store) *mode.Session {
+	sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, mode.Series)
+	if err != nil || sess == nil {
+		log.Printf("poster backfill: series image search session: %v", err)
+		return nil
+	}
+	return sess
+}
+
+func applyImageSearchPoster(ctx context.Context, libStore *library.Store, sess *mode.Session, it library.Item) bool {
+	url := searchedPoster(ctx, sess, it.Title, it.Year, "movie")
+	if url == "" {
+		return false
+	}
+	if err := libStore.SetMoviePosterByID(ctx, it.ID, url, library.PosterSourceImage); err != nil {
+		log.Printf("poster backfill: image search movie id=%d: %v", it.ID, err)
+		return false
+	}
+	log.Printf("poster backfill: image search %q id=%d", it.Title, it.ID)
+	return true
+}
+
+func applySeriesImagePoster(ctx context.Context, libStore *library.Store, sess *mode.Session, ser library.Series) bool {
+	url := searchedPoster(ctx, sess, ser.Title, ser.Year, "series")
+	if url == "" {
+		return false
+	}
+	if err := libStore.SetSeriesPosterByID(ctx, ser.ID, url, library.PosterSourceImage); err != nil {
+		log.Printf("poster backfill: image search series id=%d: %v", ser.ID, err)
+		return false
+	}
+	log.Printf("poster backfill: image search %q id=%d", ser.Title, ser.ID)
+	return true
 }

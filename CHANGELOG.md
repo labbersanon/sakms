@@ -9246,3 +9246,19 @@ status stays active.
 | `internal/api/poster_backfill.go` | Apply it when TMDB art is missing |
 | `internal/library/library_poster.go` | Poster write by row id; list ignores tmdb id |
 | `frontend/src/api/discover.ts` | Do not proxy same-origin poster paths |
+
+## 2026-09-23 — Image search when TMDB and TVDB have no poster
+
+**Problem:** A film with no catalog poster either stayed a letter tile or, after the folder.jpg change, never asked for an image. The previous web step searched pages and asked the model to guess an image URL.
+**Fix:** SearXNG's images category supplies direct https image URLs. The model may choose one of those URLs; any other answer keeps the first image. Movies still fall back to `folder.jpg` when image search returns nothing. A row with no TMDB id can store that image by row id.
+**Outcome:** Unit tests cover image URL selection, rejection of an invented URL, and skipping the SearXNG image proxy.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/searxng/client.go` | `SearchImages` |
+| `internal/identify/poster_pick.go` | Pick from image hits |
+| `internal/api/poster.go` | TMDB → TVDB → image search |
+| `internal/api/poster_backfill.go` | Image search before folder.jpg; series with no TMDB id |
+| `internal/library/library_poster.go` | `poster_source=image`; series write by id |

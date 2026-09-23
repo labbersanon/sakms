@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -26,15 +27,11 @@ const tmdbPosterAbsolute = "https://image.tmdb.org/t/p/w342"
 // synopsis) lazily, per card, keyed by tmdbId. Movies/Series only — Adult
 // scenes carry their own image inline from TPDB.
 //
-// Claude 2026-09-22: chain TMDB → TVDB → AI+SearXNG; persist absolute URL on
-// tracked rows (poster_url / poster_source).
-// Reason: letter tiles for TMDB-empty/404 titles; N+1 /poster with no cache.
-// Troubleshooting: missing Library posters when TMDB has no art; AI/TVDB
-//   re-running every grid load.
-// Review if: GET /tracked is the only poster source and this endpoint is
-//   posterPath-only again.
-// Related files: internal/library/library_poster.go, internal/tvdb/artwork.go,
-//   internal/identify/poster_pick.go
+// Claude 2026-09-23: chain TMDB → TVDB → image search.
+// Reason: a catalog miss was picking a page URL out of a text search.
+// Troubleshooting: poster_source stays empty when SearXNG image search is empty.
+// Review if: image results must be approved before they are stored.
+// Related files: internal/identify/poster_pick.go, internal/searxng/client.go
 func posterHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, libStore *library.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
@@ -141,11 +138,10 @@ func resolvePoster(
 	if m == mode.Series {
 		kind = "series"
 	}
-	if title != "" && sess.WebSearch != nil && sess.MainstreamAI != nil {
-		if url, err := identify.PickPosterURL(ctx, sess.WebSearch, sess.MainstreamAI, title, year, kind); err == nil && url != "" {
-			persistPoster(ctx, libStore, m, tmdbID, url, library.PosterSourceAI)
-			out.PosterURL = url
-		}
+	if url := searchedPoster(ctx, sess, title, year, kind); url != "" {
+		persistPoster(ctx, libStore, m, tmdbID, url, library.PosterSourceImage)
+		out.PosterURL = url
+		log.Printf("poster: image search %q tmdb=%d", title, tmdbID)
 	}
 	return out
 }
@@ -215,6 +211,17 @@ func persistPoster(ctx context.Context, libStore *library.Store, m mode.Mode, tm
 		return
 	}
 	_ = libStore.SetMoviePosterArt(ctx, m, tmdbID, url, source)
+}
+
+func searchedPoster(ctx context.Context, sess *mode.Session, title string, year int, kind string) string {
+	if sess == nil || sess.WebSearch == nil || strings.TrimSpace(title) == "" {
+		return ""
+	}
+	url, err := identify.PickPosterURL(ctx, sess.WebSearch, sess.MainstreamAI, title, year, kind)
+	if err != nil || strings.TrimSpace(url) == "" {
+		return ""
+	}
+	return url
 }
 
 func parseYearPrefix(date string) int {

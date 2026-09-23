@@ -81,6 +81,8 @@ const TMDB_STILL_BASE = "https://image.tmdb.org/t/p/w300";
 // for a blank input so callers can Show/skip a missing thumbnail.
 export function proxyImage(rawURL: string): string {
   if (!rawURL) return "";
+  // A same-origin poster (local folder.jpg) is already an app URL.
+  if (rawURL.startsWith("/")) return rawURL;
   return "/api/images/proxy?url=" + encodeURIComponent(rawURL);
 }
 

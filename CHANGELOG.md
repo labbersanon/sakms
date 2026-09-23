@@ -9231,3 +9231,18 @@ status stays active.
 |---|---|
 | `internal/api/poster_backfill.go` | Duplicate link; NFO IMDb lookup |
 | `internal/api/poster_backfill_test.go` | Second file attaches to the owning movie |
+
+## 2026-09-23 — Film poster from folder.jpg without a TMDB id
+
+**Problem:** A correct film name still showed a letter tile when TMDB has no id. Poster backfill only ran for `tmdb_id > 0`, and poster writes were keyed by that id.
+**Fix:** Movies with an empty `poster_url` use `folder.jpg` (or poster/cover) beside the video. The URL is `/api/posters/local?itemId=`, stored on the row. The card uses a same-origin path without the external image proxy. TMDB art is still tried first when an id exists.
+**Outcome:** Unit test finds `folder.jpg` and ignores other image names.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/local_poster.go` | Serve and record the sidecar image |
+| `internal/api/poster_backfill.go` | Apply it when TMDB art is missing |
+| `internal/library/library_poster.go` | Poster write by row id; list ignores tmdb id |
+| `frontend/src/api/discover.ts` | Do not proxy same-origin poster paths |

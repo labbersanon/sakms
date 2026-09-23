@@ -120,8 +120,18 @@ func RunPosterBackfill(
 				log.Printf("poster backfill: cancelled after %d movies", i)
 				return
 			}
-			out := resolvePoster(ctx, mode.Movies, it.TMDBID, httpClient, connStore, scStore, settingsStore, libStore)
-			if out.PosterURL != "" {
+			if it.TMDBID > 0 {
+				out := resolvePoster(ctx, mode.Movies, it.TMDBID, httpClient, connStore, scStore, settingsStore, libStore)
+				if out.PosterURL != "" {
+					moviesOK++
+					if err := sleepBackfillGap(ctx); err != nil {
+						log.Printf("poster backfill: cancelled during movies gap")
+						return
+					}
+					continue
+				}
+			}
+			if applyLocalFilmPoster(ctx, libStore, it) {
 				moviesOK++
 			} else {
 				moviesFail++

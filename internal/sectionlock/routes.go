@@ -134,12 +134,13 @@ func Classify(rawPath string) Set {
 		// its own credentials from an otherwise-unlocked Settings screen.
 		// Review if: the registry ever gains a mode-scoped route.
 		out.Add(SectionSettings)
-	case "images", "notifications", "apikey", "auth", "setup",
+	case "images", "posters", "notifications", "apikey", "auth", "setup",
 		"section-lock", "openapi.yaml":
 		// Deliberately unclassified, each for its own reason:
 		//
 		//   images/proxy      mode-agnostic by construction; gating it
 		//                     would break every poster in the app (R-1).
+		//   posters/local     same as images/proxy: a film card's folder.jpg.
 		//   notifications     one global stream, not a per-section one
 		//                     (R-3); §4.5 bounds its duration, not its
 		//                     content.

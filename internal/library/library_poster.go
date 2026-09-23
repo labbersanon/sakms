@@ -12,16 +12,19 @@ import (
 
 // PosterSource values written to poster_source. Empty means unset.
 const (
-	PosterSourceTMDB = "tmdb"
-	PosterSourceTVDB = "tvdb"
-	PosterSourceAI   = "ai"
+	PosterSourceTMDB  = "tmdb"
+	PosterSourceTVDB  = "tvdb"
+	PosterSourceAI    = "ai"
+	PosterSourceLocal = "local"
 )
 
 // PosterArt is the cached absolute poster URL (and lookup helpers) for one
 // tracked Movies/Series row. URL is https; Source is PosterSource*.
 // Claude 2026-09-22: dedicated read/write so List/Get scanItem stay unchanged.
 // Reason: poster fallback chain persists on tracked rows without rewriting
-//   every SELECT that feeds scanItem/scanSeries.
+//
+//	every SELECT that feeds scanItem/scanSeries.
+//
 // Troubleshooting: /poster re-resolving every card on every Library load.
 // Review if: poster columns are folded into Item/Series and List SELECTs.
 type PosterArt struct {
@@ -54,13 +57,14 @@ func (s *Store) MoviePosterArt(ctx context.Context, m mode.Mode, tmdbID int) (Po
 	return art, nil
 }
 
-// ListMoviesNeedingPoster returns movie rows with empty poster_url and a
-// positive tmdb_id (nothing useful to resolve without an id).
+// ListMoviesNeedingPoster returns movie rows with an empty poster_url.
+// A TMDB id is not required: a local folder.jpg or a web image can still
+// fill the card.
 func (s *Store) ListMoviesNeedingPoster(ctx context.Context, m mode.Mode) ([]Item, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, tmdb_id, title, year
+		SELECT id, tmdb_id, title, year, file_path
 		FROM library_items
-		WHERE mode = ? AND tmdb_id > 0 AND poster_url = ''
+		WHERE mode = ? AND poster_url = ''
 		ORDER BY title
 	`, string(m))
 	if err != nil {
@@ -71,7 +75,7 @@ func (s *Store) ListMoviesNeedingPoster(ctx context.Context, m mode.Mode) ([]Ite
 	for rows.Next() {
 		var item Item
 		item.Mode = m
-		if err := rows.Scan(&item.ID, &item.TMDBID, &item.Title, &item.Year); err != nil {
+		if err := rows.Scan(&item.ID, &item.TMDBID, &item.Title, &item.Year, &item.FilePath); err != nil {
 			return nil, fmt.Errorf("scanning movie needing poster: %w", err)
 		}
 		out = append(out, item)
@@ -141,6 +145,33 @@ func (s *Store) SetMoviePosterArt(ctx context.Context, m mode.Mode, tmdbID int, 
 	n, err := res.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("setting movie poster art for tmdb %d: %w", tmdbID, err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetMoviePosterByID writes poster_url on one library_items row. Used when
+// the film has no positive TMDB id, so SetMoviePosterArt's tmdb key cannot
+// address it.
+func (s *Store) SetMoviePosterByID(ctx context.Context, itemID int64, url, source string) error {
+	url = strings.TrimSpace(url)
+	source = strings.TrimSpace(source)
+	if itemID == 0 || url == "" {
+		return nil
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE library_items
+		SET poster_url = ?, poster_source = ?, updated_at = sakms_now()
+		WHERE id = ? AND mode = ?
+	`, url, source, itemID, string(mode.Movies))
+	if err != nil {
+		return fmt.Errorf("setting movie poster art for item %d: %w", itemID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
 	}
 	if n == 0 {
 		return ErrNotFound

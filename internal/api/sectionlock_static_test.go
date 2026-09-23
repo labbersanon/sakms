@@ -112,6 +112,7 @@ var sl9Exempt = map[string]string{
 
 	// Residual risks §14 accepts explicitly rather than solves.
 	"/api/images/proxy":         "R-1: mode-agnostic by construction; gating blanks every poster",
+	"/api/posters/local":        "R-1: local folder.jpg for a film card; gating blanks that poster",
 	"/api/modes/movies/poster":  "R-1 again: a poster is fetched by whichever screen renders a card. The ADULT form of this same route IS gated, by classifyModes' adult rule — which is why the {mode} substitution here is deliberately mainstream",
 	"/api/notifications/stream": "R-3: one global stream, not a per-section one; §4.5 bounds its duration",
 	"/api/openapi.yaml":         "R-5: pre-existing unauthenticated route (cmd/sakms)",

@@ -231,7 +231,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// Reason: Requests needs per-episode Grab; MissingEpisodes was store-only.
 	mux.HandleFunc("GET /api/modes/series/library/tmdb/{tmdbId}/missing-episodes", missingEpisodesByTMDBHandler(libStore))
 	mux.HandleFunc("PUT /api/modes/series/library/tmdb/{tmdbId}/seasons", putAllSeasonsMonitoredByTMDBHandler(seasons, grabsStore))
-		mux.HandleFunc("PUT /api/modes/series/library/tmdb/{tmdbId}/seasons/{seasonNumber}/monitored", putSeasonMonitoredByTMDBHandler(seasons, grabsStore))
+	mux.HandleFunc("PUT /api/modes/series/library/tmdb/{tmdbId}/seasons/{seasonNumber}/monitored", putSeasonMonitoredByTMDBHandler(seasons, grabsStore))
 
 	// Claude 2026-09-22: per-title quality prefs (series + movies).
 	// Reason: monitor/track surfaces need the same quality+resolution controls
@@ -521,6 +521,9 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// poster resolves a library card's TMDB poster art lazily, per card (the
 	// library caches no poster path) — see posterHandler.
 	mux.HandleFunc("GET /api/modes/{mode}/poster", posterHandler(httpClient, connStore, scStore, settingsStore, libStore))
+	// Local folder.jpg for a film that has no TMDB poster. Same-origin, so the
+	// card uses the path directly instead of the external image proxy.
+	mux.HandleFunc("GET /api/posters/local", localPosterHandler(libStore))
 	// searchHandler stays widened with grabHandler's dispatch dependencies
 	// (dl, nzb, grabsStore, whStore) so its signature matches Adult's
 	// concrete-path sibling. Movies/Series GET /search is read-only again

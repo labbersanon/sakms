@@ -105,6 +105,7 @@ func TestClassify(t *testing.T) {
 
 		// Deliberately ungated, each for a reason stated in routes.go.
 		{"/api/images/proxy", nil},
+		{"/api/posters/local", nil},
 		{"/api/modes/adult/poster", []string{SectionAdultContent}},
 		{"/api/modes/movies/poster", nil},
 		{"/api/notifications/stream", nil},

@@ -279,3 +279,64 @@ func TestSeriesSidecarPaths_ThreeDistinctPaths(t *testing.T) {
 		t.Errorf("third path should be episode sidecar (.nfo), got %q", paths[2])
 	}
 }
+
+func TestWriteSeries_RoundTrip(t *testing.T) {
+	d := t.TempDir()
+	path := filepath.Join(d, "tvshow.nfo")
+	want := nfo.SeriesNFO{
+		TMDBID: 32608,
+		TVDBID: 101501,
+		IMDBID: "tt1647504",
+		Title:  "Ancient Aliens",
+		Year:   2009,
+		Plot:   "Aliens.",
+	}
+	if err := nfo.WriteSeries(path, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := nfo.ReadSeries(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TMDBID != want.TMDBID || got.TVDBID != want.TVDBID || got.IMDBID != want.IMDBID {
+		t.Fatalf("ids: got %+v want %+v", got, want)
+	}
+	if got.Title != want.Title || got.Year != want.Year || got.Plot != want.Plot {
+		t.Fatalf("meta: got %+v want %+v", got, want)
+	}
+}
+
+func TestWriteMovie_RoundTrip(t *testing.T) {
+	d := t.TempDir()
+	path := filepath.Join(d, "movie.nfo")
+	want := nfo.MovieNFO{TMDBID: 155, IMDBID: "tt0468569", Title: "The Dark Knight", Year: 2008, Plot: "Batman."}
+	if err := nfo.WriteMovie(path, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := nfo.Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TMDBID != want.TMDBID || got.IMDBID != want.IMDBID || got.Title != want.Title {
+		t.Fatalf("got %+v want %+v", got, want)
+	}
+}
+
+func TestReadSeriesSidecarAny_TVDBOnly(t *testing.T) {
+	d := t.TempDir()
+	writeNFO(t, d, "tvshow.nfo", `<?xml version="1.0"?>
+<tvshow>
+  <title>Ancient Aliens</title>
+  <tvdbid>101501</tvdbid>
+</tvshow>`)
+	video := filepath.Join(d, "Season 01", "ep.mkv")
+	_ = os.MkdirAll(filepath.Dir(video), 0o755)
+	s := nfo.ReadSeriesSidecarAny(video)
+	if s.TVDBID != 101501 || s.Title != "Ancient Aliens" {
+		t.Fatalf("got %+v", s)
+	}
+	// ReadSeriesSidecar still requires TMDBID.
+	if z := nfo.ReadSeriesSidecar(video); z.TMDBID != 0 || z.TVDBID != 0 {
+		t.Fatalf("ReadSeriesSidecar should stay zero without tmdb: %+v", z)
+	}
+}

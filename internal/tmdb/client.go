@@ -376,6 +376,7 @@ type MovieDetails struct {
 	ID          int
 	Title       string
 	PosterPath  string // "" if TMDB has none on file
+	BackdropPath string // "" if TMDB has none on file
 	IMDBID      string // "" if TMDB has none on file
 	Runtime     int    // minutes; 0 if TMDB reports null
 	Overview    string
@@ -420,6 +421,7 @@ type movieDetailsResponse struct {
 	ID          int     `json:"id"`
 	Title       string  `json:"title"`
 	PosterPath  string  `json:"poster_path"`
+	BackdropPath string `json:"backdrop_path"`
 	IMDBID      string  `json:"imdb_id"`
 	Runtime     int     `json:"runtime"`
 	Overview    string  `json:"overview"`
@@ -469,6 +471,7 @@ func (c *Client) MovieDetails(ctx context.Context, tmdbID int) (MovieDetails, er
 		ID:               resp.ID,
 		Title:            resp.Title,
 		PosterPath:       resp.PosterPath,
+		BackdropPath:     resp.BackdropPath,
 		IMDBID:           resp.IMDBID,
 		Runtime:          resp.Runtime,
 		Overview:         resp.Overview,
@@ -518,6 +521,7 @@ type TVDetails struct {
 	ID         int
 	Title      string
 	PosterPath string // "" if TMDB has none on file
+	BackdropPath string // "" if TMDB has none on file
 	Genres     []string
 	// Extended detail fields (Discover detail popup) — ALL new: TVDetails
 	// previously carried ONLY ID/Title/PosterPath/Genres (no Runtime, no
@@ -571,6 +575,7 @@ type tvDetailsResponse struct {
 	ID         int    `json:"id"`
 	Name       string `json:"name"`
 	PosterPath string `json:"poster_path"`
+	BackdropPath string `json:"backdrop_path"`
 	Status     string `json:"status"`
 	Overview   string `json:"overview"`
 	// OriginalLanguage is TMDB's original_language ISO 639-1 code.
@@ -612,6 +617,7 @@ func (c *Client) TVDetails(ctx context.Context, tmdbID int) (TVDetails, error) {
 		ID:               resp.ID,
 		Title:            resp.Name,
 		PosterPath:       resp.PosterPath,
+		BackdropPath:     resp.BackdropPath,
 		Status:           resp.Status,
 		Overview:         resp.Overview,
 		OriginalLanguage: resp.OriginalLanguage,

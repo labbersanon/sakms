@@ -438,6 +438,9 @@ func run() error {
 	recheckTriggerMux := api.NewRecheckTriggerMux(connStore, watchStore)
 	protectedRecheckTrigger := auth.Middleware(secretStore, authStore, recheckTriggerMux, sectionGate...)
 
+	mediafolderMux := api.NewMediafolderMux(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, settingsStore, libStore)
+	protectedMediafolder := auth.Middleware(secretStore, authStore, mediafolderMux, sectionGate...)
+
 	// Manual "Refresh now" trigger for the discover-refresh feature (see
 	// api.NewDiscoverRefreshTriggerMux's doc comment) — same precedent as
 	// recheckTriggerMux above, since it needs the full discoverrefresh.Deps
@@ -502,6 +505,7 @@ func run() error {
 	top.Handle("/api/apikey", protectedAPIKey)                                         // exact match: GET status
 	top.Handle("/api/apikey/", protectedAPIKey)                                        // subtree: POST .../regenerate
 	top.Handle("/api/admin/recheck/trigger", protectedRecheckTrigger)                  // exact match: manual "Refresh now"
+	top.Handle("/api/admin/mediafolder/backfill", protectedMediafolder)                // exact match: write Jellyfin sidecars
 	top.Handle("/api/admin/discover-refresh/trigger", protectedDiscoverRefreshTrigger) // exact match: manual "Refresh now" (discover cache)
 	top.Handle("/api/requests", protectedRequests)                                     // exact match: GET worklist (excluded-title-suppressed)
 	top.Handle("/api/requests/", protectedRequests)                                    // subtree: POST exclude, exclude-batch
@@ -805,6 +809,15 @@ func run() error {
 		// outcome, not a failure.
 		log.Printf("library: size/tier backfill captured %d rows (%d sized, %d unstattable); tiers %v",
 			summary.Scanned, summary.SizedOK, summary.SizeFailed, summary.ByTier)
+	}()
+
+	// Claude 2026-09-22: one-shot Jellyfin sidecar backfill (folder.jpg/NFO).
+	// Reason: existing titles (Ancient Aliens) have disk art from Jellyfin but
+	//   sakms never wrote sidecars / repaired tmdb_id=0.
+	// Troubleshooting: letter tiles for tracked titles with local folder.jpg.
+	// Review if: backfill is only via POST /api/admin/mediafolder/backfill.
+	go func() {
+		api.RunMediafolderBackfillBoot(ctx, &http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, settingsStore, libStore)
 	}()
 
 	select {

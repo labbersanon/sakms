@@ -438,8 +438,8 @@ func run() error {
 	recheckTriggerMux := api.NewRecheckTriggerMux(connStore, watchStore)
 	protectedRecheckTrigger := auth.Middleware(secretStore, authStore, recheckTriggerMux, sectionGate...)
 
-	mediafolderMux := api.NewMediafolderMux(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, settingsStore, libStore)
-	protectedMediafolder := auth.Middleware(secretStore, authStore, mediafolderMux, sectionGate...)
+	posterBackfillMux := api.NewPosterBackfillMux(&http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, settingsStore, libStore)
+	protectedPosterBackfill := auth.Middleware(secretStore, authStore, posterBackfillMux, sectionGate...)
 
 	// Manual "Refresh now" trigger for the discover-refresh feature (see
 	// api.NewDiscoverRefreshTriggerMux's doc comment) — same precedent as
@@ -505,7 +505,7 @@ func run() error {
 	top.Handle("/api/apikey", protectedAPIKey)                                         // exact match: GET status
 	top.Handle("/api/apikey/", protectedAPIKey)                                        // subtree: POST .../regenerate
 	top.Handle("/api/admin/recheck/trigger", protectedRecheckTrigger)                  // exact match: manual "Refresh now"
-	top.Handle("/api/admin/mediafolder/backfill", protectedMediafolder)                // exact match: write Jellyfin sidecars
+	top.Handle("/api/admin/posters/backfill", protectedPosterBackfill)                 // exact match: throttled DB poster fill
 	top.Handle("/api/admin/discover-refresh/trigger", protectedDiscoverRefreshTrigger) // exact match: manual "Refresh now" (discover cache)
 	top.Handle("/api/requests", protectedRequests)                                     // exact match: GET worklist (excluded-title-suppressed)
 	top.Handle("/api/requests/", protectedRequests)                                    // subtree: POST exclude, exclude-batch
@@ -811,16 +811,14 @@ func run() error {
 			summary.Scanned, summary.SizedOK, summary.SizeFailed, summary.ByTier)
 	}()
 
-	// Claude 2026-09-22: boot mediafolder backfill removed from always-on path.
-	// Reason: B/c/b one-shot is POST /api/admin/mediafolder/backfill — a full
-	//   library sweep on every boot hung behind TMDB+image fetches with no
-	//   progress log (191 movies / 44 series). Import + /poster still write
-	//   sidecars; admin trigger remains for existing titles.
-	// Troubleshooting: letter tiles on legacy rows → POST mediafolder/backfill.
-	// Review if: a cheap boot pass (NFO/id repair only, no image download) is added.
-	// go func() {
-	// 	api.RunMediafolderBackfillBoot(ctx, &http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, settingsStore, libStore)
-	// }()
+	// Claude 2026-09-23: throttled DB poster backfill on boot (no sidecars).
+	// Reason: Jellyfin stays independent; sakms fills poster_url / repairs
+	//   tmdb_id=0 from existing NFO. Gap avoids TMDB stampede (see posterBackfillGap).
+	// Troubleshooting: letter tiles → wait for boot pass or POST /api/admin/posters/backfill.
+	// Review if: boot pass disabled in favor of admin-only.
+	go func() {
+		api.RunPosterBackfill(ctx, &http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, settingsStore, libStore)
+	}()
 
 	select {
 	case err := <-errCh:

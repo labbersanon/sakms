@@ -11,7 +11,6 @@ import (
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/identify"
 	"github.com/labbersanon/sakms/internal/library"
-	"github.com/labbersanon/sakms/internal/mediafolder"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
@@ -66,15 +65,6 @@ func resolvePoster(
 	settingsStore *settings.Store,
 	libStore *library.Store,
 ) (out apidto.PosterResponse) {
-	var sess *mode.Session
-	defer func() {
-		// Claude 2026-09-22: after art resolves, write Jellyfin sidecars.
-		// Reason: sakms is metadata source; import + lazy /poster both ensure disk art.
-		if libStore != nil && sess != nil && (out.PosterURL != "" || out.PosterPath != "") && tmdbID > 0 {
-			go syncMediafolderFromPoster(context.Background(), httpClient, libStore, sess, m, tmdbID)
-		}
-	}()
-
 	var art library.PosterArt
 	if libStore != nil && tmdbID != 0 {
 		if m == mode.Series {
@@ -89,11 +79,10 @@ func resolvePoster(
 		}
 	}
 
-	built, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, m)
-	if err != nil || built == nil || built.TMDB == nil {
+	sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, m)
+	if err != nil || sess == nil || sess.TMDB == nil {
 		return out
 	}
-	sess = built
 
 	title := art.Title
 	year := art.Year
@@ -159,27 +148,6 @@ func resolvePoster(
 		}
 	}
 	return out
-}
-
-func syncMediafolderFromPoster(ctx context.Context, httpClient *http.Client, libStore *library.Store, sess *mode.Session, m mode.Mode, tmdbID int) {
-	if sess == nil || sess.TMDB == nil {
-		return
-	}
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
-	d := mediafolder.SyncDeps{HTTP: httpClient, TMDB: sess.TMDB, Lib: libStore}
-	switch m {
-	case mode.Movies:
-		_ = mediafolder.SyncMovie(ctx, d, tmdbID)
-	case mode.Series:
-		if tmdbID <= 0 {
-			return
-		}
-		if ser, err := libStore.GetSeriesByTMDBID(ctx, tmdbID); err == nil {
-			_ = mediafolder.SyncSeries(ctx, d, *ser)
-		}
-	}
 }
 
 func resolveTVDBPoster(ctx context.Context, sess *mode.Session, m mode.Mode, tmdbID, tvdbID int, title string, year int) string {

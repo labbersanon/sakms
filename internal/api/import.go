@@ -298,8 +298,8 @@ func importGrabMovies(ctx context.Context, libStore *library.Store, g *grabs.Gra
 		return changes, fmt.Errorf("file relocated but recording it in the library failed: %w", err)
 	}
 	changes = append(changes, retireReplacedMovieFile(ctx, libStore, priorPath, destPath)...)
-	// Claude 2026-09-22: write Jellyfin-compatible sidecars so sakms is metadata source.
-	syncMediafolderAfterImport(ctx, libStore, sess, settingsStore, mode.Movies, g.TMDBID)
+	// Claude 2026-09-23: persist poster_url on import (DB only; Jellyfin independent).
+	ensureImportPoster(ctx, libStore, sess, mode.Movies, g.TMDBID)
 	return changes, nil
 }
 
@@ -371,8 +371,8 @@ func importGrabSeries(ctx context.Context, libStore *library.Store, g *grabs.Gra
 		// Review if: this case should instead report a non-200 to the caller.
 		return nil, nil
 	}
-	// Claude 2026-09-22: write Jellyfin-compatible sidecars so sakms is metadata source.
-	syncMediafolderAfterImport(ctx, libStore, sess, settingsStore, mode.Series, g.TMDBID)
+	// Claude 2026-09-23: persist poster_url on import (DB only; Jellyfin independent).
+	ensureImportPoster(ctx, libStore, sess, mode.Series, g.TMDBID)
 	return changes, nil
 }
 

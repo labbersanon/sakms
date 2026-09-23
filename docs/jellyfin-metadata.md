@@ -1,67 +1,39 @@
-# Jellyfin metadata — sakms as source
+# Sakms posters (DB) — Jellyfin stays independent
 
-sakms writes Jellyfin/Kodi-compatible sidecars next to media so Jellyfin can
-prefer local art and NFO instead of scraping TMDB/TVDB itself.
+sakms stores poster art as `poster_url` / `poster_source` on
+`library_items` and `library_series`. Jellyfin may keep scraping and writing
+its own `folder.jpg` / NFO on disk; sakms does **not** write sidecars.
 
-## Files sakms writes
+## When posters are filled
 
-| File | Location | Purpose |
-|---|---|---|
-| `folder.jpg` | movie folder / series root | Poster |
-| `backdrop.jpg` | movie folder / series root | Fanart |
-| `movie.nfo` | movie folder | Title, year, plot, TMDB/TVDB/IMDB ids |
-| `tvshow.nfo` | series root | Same fields for TV |
+1. **Import** — after a grab lands, `ensureImportPoster` runs TMDB → TVDB →
+   AI+SearXNG and persists an absolute URL on the library row.
+2. **Lazy `/poster`** — card open still resolves and caches the same way.
+3. **Throttled backfill** — `POST /api/admin/posters/backfill` and a boot
+   one-shot walk titles with empty `poster_url` (and series with `tmdb_id=0`).
+   Gap between titles: **2 seconds** (`posterBackfillGap`) so TMDB/TVDB are
+   not stampeded.
 
-No `<lockdata>` is written. Existing non-empty images are left alone unless a
-forced rewrite is requested (admin backfill currently uses `Force=false`).
-
-## When sakms writes
-
-1. **Import** — after a grab lands in the library (`importGrabMovies` /
-   `importGrabSeries`).
-2. **Poster resolve** — after `/api/.../poster` successfully resolves art
-   (lazy path for titles that never imported through sakms).
-3. **Backfill** — `POST /api/admin/mediafolder/backfill` (202 Accepted).
-   Import and `/poster` keep writing sidecars for new/lazy paths; the admin
-   endpoint is the one-shot for titles that predate this feature. There is no
-   every-boot sweep (a full library image pass was too heavy at startup).
-
-Series rows with `tmdb_id=0` are repaired from existing `tvshow.nfo` (or via
-TVDB→TMDB find) before art is fetched, then `poster_url` / `poster_source` are
-updated on the library row.
-
-## Jellyfin library settings (required)
-
-For each Movies/TV library that shares disk with sakms:
-
-1. **Metadata downloaders** — prefer **NFO** (or set NFO first in the order).
-2. **Image fetchers** — prefer **local images** / disable remote download if
-   you want sakms-only art (Jellyfin will still use `folder.jpg` /
-   `backdrop.jpg` when present).
-3. Do **not** rely on lockdata; sakms does not set it.
-4. After the first sakms backfill, run a Jellyfin library scan (or wait for
-   the next scheduled scan) so NFO ids and local art are picked up.
-
-Exact UI labels vary by Jellyfin version; the goal is: local NFO + local
-images win over online scrapers.
+Series with `tmdb_id=0` are repaired from an **existing** `tvshow.nfo` when
+present (read-only), then art is resolved.
 
 ## Admin trigger
 
 ```http
-POST /api/admin/mediafolder/backfill
+POST /api/admin/posters/backfill
 ```
 
-Requires a normal authenticated sakms session (same gate as other
-`/api/admin/*` triggers). Returns `202` immediately; progress is logged as
-`mediafolder backfill: movies_ok=… series_ok=… fail=…`.
+Returns `202` immediately. Logs:
+
+```text
+poster backfill: starting (gap=2s)
+poster backfill: done movies_ok=… movies_fail=… series_ok=… series_fail=… id_repaired=…
+```
 
 ## Troubleshooting
 
-- **Letter tile in sakms, poster in Jellyfin** — disk already had
-  `folder.jpg` from Jellyfin scrape, but the sakms row had no `tmdbId` /
-  `poster_url`. Run backfill (or open the title so `/poster` resolves); sakms
-  will repair ids from NFO and persist `poster_url`.
-- **Jellyfin re-scrapes and overwrites** — NFO/local image preference is not
-  set; adjust library metadata/image settings as above.
-- **Backfill no-ops** — title has no `file_path` / episode paths and no
-  resolvable series folder under `root_folder_path`.
+- **Letter tile** — row has empty `poster_url` (and maybe `tmdb_id=0`). Wait
+  for boot backfill, open the title (`/poster`), or POST the admin endpoint.
+- **Series stuck at tmdb_id=0 with no NFO** — add/fix ids in sakms or fix
+  the library row; backfill cannot invent a TMDB id without NFO/TVDB.
+- **Old `/api/admin/mediafolder/backfill`** — removed; use `/api/admin/posters/backfill`.

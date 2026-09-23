@@ -54,6 +54,55 @@ func (s *Store) MoviePosterArt(ctx context.Context, m mode.Mode, tmdbID int) (Po
 	return art, nil
 }
 
+// ListMoviesNeedingPoster returns movie rows with empty poster_url and a
+// positive tmdb_id (nothing useful to resolve without an id).
+func (s *Store) ListMoviesNeedingPoster(ctx context.Context, m mode.Mode) ([]Item, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, tmdb_id, title, year
+		FROM library_items
+		WHERE mode = ? AND tmdb_id > 0 AND poster_url = ''
+		ORDER BY title
+	`, string(m))
+	if err != nil {
+		return nil, fmt.Errorf("listing movies needing poster: %w", err)
+	}
+	defer rows.Close()
+	var out []Item
+	for rows.Next() {
+		var item Item
+		item.Mode = m
+		if err := rows.Scan(&item.ID, &item.TMDBID, &item.Title, &item.Year); err != nil {
+			return nil, fmt.Errorf("scanning movie needing poster: %w", err)
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+// ListSeriesNeedingPoster returns series with empty poster_url and/or tmdb_id=0
+// (zero-id rows need NFO/TVDB repair before art can be cached).
+func (s *Store) ListSeriesNeedingPoster(ctx context.Context) ([]Series, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, tmdb_id, tvdb_id, title, year, root_folder_path
+		FROM library_series
+		WHERE tmdb_id = 0 OR poster_url = ''
+		ORDER BY title
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("listing series needing poster: %w", err)
+	}
+	defer rows.Close()
+	var out []Series
+	for rows.Next() {
+		var ser Series
+		if err := rows.Scan(&ser.ID, &ser.TMDBID, &ser.TVDBID, &ser.Title, &ser.Year, &ser.RootFolderPath); err != nil {
+			return nil, fmt.Errorf("scanning series needing poster: %w", err)
+		}
+		out = append(out, ser)
+	}
+	return out, rows.Err()
+}
+
 // SeriesPosterArt loads poster cache + title/year/tvdb for one library_series row.
 func (s *Store) SeriesPosterArt(ctx context.Context, tmdbID int) (PosterArt, error) {
 	var art PosterArt

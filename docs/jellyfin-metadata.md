@@ -21,8 +21,10 @@ forced rewrite is requested (admin backfill currently uses `Force=false`).
    `importGrabSeries`).
 2. **Poster resolve** — after `/api/.../poster` successfully resolves art
    (lazy path for titles that never imported through sakms).
-3. **Backfill** — `POST /api/admin/mediafolder/backfill` (202 Accepted) and a
-   one-shot boot sweep that skips existing images.
+3. **Backfill** — `POST /api/admin/mediafolder/backfill` (202 Accepted).
+   Import and `/poster` keep writing sidecars for new/lazy paths; the admin
+   endpoint is the one-shot for titles that predate this feature. There is no
+   every-boot sweep (a full library image pass was too heavy at startup).
 
 Series rows with `tmdb_id=0` are repaired from existing `tvshow.nfo` (or via
 TVDB→TMDB find) before art is fetched, then `poster_url` / `poster_source` are

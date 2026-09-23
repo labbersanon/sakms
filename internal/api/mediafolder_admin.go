@@ -70,6 +70,7 @@ func runMediafolderBackfill(
 	settingsStore *settings.Store,
 	libStore *library.Store,
 ) {
+	log.Printf("mediafolder backfill: starting")
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
@@ -77,6 +78,9 @@ func runMediafolderBackfill(
 	if err != nil {
 		log.Printf("mediafolder backfill: build session: %v", err)
 		return
+	}
+	if sess.TMDB == nil {
+		log.Printf("mediafolder backfill: no TMDB connection configured — NFO/id repair only")
 	}
 	preset := naming.Preset("")
 	if settingsStore != nil {

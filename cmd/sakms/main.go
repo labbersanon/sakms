@@ -811,14 +811,16 @@ func run() error {
 			summary.Scanned, summary.SizedOK, summary.SizeFailed, summary.ByTier)
 	}()
 
-	// Claude 2026-09-22: one-shot Jellyfin sidecar backfill (folder.jpg/NFO).
-	// Reason: existing titles (Ancient Aliens) have disk art from Jellyfin but
-	//   sakms never wrote sidecars / repaired tmdb_id=0.
-	// Troubleshooting: letter tiles for tracked titles with local folder.jpg.
-	// Review if: backfill is only via POST /api/admin/mediafolder/backfill.
-	go func() {
-		api.RunMediafolderBackfillBoot(ctx, &http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, settingsStore, libStore)
-	}()
+	// Claude 2026-09-22: boot mediafolder backfill removed from always-on path.
+	// Reason: B/c/b one-shot is POST /api/admin/mediafolder/backfill — a full
+	//   library sweep on every boot hung behind TMDB+image fetches with no
+	//   progress log (191 movies / 44 series). Import + /poster still write
+	//   sidecars; admin trigger remains for existing titles.
+	// Troubleshooting: letter tiles on legacy rows → POST mediafolder/backfill.
+	// Review if: a cheap boot pass (NFO/id repair only, no image download) is added.
+	// go func() {
+	// 	api.RunMediafolderBackfillBoot(ctx, &http.Client{Timeout: outboundTimeout}, connStore, serviceConnStore, settingsStore, libStore)
+	// }()
 
 	select {
 	case err := <-errCh:

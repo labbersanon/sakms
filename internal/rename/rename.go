@@ -885,7 +885,7 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 				// Claude 2026-09-23: tvshow.nfo orphans enter Library without Apply.
 				// Reason: kids-root save left 1000+ identified episodes untracked.
 				// Review if: catalog grows a title-search fallback.
-				if _, catErr := catalogEpisodeAtPath(ctx, libStore, videoPath, batch.root); catErr != nil {
+				if _, catErr := catalogEpisodeAtPath(ctx, sess, libStore, videoPath, batch.root, roots); catErr != nil {
 					log.Printf("rename catalog episode %q: %v", videoPath, catErr)
 				}
 				if naming.MatchesSeriesSchema(videoPath, preset) {
@@ -1014,6 +1014,7 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 	// not change this check to Contains without re-reading the alternative
 	// tradeoff recorded in plan §9.7.1.
 
+	catalogPendingSeries(ctx, sess, libStore, roots, out)
 	return out, nil
 }
 
@@ -1069,7 +1070,10 @@ func proposeOneEpisodeLibrary(
 	// SxxExx marker parsed normally is not blocked, even if its name also
 	// happens to carry a compact code somewhere.
 	seasonEpisodeViaCompactCode := false
-	season, episodes, ok := library.ParseEpisodeNumbersLoose(name, filepath.Dir(videoPath))
+	season, episodes, ok := library.ParseEpisodeNumbersNested(videoPath, foundRoot)
+	if !ok {
+		season, episodes, ok = library.ParseEpisodeNumbersLoose(name, filepath.Dir(videoPath))
+	}
 	if !ok {
 		// Claude 2026-08-07: compact eNNNN episode code, rename-path-only (plan §1.2/§1.3)
 		// Reason: 13 real "The Red Skelton Show" rows name the episode as
@@ -1111,7 +1115,11 @@ func proposeOneEpisodeLibrary(
 	episode := episodes[0]
 	extraEpisodes := episodes[1:]
 
-	if hint := nfo.ReadSeriesSidecar(videoPath); hint.TMDBID != 0 {
+	if hint := trustedSeriesSidecar(videoPath, showFolderName(videoPath, roots), foundRoot); hint.TMDBID != 0 || hint.TVDBID != 0 {
+		if hint.TMDBID == 0 && sess != nil && sess.TMDB != nil {
+			hint.TMDBID = resolveTMDBFromTVDB(ctx, sess.TMDB, hint.TVDBID)
+		}
+	if hint.TMDBID != 0 {
 		// Claude 2026-08-07: SITE 1 of 7 — tracked slot is now an alternate, not a decline (plan §5.2.2)
 		// Reason: deep-interview-sakms-series-parsing-accuracy-improvements §5.2 —
 		//   this branch used to set Unmatched (".nfo TMDB id %d appears to already
@@ -1134,7 +1142,7 @@ func proposeOneEpisodeLibrary(
 		//   used to hard-unmatch before TVDB/search could recover.
 		// Troubleshooting: still unmatched after TVDB configured → NFO path returned early.
 		// Review if: NFO TVDB id field is preferred when TMDB season 404s.
-		if _, err := sess.TMDB.SeasonDetails(ctx, hint.TMDBID, season); err == nil {
+		if sess != nil && sess.TMDB != nil && seriesSeasonAcceptable(ctx, sess.TMDB, hint.TMDBID, season) {
 			det, err := sess.TMDB.TVDetails(ctx, hint.TMDBID)
 			if err != nil {
 				p.Status = proposals.Unmatched
@@ -1172,6 +1180,7 @@ func proposeOneEpisodeLibrary(
 		}
 		// Season missing on the NFO's TMDB id — continue into filename search /
 		// TVDB / web-authority instead of hard-unmatching.
+		}
 	}
 
 	sig := ExtractFileSignals(ctx, name, videoPath, prober)
@@ -1397,7 +1406,7 @@ func proposeOneEpisodeLibrary(
 				continue
 			}
 			// Season must exist before we treat this as a real pick.
-			if _, err := sess.TMDB.SeasonDetails(ctx, match.ID, season); err != nil {
+			if !seriesSeasonAcceptable(ctx, sess.TMDB, match.ID, season) {
 				continue
 			}
 			// Claude 2026-08-06: title-collision gate before strong-accept/weak-stash
@@ -1542,7 +1551,7 @@ func trySeriesQueries(
 			if rank == CorroborationNone {
 				continue
 			}
-			if _, err := sess.TMDB.SeasonDetails(ctx, match.ID, season); err != nil {
+			if !seriesSeasonAcceptable(ctx, sess.TMDB, match.ID, season) {
 				continue
 			}
 			// Claude 2026-08-06: title-collision gate before strong-accept/weak-stash
@@ -1601,7 +1610,7 @@ func bravePhase2Series(
 		limit := pickLimit(cfg.CandidateN, len(items))
 		for i := 0; i < limit; i++ {
 			match := items[i]
-			if _, err := sess.TMDB.SeasonDetails(ctx, match.ID, season); err != nil {
+			if !seriesSeasonAcceptable(ctx, sess.TMDB, match.ID, season) {
 				continue
 			}
 			if !seeded.allows(match.Title, match.ID) {
@@ -1768,7 +1777,7 @@ func tvdbFallbackSeries(
 				continue
 			}
 		}
-		if _, err := sess.TMDB.SeasonDetails(ctx, tmdbID, season); err != nil {
+		if !seriesSeasonAcceptable(ctx, sess.TMDB, tmdbID, season) {
 			continue
 		}
 		dateStr := ""

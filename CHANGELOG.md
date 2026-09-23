@@ -9323,3 +9323,18 @@ status stays active.
 | `frontend/src/components/ui.tsx` | FilterChip `size` |
 | `frontend/src/screens/discover/Mainstream.tsx` | Monitored `size="sm"` |
 | `frontend/src/screens/Library.tsx` | Monitored `size="sm"` |
+
+## 2026-09-23 — Series catalog: year-seasons, shorts nesting, phash-only Dedup
+
+**Problem:** Kids series such as Curious George (theme-folder discs) and Looney Tunes (year seasons, wrong tvshow.nfo) never entered Library. Catalog required a TMDB id in an nfo plus two-digit SxxExx. Dedup also grouped by TMDB/SxxExx identity.
+**Fix:** Year-as-season (S1958E14, Season 1958, Show/1958/Disc 1) is accepted only for 1928–1999 on the rename/catalog parsers. A tvshow.nfo whose title disagrees with the show folder is ignored. TVDB-only nfos resolve via FindTVByTVDBID. Organize Pending rows persist into Library in place (no move); extras stay for Apply. Dedup groups by phash only.
+**Outcome:** Unit tests cover year-season cutoff, nested disc folders, wrong-nfo discard, pending persist, and dissimilar same-TMDB files staying ungrouped.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/library/year_season.go` | Year-season parse + shorts nesting walk |
+| `internal/rename/catalog.go` | Trusted sidecar, nested nfo, kids tag |
+| `internal/rename/catalog_pending.go` | Persist Pending series in place |
+| `internal/dedup/dedup_phash_primary.go` | Phash-only grouping |

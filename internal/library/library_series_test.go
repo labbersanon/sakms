@@ -375,6 +375,18 @@ func TestParseEpisodeNumbersLoose(t *testing.T) {
 			parentDir:  "/media/Media Library/Series/The Path/Season 1/The.Path.S01E02.2160p.WEB.h265-NiXON/subs",
 			wantSeason: 0, wantEps: nil, wantOK: false,
 		},
+		{
+			name:       "year-season on basename — shorts S1958E14",
+			basename:   "Looney.Tunes.S1958E14.Fistic.Mystic.mkv",
+			parentDir:  "/media/Series (Kids)/Looney Toons/1958",
+			wantSeason: 1958, wantEps: []int{14}, wantOK: true,
+		},
+		{
+			name:       "year-season after SxxExx cutoff is not parsed",
+			basename:   "Show.S2024E01.mkv",
+			parentDir:  "/media/Series/Show/Season 2024",
+			wantSeason: 0, wantEps: nil, wantOK: false,
+		},
 	}
 	for _, c := range cases {
 		season, episodes, ok := ParseEpisodeNumbersLoose(c.basename, c.parentDir)

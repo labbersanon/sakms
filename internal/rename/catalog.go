@@ -73,58 +73,103 @@ func catalogMovieAtPath(ctx context.Context, libStore *library.Store, videoPath,
 	return err == nil, err
 }
 
-// catalogEpisodeAtPath writes series + episode rows from tvshow.nfo / episode
-// nfo / [tmdbid-N] plus an SxxExx parse. It does not move files.
-func catalogEpisodeAtPath(ctx context.Context, libStore *library.Store, videoPath, foundRoot string) (bool, error) {
+// catalogEpisodeAtPath writes series + episode rows in place. Show id comes
+// from a folder-corroborated nfo (TMDB or TVDB→TMDB) or [tmdbid-N]. Episode
+// numbers come from sequential SxxExx or year-season shorts nesting.
+func catalogEpisodeAtPath(ctx context.Context, sess *mode.Session, libStore *library.Store, videoPath, foundRoot string, roots []string) (bool, error) {
 	if libStore == nil || videoPath == "" {
 		return false, nil
 	}
-	hint := nfo.ReadSeriesSidecar(videoPath)
+	if len(roots) == 0 && foundRoot != "" {
+		roots = []string{foundRoot}
+	}
+	showFolder := showFolderName(videoPath, roots)
+	hint := trustedSeriesSidecar(videoPath, showFolder, foundRoot)
 	tmdbID := hint.TMDBID
 	if tmdbID <= 0 {
 		tmdbID = naming.TMDBIDFromPath(videoPath)
 	}
 	if tmdbID <= 0 {
+		tmdbID = naming.TMDBIDFromPath(filepath.Dir(videoPath))
+	}
+	if tmdbID <= 0 && sess != nil && sess.TMDB != nil {
+		tmdbID = resolveTMDBFromTVDB(ctx, sess.TMDB, hint.TVDBID)
+	}
+	if tmdbID == 0 {
 		return false, nil
 	}
-	season, eps, ok := library.ParseEpisodeNumbersLoose(filepath.Base(videoPath), filepath.Base(filepath.Dir(videoPath)))
+	season, eps, ok := library.ParseEpisodeNumbersNested(videoPath, foundRoot)
 	if !ok || len(eps) == 0 {
 		return false, nil
 	}
 	title := strings.TrimSpace(hint.Title)
 	if title == "" {
+		title = showFolder
+	}
+	if title == "" {
 		title = filepath.Base(filepath.Dir(filepath.Dir(videoPath)))
-		if strings.HasPrefix(strings.ToLower(title), "season ") {
-			title = filepath.Base(filepath.Dir(videoPath))
+		if strings.HasPrefix(strings.ToLower(title), "season ") || library.IsYearSeason(season) {
+			title = showFolder
 		}
 	}
-	series, err := libStore.GetSeriesByTMDBID(ctx, tmdbID)
+	return upsertCatalogedEpisode(ctx, sess, libStore, catalogEpisode{
+		TMDBID: tmdbID, TVDBID: hint.TVDBID, Title: title, Year: hint.Year,
+		Season: season, Episodes: eps, VideoPath: videoPath, FoundRoot: foundRoot,
+		AttachExtra: true,
+	})
+}
+
+type catalogEpisode struct {
+	TMDBID    int
+	TVDBID    int
+	Title     string
+	Year      int
+	Season    int
+	Episodes  []int
+	VideoPath   string
+	FoundRoot   string
+	AttachExtra bool
+}
+
+func upsertCatalogedEpisode(ctx context.Context, sess *mode.Session, libStore *library.Store, in catalogEpisode) (bool, error) {
+	if in.TMDBID == 0 || in.VideoPath == "" {
+		return false, nil
+	}
+	series, err := libStore.GetSeriesByTMDBID(ctx, in.TMDBID)
 	if err != nil && !errors.Is(err, library.ErrNotFound) {
 		return false, err
 	}
 	if series == nil {
 		created, upErr := libStore.UpsertSeries(ctx, library.Series{
-			TMDBID:         tmdbID,
-			TVDBID:         hint.TVDBID,
-			Title:          title,
-			Year:           hint.Year,
-			RootFolderPath: foundRoot,
+			TMDBID:         in.TMDBID,
+			TVDBID:         in.TVDBID,
+			Title:          in.Title,
+			Year:           in.Year,
+			RootFolderPath: in.FoundRoot,
 		})
 		if upErr != nil {
 			return false, upErr
 		}
 		series = &created
 	}
+	if sess != nil && sess.KidsRootPath != "" && in.FoundRoot == sess.KidsRootPath {
+		if tagErr := libStore.AddSeriesTag(ctx, series.ID, "kids"); tagErr != nil {
+			return false, tagErr
+		}
+	}
 	cataloged := false
-	for _, epNum := range eps {
-		got, getErr := libStore.GetEpisode(ctx, series.ID, season, epNum)
+	for _, epNum := range in.Episodes {
+		got, getErr := libStore.GetEpisode(ctx, series.ID, in.Season, epNum)
 		if getErr != nil && !errors.Is(getErr, library.ErrNotFound) {
 			return cataloged, getErr
 		}
-		if got != nil && got.FilePath != "" && got.FilePath != videoPath {
+		if got != nil && got.FilePath != "" && got.FilePath != in.VideoPath {
+			if !in.AttachExtra {
+				continue
+			}
 			_, err = libStore.UpsertEpisodeFile(ctx, library.EpisodeFile{
-				EpisodeID: got.ID, FilePath: videoPath, IsPrimary: false,
-				Size: library.FileSize(videoPath),
+				EpisodeID: got.ID, FilePath: in.VideoPath, IsPrimary: false,
+				Size: library.FileSize(in.VideoPath),
 			})
 			if err != nil {
 				return cataloged, err
@@ -132,16 +177,16 @@ func catalogEpisodeAtPath(ctx context.Context, libStore *library.Store, videoPat
 			cataloged = true
 			continue
 		}
-		if got != nil && got.FilePath == videoPath {
+		if got != nil && got.FilePath == in.VideoPath {
 			cataloged = true
 			continue
 		}
 		_, err = libStore.UpsertEpisode(ctx, library.Episode{
-			SeriesID:     series.ID,
-			SeasonNumber: season,
+			SeriesID:      series.ID,
+			SeasonNumber:  in.Season,
 			EpisodeNumber: epNum,
-			FilePath:     videoPath,
-			Size:         library.FileSize(videoPath),
+			FilePath:      in.VideoPath,
+			Size:          library.FileSize(in.VideoPath),
 		})
 		if err != nil {
 			return cataloged, err

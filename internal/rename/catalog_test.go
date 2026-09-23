@@ -8,6 +8,7 @@ import (
 
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/proposals"
 )
 
 func TestCatalogMovieAtPath_NFO(t *testing.T) {
@@ -80,7 +81,7 @@ func TestCatalogEpisodeAtPath_TVShowNFO(t *testing.T) {
 		t.Fatal(err)
 	}
 	libStore := newTestLibraryStore(t)
-	ok, err := catalogEpisodeAtPath(context.Background(), libStore, video, root)
+	ok, err := catalogEpisodeAtPath(context.Background(), nil, libStore, video, root, []string{root})
 	if err != nil {
 		t.Fatalf("catalog: %v", err)
 	}
@@ -100,5 +101,128 @@ func TestCatalogEpisodeAtPath_TVShowNFO(t *testing.T) {
 	}
 	if ep.FilePath != video {
 		t.Fatalf("path = %q", ep.FilePath)
+	}
+}
+
+func TestCatalogEpisodeAtPath_YearSeasonAndKidsTag(t *testing.T) {
+	root := t.TempDir()
+	season := filepath.Join(root, "Looney Tunes", "1958")
+	if err := os.MkdirAll(season, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Looney Tunes", "tvshow.nfo"), []byte(
+		`<tvshow><tmdbid>333432</tmdbid><title>Looney Tunes</title><year>1929</year></tvshow>`,
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(season, "Looney.Tunes.S1958E14.Fistic.Mystic.mkv")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	libStore := newTestLibraryStore(t)
+	sess := &mode.Session{Mode: mode.Series, KidsRootPath: root}
+	ok, err := catalogEpisodeAtPath(context.Background(), sess, libStore, video, root, []string{root})
+	if err != nil || !ok {
+		t.Fatalf("catalog ok=%v err=%v", ok, err)
+	}
+	series, err := libStore.GetSeriesByTMDBID(context.Background(), 333432)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep, err := libStore.GetEpisode(context.Background(), series.ID, 1958, 14)
+	if err != nil {
+		t.Fatalf("episode: %v", err)
+	}
+	if ep.FilePath != video {
+		t.Fatalf("path = %q", ep.FilePath)
+	}
+	tags, err := libStore.SeriesTags(context.Background(), series.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundKids := false
+	for _, tag := range tags {
+		if tag == "kids" {
+			foundKids = true
+		}
+	}
+	if !foundKids {
+		t.Fatalf("tags = %v, want kids", tags)
+	}
+}
+
+func TestCatalogEpisodeAtPath_WrongNFOIgnored(t *testing.T) {
+	root := t.TempDir()
+	season := filepath.Join(root, "Looney Toons", "1958")
+	if err := os.MkdirAll(season, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Looney Toons", "tvshow.nfo"), []byte(
+		`<tvshow><uniqueid type="tvdb">465409</uniqueid><title>The Tooney and Russo Show</title></tvshow>`,
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(season, "Looney.Tunes.S1958E14.mkv")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := catalogEpisodeAtPath(context.Background(), nil, newTestLibraryStore(t), video, root, []string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("wrong-nfo file must not catalog without a trusted show id")
+	}
+}
+
+func TestCatalogEpisodeAtPath_NestedDiscYearFolder(t *testing.T) {
+	root := t.TempDir()
+	disc := filepath.Join(root, "Looney Tunes", "1958", "Disc 1")
+	if err := os.MkdirAll(disc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Looney Tunes", "tvshow.nfo"), []byte(
+		`<tvshow><tmdbid>333432</tmdbid><title>Looney Tunes</title></tvshow>`,
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(disc, "E14 Fistic Mystic.mkv")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	libStore := newTestLibraryStore(t)
+	ok, err := catalogEpisodeAtPath(context.Background(), nil, libStore, video, root, []string{root})
+	if err != nil || !ok {
+		t.Fatalf("catalog ok=%v err=%v", ok, err)
+	}
+	series, err := libStore.GetSeriesByTMDBID(context.Background(), 333432)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := libStore.GetEpisode(context.Background(), series.ID, 1958, 14); err != nil {
+		t.Fatalf("episode: %v", err)
+	}
+}
+
+func TestCatalogPendingSeries_WritesLibrary(t *testing.T) {
+	root := t.TempDir()
+	video := filepath.Join(root, "Curious George", "01-Rescue.mkv")
+	if err := os.MkdirAll(filepath.Dir(video), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	libStore := newTestLibraryStore(t)
+	catalogPendingSeries(context.Background(), nil, libStore, []string{root}, []proposals.Proposal{{
+		Status: proposals.Pending, SourcePath: video, TMDBID: 656, Title: "Curious George",
+		Year: 2006, SeasonNumber: 1, EpisodeNumber: 1, RootFolderPath: root,
+	}})
+	series, err := libStore.GetSeriesByTMDBID(context.Background(), 656)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := libStore.GetEpisode(context.Background(), series.ID, 1, 1); err != nil {
+		t.Fatal(err)
 	}
 }

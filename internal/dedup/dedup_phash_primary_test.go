@@ -13,7 +13,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/library"
@@ -201,6 +200,43 @@ func TestScanLibraryPHash_AC4_DissimilarFilesNotGrouped(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("expected no proposal for perceptually dissimilar files, got %+v", got)
+	}
+}
+
+// TestScanLibraryPHash_SameTMDBDissimilarNotGrouped: Dedup is phash-only.
+// Sharing a TMDB id must not group files that are not perceptually similar.
+func TestScanLibraryPHash_SameTMDBDissimilarNotGrouped(t *testing.T) {
+	dir := t.TempDir()
+	fileA := writeVideoFile(t, filepath.Join(dir, "Copy A"), "a.mkv", 100)
+	fileB := writeVideoFile(t, filepath.Join(dir, "Copy B"), "b.mkv", 100)
+
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	item, err := libStore.Upsert(ctx, library.Item{
+		Mode: mode.Movies, TMDBID: 42, Title: "Same Title", FilePath: fileA, RootFolderPath: dir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := libStore.UpsertFile(ctx, library.ItemFile{
+		ItemID: item.ID, FilePath: fileB, IsPrimary: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	sess := &mode.Session{Mode: mode.Movies}
+	prober := &fakeProber{byPath: map[string]*mediainfo.Probe{
+		fileA: {CodecName: "h264", Width: 1280, Height: 720, BitRate: 3000},
+		fileB: {CodecName: "h264", Width: 1280, Height: 720, BitRate: 3000},
+	}}
+	hasher := &fakePHasher{byPath: map[string]string{fileA: refHash, fileB: farHash}}
+
+	got, err := ScanLibraryPHash(ctx, sess, libStore, dir, prober, hasher, 2, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("same-title dissimilar files must not group, got %+v", got)
 	}
 }
 
@@ -489,14 +525,8 @@ func TestScanLibraryPHash_SameTMDBIdentityGroupsDissimilarPHash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(got) != 1 || len(got[0].Candidates) != 2 {
-		t.Fatalf("expected same-TMDB extras to group despite dissimilar phash, got %+v", got)
-	}
-	if got[0].TMDBID != 89 {
-		t.Errorf("expected TMDBID 89, got %d", got[0].TMDBID)
-	}
-	if !strings.Contains(got[0].Reason, "TMDB identity") {
-		t.Errorf("expected identity reason, got %q", got[0].Reason)
+	if len(got) != 0 {
+		t.Fatalf("Dedup is phash-only: same TMDB + dissimilar hash must not group, got %+v", got)
 	}
 }
 

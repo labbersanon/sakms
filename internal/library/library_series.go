@@ -958,7 +958,17 @@ func ParseEpisodeNumbersLoose(basename, parentDir string) (season int, episodes 
 	if season, episodes, ok = ParseEpisodeNumbers(basename); ok {
 		return season, episodes, ok
 	}
-	return ParseEpisodeNumbers(filepath.Base(parentDir))
+	if season, episodes, ok = ParseEpisodeNumbers(filepath.Base(parentDir)); ok {
+		return season, episodes, ok
+	}
+	// Claude 2026-09-23: year-as-season after sequential SxxExx, rename-only.
+	// Reason: S1958E14 is a shorts season, not S19. ParseEpisodeNumbers stays
+	//   two-digit so import/releasematch are unchanged.
+	// Review if: year-season is accepted on Dedup — it must not be.
+	if season, episodes, ok = ParseYearSeasonNumbers(basename); ok {
+		return season, episodes, ok
+	}
+	return ParseYearSeasonNumbers(filepath.Base(parentDir))
 }
 
 // Claude 2026-08-07: compact "eNNNN" episode-code siblings, rename-path-only (plan §1.1/§1.2)
@@ -1145,8 +1155,14 @@ func StripEpisodeMarkerLoose(basename, parentDir string) string {
 	if stripped := StripEpisodeMarker(basename); stripped != basename {
 		return stripped
 	}
+	if stripped := StripYearSeasonMarker(basename); stripped != basename {
+		return stripped
+	}
 	parentBase := filepath.Base(parentDir)
 	if stripped := StripEpisodeMarker(parentBase); stripped != parentBase {
+		return stripped
+	}
+	if stripped := StripYearSeasonMarker(parentBase); stripped != parentBase {
 		return stripped
 	}
 	return basename

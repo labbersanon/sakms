@@ -2,13 +2,9 @@
 //
 // ScanLibraryPHash and ScanLibrarySeriesPHash group ALL video files —
 // tracked primaries, extra copies recorded on the library row, and orphans —
-// independently of Rename. Two files group when they are perceptually similar
-// OR they share a TMDB identity (Movies: same TMDB id; Series: same TMDB id
-// plus the same season/episode). TMDB search is still used for unlabeled
-// orphans; a [tmdbid-N] path tag is enough on its own.
-//
-// Phash still catches the cases identity cannot: orphan-vs-orphan with no
-// id, and two tracked rows that resolved to the wrong TMDB ids.
+// independently of Rename. Two files group only when they are perceptually
+// similar. TMDB ids, SxxExx parses, and filename search are not used to
+// form groups — Dedup does not identify titles.
 //
 // ApplyLibrary / ApplyLibrarySeries delete only the losing candidate's own
 // file — removing an extra copy never deletes the title it belongs to.
@@ -25,10 +21,8 @@ import (
 	"github.com/labbersanon/sakms/internal/config"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
-	"github.com/labbersanon/sakms/internal/naming"
 	"github.com/labbersanon/sakms/internal/phash"
 	"github.com/labbersanon/sakms/internal/proposals"
-	"github.com/labbersanon/sakms/internal/searchterm"
 )
 
 // pHashFileItem holds one candidate (tracked or orphan) for the phash-primary
@@ -40,7 +34,7 @@ type pHashFileItem struct {
 	trackedID int    // 0 for orphans
 	tmdbID    int    // from tracked identity or TMDB search; 0 if unknown
 	title     string // TMDB-resolved title; "" if unavailable
-	season    int    // Series only — from library.ParseEpisodeFilename
+	season    int    // Series only — from an already-tracked library row
 	episode   int    // Series only
 	phashVal  string // "" means computation failed; item skipped during comparison
 }
@@ -140,29 +134,9 @@ func pHashGroupReason(group []pHashFileItem, n int, similarity float64, perFrame
 	}
 }
 
-func orphanMovieTMDB(ctx context.Context, sess *mode.Session, path, name string) (tmdbID int, title string) {
-	if id := naming.TMDBIDFromPath(path); id != 0 {
-		return id, ""
-	}
-	if sess != nil && sess.TMDB != nil {
-		if results, sErr := sess.TMDB.SearchMovies(ctx, searchterm.FromName(name)); sErr == nil && len(results) > 0 {
-			return results[0].ID, results[0].Title
-		}
-	}
-	return 0, ""
-}
-
-func orphanSeriesTMDB(ctx context.Context, sess *mode.Session, path, name string) (tmdbID int, title string) {
-	if id := naming.TMDBIDFromPath(path); id != 0 {
-		return id, ""
-	}
-	if sess != nil && sess.TMDB != nil {
-		if results, sErr := sess.TMDB.SearchTV(ctx, searchterm.FromName(library.StripEpisodeMarker(name))); sErr == nil && len(results) > 0 {
-			return results[0].ID, results[0].Title
-		}
-	}
-	return 0, ""
-}
+// Claude 2026-09-23: orphanMovieTMDB / orphanSeriesTMDB removed.
+// Reason: Dedup groups by phash only — filename/TMDB search is identify work.
+// Review if: group labels need a title and should read the library row only.
 
 // pHashGroupComponents returns all connected components with ≥ 2 members.
 // Union-find produces transitive clusters: if A~B and B~C, {A,B,C} are grouped
@@ -216,15 +190,15 @@ func minPairwiseSimilarity(group []pHashFileItem, frames int) float64 {
 }
 
 // ScanLibraryPHash is Dedup's Movies scan. Files group by perceptual
-// similarity or by shared TMDB identity, taken from a [tmdbid-N] path tag, the
-// library row, or a TMDB search. Extra copies on library_item_files are
-// candidates too — Rename having folded them in does not exempt them.
+// similarity only. Extra copies on library_item_files are candidates too —
+// Rename having folded them in does not exempt them.
 //
 // perFrameThreshold is the Movies per-frame Hamming distance ceiling —
 // default 64 bits (of 256 per frame, PDQ scale — see phash.DefaultMoviesThreshold's
 // doc comment for the measured calibration this was chosen against),
 // configurable via movies_phash_dedup_threshold.
 func ScanLibraryPHash(ctx context.Context, sess *mode.Session, libStore *library.Store, rootFolderPath string, prober Prober, hasher PHasher, perFrameThreshold int, onProgress ProgressFunc) ([]proposals.Proposal, error) {
+	_ = sess // kept on the signature; Dedup does not identify via sess.TMDB
 	if rootFolderPath == "" {
 		return nil, fmt.Errorf("no Movies library root folder configured yet — add one in Settings first")
 	}
@@ -292,12 +266,9 @@ func ScanLibraryPHash(ctx context.Context, sess *mode.Session, libStore *library
 		if onProgress != nil {
 			onProgress(ProgressEvent{Current: current, Total: total, Name: o.name, Phase: "hashing"})
 		}
-		tmdbID, title := orphanMovieTMDB(ctx, sess, o.path, o.name)
 		items = append(items, pHashFileItem{
 			path:     o.path,
 			label:    o.name,
-			tmdbID:   tmdbID,
-			title:    title,
 			phashVal: h,
 		})
 	}
@@ -314,7 +285,7 @@ func ScanLibraryPHash(ctx context.Context, sess *mode.Session, libStore *library
 	}
 	_ = libStore.DeleteOrphanPHashesNotIn(ctx, keepCached)
 
-	uf := unionByPHashAndIdentity(items, perFrameThreshold, sameMovieIdentity)
+	uf := unionByPHashAndIdentity(items, perFrameThreshold, nil)
 	groups := pHashGroupComponents(items, uf)
 
 	var out []proposals.Proposal
@@ -338,7 +309,7 @@ func ScanLibraryPHash(ctx context.Context, sess *mode.Session, libStore *library
 			SourceName: title, Title: title, TMDBID: tmdbID, RootFolderPath: rootPath,
 			Candidates:      candidates,
 			PHashSimilarity: similarity,
-			Reason:          pHashGroupReason(group, len(candidates), similarity, perFrameThreshold, sameMovieIdentity),
+			Reason:          pHashGroupReason(group, len(candidates), similarity, perFrameThreshold, nil),
 		})
 	}
 	return out, nil
@@ -354,6 +325,7 @@ func ScanLibraryPHash(ctx context.Context, sess *mode.Session, libStore *library
 //
 // perFrameThreshold is configurable via series_phash_dedup_threshold.
 func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *library.Store, rootFolderPath string, prober Prober, hasher PHasher, perFrameThreshold int, onProgress ProgressFunc) ([]proposals.Proposal, error) {
+	_ = sess // kept on the signature; Dedup does not identify via sess.TMDB
 	if rootFolderPath == "" {
 		return nil, fmt.Errorf("no Series library root folder configured yet — add one in Settings first")
 	}
@@ -450,15 +422,9 @@ func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *l
 		if onProgress != nil {
 			onProgress(ProgressEvent{Current: current, Total: total, Name: name, Phase: "hashing"})
 		}
-		season, episode, _ := library.ParseEpisodeFilename(name)
-		tmdbID, title := orphanSeriesTMDB(ctx, sess, videoPath, name)
 		items = append(items, pHashFileItem{
 			path:     videoPath,
 			label:    name,
-			tmdbID:   tmdbID,
-			season:   season,
-			episode:  episode,
-			title:    title,
 			phashVal: h,
 		})
 	}
@@ -471,7 +437,7 @@ func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *l
 	}
 	_ = libStore.DeleteOrphanPHashesNotIn(ctx, keepCached)
 
-	uf := unionByPHashAndIdentity(items, perFrameThreshold, sameEpisodeIdentity)
+	uf := unionByPHashAndIdentity(items, perFrameThreshold, nil)
 	groups := pHashGroupComponents(items, uf)
 
 	var out []proposals.Proposal
@@ -507,7 +473,7 @@ func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *l
 			RootFolderPath:  rootPath,
 			Candidates:      candidates,
 			PHashSimilarity: similarity,
-			Reason:          pHashGroupReason(group, len(candidates), similarity, perFrameThreshold, sameEpisodeIdentity),
+			Reason:          pHashGroupReason(group, len(candidates), similarity, perFrameThreshold, nil),
 		})
 	}
 	return out, nil

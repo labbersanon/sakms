@@ -120,3 +120,58 @@ func TestRepairMovieIdentity_NoWebSearchStaysUnrepaired(t *testing.T) {
 		t.Fatal("expected no repair without web search")
 	}
 }
+
+func TestRepairSeriesIdentity_WebSearchAfterGuessDecline(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/search/tv"):
+			if !strings.Contains(r.URL.Query().Get("query"), "Laurel") {
+				_, _ = w.Write([]byte(`{"results":[]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"results":[{"id":5555,"name":"Laurel & Hardy","first_air_date":"1919-01-01"}]}`))
+		case r.URL.Path == "/tv/5555":
+			_, _ = w.Write([]byte(`{"id":5555,"name":"Laurel & Hardy","first_air_date":"1919-01-01","poster_path":"/p.jpg"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	store := library.New(dbtest.New(t))
+	ctx := context.Background()
+	ser, err := store.UpsertSeries(ctx, library.Series{
+		TMDBID: -42, TVDBID: 73910, Title: "Laurel & Hardy", Year: 1919, RootFolderPath: "/tv",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	search := &scriptedSearch{res: []websearch.Result{{
+		Title:       "Laurel & Hardy (TV series)",
+		Description: "Shorts catalogued as a series, first aired 1919.",
+		URL:         "https://example.test/lh",
+	}}}
+	ai := &scriptedIdentityAI{ground: map[string]any{
+		"title": "Laurel & Hardy",
+		"year":  float64(1919),
+	}}
+	sess := &mode.Session{
+		TMDB:         tmdb.New(tmdb.Config{BaseURL: srv.URL, APIKey: "test", BypassCache: true}, srv.Client()),
+		MainstreamAI: ai,
+		WebSearch:    search,
+	}
+	if !repairSeriesIdentity(ctx, store, sess, ser) {
+		t.Fatal("expected web grounding to repair the series")
+	}
+	got, err := store.GetSeriesByTMDBID(ctx, 5555)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != ser.ID || got.TVDBID != 73910 {
+		t.Fatalf("repaired series: %+v", got)
+	}
+	if search.query != "Laurel & Hardy" {
+		t.Fatalf("search query = %q", search.query)
+	}
+}

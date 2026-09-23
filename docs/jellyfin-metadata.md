@@ -10,12 +10,13 @@ its own `folder.jpg` / NFO on disk; sakms does **not** write sidecars.
    AI+SearXNG and persists an absolute URL on the library row.
 2. **Lazy `/poster`** — card open still resolves and caches the same way.
 3. **Throttled backfill** — `POST /api/admin/posters/backfill` and a boot
-   one-shot walk titles with empty `poster_url` (and series with `tmdb_id=0`).
+   one-shot walk titles with empty `poster_url` (and series with `tmdb_id≤0`).
    Gap between titles: **2 seconds** (`posterBackfillGap`) so TMDB/TVDB are
    not stampeded.
 
-Series with `tmdb_id=0` are repaired from an **existing** `tvshow.nfo` when
-present (read-only), then art is resolved.
+Series with `tmdb_id≤0` are repaired from an **existing** `tvshow.nfo` when
+present (read-only). If that file has no TMDB id, backfill uses GuessTitle
+and then web search, and sends the grounded title to TMDB's TV search.
 
 ## TMDB rate limit
 
@@ -42,8 +43,8 @@ poster backfill: done movies_ok=… movies_fail=… series_ok=… series_fail=�
 
 - **Letter tile** — row has empty `poster_url` (and maybe `tmdb_id=0`). Wait
   for boot backfill, open the title (`/poster`), or POST the admin endpoint.
-- **Series stuck at tmdb_id=0 with no NFO** — add/fix ids in sakms or fix
-  the library row; backfill cannot invent a TMDB id without NFO/TVDB.
+- **Series still at tmdb_id≤0** — NFO, GuessTitle, and web search all missed,
+  or another row already owns the TMDB id.
 - **Old `/api/admin/mediafolder/backfill`** — removed; use `/api/admin/posters/backfill`.
 
 ## Embedded file tags (Movies identity)
@@ -54,5 +55,5 @@ Tracked Movies rows with `tmdb_id ≤ 0` are repaired the same way when the
 file still has usable tags. If tags, NFO, and GuessTitle still produce no
 TMDB id, backfill searches the web (SearXNG when configured), asks the local
 model to read the snippets, and sends that title and year to TMDB. Series
-repair stays NFO-only.
+rows with `tmdb_id≤0` use that GuessTitle then web-search order on TMDB TV.
 

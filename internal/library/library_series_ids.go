@@ -39,6 +39,31 @@ func (s *Store) SetSeriesTMDBID(ctx context.Context, seriesID int64, newTMDBID, 
 	return nil
 }
 
+// ListSeriesNeedingIdentity returns series rows with a missing or non-positive
+// tmdb_id. Poster listing only includes tmdb_id=0, so negative web-authority
+// ids are invisible there.
+func (s *Store) ListSeriesNeedingIdentity(ctx context.Context) ([]Series, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, tmdb_id, tvdb_id, title, year, root_folder_path
+		FROM library_series
+		WHERE tmdb_id <= 0
+		ORDER BY title
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("listing series needing identity: %w", err)
+	}
+	defer rows.Close()
+	var out []Series
+	for rows.Next() {
+		var ser Series
+		if err := rows.Scan(&ser.ID, &ser.TMDBID, &ser.TVDBID, &ser.Title, &ser.Year, &ser.RootFolderPath); err != nil {
+			return nil, fmt.Errorf("scanning series needing identity: %w", err)
+		}
+		out = append(out, ser)
+	}
+	return out, rows.Err()
+}
+
 // SeriesDirHint returns RootFolderPath for a series when set.
 func (s *Store) SeriesDirHint(ctx context.Context, seriesID int64) (root string, title string, err error) {
 	err = s.db.QueryRowContext(ctx, `

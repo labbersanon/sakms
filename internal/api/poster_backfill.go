@@ -19,6 +19,7 @@ import (
 	"github.com/labbersanon/sakms/internal/rename"
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/tmdb"
 )
 
 // Claude 2026-09-23: DB-only poster backfill (Jellyfin stays independent — no sidecars).
@@ -27,12 +28,13 @@ import (
 // Review if: gap tuned differently or AI fallback disabled during backfill.
 // Related files: internal/api/poster.go, internal/library/library_poster.go
 //
-// Claude 2026-09-23: movie identity repair falls through to SearXNG grounding.
-// Reason: GuessTitle→TMDB misses the same messy names Rename Phase 2 recovers.
-// Troubleshooting: movie_id_repaired stays 0 with web search configured → check
-//   "web-search" log line; nil WebSearch or MainstreamAI skips this step.
-// Review if: series repair grows the same grounding path.
-// Related files: internal/identify/mainstream_prompts.go, internal/rename/rename.go
+// Claude 2026-09-23: series identity uses the movie web-search fallthrough.
+// Reason: poster list is tmdb_id=0 or empty art, so a negative tmdb_id with a
+//   poster (Laurel & Hardy) never reached NFO repair.
+// Troubleshooting: series_id_repaired stays 0 → row still tmdb_id<=0; check
+//   "web-search" / "guess-title" on the series log line.
+// Review if: series embedded tags become an identity source.
+// Related files: internal/library/library_series_ids.go
 
 // posterBackfillGap spaces TMDB/TVDB/AI calls so a full-library pass cannot
 // stampede outbound APIs the way the unthrottled mediafolder boot sweep did.
@@ -131,6 +133,28 @@ func RunPosterBackfill(
 	}
 
 	seriesOK, seriesFail, repaired := 0, 0, 0
+	if needSeries, err := libStore.ListSeriesNeedingIdentity(ctx); err != nil {
+		log.Printf("poster backfill: list series needing identity: %v", err)
+	} else if len(needSeries) > 0 {
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, mode.Series)
+		if err != nil || sess == nil || sess.TMDB == nil {
+			log.Printf("poster backfill: cannot repair series identity (session): %v", err)
+		} else {
+			for i, ser := range needSeries {
+				if ctx.Err() != nil {
+					log.Printf("poster backfill: cancelled during series identity repair after %d", i)
+					return
+				}
+				if repairSeriesIdentity(ctx, libStore, sess, ser) {
+					repaired++
+				}
+				if err := sleepBackfillGap(ctx); err != nil {
+					return
+				}
+			}
+		}
+	}
+
 	series, err := libStore.ListSeriesNeedingPoster(ctx)
 	if err != nil {
 		log.Printf("poster backfill: list series: %v", err)
@@ -244,6 +268,97 @@ func sleepBackfillGap(ctx context.Context) error {
 	case <-t.C:
 		return nil
 	}
+}
+
+// repairSeriesIdentity assigns a positive TMDB id: existing tvshow.nfo, then
+// GuessTitle, then web-search grounding. Same order as movie repair after tags.
+func repairSeriesIdentity(ctx context.Context, libStore *library.Store, sess *mode.Session, ser library.Series) bool {
+	if _, ok := repairSeriesTMDBFromDisk(ctx, libStore, ser); ok {
+		return true
+	}
+	if sess == nil || sess.TMDB == nil {
+		return false
+	}
+	seed := seriesIdentitySeed(ctx, libStore, ser)
+	query := seed
+	if sess.MainstreamAI != nil && seed != "" {
+		g, err := identify.GuessTitle(ctx, sess.MainstreamAI, seed)
+		if err == nil && g.Title != "" {
+			query = g.Title
+			if repairSeriesByTitle(ctx, libStore, sess, ser, g.Title, g.Year, "guess-title") {
+				return true
+			}
+		}
+	}
+	grounded, err := identify.GroundTitleViaSearch(ctx, sess.WebSearch, sess.MainstreamAI, query)
+	if err != nil || grounded.Title == "" {
+		return false
+	}
+	return repairSeriesByTitle(ctx, libStore, sess, ser, grounded.Title, grounded.Year, "web-search")
+}
+
+func repairSeriesByTitle(ctx context.Context, libStore *library.Store, sess *mode.Session, ser library.Series, title string, year int, via string) bool {
+	if year == 0 {
+		year = ser.Year
+	}
+	tmdbID, err := searchSeriesTMDB(ctx, sess.TMDB, title, year)
+	if err != nil || tmdbID <= 0 {
+		return false
+	}
+	return commitSeriesIdentityRepair(ctx, libStore, sess, ser, tmdbID, via)
+}
+
+func seriesIdentitySeed(ctx context.Context, libStore *library.Store, ser library.Series) string {
+	if ser.Title != "" && !strings.Contains(ser.Title, ".") {
+		return ser.Title
+	}
+	eps, err := libStore.ListEpisodes(ctx, ser.ID)
+	if err != nil {
+		return ser.Title
+	}
+	for _, ep := range eps {
+		if ep.FilePath != "" {
+			return filepath.Base(ep.FilePath)
+		}
+	}
+	return ser.Title
+}
+
+func searchSeriesTMDB(ctx context.Context, client *tmdb.Client, title string, year int) (int, error) {
+	title = strings.TrimSpace(title)
+	if client == nil || title == "" {
+		return 0, nil
+	}
+	items, err := client.SearchTV(ctx, title)
+	if err != nil || len(items) == 0 {
+		return 0, err
+	}
+	pick := items[0]
+	if year > 0 {
+		for _, it := range items {
+			if parseYearPrefix(it.ReleaseDate) == year {
+				pick = it
+				break
+			}
+		}
+	}
+	return pick.ID, nil
+}
+
+func commitSeriesIdentityRepair(ctx context.Context, libStore *library.Store, sess *mode.Session, ser library.Series, tmdbID int, via string) bool {
+	tvdbID := ser.TVDBID
+	if tvdbID <= 0 && sess != nil && sess.TMDB != nil {
+		if id, err := sess.TMDB.ExternalIDs(ctx, tmdbID); err == nil && id > 0 {
+			tvdbID = id
+		}
+	}
+	if err := libStore.SetSeriesTMDBID(ctx, ser.ID, tmdbID, tvdbID); err != nil {
+		log.Printf("poster backfill: repair series id=%d → tmdb=%d: %v", ser.ID, tmdbID, err)
+		return false
+	}
+	log.Printf("poster backfill: repaired series %q id=%d → tmdb=%d (%s)", ser.Title, ser.ID, tmdbID, via)
+	ensureImportPoster(ctx, libStore, sess, mode.Series, tmdbID)
+	return true
 }
 
 // repairSeriesTMDBFromDisk reads an existing tvshow.nfo (Jellyfin-written or

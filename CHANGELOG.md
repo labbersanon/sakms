@@ -9190,3 +9190,18 @@ status stays active.
 | `internal/api/poster_backfill.go` | Web-search fallthrough on movie identity repair |
 | `internal/api/poster_backfill_test.go` | Declined guess + snippet → TMDB id |
 | `docs/jellyfin-metadata.md` | Document the movie repair order |
+
+## 2026-09-23 — Series identity repair grounds via web search
+
+**Problem:** Series repair stopped at `tvshow.nfo`. A negative `tmdb_id` with a poster never entered that path, because the poster list only includes `tmdb_id=0` or empty art.
+**Fix:** `ListSeriesNeedingIdentity` selects `tmdb_id≤0`. Repair order is NFO, GuessTitle, then SearXNG grounding, and the title is searched on TMDB TV. An existing TVDB id is kept.
+**Outcome:** Unit test covers a declined guess recovered from a search snippet.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/poster_backfill.go` | Series GuessTitle and web-search fallthrough |
+| `internal/library/library_series_ids.go` | `ListSeriesNeedingIdentity` |
+| `internal/api/poster_backfill_test.go` | Series web-search repair test |
+| `docs/jellyfin-metadata.md` | Series repair order |

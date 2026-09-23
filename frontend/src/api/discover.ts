@@ -212,10 +212,12 @@ export function fetchTitleDetail(
   mode: Exclude<Mode, "adult">,
   tmdbId: number,
   sections?: "seasons",
+  year?: number,
 ): Promise<TitleDetail> {
   return api<TitleDetail>(
     `/api/modes/${mode}/discover/detail?tmdbId=${tmdbId}` +
-      (sections ? `&sections=${sections}` : ""),
+      (sections ? `&sections=${sections}` : "") +
+      (year && year > 0 ? `&year=${year}` : ""),
   );
 }
 

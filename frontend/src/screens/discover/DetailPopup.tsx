@@ -719,12 +719,15 @@ export const DetailPopup: Component<{
   // backend itself soft-fails each sub-call so a partial bundle is normal (any
   // missing piece is an empty array/string, guarded per-section below).
   const [detail] = createResource(
-    () =>
-      mode() !== "adult"
-        ? { m: mode() as "movies" | "series", tmdbId: (item() as DiscoverItem).id }
-        : null,
-    ({ m, tmdbId }) =>
-      fetchTitleDetail(m, tmdbId).catch(() => undefined as TitleDetail | undefined),
+    () => {
+      if (mode() === "adult") return null;
+      const d = item() as DiscoverItem;
+      const yearText = d.releaseDate ?? "";
+      const year = mode() === "series" && /^\d{4}/.test(yearText) ? Number(yearText.slice(0, 4)) : 0;
+      return { m: mode() as "movies" | "series", tmdbId: d.id, year };
+    },
+    ({ m, tmdbId, year }) =>
+      fetchTitleDetail(m, tmdbId, undefined, year).catch(() => undefined as TitleDetail | undefined),
   );
 
   // Claude 2026-08-14: Library tracked rows pass posterPath "".

@@ -84,13 +84,14 @@ func (s *Store) ListMoviesNeedingPoster(ctx context.Context, m mode.Mode) ([]Ite
 	return out, rows.Err()
 }
 
-// ListSeriesNeedingPoster returns series with empty poster_url and/or tmdb_id=0
-// (zero-id rows need NFO/TVDB repair before art can be cached).
+// ListSeriesNeedingPoster returns series with no poster, no TMDB id, or a
+// poster_source of ai. The ai source is a page URL from text search, including
+// shorts whose TMDB id is a movie.
 func (s *Store) ListSeriesNeedingPoster(ctx context.Context) ([]Series, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, tmdb_id, tvdb_id, title, year, root_folder_path
 		FROM library_series
-		WHERE tmdb_id = 0 OR poster_url = ''
+		WHERE tmdb_id = 0 OR poster_url = '' OR poster_source = 'ai'
 		ORDER BY title
 	`)
 	if err != nil {

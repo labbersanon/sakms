@@ -9262,3 +9262,19 @@ status stays active.
 | `internal/api/poster.go` | TMDB → TVDB → image search |
 | `internal/api/poster_backfill.go` | Image search before folder.jpg; series with no TMDB id |
 | `internal/library/library_poster.go` | `poster_source=image`; series write by id |
+
+## 2026-09-23 — Short films filed as series still use the TMDB movie
+
+**Problem:** One Good Turn and the other Laurel & Hardy shorts are series rows. Poster and detail lookup called `/tv/{id}`. Movie 48903 is the 1931 short; TV 48903 is a 2012 show. The TV lookup had no usable poster, and text search stored the TMDB gallery page.
+**Fix:** When the library year matches the movie and not the TV show, poster, overview, cast, and the detail popup read the movie. A stored page URL is not treated as a poster, so backfill can replace `poster_source=ai` rows.
+**Outcome:** Unit tests cover the 1931-vs-2012 choice and reject gallery-page URLs.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/series_short.go` | Year match chooses the movie |
+| `internal/api/poster.go` | Series poster uses that record |
+| `internal/api/discover_detail.go` | Detail popup uses that record when `year` is set |
+| `internal/library/library_poster.go` | Revisit `poster_source=ai` |
+| `frontend/src/screens/discover/DetailPopup.tsx` | Pass the library year |

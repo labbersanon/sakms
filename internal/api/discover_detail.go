@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 
 	"golang.org/x/sync/errgroup"
 
@@ -101,10 +102,15 @@ func discoverDetailHandler(httpClient *http.Client, connStore *connections.Store
 
 		isTV := m == mode.Series
 		seasonsOnly := r.URL.Query().Get("sections") == "seasons"
-
-		// Each sub-call writes only its own captured var below — disjoint, so no
-		// data race across the parallel goroutines. Assembled into the DTO after
-		// g.Wait().
+		// Claude 2026-09-23: a library short passes its year. The same TMDB
+		// number can be a movie and a different TV show.
+		// Reason: series detail was reading TV 48903 (2012) for One Good Turn (1931).
+		// Troubleshooting: a short's popup shows another show's cast and overview.
+		// Review if: shorts are no longer stored as series.
+		libraryYear := 0
+		if isTV {
+			libraryYear, _ = strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("year")))
+		}
 		var (
 			ext       titleExtended
 			credits   tmdb.Credits
@@ -112,11 +118,32 @@ func discoverDetailHandler(httpClient *http.Client, connStore *connections.Store
 			providers []tmdb.WatchProvider
 			recs      []tmdb.Item
 		)
+		useMovie := false
+		if isTV && libraryYear > 0 {
+			tv, tvErr := sess.TMDB.TVDetails(ctx, tmdbID)
+			mov, movErr := sess.TMDB.MovieDetails(ctx, tmdbID)
+			tvOK := tvErr == nil && strings.TrimSpace(tv.Title) != ""
+			movieOK := movErr == nil && strings.TrimSpace(mov.Title) != ""
+			useMovie = preferMovieForSeriesYear(tvOK, tvPremiereYear(tv), movieOK, parseYearPrefix(mov.ReleaseDate), libraryYear)
+			if useMovie {
+				ext = extendedFromMovie(mov)
+			} else if tvErr == nil {
+				ext = extendedFromTV(tv)
+			}
+		}
+		asTV := isTV && !useMovie
 
+		// Each sub-call writes only its own captured var below — disjoint, so no
+		// data race across the parallel goroutines. Assembled into the DTO after
+		// g.Wait(). ext is filled above when a library year picked the movie
+		// or the TV show already.
 		g := new(errgroup.Group)
 		g.Go(func() error {
+			if isTV && libraryYear > 0 {
+				return nil
+			}
 			var e error
-			if isTV {
+			if asTV {
 				var d tmdb.TVDetails
 				d, e = sess.TMDB.TVDetails(ctx, tmdbID)
 				if e == nil {
@@ -141,7 +168,7 @@ func discoverDetailHandler(httpClient *http.Client, connStore *connections.Store
 		if !seasonsOnly {
 			g.Go(func() error {
 				var e error
-				if isTV {
+				if asTV {
 					credits, e = sess.TMDB.TVAggregateFullCredits(ctx, tmdbID)
 				} else {
 					credits, e = sess.TMDB.MovieFullCredits(ctx, tmdbID)
@@ -153,7 +180,7 @@ func discoverDetailHandler(httpClient *http.Client, connStore *connections.Store
 			})
 			g.Go(func() error {
 				var e error
-				if isTV {
+				if asTV {
 					keywords, e = sess.TMDB.TVKeywords(ctx, tmdbID)
 				} else {
 					keywords, e = sess.TMDB.MovieKeywords(ctx, tmdbID)
@@ -165,7 +192,7 @@ func discoverDetailHandler(httpClient *http.Client, connStore *connections.Store
 			})
 			g.Go(func() error {
 				var e error
-				if isTV {
+				if asTV {
 					providers, e = sess.TMDB.TVWatchProviders(ctx, tmdbID)
 				} else {
 					providers, e = sess.TMDB.MovieWatchProviders(ctx, tmdbID)
@@ -177,7 +204,7 @@ func discoverDetailHandler(httpClient *http.Client, connStore *connections.Store
 			})
 			g.Go(func() error {
 				var e error
-				if isTV {
+				if asTV {
 					recs, e = sess.TMDB.TVRecommendations(ctx, tmdbID, 1)
 				} else {
 					recs, e = sess.TMDB.MovieRecommendations(ctx, tmdbID, 1)
@@ -204,9 +231,9 @@ func discoverDetailHandler(httpClient *http.Client, connStore *connections.Store
 		if !seasonsOnly {
 			imdbID := ""
 			if wantCatalogIMDB(ctx, connStore, traktStore) {
-				imdbID = resolveTitleIMDBID(ctx, sess.TMDB, isTV, tmdbID, ext.IMDBID)
+				imdbID = resolveTitleIMDBID(ctx, sess.TMDB, asTV, tmdbID, ext.IMDBID)
 			}
-			traktRatings = lookupTraktRatings(ctx, httpClient, traktStore, isTV, tmdbID, imdbID)
+			traktRatings = lookupTraktRatings(ctx, httpClient, traktStore, asTV, tmdbID, imdbID)
 			// OMDb is IMDb-only fallback — skip it when Trakt already
 			// nested an IMDb score so we don't spend a second lookup.
 			if traktRatings.IMDb.Rating <= 0 {

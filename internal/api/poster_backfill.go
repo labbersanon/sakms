@@ -482,7 +482,7 @@ func ensureImportPoster(ctx context.Context, libStore *library.Store, sess *mode
 		return
 	}
 	if m == mode.Series {
-		if art, err := libStore.SeriesPosterArt(ctx, tmdbID); err == nil && art.URL != "" {
+		if art, err := libStore.SeriesPosterArt(ctx, tmdbID); err == nil && posterURLIsImage(art.URL) {
 			return
 		}
 	} else {
@@ -494,15 +494,25 @@ func ensureImportPoster(ctx context.Context, libStore *library.Store, sess *mode
 	title := ""
 	year := 0
 	tvdbID := 0
+	searchAsMovie := m != mode.Series
 	if m == mode.Series {
-		details, err := sess.TMDB.TVDetails(ctx, tmdbID)
-		if err == nil {
-			title = details.Title
-			if details.PosterPath != "" {
-				abs := tmdbPosterAbsolute + details.PosterPath
-				persistPoster(ctx, libStore, m, tmdbID, abs, library.PosterSourceTMDB)
-				return
-			}
+		libraryYear := year
+		if ser, err := libStore.GetSeriesByTMDBID(ctx, tmdbID); err == nil && libraryYear == 0 {
+			libraryYear = ser.Year
+		}
+		cat := loadSeriesPosterCatalog(ctx, sess.TMDB, tmdbID, libraryYear)
+		if cat.FromMovie {
+			searchAsMovie = true
+		}
+		if cat.Title != "" {
+			title = cat.Title
+		}
+		if cat.Year != 0 {
+			year = cat.Year
+		}
+		if cat.PosterPath != "" {
+			persistPoster(ctx, libStore, m, tmdbID, tmdbPosterAbsolute+cat.PosterPath, library.PosterSourceTMDB)
+			return
 		}
 		if ser, err := libStore.GetSeriesByTMDBID(ctx, tmdbID); err == nil {
 			if title == "" {
@@ -537,9 +547,9 @@ func ensureImportPoster(ctx context.Context, libStore *library.Store, sess *mode
 		return
 	}
 
-	kind := "movie"
-	if m == mode.Series {
-		kind = "series"
+	kind := "series"
+	if searchAsMovie {
+		kind = "movie"
 	}
 	if url := searchedPoster(ctx, sess, title, year, kind); url != "" {
 		persistPoster(ctx, libStore, m, tmdbID, url, library.PosterSourceImage)

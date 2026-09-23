@@ -71,7 +71,7 @@ func resolvePoster(
 		} else if a, err := libStore.MoviePosterArt(ctx, m, tmdbID); err == nil {
 			art = a
 		}
-		if strings.TrimSpace(art.URL) != "" {
+		if posterURLIsImage(art.URL) {
 			out.PosterURL = art.URL
 		}
 	}
@@ -84,23 +84,34 @@ func resolvePoster(
 	title := art.Title
 	year := art.Year
 	tvdbID := art.TVDBID
+	searchAsMovie := m != mode.Series
 
 	if m == mode.Series {
-		details, err := sess.TMDB.TVDetails(ctx, tmdbID)
-		if err == nil {
-			out.Overview = details.Overview
-			if title == "" {
-				title = details.Title
+		// Claude 2026-09-23: a short filed as a series may be a TMDB movie.
+		// Reason: TV details for that number are a different show, or empty.
+		// Troubleshooting: series poster_url is a themoviedb.org gallery page.
+		// Review if: shorts are no longer stored in library_series.
+		cat := loadSeriesPosterCatalog(ctx, sess.TMDB, tmdbID, year)
+		if cat.Overview != "" {
+			out.Overview = cat.Overview
+		}
+		if title == "" {
+			title = cat.Title
+		}
+		if year == 0 {
+			year = cat.Year
+		}
+		if cat.FromMovie {
+			searchAsMovie = true
+		}
+		if cat.PosterPath != "" {
+			out.PosterPath = cat.PosterPath
+			abs := tmdbPosterAbsolute + cat.PosterPath
+			if out.PosterURL == "" {
+				persistPoster(ctx, libStore, m, tmdbID, abs, library.PosterSourceTMDB)
+				out.PosterURL = abs
 			}
-			if details.PosterPath != "" {
-				out.PosterPath = details.PosterPath
-				abs := tmdbPosterAbsolute + details.PosterPath
-				if out.PosterURL == "" {
-					persistPoster(ctx, libStore, m, tmdbID, abs, library.PosterSourceTMDB)
-					out.PosterURL = abs
-				}
-				return out
-			}
+			return out
 		}
 	} else {
 		details, err := sess.TMDB.MovieDetails(ctx, tmdbID)
@@ -134,9 +145,9 @@ func resolvePoster(
 		return out
 	}
 
-	kind := "movie"
-	if m == mode.Series {
-		kind = "series"
+	kind := "series"
+	if searchAsMovie {
+		kind = "movie"
 	}
 	if url := searchedPoster(ctx, sess, title, year, kind); url != "" {
 		persistPoster(ctx, libStore, m, tmdbID, url, library.PosterSourceImage)

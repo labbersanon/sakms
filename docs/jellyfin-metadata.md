@@ -9,7 +9,9 @@ its own `folder.jpg` / NFO on disk; sakms does **not** write sidecars.
 1. **Import** — after a grab lands, `ensureImportPoster` runs TMDB → TVDB →
    SearXNG image search and persists an absolute URL on the library row.
    A movie with no catalog art and no image hit can still use `folder.jpg`
-   beside the video (`poster_source=local`).
+   beside the video (`poster_source=local`). A series whose TMDB id is a
+   short film uses the movie record when the library year matches the movie
+   and not the TV show that shares the number.
 2. **Lazy `/poster`** — card open still resolves and caches the same way.
 3. **Throttled backfill** — `POST /api/admin/posters/backfill` and a boot
    one-shot walk titles with empty `poster_url` (and series with `tmdb_id≤0`).

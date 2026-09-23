@@ -9366,3 +9366,16 @@ status stays active.
 | `internal/apidto/dto.go` | Field comment for PosterURL; gendto note |
 | `internal/apidto/ts/dto.gen.ts` | Regenerated from Go source |
 | `internal/downloader/upload_speed_test.go` | Sample upload speed during transfer |
+
+## 2026-09-23 — Harden two more go-test flakes
+
+**Problem:** After the DTO/upload-speed fix, CI failed once on `TestPromoteRequestHandler_BumpsRetryAfterToNow` (`got []`). `TestReconcileInFlightDownloads_DrainResumesWhenSlotFrees` had also failed earlier the same day.
+**Fix:** DueForRetry is queried with wall-clock now+5s (retry_after is millisecond TEXT). Drain wait is 10s under `-p 4`.
+**Outcome:** Same promote/reconcile assertions; less timing dependence.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/requests_promote_test.go` | DueForRetry cutoff uses wall clock |
+| `internal/api/downloadreconcile_test.go` | Drain wait 2s → 10s |

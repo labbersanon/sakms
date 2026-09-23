@@ -376,7 +376,13 @@ func TestReconcileInFlightDownloads_DrainResumesWhenSlotFrees(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
+	// Claude 2026-09-23: 10s, not 2s.
+	// Reason: go-test runs with -p 4; a 2s wait missed the 20ms drain tick on
+	//   a loaded GitHub runner (TestReconcileInFlightDownloads_DrainResumesWhenSlotFrees).
+	// Troubleshooting: "drain did not relaunch" with an empty list means the
+	//   drain never ran; with only the injected GID, Cancel did not free the slot.
+	// Review if: usenetReconcileDrainInterval is no longer shortened in this test.
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		for _, d := range nzb.List() {
 			if d.GID == gids[0] || d.GID == gids[1] {

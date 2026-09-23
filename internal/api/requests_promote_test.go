@@ -53,7 +53,15 @@ func TestPromoteRequestHandler_BumpsRetryAfterToNow(t *testing.T) {
 	if got.RetryAfter != grabs.FormatTime(now) && got.RetryAfter > grabs.FormatTime(now.Add(time.Minute)) {
 		t.Fatalf("retry_after = %q, want near now (%q)", got.RetryAfter, grabs.FormatTime(now))
 	}
-	due, err := grabsStore.DueForRetry(ctx, now.Add(time.Second))
+	// Claude 2026-09-23: query DueForRetry with wall-clock now, not truncated now+1s.
+	// Reason: sqliteTimeLayout is millisecond precision. The test truncated now
+	//   to the second, then allowed only +1s. A promote that lands 1.001s after
+	//   that truncated value is a valid bump to "now" but is invisible to
+	//   DueForRetry — that failed go-test on a loaded CI runner.
+	// Troubleshooting: "promoted row should be due, got []" with retry_after
+	//   already near now means the DueForRetry cutoff is still too early.
+	// Review if: FormatTime drops milliseconds.
+	due, err := grabsStore.DueForRetry(ctx, time.Now().UTC().Add(5*time.Second))
 	if err != nil {
 		t.Fatalf("DueForRetry: %v", err)
 	}

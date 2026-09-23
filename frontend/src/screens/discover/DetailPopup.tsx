@@ -911,9 +911,11 @@ export const DetailPopup: Component<{
     }
     const path =
       (item() as DiscoverItem).posterPath ||
-      (detail()?.posterPath ?? "") ||
-      (lazyPoster() ?? "");
-    return tmdbPoster(path);
+      (detail()?.posterPath ?? "");
+    if (path) return tmdbPoster(path);
+    // Claude 2026-09-22: lazyPoster is already a proxied src (cardPosterSrc).
+    // Reason: TVDB/AI absolute URLs; do not wrap with tmdbPoster again.
+    return lazyPoster() ?? "";
   };
   const overviewText = () =>
     mode() === "adult"

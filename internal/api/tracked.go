@@ -166,6 +166,11 @@ func listTrackedHandler(libStore *library.Store, grabsStore *grabs.Store) http.H
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			posterURLs, err := libStore.MoviePosterURLMap(ctx, mode.Movies)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 			out := make([]libraryTrackedItem, len(items))
 			for i, item := range items {
 				tags, err := libStore.Tags(ctx, item.ID)
@@ -225,7 +230,7 @@ func listTrackedHandler(libStore *library.Store, grabsStore *grabs.Store) http.H
 					ID: item.ID, Title: item.Title, Tags: tags, TMDBID: item.TMDBID, Year: item.Year,
 					CollectionName: item.CollectionName, Genres: item.Genres, Cast: item.Cast,
 					CreatedAt: item.CreatedAt, QualityTiers: tiers, Files: trackedFiles,
-					VideoURL: itemVideoURL, Rating: item.Rating,
+					VideoURL: itemVideoURL, PosterURL: posterURLs[item.TMDBID], Rating: item.Rating,
 					Monitored: activeMovies[requestKey(mode.Movies, item.TMDBID, item.Title)],
 				}
 			}
@@ -260,6 +265,11 @@ func listTrackedHandler(libStore *library.Store, grabsStore *grabs.Store) http.H
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			posterURLs, err := libStore.SeriesPosterURLMap(ctx)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 			out := make([]libraryTrackedItem, len(series))
 			for i, s := range series {
 				tags, err := libStore.SeriesTags(ctx, s.ID)
@@ -270,7 +280,7 @@ func listTrackedHandler(libStore *library.Store, grabsStore *grabs.Store) http.H
 				out[i] = libraryTrackedItem{
 					ID: s.ID, Title: s.Title, Tags: tags, TMDBID: s.TMDBID, Year: s.Year,
 					Genres: s.Genres, Cast: s.Cast, CreatedAt: s.CreatedAt,
-					QualityTiers: tiersBySeries[s.ID], Rating: s.Rating,
+					QualityTiers: tiersBySeries[s.ID], PosterURL: posterURLs[s.TMDBID], Rating: s.Rating,
 					Monitored: monitoredSeries[s.ID] || activeSeries[requestKey(mode.Series, s.TMDBID, s.Title)],
 				}
 			}

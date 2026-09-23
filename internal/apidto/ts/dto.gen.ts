@@ -442,6 +442,8 @@ export interface PerformerSummary {
  */
 export interface PosterResponse {
   posterPath: string;
+  /** Absolute https image URL (TMDB/TVDB/AI cache); prefer over posterPath. */
+  posterUrl?: string;
   overview: string;
 }
 /**

@@ -520,7 +520,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("GET /api/modes/{mode}/tvdb-search", tvdbSearchHandler(httpClient, connStore, scStore, settingsStore))
 	// poster resolves a library card's TMDB poster art lazily, per card (the
 	// library caches no poster path) — see posterHandler.
-	mux.HandleFunc("GET /api/modes/{mode}/poster", posterHandler(httpClient, connStore, scStore, settingsStore))
+	mux.HandleFunc("GET /api/modes/{mode}/poster", posterHandler(httpClient, connStore, scStore, settingsStore, libStore))
 	// searchHandler stays widened with grabHandler's dispatch dependencies
 	// (dl, nzb, grabsStore, whStore) so its signature matches Adult's
 	// concrete-path sibling. Movies/Series GET /search is read-only again

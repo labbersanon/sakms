@@ -554,11 +554,15 @@ export const LibraryCard: Component<{
   const [poster] = createResource(tmdbId, (id) =>
     id ? fetchTitlePoster(props.mode, id).catch(() => "") : Promise.resolve(""),
   );
-  const src = () => tmdbPoster(poster() ?? "");
+  // Claude 2026-09-22: fetchTitlePoster already returns a proxied src.
+  // Reason: TVDB/AI absolute URLs cannot go through tmdbPoster().
+  // Troubleshooting: double-encoded /api/images/proxy?url=…image.tmdb…proxy…
+  // Review if: fetchTitlePoster reverts to raw path/url and callers wrap again.
+  const src = () => poster() ?? "";
   const grabItem = (): DiscoverItem => ({
     id: tmdbId(),
     title: props.item.title,
-    posterPath: poster() ?? "",
+    posterPath: "",
     overview: "",
     releaseDate: props.item.year ? String(props.item.year) : "",
     voteAverage: 0,

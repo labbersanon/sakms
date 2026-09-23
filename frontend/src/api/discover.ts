@@ -233,14 +233,27 @@ export function fetchTitleCard(
   return api<PosterResponse>(`/api/modes/${mode}/poster?tmdbId=${tmdbId}`);
 }
 
-// fetchTitlePoster stays the poster-only view of the same call — unchanged
-// contract for every existing caller (Mainstream LibraryCard, DetailPopup lazy
-// poster, TraktWatchlistRow, Library DetailPanel).
+// cardPosterSrc prefers an absolute posterUrl (TVDB/AI/cache) via proxyImage,
+// else a TMDB-relative posterPath via tmdbPoster. Returns "" when both empty.
+// Claude 2026-09-22: absolute posterUrl from the TMDB→TVDB→AI chain.
+// Reason: tmdbPoster alone cannot express non-TMDB hosts.
+// Review if: PosterResponse drops posterPath and always sends posterUrl.
+export function cardPosterSrc(card: {
+  posterPath?: string;
+  posterUrl?: string;
+}): string {
+  if (card.posterUrl) return proxyImage(card.posterUrl);
+  return tmdbPoster(card.posterPath ?? "");
+}
+
+// fetchTitlePoster returns a same-origin proxied <img src> (or "") — callers
+// that previously passed the raw posterPath into tmdbPoster must NOT wrap
+// this again. Contract change 2026-09-22: value is already proxied when set.
 export function fetchTitlePoster(
   mode: Exclude<Mode, "adult">,
   tmdbId: number,
 ): Promise<string> {
-  return fetchTitleCard(mode, tmdbId).then((r) => r.posterPath ?? "");
+  return fetchTitleCard(mode, tmdbId).then((r) => cardPosterSrc(r));
 }
 
 // fetchDiscoverCalendar returns the Movies-release / TV-premiere items whose

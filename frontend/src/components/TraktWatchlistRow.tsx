@@ -16,7 +16,7 @@ import { type Component, createResource, Show } from "solid-js";
 import { Carousel } from "./Carousel";
 import { ErrorText } from "./ui";
 import { fetchTraktStatus, fetchTraktWatchlist, type TraktWatchlistItem } from "../api/trakt";
-import { fetchTitlePoster, tmdbPoster, type DiscoverItem } from "../api/discover";
+import { fetchTitlePoster, type DiscoverItem } from "../api/discover";
 import { GrabButton } from "../screens/discover/Mainstream";
 import { type GrabTarget } from "../screens/discover/shared";
 import { MediaFallbackTile } from "./media";
@@ -45,11 +45,12 @@ export const WatchlistCard: Component<{
     () => props.item.tmdbId,
     (id) => (id ? fetchTitlePoster(mode(), id).catch(() => "") : Promise.resolve("")),
   );
-  const src = () => tmdbPoster(poster() ?? "");
+  // Claude 2026-09-22: fetchTitlePoster already returns a proxied src.
+  const src = () => poster() ?? "";
   const grabItem = (): DiscoverItem => ({
     id: props.item.tmdbId,
     title: props.item.title,
-    posterPath: poster() ?? "",
+    posterPath: "",
     overview: "",
     releaseDate: props.item.year ? String(props.item.year) : "",
     voteAverage: 0,

@@ -39,7 +39,7 @@ import {
 } from "solid-js";
 import { useSearchParams } from "@solidjs/router";
 import type { AdultDiscoverItem, DiscoverItem, Mode } from "../api/discover";
-import { fetchTitleCard, fetchTitlePoster, proxyImage, tmdbPoster } from "../api/discover";
+import { fetchTitleCard, fetchTitlePoster, proxyImage, cardPosterSrc } from "../api/discover";
 import { SeasonsPanel } from "../components/SeasonsPanel";
 import { TitleQualityPrefs } from "../components/TitleQualityPrefs";
 import {
@@ -218,17 +218,28 @@ const PosterCard: Component<{
         ? ({ mode: props.mode as PosterMode, tmdbId: props.item.tmdbId })
         : undefined,
     ({ mode, tmdbId }) =>
-      fetchTitleCard(mode, tmdbId).catch(() => ({ posterPath: "", overview: "" })),
+      fetchTitleCard(mode, tmdbId).catch(() => ({
+        posterPath: "",
+        posterUrl: "",
+        overview: "",
+      })),
   );
 
   // Claude 2026-08-14: Adult catalog posterUrl (proxied) beats TMDB path and
   // the video still. Reason: parked artwork slice — MatchResult.Image is
   // stored at grab; Library had no column. No BrowseMovies / N+1 lookup.
   // Review if: 2B is revisited once catalog art is the common case.
+  // Claude 2026-09-22: Movies/Series use cardPosterSrc (posterUrl | posterPath).
+  // Reason: TVDB/AI fallback returns absolute posterUrl, not a TMDB path.
+  // Troubleshooting: letter tiles after TMDB miss even when /poster has art.
+  // Review if: GET /tracked posterUrl alone feeds the card (skip /poster).
   const posterUrl = () => {
     if (props.mode === "adult") return proxyImage(props.item.posterUrl ?? "");
-    const path = card()?.posterPath ?? "";
-    return path ? tmdbPoster(path) : "";
+    // Prefer list-payload cache when /poster has not resolved yet.
+    if (props.item.posterUrl) return proxyImage(props.item.posterUrl);
+    const c = card();
+    if (!c) return "";
+    return cardPosterSrc(c);
   };
   const hoverText = () =>
     props.mode === "adult"
@@ -406,7 +417,7 @@ const DetailPanel: Component<{
   const showPoster = () => props.showPoster !== false;
   const showTrackedCredits = () => props.showTrackedCredits !== false;
   const showRating = () => props.showRating !== false;
-  const [posterPath] = createResource(
+  const [posterSrcLazy] = createResource(
     () =>
       showPoster() && props.mode !== "adult" && props.item.tmdbId
         ? ({ mode: props.mode as PosterMode, tmdbId: props.item.tmdbId })
@@ -416,8 +427,8 @@ const DetailPanel: Component<{
 
   const posterUrl = () => {
     if (props.mode === "adult") return proxyImage(props.item.posterUrl ?? "");
-    const path = posterPath();
-    return path ? tmdbPoster(path) : "";
+    if (props.item.posterUrl) return proxyImage(props.item.posterUrl);
+    return posterSrcLazy() ?? "";
   };
   const adultVideoUrl = () =>
     props.mode === "adult" && !posterUrl() ? (props.item.videoUrl ?? "") : "";

@@ -561,67 +561,9 @@ func tvdbSearchHandler(httpClient *http.Client, connStore *connections.Store, sc
 	}
 }
 
-// posterHandler resolves a Movies/Series library card's poster art (and
-// synopsis) lazily, per card, keyed by tmdbId. SAK's library caches
-// TMDBID/Year but no poster path or overview, so the existing-library row on
-// Discover and Library's PosterCard fetch each visible card on demand (one
-// bounded call per rendered card) rather than the list endpoint doing an
-// unbounded N+1 lookup for the whole library up front, exactly the N+1
-// discoverHandler's own doc warns against. Movies/Series only — Adult scenes
-// carry their own image inline from TPDB.
-// Claude 2026-09-01: response is apidto.PosterResponse (posterPath + overview)
-// instead of a hand-rolled map that dropped Overview.
-// Reason: MovieDetails/TVDetails already return Overview; Library hover and
-// DetailPopup header need it with zero added TMDB calls.
-// Review if: this handler stops calling MovieDetails/TVDetails (e.g. moves to
-// a cached poster-path store), at which point overview is no longer free here.
-func posterHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		m := mode.Mode(r.PathValue("mode"))
-		if m != mode.Movies && m != mode.Series {
-			http.Error(w, "poster lookup is only supported for movies/series", http.StatusBadRequest)
-			return
-		}
-		ctx := r.Context()
-		tmdbID, err := strconv.Atoi(r.URL.Query().Get("tmdbId"))
-		if err != nil {
-			http.Error(w, "tmdbId query parameter is required and must be an integer", http.StatusBadRequest)
-			return
-		}
-
-		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, m)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if sess.TMDB == nil {
-			http.Error(w, "tmdb isn't configured yet — add it in Settings first", http.StatusBadRequest)
-			return
-		}
-
-		var out apidto.PosterResponse
-		if m == mode.Series {
-			details, err := sess.TMDB.TVDetails(ctx, tmdbID)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadGateway)
-				return
-			}
-			out.PosterPath = details.PosterPath
-			out.Overview = details.Overview
-		} else {
-			details, err := sess.TMDB.MovieDetails(ctx, tmdbID)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadGateway)
-				return
-			}
-			out.PosterPath = details.PosterPath
-			out.Overview = details.Overview
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(out)
-	}
-}
+// posterHandler lived here through 2026-09-01 (TMDB-only). Moved to poster.go
+// on 2026-09-22 for the TMDB → TVDB → AI+SearXNG chain + tracked-row persist.
+// See posterHandler in poster.go.
 
 // resolveTVDBIDHandler resolves a TMDB TV show id to its TVDB id — the one
 // extra call needed before grabbing a Series title discovered via TMDB,

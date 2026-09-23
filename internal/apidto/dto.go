@@ -423,13 +423,18 @@ type PerformerSummary struct {
 // Claude 2026-09-22: PosterURL added for TVDB/AI absolute art + cache hits.
 // Reason: TMDB-relative posterPath cannot express TVDB/AI hosts; tracked rows
 //   persist absolute poster_url for reuse.
+// Claude 2026-09-23: regenerate dto.gen.ts via gendto after DTO edits.
+// Reason: #79 added posterUrl to the committed .ts by hand; TestNoDrift
+//   failed go-test on every main push after because tygo output disagreed.
+// Troubleshooting: `go test ./internal/apidto/gen` — run `go run ./cmd/gendto`.
 // Review if: a dedicated per-card metadata endpoint is added, or GET /tracked
 // starts carrying overview (then the card can read it from the list payload
 // and this field can go back to poster-only).
 type PosterResponse struct {
 	PosterPath string `json:"posterPath"`
-	PosterURL  string `json:"posterUrl,omitempty"`
-	Overview   string `json:"overview"`
+	// Absolute https image URL (TMDB/TVDB/AI cache); prefer over posterPath.
+	PosterURL string `json:"posterUrl,omitempty"`
+	Overview  string `json:"overview"`
 }
 
 // --- Connections (reference implementation of the three-state secret rule) -

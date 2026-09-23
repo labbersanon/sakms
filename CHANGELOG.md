@@ -9352,3 +9352,17 @@ status stays active.
 | `internal/rename/catalog_show.go` | `catalogShowTMDBID` keeps negatives |
 | `internal/rename/catalog.go` | Use `catalogShowTMDBID` |
 | `internal/rename/rename.go` | Pending from negative nfo TMDB without TVDetails |
+
+## 2026-09-23 — Fix go-test CI emails (DTO drift + upload-speed flake)
+
+**Problem:** Every `main` push since #79 emailed a failing `go-test` job. Catalog/rename packages were green.
+**Fix:** Regenerated `dto.gen.ts` with `go run ./cmd/gendto` so TestNoDrift matches `PosterResponse.PosterURL`. G-1 samples seeder UploadSpeed during the loopback transfer instead of after the leecher completes.
+**Outcome:** `TestNoDrift` and `TestUploadSpeed_ComputedWhileSeeding` are the two failures that were failing the workflow.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/apidto/dto.go` | Field comment for PosterURL; gendto note |
+| `internal/apidto/ts/dto.gen.ts` | Regenerated from Go source |
+| `internal/downloader/upload_speed_test.go` | Sample upload speed during transfer |

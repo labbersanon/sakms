@@ -1676,6 +1676,25 @@ func (c *Client) FindMovieByTVDBID(ctx context.Context, tvdbID int) (tmdbID int,
 	return 0, nil
 }
 
+// FindMovieByIMDBID looks up a TMDB movie id by IMDb id (tt…) via /find.
+// Returns 0 when TMDB has no cross-reference.
+func (c *Client) FindMovieByIMDBID(ctx context.Context, imdbID string) (tmdbID int, err error) {
+	imdbID = strings.TrimSpace(imdbID)
+	if imdbID == "" {
+		return 0, nil
+	}
+	q := url.Values{}
+	q.Set("external_source", "imdb_id")
+	var resp findResponse
+	if err := c.do(ctx, fmt.Sprintf("/find/%s", imdbID), q, &resp); err != nil {
+		return 0, err
+	}
+	if len(resp.MovieResults) > 0 {
+		return resp.MovieResults[0].ID, nil
+	}
+	return 0, nil
+}
+
 // FindTVByTVDBID looks up a TMDB TV show id by a TheTVDB series id via
 // TMDB's /find endpoint with external_source=tvdb_id. Returns 0 if the
 // cross-reference is absent. TVDB is historically the canonical database for

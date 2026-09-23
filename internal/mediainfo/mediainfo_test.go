@@ -70,6 +70,28 @@ func TestProbe_MissingBitRateDefaultsToZero(t *testing.T) {
 	}
 }
 
+func TestProbe_ParsesFormatTags(t *testing.T) {
+	raw := []byte(`{
+		"streams":[{"codec_name":"h264","width":1920,"height":1080,"bit_rate":"1000"}],
+		"format":{"duration":"7200.0","tags":{"title":"The Matrix","date":"1999-03-31","IMDB":"tt0133093","tmdb":"603"}}
+	}`)
+	p := fakeProber(raw, nil)
+	got, err := p.Probe(context.Background(), "/fake.mkv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Tags.Title != "The Matrix" || got.Tags.Year != 1999 || got.Tags.IMDBID != "tt0133093" || got.Tags.TMDBID != 603 {
+		t.Fatalf("tags = %+v", got.Tags)
+	}
+}
+
+func TestParseFormatTags_TitleYearOnly(t *testing.T) {
+	tags := ParseFormatTags(map[string]string{"TITLE": "Copacabana (1947)", "YEAR": "1947"})
+	if tags.Title != "Copacabana (1947)" || tags.Year != 1947 {
+		t.Fatalf("%+v", tags)
+	}
+}
+
 func TestProbe_NoVideoStreamErrors(t *testing.T) {
 	raw := []byte(`{"streams":[]}`)
 	p := fakeProber(raw, nil)

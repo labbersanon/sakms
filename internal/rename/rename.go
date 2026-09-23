@@ -250,6 +250,18 @@ func proposeOneLibrary(
 		SourceName: entry.Name, SourcePath: entry.Path, RootFolderPath: foundRoot,
 	}
 
+	// Claude 2026-09-23: embedded tags before NFO (operator C/C/A).
+	// Reason: container title/year/ids beat sidecar and filename when present.
+	// Troubleshooting: orphans with clean tags still unmatched via filename-only path.
+	// Review if: tag false-positives need a corroboration gate for title-only hits.
+	if prober != nil {
+		if probe, err := prober.Probe(ctx, entry.Path); err == nil && probe != nil && probe.Tags.HasIdentity() {
+			if got := tryEmbeddedTagsMovie(ctx, sess, byTMDB, generalRoot, foundRoot, probe.Tags, probe.Duration, cfg, p); got != nil {
+				return *got
+			}
+		}
+	}
+
 	// NFO fast-path: if a Kodi/Jellyfin .nfo sidecar is present and carries
 	// a TMDB ID, use it directly — no fuzzy filename search, no drilldown
 	// gate. The ID in the .nfo is authoritative; still run the duplicate and

@@ -3,6 +3,8 @@ package library
 import (
 	"context"
 	"testing"
+
+	"github.com/labbersanon/sakms/internal/mode"
 )
 
 func TestSetSeriesTMDBID_RepairsZero(t *testing.T) {
@@ -44,3 +46,26 @@ func TestSetSeriesTMDBID_Conflict(t *testing.T) {
 		t.Fatal("expected conflict error")
 	}
 }
+
+func TestSetMovieTMDBID_RepairsNegative(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	item, err := s.Upsert(ctx, Item{
+		Mode: mode.Movies, TMDBID: -99, Title: "Synthetic", Year: 1947,
+		FilePath: "/m.mkv", RootFolderPath: "/movies",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetMovieTMDBID(ctx, item.ID, 11449, "Jo Jo Dancer", 1986); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetByTMDBID(ctx, mode.Movies, 11449)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != item.ID || got.Title != "Jo Jo Dancer" || got.Year != 1986 {
+		t.Fatalf("%+v", got)
+	}
+}
+

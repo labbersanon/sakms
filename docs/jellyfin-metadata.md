@@ -37,3 +37,11 @@ poster backfill: done movies_ok=… movies_fail=… series_ok=… series_fail=�
 - **Series stuck at tmdb_id=0 with no NFO** — add/fix ids in sakms or fix
   the library row; backfill cannot invent a TMDB id without NFO/TVDB.
 - **Old `/api/admin/mediafolder/backfill`** — removed; use `/api/admin/posters/backfill`.
+
+## Embedded file tags (Movies identity)
+
+Rename/scan and poster backfill prefer **ffprobe format.tags** before NFO and
+filename: TMDB/IMDb ids when present, otherwise title + year → TMDB search.
+Tracked Movies rows with `tmdb_id ≤ 0` are repaired the same way when the
+file still has usable tags.
+

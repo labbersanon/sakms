@@ -12,8 +12,10 @@ import (
 	"github.com/labbersanon/sakms/internal/identify"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mediafolder"
+	"github.com/labbersanon/sakms/internal/mediainfo"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/nfo"
+	"github.com/labbersanon/sakms/internal/rename"
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 )
@@ -72,6 +74,30 @@ func RunPosterBackfill(
 		return
 	}
 	log.Printf("poster backfill: starting (gap=%s)", posterBackfillGap)
+
+	prober := mediainfo.New()
+	idRepaired := 0
+	if needID, err := libStore.ListMoviesNeedingIdentity(ctx); err != nil {
+		log.Printf("poster backfill: list movies needing identity: %v", err)
+	} else if len(needID) > 0 {
+		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, mode.Movies)
+		if err != nil || sess == nil || sess.TMDB == nil {
+			log.Printf("poster backfill: cannot repair movie identity (session): %v", err)
+		} else {
+			for i, it := range needID {
+				if ctx.Err() != nil {
+					log.Printf("poster backfill: cancelled during identity repair after %d", i)
+					return
+				}
+				if repairMovieIdentityFromTags(ctx, libStore, sess, prober, it) {
+					idRepaired++
+				}
+				if err := sleepBackfillGap(ctx); err != nil {
+					return
+				}
+			}
+		}
+	}
 
 	moviesOK, moviesFail := 0, 0
 	movies, err := libStore.ListMoviesNeedingPoster(ctx, mode.Movies)
@@ -133,8 +159,29 @@ func RunPosterBackfill(
 		}
 	}
 
-	log.Printf("poster backfill: done movies_ok=%d movies_fail=%d series_ok=%d series_fail=%d id_repaired=%d",
-		moviesOK, moviesFail, seriesOK, seriesFail, repaired)
+	log.Printf("poster backfill: done movies_ok=%d movies_fail=%d series_ok=%d series_fail=%d series_id_repaired=%d movie_id_repaired=%d",
+		moviesOK, moviesFail, seriesOK, seriesFail, repaired, idRepaired)
+}
+
+func repairMovieIdentityFromTags(ctx context.Context, libStore *library.Store, sess *mode.Session, prober *mediainfo.Prober, it library.Item) bool {
+	if it.FilePath == "" || prober == nil || sess == nil || sess.TMDB == nil {
+		return false
+	}
+	probe, err := prober.Probe(ctx, it.FilePath)
+	if err != nil || probe == nil || !probe.Tags.HasIdentity() {
+		return false
+	}
+	tmdbID, title, year, err := rename.ResolveMovieTMDBFromTags(ctx, sess.TMDB, probe.Tags)
+	if err != nil || tmdbID <= 0 {
+		return false
+	}
+	if err := libStore.SetMovieTMDBID(ctx, it.ID, tmdbID, title, year); err != nil {
+		log.Printf("poster backfill: repair movie id=%d → tmdb=%d: %v", it.ID, tmdbID, err)
+		return false
+	}
+	log.Printf("poster backfill: repaired movie %q id=%d → tmdb=%d (embedded tags)", it.Title, it.ID, tmdbID)
+	ensureImportPoster(ctx, libStore, sess, mode.Movies, tmdbID)
+	return true
 }
 
 func sleepBackfillGap(ctx context.Context) error {

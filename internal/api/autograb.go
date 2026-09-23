@@ -131,6 +131,14 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, scSt
 			http.Error(w, "title is required", http.StatusBadRequest)
 			return
 		}
+		// Claude 2026-09-23: movies/series Grab must carry the catalog id.
+		// Reason: title-only Search parked pending_retry rows with tmdb_id=0.
+		// Troubleshooting: Barnaby Jones / Waltons / Magnum / Rockford letter tiles.
+		// Review if: a title-only RSS grab is routed through this handler.
+		if (m == mode.Movies || m == mode.Series) && req.TMDBID <= 0 {
+			http.Error(w, "tmdbId is required for movies/series", http.StatusBadRequest)
+			return
+		}
 
 		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, dl, m)
 		if err != nil {

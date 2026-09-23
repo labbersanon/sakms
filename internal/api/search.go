@@ -232,6 +232,12 @@ func runToggleGatedSearch(ctx context.Context, deps AutoGrabDeps, sess *mode.Ses
 	// (The plan's §2.3.1 predicted "only a Lossless-source release can
 	// auto-grab" on this path. That prediction is wrong for the reason above;
 	// the direction — expect retries, not grabs — is right, and stronger.)
+	//
+	// Claude 2026-09-23: RunAutoGrab now fills a unique exact-title TMDB id
+	// before parking. The paragraph above said not to invent a title→TMDB
+	// step here; the recovery lives in fillMissingTMDBID instead.
+	// Reason: title-only pending_retry rows could never resolve a poster.
+	// Review if: Search starts accepting tmdbId on the query string.
 	out, err := RunAutoGrab(ctx, deps, sess, AutoGrabRequest{
 		Mode: id.Mode, Title: id.Title, TMDBID: id.TMDBID,
 		Season: id.Season, Episode: id.Episode, SeasonSpecified: id.SeasonSpecified,

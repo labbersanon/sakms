@@ -763,3 +763,19 @@ func TestAutoGrabHandler_Movies_UnreleasedReturns409(t *testing.T) {
 		t.Errorf("gate must prevent any download-client contact: got %d adds", got)
 	}
 }
+
+func TestAutoGrabHandler_Series_RejectsMissingTMDBID(t *testing.T) {
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, newTestDownloader("x", t.TempDir()), nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	body, _ := json.Marshal(apidto.AutoGrabRequest{Title: "Barnaby Jones"})
+	resp, err := http.Post(srv.URL+"/api/modes/series/autograb", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}

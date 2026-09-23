@@ -330,6 +330,8 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 		}
 	}
 
+	fillMissingTMDBID(ctx, sess, deps, &req)
+
 	// Claude 2026-09-16: movie-release gate — Layer 2 of CAM-prevention.
 	// Reason: a theatrical-only movie must never be searched or dispatched.
 	//   This gate runs after the toggle (which proves the operator wants unattended

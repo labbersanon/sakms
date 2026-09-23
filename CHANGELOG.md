@@ -9278,3 +9278,18 @@ status stays active.
 | `internal/api/discover_detail.go` | Detail popup uses that record when `year` is set |
 | `internal/library/library_poster.go` | Revisit `poster_source=ai` |
 | `frontend/src/screens/discover/DetailPopup.tsx` | Pass the library year |
+
+## 2026-09-23 — Search requests must keep a TMDB id
+
+**Problem:** Discover Monitored showed letter tiles for Barnaby Jones, The Waltons, Magnum, P.I., The Rockford Files, and Dr. Death: The Undoctored Story. Those rows were title-only `pending_retry` grabs (`tmdb_id=0`). Catalog Grab already posts `tmdbId`; the Search hook and retries did not recover one.
+**Fix:** Movies/series `POST /autograb` rejects a missing `tmdbId`. `RunAutoGrab` fills a unique exact-title TMDB id before search/park and writes it onto an existing grab.
+**Outcome:** Unit tests cover unique match, two remakes staying 0, operator 400, and persisting the id on the grab.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/autograb.go` | Require `tmdbId` for movies/series |
+| `internal/api/autograb_tmdbid.go` | Exact-title TMDB resolve |
+| `internal/api/autograb_shared.go` | Fill a missing id before the movie gate |
+| `internal/grabs/grabs.go` | `SetTMDBID` |

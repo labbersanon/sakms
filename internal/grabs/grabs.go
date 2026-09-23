@@ -1105,6 +1105,27 @@ func (s *Store) SetOrigin(ctx context.Context, id int64, origin string) error {
 	return dbutil.CheckAffected(res, id, ErrNotFound)
 }
 
+// SetTMDBID writes tmdb_id on an existing grab. Used when a title-only
+// Search row later resolves a unique catalog id. Returns ErrNotFound when
+// id resolves to nothing.
+//
+// Claude 2026-09-23: persist a recovered catalog id onto a pending_retry row.
+// Reason: title-only Search parked tmdb_id=0; retry then called ExternalIDs(0).
+// Troubleshooting: Barnaby Jones / Waltons / Magnum / Rockford letter tiles.
+// Review if: Search starts accepting tmdbId on the query string.
+func (s *Store) SetTMDBID(ctx context.Context, id int64, tmdbID int) error {
+	if tmdbID <= 0 {
+		return fmt.Errorf("setting tmdb id on grab %d: tmdb id must be positive", id)
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE grabs SET tmdb_id = ?, updated_at = sakms_now() WHERE id = ?
+	`, tmdbID, id)
+	if err != nil {
+		return fmt.Errorf("setting tmdb id on grab %d: %w", id, err)
+	}
+	return dbutil.CheckAffected(res, id, ErrNotFound)
+}
+
 // ParkForTransportResume parks a grab for a transport-resume retry without
 // advancing the multi-day retry_count ladder or clearing download_gid.
 //

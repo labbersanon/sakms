@@ -47,6 +47,25 @@ func TestCreate_StartsQueuedWithTimestampsPopulated(t *testing.T) {
 	}
 }
 
+func TestSetTMDBID_WritesPositiveID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	g, err := s.Create(ctx, Grab{Mode: mode.Series, Title: "Barnaby Jones"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := s.SetTMDBID(ctx, g.ID, 2071); err != nil {
+		t.Fatalf("SetTMDBID: %v", err)
+	}
+	got, err := s.Get(ctx, g.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.TMDBID != 2071 {
+		t.Fatalf("tmdb id = %d, want 2071", got.TMDBID)
+	}
+}
+
 func TestGet_RoundTripsEveryField(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

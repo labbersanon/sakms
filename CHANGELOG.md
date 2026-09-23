@@ -9352,3 +9352,30 @@ status stays active.
 | `internal/rename/catalog_show.go` | `catalogShowTMDBID` keeps negatives |
 | `internal/rename/catalog.go` | Use `catalogShowTMDBID` |
 | `internal/rename/rename.go` | Pending from negative nfo TMDB without TVDetails |
+
+## 2026-09-23 — Fix go-test CI (DTO drift + upload-speed flake)
+
+**Problem:** Every `main` push since #79 failed `go-test`. Catalog/rename packages were green.
+**Fix:** Regenerated `dto.gen.ts` with `go run ./cmd/gendto` so TestNoDrift matches `PosterResponse.PosterURL`. G-1 samples seeder UploadSpeed during the transfer, not after the leecher completes.
+**Outcome:** `TestNoDrift` and `TestUploadSpeed_ComputedWhileSeeding` pass.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/apidto/dto.go` | Field comment for PosterURL; gendto note |
+| `internal/apidto/ts/dto.gen.ts` | Regenerated from Go source |
+| `internal/downloader/upload_speed_test.go` | Sample upload speed during transfer |
+
+## 2026-09-23 — Harden two more go-test flakes
+
+**Problem:** After the DTO/upload-speed fix, CI failed once on `TestPromoteRequestHandler_BumpsRetryAfterToNow` (`got []`). `TestReconcileInFlightDownloads_DrainResumesWhenSlotFrees` had also failed earlier the same day.
+**Fix:** DueForRetry is queried with wall-clock now+5s (retry_after is millisecond TEXT). Drain wait is 10s under `-p 4`.
+**Outcome:** Same promote/reconcile assertions; less timing dependence.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/requests_promote_test.go` | DueForRetry cutoff uses wall clock |
+| `internal/api/downloadreconcile_test.go` | Drain wait 2s → 10s |

@@ -121,11 +121,14 @@ func findDownload(list []Download, gid string) *Download {
 func TestUploadSpeed_ComputedWhileSeeding(t *testing.T) {
 	seeder, leecher, seedGID, leechGID := setupUploadLeechPair(t, 41)
 
-	waitLeechComplete(t, leecher, leechGID, seeder, seedGID)
-
-	// Sample the seeder's own snapshot repeatedly. setupUploadLeechPair rate-
-	// limits the leecher so the transfer spans several poll ticks, giving a
-	// real window in which to observe a non-zero rate.
+	// Claude 2026-09-23: sample DURING the transfer, not after waitLeechComplete.
+	// Reason: pollSnapshot publishes the BytesWrittenData delta each tick.
+	//   After the leecher finishes, later ticks see delta=0 and publish 0.
+	// Troubleshooting: "UploadSpeed never went non-zero while genuinely
+	//   seeding" after this change means the upload pass is unreachable, not
+	//   a closed timing window.
+	// Review if: pollSnapshot latches the last non-zero upload rate after
+	//   seeding completes (post-complete sampling would then work again).
 	deadline := time.Now().Add(20 * time.Second)
 	var maxSeen int64
 	for time.Now().Before(deadline) {
@@ -137,6 +140,7 @@ func TestUploadSpeed_ComputedWhileSeeding(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	waitLeechComplete(t, leecher, leechGID, seeder, seedGID)
 	if maxSeen <= 0 {
 		t.Fatal("UploadSpeed never went non-zero while genuinely seeding — the upload pass " +
 			"is not reachable for a complete-and-seeding entry (F-1)")

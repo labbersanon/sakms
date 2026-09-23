@@ -425,24 +425,30 @@ export interface PerformerSummary {
 }
 /**
  * PosterResponse is GET /api/modes/{mode}/poster's response — the lazily
- * resolved TMDB poster path (and synopsis) for one library card, keyed by
- * tmdbId (Movies/Series only). PosterPath is a bare TMDB path (e.g.
- * "/abc.jpg") the client turns into a proxied image URL, or "" when TMDB has
- * no art on file (the card then renders its text fallback). Overview is the
- * TMDB plot synopsis already fetched by MovieDetails/TVDetails; it used to be
- * discarded here. Library card hover and DetailPopup's header reuse it so a
- * second /discover/detail round-trip is not needed just for prose.
+ * resolved poster (and synopsis) for one library card, keyed by tmdbId
+ * (Movies/Series only). PosterPath is a bare TMDB path (e.g. "/abc.jpg") the
+ * client turns into a proxied image URL when PosterURL is empty. PosterURL is
+ * an absolute https image URL from TMDB/TVDB/AI (or the tracked-row cache);
+ * the client proxies it via /api/images/proxy. Overview is the TMDB plot
+ * synopsis when TMDB answered; empty when TMDB failed and a fallback supplied
+ * only the image.
  * Claude 2026-09-01: Overview added — free on this call; GET /tracked still
  * carries no overview column.
  * Reason: Library Movies/Series hover + DetailPopup header need the synopsis
  * without an extra TMDB fan-out per card.
+ * Claude 2026-09-22: PosterURL added for TVDB/AI absolute art + cache hits.
+ * Reason: TMDB-relative posterPath cannot express TVDB/AI hosts; tracked rows
+ *   persist absolute poster_url for reuse.
+ * Claude 2026-09-23: regenerate dto.gen.ts via gendto after DTO edits.
+ * Reason: #79 committed posterUrl in dto.gen.ts by hand; tygo output disagreed
+ *   and TestNoDrift failed every later main push.
+ * Troubleshooting: `go test ./internal/apidto/gen` — run `go run ./cmd/gendto`.
  * Review if: a dedicated per-card metadata endpoint is added, or GET /tracked
  * starts carrying overview (then the card can read it from the list payload
  * and this field can go back to poster-only).
  */
 export interface PosterResponse {
   posterPath: string;
-  /** Absolute https image URL (TMDB/TVDB/AI cache); prefer over posterPath. */
   posterUrl?: string;
   overview: string;
 }

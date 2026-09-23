@@ -62,6 +62,9 @@ func (c *Client) doPOST(ctx context.Context, path string, query url.Values, body
 	if query == nil {
 		query = url.Values{}
 	}
+	if err := waitRate(ctx); err != nil {
+		return fmt.Errorf("tmdb rate limit: %w", err)
+	}
 	reqQuery := url.Values{}
 	for k, vs := range query {
 		for _, v := range vs {

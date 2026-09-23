@@ -168,6 +168,14 @@ func (c *Client) do(ctx context.Context, path string, query url.Values, out any)
 	}
 	logCacheMiss(path)
 
+	// Claude 2026-09-23: wait on shared TMDB budget before every live GET.
+	// Reason: A/A/A — 40/10s process-wide; cache hits above skip this path.
+	// Troubleshooting: context deadline exceeded here → caller timeout too short.
+	// Review if: BypassCache bulk populators need a separate slower budget.
+	if err := waitRate(ctx); err != nil {
+		return fmt.Errorf("tmdb rate limit: %w", err)
+	}
+
 	// Claude 2026-08-02: copy the caller's query before writing api_key into it.
 	// Reason: cacheKey above deliberately runs BEFORE api_key exists, so the
 	// operator's key never lands in a process-lifetime map key. Mutating the

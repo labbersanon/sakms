@@ -122,10 +122,8 @@ func TestUploadSpeed_ComputedWhileSeeding(t *testing.T) {
 	seeder, leecher, seedGID, leechGID := setupUploadLeechPair(t, 41)
 
 	// Claude 2026-09-23: sample DURING the transfer, not after waitLeechComplete.
-	// Reason: pollSnapshot sets upSpeed from the BytesWrittenData delta each
-	//   tick. After the leecher finishes, later ticks see delta=0 and publish
-	//   0, so a sample loop that starts only after complete never sees a
-	//   non-zero rate on a loaded CI runner.
+	// Reason: pollSnapshot publishes the BytesWrittenData delta each tick.
+	//   After the leecher finishes, later ticks see delta=0 and publish 0.
 	// Troubleshooting: "UploadSpeed never went non-zero while genuinely
 	//   seeding" after this change means the upload pass is unreachable, not
 	//   a closed timing window.

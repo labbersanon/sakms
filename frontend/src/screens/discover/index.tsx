@@ -115,10 +115,12 @@ export const DiscoverMainstream: Component = () => {
     next: Record<string, string | undefined>,
     opts?: { replace?: boolean },
   ) => void = () => {};
+  let hasSearchParams = false;
   try {
     const [sp, setSp] = useSearchParams();
     readParams = () => sp;
     writeParams = setSp;
+    hasSearchParams = true;
   } catch {
     /* unit tests mount without Router */
   }
@@ -130,6 +132,10 @@ export const DiscoverMainstream: Component = () => {
   );
   const ownedTier = () => firstQuery(readParams().tier) ?? "";
   createEffect(() => {
+    // Claude 2026-09-24: skip URL sync when tests mount without Router.
+    // Reason: empty params would reset tab to series and clear In library.
+    // Review if: Discover tests wrap a MemoryRouter with search params.
+    if (!hasSearchParams) return;
     const nextTab = sanitizeMainstreamTab(firstQuery(readParams().tab));
     if (nextTab !== tab()) setTab(nextTab);
     setOwnedOnly(isDiscoverOwnedView(firstQuery(readParams().view)));
@@ -260,10 +266,12 @@ export const DiscoverAdult: Component = () => {
     next: Record<string, string | undefined>,
     opts?: { replace?: boolean },
   ) => void = () => {};
+  let hasSearchParams = false;
   try {
     const [sp, setSp] = useSearchParams();
     readParams = () => sp;
     writeParams = setSp;
+    hasSearchParams = true;
   } catch {
     /* unit tests mount without Router */
   }
@@ -275,6 +283,10 @@ export const DiscoverAdult: Component = () => {
   );
   const ownedTier = () => firstQuery(readParams().tier) ?? "";
   createEffect(() => {
+    // Claude 2026-09-24: skip URL sync when tests mount without Router.
+    // Reason: empty params would reset tab to scenes and clear In library.
+    // Review if: Discover tests wrap a MemoryRouter with search params.
+    if (!hasSearchParams) return;
     const nextTab = sanitizeAdultTab(firstQuery(readParams().tab));
     if (nextTab !== tab()) setTab(nextTab);
     setOwnedOnly(isDiscoverOwnedView(firstQuery(readParams().view)));

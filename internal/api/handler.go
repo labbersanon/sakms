@@ -180,7 +180,8 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("GET /api/modes/{mode}/tracked/{id}/video", trackedVideoHandler(libStore))
 	mux.HandleFunc("GET /api/modes/{mode}/collections", collectionsHandler(libStore))
 	mux.HandleFunc("GET /api/modes/{mode}/library/root-folder", getLibraryRootFolderHandler(settingsStore))
-	mux.HandleFunc("PUT /api/modes/{mode}/library/root-folder", putLibraryRootFolderHandler(settingsStore))
+	mux.HandleFunc("PUT /api/modes/{mode}/library/root-folder", putLibraryRootFolderHandler(httpClient, connStore, scStore, settingsStore, propStore, libStore, prober, videoHasher, entityStore))
+	mux.HandleFunc("POST /api/modes/{mode}/library/rescan", libraryRescanHandler(httpClient, connStore, scStore, settingsStore, propStore, libStore, prober, videoHasher, entityStore))
 	// Validates that a candidate root folder both exists and is writable (SAK
 	// writes into it for rename/dedup) — deliberately NOT confined to
 	// browse.go's browsableRoots, which scope only the autocomplete helper.
@@ -275,6 +276,8 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("PUT /api/modes/{mode}/phash-threshold", putPHashThresholdHandler(settingsStore))
 	mux.HandleFunc("GET /api/modes/{mode}/rename-match-config", getMatchConfigHandler(settingsStore))
 	mux.HandleFunc("PUT /api/modes/{mode}/rename-match-config", putMatchConfigHandler(settingsStore))
+	mux.HandleFunc("GET /api/modes/{mode}/rename/propose-nested-moves", getProposeNestedMovesHandler(settingsStore))
+	mux.HandleFunc("PUT /api/modes/{mode}/rename/propose-nested-moves", putProposeNestedMovesHandler(settingsStore))
 	mux.HandleFunc("GET /api/modes/{mode}/identify-enabled", getIdentifyEnabledHandler(settingsStore))
 	mux.HandleFunc("PUT /api/modes/{mode}/identify-enabled", putIdentifyEnabledHandler(settingsStore))
 

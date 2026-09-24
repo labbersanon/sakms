@@ -530,6 +530,249 @@ func TestCatalogEpisodeAtPath_KeepsAnthologyNegativeTMDBID(t *testing.T) {
 	}
 }
 
+func TestParentPremiereOK(t *testing.T) {
+	if parentPremiereOK(0) || parentPremiereOK(1970) || parentPremiereOK(2023) {
+		t.Fatal("year 0 / 1970 / 2023 must not parent shorts")
+	}
+	if !parentPremiereOK(1919) || !parentPremiereOK(1969) {
+		t.Fatal("1919 and 1969 are valid parent premiere years")
+	}
+}
+
+func TestGenericEpisodeTitleKey(t *testing.T) {
+	if !genericEpisodeTitleKey(episodeTitleKey("Pilot")) {
+		t.Fatal("Pilot is generic")
+	}
+	if genericEpisodeTitleKey(episodeTitleKey("Night Owls")) {
+		t.Fatal("Night Owls is not generic")
+	}
+}
+
+func TestCatalogEpisodeAtPath_Post1970ParentNotUsed(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	libStore := newTestLibraryStore(t)
+	modern, err := libStore.UpsertSeries(ctx, library.Series{
+		TMDBID: 48889, Title: "Night Owls", Year: 2023, RootFolderPath: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: modern.ID, SeasonNumber: 1, EpisodeNumber: 1, Title: "Night Owls",
+		FilePath: filepath.Join(root, "Night Owls (2023)", "Season 01", "S01E01.mkv"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "Night Owls (1930) [tmdbid-48889]", "Season 00")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(dir, "Night Owls S00E00.mkv")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := catalogEpisodeAtPath(ctx, nil, libStore, video, root, []string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("2023 Night Owls must not parent the 1930 short")
+	}
+}
+
+func TestCatalogEpisodeAtPath_CreatesParentFromSearchSeries(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	libStore := newTestLibraryStore(t)
+	dir := filepath.Join(root, "Night Owls (1930) [tmdbid-48889]", "Season 00")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(dir, "Night Owls S00E00.mkv")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tvdbClient, _ := fakeTVDBAnthologyServer(t, []fakeTVDBAnthologyShow{{
+		ID: 73910, Name: "Laurel & Hardy", Year: "1919",
+		Catalog: []fakeTVDBEpisode{
+			{ID: 20, SeriesID: 73910, Name: "Night Owls", Number: 4, SeasonNumber: 5, Aired: "1930-01-04"},
+		},
+	}})
+	sess := &mode.Session{Mode: mode.Series, TVDB: tvdbClient}
+	ok, err := catalogEpisodeAtPath(ctx, sess, libStore, video, root, []string{root})
+	if err != nil || !ok {
+		t.Fatalf("catalog ok=%v err=%v", ok, err)
+	}
+	parent, err := libStore.GetSeriesByTMDBID(ctx, anthologyTMDBID(73910))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parent.Title != "Laurel & Hardy" || parent.Year != 1919 || parent.TVDBID != 73910 {
+		t.Fatalf("parent = %+v", parent)
+	}
+	ep, err := libStore.GetEpisode(ctx, parent.ID, 5, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ep.FilePath != video {
+		t.Fatalf("path = %q", ep.FilePath)
+	}
+}
+
+func TestCatalogEpisodeAtPath_GenericKeyDoesNotCreate(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	dir := filepath.Join(root, "Pilot (1930)", "Season 00")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(dir, "Pilot S00E00.mkv")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tvdbClient, _ := fakeTVDBAnthologyServer(t, []fakeTVDBAnthologyShow{{
+		ID: 73910, Name: "Laurel & Hardy", Year: "1919",
+		Catalog: []fakeTVDBEpisode{
+			{ID: 1, SeriesID: 73910, Name: "Pilot", Number: 1, SeasonNumber: 1, Aired: "1919-01-01"},
+		},
+	}})
+	ok, err := catalogEpisodeAtPath(ctx, &mode.Session{Mode: mode.Series, TVDB: tvdbClient}, newTestLibraryStore(t), video, root, []string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("generic Pilot must not auto-create a parent")
+	}
+}
+
+func TestCatalogEpisodeAtPath_YearSeasonCreatesParent(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	seasonDir := filepath.Join(root, "Looney Tunes", "1958")
+	if err := os.MkdirAll(seasonDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(seasonDir, "Looney.Tunes.S1958E14.Fistic.Mystic.mkv")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tvdbClient, _ := fakeTVDBAnthologyServer(t, []fakeTVDBAnthologyShow{{
+		ID: 7266, Name: "Looney Tunes", Year: "1930",
+		Catalog: []fakeTVDBEpisode{
+			{ID: 14, SeriesID: 7266, Name: "Fistic Mystic", Number: 14, SeasonNumber: 1958, Aired: "1958-01-01"},
+		},
+	}})
+	libStore := newTestLibraryStore(t)
+	ok, err := catalogEpisodeAtPath(ctx, &mode.Session{Mode: mode.Series, TVDB: tvdbClient}, libStore, video, root, []string{root})
+	if err != nil || !ok {
+		t.Fatalf("catalog ok=%v err=%v", ok, err)
+	}
+	parent, err := libStore.GetSeriesByTMDBID(ctx, anthologyTMDBID(7266))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parent.Title != "Looney Tunes" || parent.Year != 1930 {
+		t.Fatalf("parent = %+v", parent)
+	}
+	if _, err := libStore.GetEpisode(ctx, parent.ID, 1958, 14); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCatalogEpisodeAtPath_BareTitleNests(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	libStore := newTestLibraryStore(t)
+	parent := seedLaurelHardyParent(t, libStore, root)
+	video := filepath.Join(root, "Early to Bed.mkv")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess := &mode.Session{Mode: mode.Series, TVDB: fakeTVDBEpisodesServer(t, []fakeTVDBEpisode{
+		{ID: 9, SeriesID: 73910, Name: "Early to Bed", Number: 11, SeasonNumber: 3, Aired: "1928-10-06"},
+	})}
+	ok, err := catalogEpisodeAtPath(ctx, sess, libStore, video, root, []string{root})
+	if err != nil || !ok {
+		t.Fatalf("catalog ok=%v err=%v", ok, err)
+	}
+	ep, err := libStore.GetEpisode(ctx, parent.ID, 3, 11)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ep.FilePath != video {
+		t.Fatalf("path = %q", ep.FilePath)
+	}
+}
+
+func TestCatalogEpisodeAtPath_AmbiguousParentsRefuse(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	dir := filepath.Join(root, "Duck Soup (1927)", "Season 00")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(dir, "Duck Soup S00E00.mkv")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tvdbClient, _ := fakeTVDBAnthologyServer(t, []fakeTVDBAnthologyShow{
+		{ID: 73910, Name: "Laurel & Hardy", Year: "1919", Catalog: []fakeTVDBEpisode{
+			{ID: 1, SeriesID: 73910, Name: "Duck Soup", Number: 1, SeasonNumber: 3, Aired: "1927-03-13"},
+		}},
+		{ID: 111, Name: "The Marx Brothers", Year: "1929", Catalog: []fakeTVDBEpisode{
+			{ID: 2, SeriesID: 111, Name: "Duck Soup", Number: 1, SeasonNumber: 1, Aired: "1927-03-13"},
+		}},
+	})
+	ok, err := catalogEpisodeAtPath(ctx, &mode.Session{Mode: mode.Series, TVDB: tvdbClient}, newTestLibraryStore(t), video, root, []string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("two pre-1970 series sharing the episode must not auto-nest")
+	}
+}
+
+func TestScanLibrarySeries_ProposeNestedMoves(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	libStore := newTestLibraryStore(t)
+	parent := seedLaurelHardyParent(t, libStore, root)
+	dir := filepath.Join(root, "Night Owls (1930) [tmdbid-48889]", "Season 00")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(dir, "Night Owls S00E00.mkv")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess := &mode.Session{
+		Mode: mode.Series,
+		TMDB: fatalTMDBSeriesServer(t),
+		TVDB: fakeTVDBEpisodesServer(t, []fakeTVDBEpisode{
+			{ID: 20, SeriesID: 73910, Name: "Night Owls", Number: 4, SeasonNumber: 5, Aired: "1930-01-04"},
+		}),
+	}
+	cfg := DefaultMatchConfig()
+	cfg.ProposeNestedMoves = true
+	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := libStore.GetEpisode(ctx, parent.ID, 5, 4); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, p := range got {
+		if p.SourcePath == video && p.Status == proposals.Pending && p.TMDBID == parent.TMDBID && p.SeasonNumber == 5 && p.EpisodeNumber == 4 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a pending move proposal for the nested short, got %+v", got)
+	}
+}
+
 func TestCatalogPendingSeries_WritesLibrary(t *testing.T) {
 	root := t.TempDir()
 	video := filepath.Join(root, "Curious George", "01-Rescue.mkv")
@@ -550,5 +793,55 @@ func TestCatalogPendingSeries_WritesLibrary(t *testing.T) {
 	}
 	if _, err := libStore.GetEpisode(context.Background(), series.ID, 1, 1); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCatalogEpisodeAtPath_NestUndoRevertsWithoutMovingFile(t *testing.T) {
+	e := newUndoEnv(t, nil)
+	SetDefaultProposalStore(e.propStore)
+	t.Cleanup(func() { SetDefaultProposalStore(nil) })
+	parent, err := e.libStore.UpsertSeries(e.ctx, library.Series{
+		TMDBID: -1498833576, TVDBID: 73910, Title: "Laurel & Hardy", Year: 1919, RootFolderPath: e.root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.libStore.UpsertEpisode(e.ctx, library.Episode{
+		SeriesID: parent.ID, SeasonNumber: 7, EpisodeNumber: 8, Title: "One Good Turn",
+		FilePath: filepath.Join(e.root, "Laurel & Hardy (1919)", "Season 07", "S07E08.mp4"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(e.root, "Night Owls (1930) [tmdbid-48889]", "Season 00")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(dir, "Night Owls S00E00.mkv")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess := &mode.Session{Mode: mode.Series, TVDB: fakeTVDBEpisodesServer(t, []fakeTVDBEpisode{
+		{ID: 20, SeriesID: 73910, Name: "Night Owls", Number: 4, SeasonNumber: 5, Aired: "1930-01-04"},
+	})}
+	ok, err := catalogEpisodeAtPath(e.ctx, sess, e.libStore, video, e.root, []string{e.root})
+	if err != nil || !ok {
+		t.Fatalf("catalog ok=%v err=%v", ok, err)
+	}
+	if _, err := e.libStore.GetEpisode(e.ctx, parent.ID, 5, 4); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := e.undoStore.ListActive(e.ctx, mode.Series)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("undo entries = %d err=%v", len(entries), err)
+	}
+	res := e.undoLatest(t, entries[0].ProposalID)
+	if res.FileRestored {
+		t.Fatal("nest undo must not move the file")
+	}
+	if _, err := e.libStore.GetEpisode(e.ctx, parent.ID, 5, 4); err == nil {
+		t.Fatal("expected nested episode row to be removed")
+	}
+	if _, err := os.Stat(video); err != nil {
+		t.Fatalf("file should stay at %q: %v", video, err)
 	}
 }

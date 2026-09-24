@@ -67,6 +67,7 @@ import {
   LibraryConnectionsSection,
   LibraryRootFolderSection,
   NamingPresetSection,
+  ProposeNestedMovesSection,
   QualityPrefsSection,
   SeriesNewSeasonDiscoverySection,
 } from "./Library";
@@ -204,6 +205,7 @@ export const Settings: Component<{ onReboot: () => void }> = (props) => {
               Series-library behavior, even though the dispatch it eventually
               feeds is gated by the usenet auto-grab toggle. */}
           <Show when={mode() === "series"}>
+            <ProposeNestedMovesSection />
             <SeriesNewSeasonDiscoverySection />
           </Show>
         </SectionSave>

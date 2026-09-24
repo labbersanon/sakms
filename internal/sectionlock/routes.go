@@ -222,7 +222,7 @@ func classifyModes(rest []string, out Set) {
 		// /library/root-folder{,/test} is a Settings control; everything
 		// else under /library (series seasons, monitored flags) is the
 		// Library screen's own data.
-		if len(rest) >= 3 && rest[2] == "root-folder" {
+		if len(rest) >= 3 && (rest[2] == "root-folder" || rest[2] == "rescan") {
 			out.Add(SectionSettings)
 		} else {
 			out.Add(SectionLibrary)

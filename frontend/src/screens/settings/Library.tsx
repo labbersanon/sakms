@@ -32,12 +32,15 @@ import {
   QUALITY_TIERS,
   fetchKidsRootPath,
   fetchLibraryRootFolder,
+  fetchProposeNestedMoves,
   fetchRenameScanStatus,
   fetchNamingPreset,
   fetchQualityPrefs,
+  postLibraryRescan,
   putKidsRootPath,
   putLibraryRootFolder,
   putNamingPreset,
+  putProposeNestedMoves,
   putQualityPrefs,
   testLibraryRootFolder,
 } from "../../api/settings";
@@ -59,6 +62,27 @@ import {
   useSectionSaveItem,
 } from "./shared";
 
+function scanStatusLine(s: {
+  running?: boolean;
+  total?: number;
+  current?: number;
+  name?: string;
+  phase?: string;
+  error?: string;
+}): string {
+  if (s.running) {
+    const n = s.total ? `${s.current ?? 0}/${s.total}` : "…";
+    return `Scanning ${n}${s.name ? ` · ${s.name}` : ""}`;
+  }
+  if (s.phase === "error") {
+    return s.error || "Scan failed";
+  }
+  if (s.phase === "done") {
+    return "Scan finished — identified titles are in Library.";
+  }
+  return "";
+}
+
 // ---- Per-mode: library root folder ----------------------------------------
 
 export const LibraryRootFolderSection: Component<{ mode: () => Mode }> = (
@@ -76,14 +100,52 @@ export const LibraryRootFolderSection: Component<{ mode: () => Mode }> = (
     }),
   );
   const status = useSaveStatus();
+  const [scanLine, setScanLine] = createSignal("");
+  let scanTimer: number | undefined;
+  const stopScanPoll = () => {
+    if (scanTimer !== undefined) {
+      window.clearInterval(scanTimer);
+      scanTimer = undefined;
+    }
+  };
+  const pollScan = () => {
+    stopScanPoll();
+    scanTimer = window.setInterval(() => {
+      void fetchRenameScanStatus(props.mode()).then((s) => {
+        const line = scanStatusLine(s);
+        if (s.running) {
+          setScanLine(line);
+          return;
+        }
+        stopScanPoll();
+        if (line) {
+          setScanLine(line);
+        }
+      });
+    }, 1000);
+  };
+  onCleanup(stopScanPoll);
   const save = async () => {
     try {
       await putLibraryRootFolder(props.mode(), path());
       setDirty(false);
       status.saved();
+      if (path().trim() !== "") {
+        setScanLine("Starting scan…");
+        pollScan();
+      }
     } catch (e) {
       status.failed(e);
       throw e;
+    }
+  };
+  const rescan = async () => {
+    try {
+      await postLibraryRescan(props.mode());
+      setScanLine("Starting scan…");
+      pollScan();
+    } catch (e) {
+      status.failed(e);
     }
   };
   // testFailed red-tints the path input after a failed path test; cleared on a
@@ -140,6 +202,13 @@ export const LibraryRootFolderSection: Component<{ mode: () => Mode }> = (
             </Button>
           </Show>
           <Button onClick={() => void testPath()}>Test</Button>
+          <Button
+            type="button"
+            aria-label="Rescan library"
+            onClick={() => void rescan()}
+          >
+            Rescan
+          </Button>
           <SaveStatus
             text={status.status().text}
             error={status.status().error}
@@ -150,6 +219,11 @@ export const LibraryRootFolderSection: Component<{ mode: () => Mode }> = (
           />
         </div>
       </form>
+      <Show when={scanLine()}>
+        <p class="mt-2 text-sm text-fg" aria-live="polite">
+          {scanLine()}
+        </p>
+      </Show>
       <Muted class="mt-2">
         Where Rename/Purge/Dedup and Search's Check &amp; Import look for and
         place {MODE_LABELS[props.mode()]} files — no{" "}
@@ -564,6 +638,79 @@ export const KidsRootPathSection: Component<{ mode: () => Mode }> = (props) => {
         [tmdbid-N] tag appear in Library. Leave blank to turn Kids
         classification off.
       </Muted>
+    </Card>
+  );
+};
+
+// ---- Series only: propose moves for nested shorts --------------------------
+
+export const ProposeNestedMovesSection: Component = () => {
+  const [enabled, setEnabled] = createSignal(false);
+  const [dirty, setDirty] = createSignal(false);
+  const [loadError, setLoadError] = createSignal<Error | null>(null);
+  const status = useSaveStatus();
+
+  onMount(() => {
+    void fetchProposeNestedMoves("series")
+      .then((v) => setEnabled(v))
+      .catch((e) => setLoadError(e instanceof Error ? e : new Error(String(e))));
+  });
+
+  const save = async () => {
+    try {
+      await putProposeNestedMoves("series", enabled());
+      setDirty(false);
+      status.saved();
+    } catch (e) {
+      status.failed(e);
+      throw e;
+    }
+  };
+
+  const batched = useSectionSaveItem({
+    id: "library-propose-nested-moves",
+    label: "propose nested short moves",
+    dirty,
+    save,
+  });
+
+  return (
+    <Card title="Nested shorts (Series)">
+      <label class="mb-3 flex items-center gap-2">
+        <input
+          type="checkbox"
+          aria-label="Propose moves for nested shorts"
+          checked={enabled()}
+          disabled={loadError() !== null}
+          onChange={(e) => {
+            setEnabled(e.currentTarget.checked);
+            setDirty(true);
+          }}
+        />
+        <span class="text-sm text-fg">Propose moves for nested shorts</span>
+      </label>
+      <Muted>
+        Off by default. Save and Rescan identify shorts in place. Turn this on
+        if Organize Scan should also stage a move into the anthology folder.
+        Apply is still the only mover.
+      </Muted>
+      <Show when={loadError()}>
+        <ErrorText>
+          Couldn't load the nested-shorts setting: {loadError()?.message}.
+        </ErrorText>
+      </Show>
+      <Show when={!batched()}>
+        <div class="mt-3 flex items-center gap-2">
+          <Button
+            variant="primary"
+            disabled={!dirty()}
+            onClick={() => void save().catch(() => {})}
+          >
+            Save
+          </Button>
+          <SaveStatus text={status.status().text} error={status.status().error} />
+        </div>
+      </Show>
     </Card>
   );
 };

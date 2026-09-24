@@ -50,6 +50,92 @@ func TestLibraryRootFolder_Adult_PutThenGet_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestLibraryRescan_RequiresRoot(t *testing.T) {
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/modes/series/library/rescan", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 without a root, got %d", resp.StatusCode)
+	}
+
+	putBody, _ := json.Marshal(libraryRootFolderRequest{Path: t.TempDir()})
+	putReq, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/modes/series/library/root-folder", bytes.NewReader(putBody))
+	putResp, err := http.DefaultClient.Do(putReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	putResp.Body.Close()
+	if putResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("put root: %d", putResp.StatusCode)
+	}
+
+	resp2, err := http.Post(srv.URL+"/api/modes/series/library/rescan", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 after a root is set, got %d", resp2.StatusCode)
+	}
+}
+
+func TestProposeNestedMoves_SeriesOnly(t *testing.T) {
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	movies, err := http.Get(srv.URL + "/api/modes/movies/rename/propose-nested-moves")
+	if err != nil {
+		t.Fatal(err)
+	}
+	movies.Body.Close()
+	if movies.StatusCode != http.StatusBadRequest {
+		t.Fatalf("movies GET: %d", movies.StatusCode)
+	}
+
+	getResp, err := http.Get(srv.URL + "/api/modes/series/rename/propose-nested-moves")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer getResp.Body.Close()
+	var got proposeNestedMovesResponse
+	if err := json.NewDecoder(getResp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Enabled {
+		t.Fatal("default must be off")
+	}
+
+	body, _ := json.Marshal(proposeNestedMovesRequest{Enabled: true})
+	putReq, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/modes/series/rename/propose-nested-moves", bytes.NewReader(body))
+	putResp, err := http.DefaultClient.Do(putReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	putResp.Body.Close()
+	if putResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("put: %d", putResp.StatusCode)
+	}
+
+	get2, err := http.Get(srv.URL + "/api/modes/series/rename/propose-nested-moves")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer get2.Body.Close()
+	if err := json.NewDecoder(get2.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Enabled {
+		t.Fatal("expected enabled after PUT")
+	}
+}
+
 // TestQualityPrefs_DefaultsWhenUnset proves GET returns quality.Default
 // ("high"), maxResolution=0 (no cap), and protocol="" (no preference) for a
 // mode that's never had a PUT — matching quality.ProfileFor's own

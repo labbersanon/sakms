@@ -11,11 +11,17 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/labbersanon/sakms/internal/connections"
+	"github.com/labbersanon/sakms/internal/dedup"
+	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/naming"
+	"github.com/labbersanon/sakms/internal/parseentity"
 	"github.com/labbersanon/sakms/internal/phash"
+	"github.com/labbersanon/sakms/internal/proposals"
 	"github.com/labbersanon/sakms/internal/quality"
 	"github.com/labbersanon/sakms/internal/rename"
+	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 )
 
@@ -79,9 +85,20 @@ func getLibraryRootFolderHandler(settingsStore *settings.Store) http.HandlerFunc
 }
 
 // putLibraryRootFolderHandler stores {mode}'s library root folder path.
-func putLibraryRootFolderHandler(settingsStore *settings.Store) http.HandlerFunc {
+func putLibraryRootFolderHandler(
+	httpClient *http.Client,
+	connStore *connections.Store,
+	scStore *serviceconn.Store,
+	settingsStore *settings.Store,
+	propStore *proposals.Store,
+	libStore *library.Store,
+	prober dedup.Prober,
+	videoHasher rename.PHasher,
+	entityStore parseentity.EntityStore,
+) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		key, ok := libraryRootFolderKey(mode.Mode(r.PathValue("mode")))
+		m := mode.Mode(r.PathValue("mode"))
+		key, ok := libraryRootFolderKey(m)
 		if !ok {
 			http.Error(w, "a library root folder is only applicable to movies and series right now", http.StatusBadRequest)
 			return
@@ -99,6 +116,45 @@ func putLibraryRootFolderHandler(settingsStore *settings.Store) http.HandlerFunc
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		requestWatchReload()
+		// Claude 2026-09-24: saving a main root scans existing files.
+		// Reason: kids Save already catalogs in place; main Save did not.
+		// Troubleshooting: Series Library empty after setting the root folder.
+		// Review if: empty path should cancel an in-flight scan.
+		go scanFromWatcher(context.Background(), m, httpClient, connStore, scStore, settingsStore, propStore, libStore, videoHasher, prober, entityStore)
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// libraryRescanHandler starts the same background catalog scan as Save.
+func libraryRescanHandler(
+	httpClient *http.Client,
+	connStore *connections.Store,
+	scStore *serviceconn.Store,
+	settingsStore *settings.Store,
+	propStore *proposals.Store,
+	libStore *library.Store,
+	prober dedup.Prober,
+	videoHasher rename.PHasher,
+	entityStore parseentity.EntityStore,
+) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		m := mode.Mode(r.PathValue("mode"))
+		key, ok := libraryRootFolderKey(m)
+		if !ok {
+			http.Error(w, "library rescan is only applicable to movies, series, and adult", http.StatusBadRequest)
+			return
+		}
+		path, err := settingsStore.Get(r.Context(), key)
+		if err != nil && !errors.Is(err, settings.ErrNotFound) {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if strings.TrimSpace(path) == "" {
+			http.Error(w, "no library root folder configured yet — add one first", http.StatusBadRequest)
+			return
+		}
+		go scanFromWatcher(context.Background(), m, httpClient, connStore, scStore, settingsStore, propStore, libStore, videoHasher, prober, entityStore)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -650,6 +706,10 @@ func renameDurationToleranceKey(m mode.Mode) string {
 	return string(m) + "_rename_duration_tolerance_pct"
 }
 
+func proposeNestedMovesKey(m mode.Mode) string {
+	return string(m) + "_propose_nested_short_moves"
+}
+
 // resolveMatchConfig loads Movies/Series Rename drilldown settings.
 func resolveMatchConfig(ctx context.Context, settingsStore *settings.Store, m mode.Mode) (rename.MatchConfig, error) {
 	cfg := rename.DefaultMatchConfig()
@@ -671,7 +731,61 @@ func resolveMatchConfig(ctx context.Context, settingsStore *settings.Store, m mo
 			cfg.DurationTolerancePct = v
 		}
 	}
+	rawMove, err := settingsStore.Get(ctx, proposeNestedMovesKey(m))
+	if err != nil && !errors.Is(err, settings.ErrNotFound) {
+		return cfg, err
+	}
+	cfg.ProposeNestedMoves = rawMove == "true"
 	return cfg.Normalize(), nil
+}
+
+type proposeNestedMovesResponse struct {
+	Enabled bool `json:"enabled"`
+}
+
+type proposeNestedMovesRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+func getProposeNestedMovesHandler(settingsStore *settings.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		m := mode.Mode(r.PathValue("mode"))
+		if m != mode.Series {
+			http.Error(w, "propose nested short moves is only applicable to series", http.StatusBadRequest)
+			return
+		}
+		raw, err := settingsStore.Get(r.Context(), proposeNestedMovesKey(m))
+		if err != nil && !errors.Is(err, settings.ErrNotFound) {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(proposeNestedMovesResponse{Enabled: raw == "true"})
+	}
+}
+
+func putProposeNestedMovesHandler(settingsStore *settings.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		m := mode.Mode(r.PathValue("mode"))
+		if m != mode.Series {
+			http.Error(w, "propose nested short moves is only applicable to series", http.StatusBadRequest)
+			return
+		}
+		var req proposeNestedMovesRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		val := "false"
+		if req.Enabled {
+			val = "true"
+		}
+		if err := settingsStore.Set(r.Context(), proposeNestedMovesKey(m), val); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
 }
 
 type matchConfigResponse struct {

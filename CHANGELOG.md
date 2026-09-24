@@ -9410,3 +9410,20 @@ status stays active.
 | `internal/rename/catalog.go` | TVDB fallback; keep episode title/air date |
 | `internal/rename/rename.go` | Un-hide dummy S00E00; do not schema-skip dummy |
 | `internal/rename/catalog_test.go` | TVDB nest, year mismatch, tribute, scan-known |
+
+## 2026-09-24 — Generalize shorts nest: pre-1970 parents, Save/Rescan, Undo
+
+**Problem:** The L&H nest was too narrow. Year-season folders without a show id, bare title files, and untracked anthologies stayed as stray cards. Main library Save did not catalog. Wrong nests had no Organize Undo.
+**Fix:** Nest any unparsed Series orphan (dummy S00E00, year-season, bare title) under a unique pre-1970 parent. Tracked catalogs first, then SearchSeries + exact episode key; refuse generic titles. Year-season without a show id parents by folder title. Save and Rescan start the same background catalog scan as kids Save. Nest writes a synthetic Applied proposal (SourcePath == DestPath, no file move) for Undo. Optional Series toggle stages Organize move proposals after nest (off by default).
+**Outcome:** Unit tests create Laurel & Hardy from SearchSeries, parent Looney Tunes year-season, refuse Pilot/Tribute/2023 Night Owls/ambiguous Duck Soup, undo a nest without moving the file, and emit a Pending move when the toggle is on.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/rename/catalog_nest.go` | Premiere < 1970, generic-key refuse, SearchSeries create, parent-by-folder |
+| `internal/rename/catalog.go` | Year-season without show id; nest undo archive |
+| `internal/rename/catalog_nest_undo.go` | Synthetic Applied + viaAlternateFold archive |
+| `internal/rename/rename.go` | Optional ProposeNestedMoves |
+| `internal/api/library.go` | Main Save scan, POST rescan, propose-nested-moves setting |
+| `frontend/src/screens/settings/Library.tsx` | Rescan next to Save; Series nested-shorts toggle |

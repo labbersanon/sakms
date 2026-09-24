@@ -604,6 +604,54 @@ func (s *Store) MarkApplied(ctx context.Context, id int64, trackedID int) error 
 	return dbutil.CheckAffected(res, id, ErrNotFound)
 }
 
+// Claude 2026-09-24: InsertApplied writes one Applied row without touching the live queue.
+// Reason: nest identification is a Library write, not a Scan ReplacePending.
+//   Undo needs a real proposal id and an archive entry; ReplacePending would
+//   wipe Pending/Unmatched siblings.
+// Troubleshooting: nest undo missing from Recently Applied.
+// Review if: nest identification starts as Pending instead of Applied.
+func (s *Store) InsertApplied(ctx context.Context, p Proposal) (Proposal, error) {
+	if s == nil {
+		return Proposal{}, fmt.Errorf("proposals: store is nil")
+	}
+	p.Status = Applied
+	p.Workflow = Rename
+	candidatesJSON, err := json.Marshal(p.Candidates)
+	if err != nil {
+		return Proposal{}, fmt.Errorf("encoding candidates: %w", err)
+	}
+	extraEpisodesJSON, err := marshalExtraEpisodes(p.ExtraEpisodeNumbers)
+	if err != nil {
+		return Proposal{}, fmt.Errorf("encoding extra episode numbers: %w", err)
+	}
+	genresJSON, err := marshalStringSlice(p.Genres)
+	if err != nil {
+		return Proposal{}, fmt.Errorf("encoding genres: %w", err)
+	}
+	castJSON, err := marshalStringSlice(p.Cast)
+	if err != nil {
+		return Proposal{}, fmt.Errorf("encoding cast: %w", err)
+	}
+	row := s.db.QueryRowContext(ctx, `
+		INSERT INTO proposals (
+			mode, workflow, status, source_name, source_path, root_folder_path,
+			title, tvdb_id, tmdb_id, season_number, episode_number, year, quality_profile_id, reason, tracked_id,
+			foreign_id, item_type, candidates_json, studio, scene_date,
+			phash, duration_seconds, give_back_box, give_back_scene_id, extra_episode_numbers,
+			genres, "cast", phash_similarity, applied_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, sakms_now())
+		RETURNING id, created_at, applied_at
+	`, string(p.Mode), string(p.Workflow), string(p.Status), p.SourceName, p.SourcePath, p.RootFolderPath,
+		p.Title, p.TVDBID, p.TMDBID, p.SeasonNumber, p.EpisodeNumber, p.Year, p.QualityProfileID, p.Reason, p.TrackedID,
+		p.ForeignID, p.ItemType, string(candidatesJSON), p.Studio, p.Date,
+		p.PHash, p.DurationSeconds, p.GiveBackBox, p.GiveBackSceneID, extraEpisodesJSON,
+		genresJSON, castJSON, p.PHashSimilarity)
+	if err := row.Scan(&p.ID, &p.CreatedAt, &p.AppliedAt); err != nil {
+		return Proposal{}, fmt.Errorf("inserting applied proposal for %q: %w", p.SourceName, err)
+	}
+	return p, nil
+}
+
 // Claude 2026-08-10: added RestoreSnapshot.
 // Reason: deep-interview-rename-undo — undo restores the proposal from a full
 //   pre-Apply snapshot, so it needs a whole-row writer. Deliberately NOT built

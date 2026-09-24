@@ -104,6 +104,8 @@ func TestHandlerDTOMirrorNoDrift(t *testing.T) {
 		{"matchConfigRequest/MatchConfigRequest", matchConfigRequest{}, apidto.MatchConfigRequest{}},
 		{"identifyEnabledResponse/IdentifyEnabledResponse", identifyEnabledResponse{}, apidto.IdentifyEnabledResponse{}},
 		{"identifyEnabledRequest/IdentifyEnabledRequest", identifyEnabledRequest{}, apidto.IdentifyEnabledRequest{}},
+		{"proposeNestedMovesResponse/ProposeNestedMovesResponse", proposeNestedMovesResponse{}, apidto.ProposeNestedMovesResponse{}},
+		{"proposeNestedMovesRequest/ProposeNestedMovesRequest", proposeNestedMovesRequest{}, apidto.ProposeNestedMovesRequest{}},
 		// recheck.go
 		{"recheckIntervalResponse/RecheckIntervalResponse", recheckIntervalResponse{}, apidto.RecheckIntervalResponse{}},
 		{"recheckIntervalRequest/RecheckIntervalRequest", recheckIntervalRequest{}, apidto.RecheckIntervalRequest{}},

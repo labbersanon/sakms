@@ -49,6 +49,8 @@ func TestClassify(t *testing.T) {
 		// Mode-scoped settings controls belong to the Settings screen; the
 		// Library screen's own data does not.
 		{"/api/modes/movies/library/root-folder", []string{SectionSettings}},
+		{"/api/modes/series/library/rescan", []string{SectionSettings}},
+		{"/api/modes/series/rename/propose-nested-moves", []string{SectionOrganize}},
 		{"/api/modes/movies/naming-preset", []string{SectionSettings}},
 		{"/api/modes/movies/quality-prefs", []string{SectionSettings}},
 

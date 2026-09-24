@@ -157,6 +157,10 @@ func run() error {
 	// Review if: internal/rename stops needing a settings-derived depth, or the
 	//   Apply functions gain a dependency struct that could carry this instead.
 	rename.SetDefaultUndoStore(rename.NewUndoStore(sqlDB, api.UndoDepthFor(settingsStore)))
+	// Claude 2026-09-24: nest identification archives through the same proposals store as Apply.
+	// Reason: recordNestIdentification needs InsertApplied without growing catalog signatures.
+	// Review if: catalog callers take an explicit proposals store.
+	rename.SetDefaultProposalStore(propStore)
 	slidersStore := discoversliders.New(sqlDB)
 	// Excluded titles back the Requests "remove" feature (see api.NewRequestsMux).
 	// A dependency NewMux doesn't carry, so — like recheck's watchStore — it's

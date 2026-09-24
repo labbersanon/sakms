@@ -108,11 +108,12 @@ func catalogEpisodeAtPath(ctx context.Context, sess *mode.Session, libStore *lib
 		parent, nestSeason, nestEp, ok := findEpisodeNest(ctx, libStore, titleHint)
 		var epTitle, airDate string
 		if !ok {
-			parent, nestSeason, nestEp, epTitle, airDate, ok = findTVDBEpisodeNest(ctx, sess, libStore, titleHint, yearFromShowFolder(showFolder))
+			parent, nestSeason, nestEp, epTitle, airDate, ok = findTVDBEpisodeNest(ctx, sess, libStore, titleHint, yearFromShowFolder(showFolder), foundRoot)
 		}
 		if !ok {
 			return false, nil
 		}
+		prior, _ := libStore.GetEpisode(ctx, parent.ID, nestSeason, nestEp)
 		cataloged, err := upsertCatalogedEpisode(ctx, sess, libStore, catalogEpisode{
 			TMDBID: parent.TMDBID, TVDBID: parent.TVDBID, Title: parent.Title, Year: parent.Year,
 			Season: nestSeason, Episodes: []int{nestEp}, VideoPath: videoPath, FoundRoot: foundRoot,
@@ -122,16 +123,46 @@ func catalogEpisodeAtPath(ctx context.Context, sess *mode.Session, libStore *lib
 			return cataloged, err
 		}
 		retireStrayMovieSeries(ctx, libStore, pathTMDB, videoPath, parent.TMDBID)
+		recordNestIdentification(ctx, libStore, parent, nestSeason, nestEp, videoPath, foundRoot, prior)
 		return true, nil
 	}
 	if tmdbID == 0 {
-		return false, nil
+		// Claude 2026-09-24: year-season without a show id still catalogs in place.
+		// Reason: Looney Tunes/1958/S1958E14 has a parse but no tvshow.nfo;
+		//   parent is the show-folder title among pre-1970 tracked / SearchSeries.
+		// Troubleshooting: year-season shorts stay untracked after Save.
+		// Review if: catalog grows a TMDB-search fallback for modern SxxExx.
+		if !library.IsYearSeason(season) {
+			return false, nil
+		}
+		parent, ok := findParentByShowFolder(ctx, sess, libStore, showFolder, foundRoot)
+		if !ok {
+			return false, nil
+		}
+		prior, _ := libStore.GetEpisode(ctx, parent.ID, season, firstEpisode(eps))
+		cataloged, err := upsertCatalogedEpisode(ctx, sess, libStore, catalogEpisode{
+			TMDBID: parent.TMDBID, TVDBID: parent.TVDBID, Title: parent.Title, Year: parent.Year,
+			Season: season, Episodes: eps, VideoPath: videoPath, FoundRoot: foundRoot,
+			AttachExtra: true,
+		})
+		if err != nil || !cataloged {
+			return cataloged, err
+		}
+		recordNestIdentification(ctx, libStore, parent, season, firstEpisode(eps), videoPath, foundRoot, prior)
+		return true, nil
 	}
 	return upsertCatalogedEpisode(ctx, sess, libStore, catalogEpisode{
 		TMDBID: tmdbID, TVDBID: hint.TVDBID, Title: title, Year: hint.Year,
 		Season: season, Episodes: eps, VideoPath: videoPath, FoundRoot: foundRoot,
 		AttachExtra: true,
 	})
+}
+
+func firstEpisode(eps []int) int {
+	if len(eps) == 0 {
+		return 0
+	}
+	return eps[0]
 }
 
 type catalogEpisode struct {

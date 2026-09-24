@@ -627,6 +627,53 @@ describe("Discover — existing-library row", () => {
     ).toBe(popupCallsBefore);
   });
 
+  it("an owned series with a synthetic negative TMDB id opens Play Show", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/series/tracked"))
+        return jsonResponse([
+          tracked({
+            id: 1485,
+            title: "Laurel & Hardy",
+            tmdbId: -1498833576,
+            year: 1919,
+          }),
+        ]);
+      if (url.includes("/library/1485/seasons")) {
+        return jsonResponse([
+          {
+            seasonNumber: 3,
+            episodeCount: 1,
+            missingCount: 0,
+            monitored: true,
+            episodes: [
+              {
+                id: 1549,
+                episodeNumber: 1,
+                title: "Duck Soup",
+                hasFile: true,
+                videoUrl: "/api/modes/series/tracked/1485/video?episodeId=1549",
+              },
+            ],
+          },
+        ]);
+      }
+      const av = availabilityDefaults(url);
+      if (av) return av;
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <DiscoverMainstream />);
+    const card = await screen.findByRole("button", { name: "Laurel & Hardy" });
+    expect(card).not.toBeDisabled();
+    fireEvent.click(card);
+    expect(await screen.findByText("Play Show →")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Play S03E01 · Duck Soup" }),
+    ).toBeInTheDocument();
+  });
+
   // The select-mode half of the same guard. This invariant is load-bearing well
   // beyond LibraryCard: it is precisely what made the picker redesign's
   // `insideModal` nested-modal-suppression prop unreachable and therefore safe

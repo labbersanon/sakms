@@ -395,6 +395,9 @@ export function externalDetailURL(target: DetailTarget): string | undefined {
         return undefined;
     }
   }
+  // Claude 2026-09-24: anthology synthetics have no TMDB page.
+  // Reason: Laurel & Hardy stores tmdb -1498833576 on purpose.
+  if (target.item.id <= 0) return undefined;
   return `https://www.themoviedb.org/${target.mode === "movies" ? "movie" : "tv"}/${target.item.id}`;
 }
 
@@ -623,6 +626,8 @@ const SectionHeading: Component<{ children: string }> = (props) => (
 // Review if: a horizontal chip row is wanted on wide screens.
 const HEADER_ACTION_CLASS =
   "inline-flex w-full items-center justify-center rounded-md border border-border bg-surface-2 px-3 py-1.5 text-center text-xs font-medium text-fg transition hover:opacity-90";
+const HEADER_POSTER_CLASS =
+  "aspect-[2/3] w-24 shrink-0 overflow-hidden rounded-lg border border-border bg-surface-2";
 
 export const DetailPopup: Component<{
   target: DetailTarget;
@@ -688,6 +693,11 @@ export const DetailPopup: Component<{
   const allowGrab = () => props.allowGrab !== false || replaceOpen();
   const ownedSeriesID = () =>
     mode() === "series" && (props.seriesID ?? 0) > 0 ? props.seriesID : undefined;
+  const qualityTitleKey = () => {
+    const seriesID = ownedSeriesID();
+    if (seriesID) return { seriesID };
+    return { tmdbId: (item() as DiscoverItem).id };
+  };
   const [ownedSeasons] = createResource(ownedSeriesID, (id) =>
     fetchSeasonStatesFor({ seriesID: id }).catch(() => []),
   );
@@ -728,14 +738,18 @@ export const DetailPopup: Component<{
   );
   const useAutoGrab = () => mode() !== "adult" && autoGrabEnabled() === true;
 
-  // trailer resolves this title's YouTube trailer URL once per title —
-  // Movies/Series only, skipped entirely for Adult (no TMDB id to resolve
-  // one from). "" (no trailer on file) is a normal, non-error outcome; the
-  // link below simply doesn't render.
+  // Claude 2026-09-24: skip TMDB trailer/detail when id <= 0.
+  // Reason: anthology synthetics (Laurel & Hardy -1498833576) have no /tv page.
+  // Troubleshooting: opening owned play used to be blocked before this skip.
+  // Review if: movies with tmdb 0 also open a file-only popup.
+  const catalogTmdbId = () =>
+    mode() === "adult" ? 0 : (item() as DiscoverItem).id;
+  const hasCatalogTmdb = () => catalogTmdbId() > 0;
+
   const [trailer] = createResource(
     () =>
-      mode() !== "adult"
-        ? { m: mode() as "movies" | "series", tmdbId: (item() as DiscoverItem).id }
+      hasCatalogTmdb()
+        ? { m: mode() as "movies" | "series", tmdbId: catalogTmdbId() }
         : null,
     ({ m, tmdbId }) => fetchTrailer(m, tmdbId).catch(() => ""),
   );
@@ -749,7 +763,7 @@ export const DetailPopup: Component<{
   // missing piece is an empty array/string, guarded per-section below).
   const [detail] = createResource(
     () => {
-      if (mode() === "adult") return null;
+      if (!hasCatalogTmdb()) return null;
       const d = item() as DiscoverItem;
       const yearText = d.releaseDate ?? "";
       const year = mode() === "series" && /^\d{4}/.test(yearText) ? Number(yearText.slice(0, 4)) : 0;
@@ -768,9 +782,9 @@ export const DetailPopup: Component<{
   // Review if: tracked list starts carrying poster paths.
   const [lazyPoster] = createResource(
     () => {
-      if (mode() === "adult") return null;
+      if (!hasCatalogTmdb()) return null;
       const it = item() as DiscoverItem;
-      if (!it.id || it.posterPath) return null;
+      if (it.posterPath) return null;
       if (detail.loading) return null;
       if (detail()?.posterPath) return null;
       return { m: mode() as "movies" | "series", tmdbId: it.id };
@@ -949,6 +963,16 @@ export const DetailPopup: Component<{
     // Reason: TVDB/AI absolute URLs; do not wrap with tmdbPoster again.
     return lazyPoster() ?? "";
   };
+  const catalogHref = () => externalDetailURL(props.target);
+  const PosterArt: Component = () => (
+    <Show when={posterSrc()} fallback={<MediaFallbackTile title={item().title} />}>
+      <img
+        src={posterSrc()}
+        alt={item().title}
+        class="h-full w-full object-cover"
+      />
+    </Show>
+  );
   const overviewText = () =>
     mode() === "adult"
       ? [
@@ -1098,20 +1122,25 @@ export const DetailPopup: Component<{
           Troubleshooting: overview lived inside <Show when={ready()}>.
           Review if: Series stops gating availability behind the picker. */}
       <div class="flex items-start gap-3">
-        <a
-          href={externalDetailURL(props.target)}
-          target="_blank"
-          rel="noreferrer"
-          class="aspect-[2/3] w-24 shrink-0 overflow-hidden rounded-lg border border-border bg-surface-2"
+        <Show
+          when={catalogHref()}
+          fallback={
+            <div class={HEADER_POSTER_CLASS}>
+              <PosterArt />
+            </div>
+          }
         >
-          <Show when={posterSrc()} fallback={<MediaFallbackTile title={item().title} />}>
-            <img
-              src={posterSrc()}
-              alt={item().title}
-              class="h-full w-full object-cover"
-            />
-          </Show>
-        </a>
+          {(href) => (
+            <a
+              href={href()}
+              target="_blank"
+              rel="noreferrer"
+              class={HEADER_POSTER_CLASS}
+            >
+              <PosterArt />
+            </a>
+          )}
+        </Show>
         <div class="flex min-w-0 flex-1 flex-col gap-1.5">
           <Show when={props.lead}>{props.lead}</Show>
           <Show when={mode() === "adult" && ratingValue() > 0}>
@@ -1123,14 +1152,18 @@ export const DetailPopup: Component<{
               class="mt-1 text-sm text-muted"
             />
           </Show>
-          <a
-            href={externalDetailURL(props.target)}
-            target="_blank"
-            rel="noreferrer"
-            class={HEADER_ACTION_CLASS}
-          >
-            More on {sourceLabel(props.target)} →
-          </a>
+          <Show when={catalogHref()}>
+            {(href) => (
+              <a
+                href={href()}
+                target="_blank"
+                rel="noreferrer"
+                class={HEADER_ACTION_CLASS}
+              >
+                More on {sourceLabel(props.target)} →
+              </a>
+            )}
+          </Show>
           {/* Trailer, elevated from the old header text link into a
               distinct button (F1 item 2) — styling/placement only,
               TrailerURL is already wired. Deliberately a SIBLING of the
@@ -1226,10 +1259,10 @@ export const DetailPopup: Component<{
       <Show when={allowGrab() && (mode() === "movies" || mode() === "series")}>
         <TitleQualityPrefs
           mode={mode() as "movies" | "series"}
-          titleKey={{ tmdbId: (item() as DiscoverItem).id }}
+          titleKey={qualityTitleKey()}
         />
       </Show>
-      <Show when={allowGrab() && mode() === "series"}>
+      <Show when={allowGrab() && mode() === "series" && hasCatalogTmdb()}>
         <SeasonsPanel tmdbId={(item() as DiscoverItem).id} />
       </Show>
       <Show when={(ownedSeriesID() ?? 0) > 0}>

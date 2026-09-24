@@ -9484,3 +9484,17 @@ status stays active.
 | `frontend/src/screens/Library.tsx` | In library Rematch |
 | `frontend/src/screens/discover/Adult.tsx` | Adult Rematch |
 
+## 2026-09-24 — Anthology series play without a positive TMDB id
+
+**Problem:** Laurel & Hardy (library id 1485, tmdb −1498833576) had 87 episode files but owned detail showed no Play Show or episode list.
+**Fix:** Owned series open DetailPopup on the library row even when tmdb_id is 0 or a negative anthology synthetic. Movies with no TMDB id stay click-inert. DetailPopup skips TMDB trailer/detail/More-on links when the catalog id is not positive; seasons/play stay keyed on seriesID.
+**Outcome:** Preview, search, monitored, and In library open the same episode Play path Arrested Development already had.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/Library.tsx` | `trackedToDetailTarget` / `ownedCardOpenable` for series |
+| `frontend/src/screens/discover/Mainstream.tsx` | Preview/search/monitored cards clickable for series |
+| `frontend/src/screens/discover/DetailPopup.tsx` | Skip TMDB fetches and links when id ≤ 0 |
+

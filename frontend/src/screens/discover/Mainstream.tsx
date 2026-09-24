@@ -42,6 +42,7 @@ import { setItemRating } from "../../api/rating";
 import {
   LibraryPosterCard,
   LibraryView,
+  ownedCardOpenable,
   playableLibrarySrc,
   trackedToDetailTarget,
 } from "../Library";
@@ -662,7 +663,8 @@ const OwnedPreviewCard: Component<{
 }> = (props) => {
   const selection = useSelection();
   const blocked = () =>
-    (selection?.selectMode() ?? false) || (props.item.tmdbId ?? 0) <= 0;
+    (selection?.selectMode() ?? false) ||
+    !ownedCardOpenable(props.mode, props.item);
   return (
     <LibraryPosterCard
       class={MEDIA_CAROUSEL_POSTER_CLASS}
@@ -855,6 +857,8 @@ export const MainstreamDiscover: Component<{
     setOwnedDetail({ mode, item });
     setDetailTarget(trackedToDetailTarget(mode, item) ?? null);
   };
+  const ownedMode = (): "movies" | "series" =>
+    props.contentType === "series" ? "series" : "movies";
   const closeDetail = () => {
     setDetailTarget(null);
     setOwnedDetail(null);
@@ -1397,7 +1401,8 @@ export const MainstreamDiscover: Component<{
       {/* Claude 2026-09-15: Monitored grid — replaces carousels when chip is on.
           No TMDB calls while chip is on (plan §4.1 guardrail).
           LibraryCard lazy-fetches posters via tmdbId and opens DetailPopup.
-          Cards with tmdbId===0 stay click-inert (existing LibraryCard behavior).
+          Movies with no TMDB id stay click-inert; series still open
+          (ownedCardOpenable), including anthology synthetics.
           Direct Show/For rather than PaginatedStrip: monitoredItems is a
           resource keyed on monitoredOnly(); rendering directly from the resource
           correctly handles the async timing (PaginatedStrip's load callback
@@ -1433,23 +1438,17 @@ export const MainstreamDiscover: Component<{
                 <For each={monitoredItems() ?? []}>
                   {(item) => (
                     <LibraryPosterCard
-                      mode={(props.contentType ?? "movies") as "movies" | "series"}
+                      mode={ownedMode()}
                       item={item}
                       selected={false}
-                      disabled={(item.tmdbId ?? 0) <= 0}
+                      disabled={!ownedCardOpenable(ownedMode(), item)}
                       onClick={() => {
-                        if ((item.tmdbId ?? 0) <= 0) return;
-                        openOwned(
-                          (props.contentType ?? "movies") as "movies" | "series",
-                          item,
-                        );
+                        const mode = ownedMode();
+                        if (!ownedCardOpenable(mode, item)) return;
+                        openOwned(mode, item);
                       }}
                       onRate={(rating) =>
-                        void setItemRating(
-                          (props.contentType ?? "movies") as "movies" | "series",
-                          item.id,
-                          rating,
-                        )
+                        void setItemRating(ownedMode(), item.id, rating)
                       }
                     />
                   )}
@@ -1547,9 +1546,9 @@ export const MainstreamDiscover: Component<{
                           mode={e.mode}
                           item={e.item}
                           selected={false}
-                          disabled={(e.item.tmdbId ?? 0) <= 0}
+                          disabled={!ownedCardOpenable(e.mode, e.item)}
                           onClick={() => {
-                            if ((e.item.tmdbId ?? 0) <= 0) return;
+                            if (!ownedCardOpenable(e.mode, e.item)) return;
                             openOwned(e.mode, e.item);
                           }}
                           onRate={(rating) =>

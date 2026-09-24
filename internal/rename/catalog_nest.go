@@ -138,6 +138,9 @@ func nestTitleHint(hintTitle, showFolder, videoPath string) string {
 	return strings.TrimSpace(base)
 }
 
+// SearchSeries parent-create is only for a folder named after the short
+// (dummy movie-as-series or a single-title folder). A multi-file anthology
+// folder ("Laurel and Hardy/Duck Soup.mkv") is Organize's token matcher.
 func allowNestSearchCreate(showFolder, titleHint string, dummyFolder bool) bool {
 	if dummyFolder {
 		return true

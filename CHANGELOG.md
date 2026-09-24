@@ -9447,3 +9447,22 @@ status stays active.
 | `internal/sectionlock/sections.go` | Library removed from lockable tabs |
 | `internal/sectionlock/routes.go` | Owned APIs also Discover |
 
+## 2026-09-24 — Series episode in-app playback on owned Discover detail
+
+**Problem:** Movies owned detail can play a file. Series could not — `GET /tracked/{id}/video` returned 400, seasons listed titles without a stream URL, and header Play Show was hidden.
+**Fix:** `GET /api/modes/series/tracked/{seriesID}/video?episodeId=&fileId=` reuses Range/`serveLocalVideoFile`. `SeasonEpisode` now carries `id`, `airDate`, `videoUrl`, `files[]`, and watch progress. Owned `DetailPopup` (`seriesID`) shows Play Show / Resume Show plus `SeriesEpisodesPanel`. Catalog-only series stay grab-only. `library_episode_progress` + `PUT .../episodes/{episodeId}/progress` record the play head (~90% or `ended` = watched). Rematch and per-episode Replace are not in this change. Transcoding is still out of scope.
+**Outcome:** Go and frontend tests pass. Header Play/Resume and per-row Play use the Movies HTML5 player.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/tracked.go` | Series video handler + `episodeId` |
+| `internal/api/airdatemonitor.go` | Enriched seasons payload |
+| `internal/api/episode_progress.go` | Progress PUT |
+| `internal/db/migrations/0032_library_episode_progress.sql` | Progress table |
+| `internal/library/library_episode_progress.go` | Progress store |
+| `frontend/src/components/SeriesEpisodesPanel.tsx` | Season chips + episode Play |
+| `frontend/src/screens/discover/DetailPopup.tsx` | Owned series Play/Resume + panel |
+| `frontend/src/screens/seriesPlay.ts` | First playable / Resume pick |
+

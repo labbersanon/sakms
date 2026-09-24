@@ -3167,12 +3167,38 @@ export interface SeasonState {
   episodes?: SeasonEpisode[];
 }
 /**
- * SeasonEpisode is one episode under SeasonState for the Library season list.
+ * SeasonEpisode is one episode under SeasonState for the Library season list
+ * and the owned-series play list. Catalog-only TMDB seasons may omit id /
+ * videoUrl / files when no library_episodes row exists.
+ * Claude 2026-09-24: id + airDate + videoUrl + files for in-app episode play.
+ * Reason: GET /tracked must not carry a series-level videoUrl; play is per episode.
+ * Troubleshooting: Play Show and SeriesEpisodesPanel need a stream URL + episode id.
+ * Review if: a dedicated GET .../episodes replaces this embed.
  */
 export interface SeasonEpisode {
+  id?: number /* int64 */;
   episodeNumber: number /* int */;
   title: string;
+  airDate?: string;
   hasFile: boolean;
+  videoUrl?: string;
+  files?: TrackedItemFile[];
+  /**
+   * Claude 2026-09-24: play head for Resume / episode bars. Absent = never played.
+   * Review if: Movies/Adult start reporting the same fields.
+   */
+  positionSeconds?: number /* float64 */;
+  durationSeconds?: number /* float64 */;
+  watched?: boolean;
+}
+/**
+ * EpisodeProgressRequest is PUT /api/modes/series/tracked/{id}/episodes/{episodeId}/progress.
+ * The handler marks watched when Watched is true or position is ~90% of duration.
+ */
+export interface EpisodeProgressRequest {
+  positionSeconds: number /* float64 */;
+  durationSeconds: number /* float64 */;
+  watched?: boolean;
 }
 /**
  * SetSeasonMonitoredRequest is the body of both season-monitoring writes: the

@@ -49,6 +49,39 @@ func (s *Store) ListEpisodeFiles(ctx context.Context, episodeID int64) ([]Episod
 	return out, rows.Err()
 }
 
+// ListEpisodeFilesForSeries returns every file row for episodes of seriesID, keyed by episode id.
+// Claude 2026-09-24: batch read so GET .../seasons is not an N+1 ListEpisodeFiles loop.
+// Reason: writeSeasonStates attaches files[] + videoUrl on every episode.
+// Troubleshooting: a 20-season show would issue one query per episode.
+// Review if: a dedicated GET .../episodes replaces the seasons embed.
+func (s *Store) ListEpisodeFilesForSeries(ctx context.Context, seriesID int64) (map[int64][]EpisodeFile, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT f.id, f.episode_id, f.file_path, f.is_primary, f.quality_tier, f.size,
+		       f.width, f.height, f.video_codec, f.bitrate, f.duration_sec, f.phash,
+		       f.created_at, f.updated_at
+		FROM library_episode_files f
+		INNER JOIN library_episodes e ON e.id = f.episode_id
+		WHERE e.series_id = ?
+		ORDER BY f.episode_id, f.is_primary DESC, f.id ASC
+	`, seriesID)
+	if err != nil {
+		return nil, fmt.Errorf("listing files for library series %d: %w", seriesID, err)
+	}
+	defer rows.Close()
+	out := map[int64][]EpisodeFile{}
+	for rows.Next() {
+		f, err := scanEpisodeFile(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[f.EpisodeID] = append(out[f.EpisodeID], f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // UpsertEpisodeFile inserts or updates a file row by (episode_id, file_path).
 // When IsPrimary is true, clears primary on siblings of the SAME episode first
 // (equal-tier keep-existing is the caller's job, exactly as in UpsertFile).

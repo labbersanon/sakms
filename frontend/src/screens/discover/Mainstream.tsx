@@ -1543,6 +1543,11 @@ export const MainstreamDiscover: Component<{
             target={t}
             allowGrab={!ownedDetail()}
             canReplace={!!ownedDetail()}
+            seriesID={
+              ownedDetail()?.mode === "series"
+                ? ownedDetail()!.item.id
+                : undefined
+            }
             playSrc={
               ownedDetail()
                 ? playableLibrarySrc(ownedDetail()!.mode, ownedDetail()!.item) ||

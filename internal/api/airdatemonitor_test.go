@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -1721,6 +1723,73 @@ func TestSeasonMonitoringRoutes(t *testing.T) {
 	putAllSeasonsMonitoredHandler(env.catalog(), env.grabs)(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("writing seasons for an unknown series: status %d, want 404", rec.Code)
+	}
+}
+
+func TestSeasonStates_PlayableEpisodeGetsVideoURL(t *testing.T) {
+	now := time.Now()
+	env := newAirDateEnv(t, map[int][]fakeTMDBEpisode{}, noQualifyingRelease)
+	series := env.trackSeries(t)
+	mp4 := filepath.Join(t.TempDir(), "s01e01.mp4")
+	if err := os.WriteFile(mp4, []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env.seedOnDiskEpisode(t, series.ID, 1, 1, dayOffset(now, -30), mp4)
+	env.seedOnDiskEpisode(t, series.ID, 1, 2, dayOffset(now, -23), "/series/Some Show/S01E02.mkv")
+	env.seedMissingEpisode(t, series.ID, 1, 3, dayOffset(now, -16))
+
+	states := env.getSeasons(t, series.ID)
+	st, ok := findSeason(states, 1)
+	if !ok || len(st.Episodes) != 3 {
+		t.Fatalf("expected 3 season-1 episodes, got %+v", states)
+	}
+	playable := st.Episodes[0]
+	if playable.ID == 0 || playable.VideoURL == "" || !playable.HasFile {
+		t.Fatalf("mp4 episode missing id/videoUrl: %+v", playable)
+	}
+	want := fmt.Sprintf("/api/modes/series/tracked/%d/video?episodeId=%d", series.ID, playable.ID)
+	if playable.VideoURL != want {
+		t.Fatalf("videoUrl = %q, want %q", playable.VideoURL, want)
+	}
+	if len(playable.Files) == 0 || playable.Files[0].VideoURL == "" {
+		t.Fatalf("expected a playable file row, got %+v", playable.Files)
+	}
+	mkv := st.Episodes[1]
+	if !mkv.HasFile {
+		t.Fatalf("mkv episode should still hasFile: %+v", mkv)
+	}
+	if mkv.VideoURL != "" {
+		t.Fatalf("mkv episode should omit videoUrl, got %q", mkv.VideoURL)
+	}
+	missing := st.Episodes[2]
+	if missing.HasFile || missing.VideoURL != "" {
+		t.Fatalf("missing episode should have no file/url: %+v", missing)
+	}
+}
+
+func TestSeasonStates_IncludesEpisodeProgress(t *testing.T) {
+	now := time.Now()
+	env := newAirDateEnv(t, map[int][]fakeTMDBEpisode{}, noQualifyingRelease)
+	series := env.trackSeries(t)
+	mp4 := filepath.Join(t.TempDir(), "s01e01.mp4")
+	if err := os.WriteFile(mp4, []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env.seedOnDiskEpisode(t, series.ID, 1, 1, dayOffset(now, -30), mp4)
+	states := env.getSeasons(t, series.ID)
+	st, ok := findSeason(states, 1)
+	if !ok || len(st.Episodes) != 1 || st.Episodes[0].ID == 0 {
+		t.Fatalf("expected one episode, got %+v", states)
+	}
+	if _, err := env.lib.UpsertEpisodeProgress(env.ctx, library.EpisodeProgress{
+		EpisodeID: st.Episodes[0].ID, PositionSeconds: 40, DurationSeconds: 100, Watched: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	states = env.getSeasons(t, series.ID)
+	st, ok = findSeason(states, 1)
+	if !ok || st.Episodes[0].PositionSeconds != 40 || st.Episodes[0].Watched {
+		t.Fatalf("progress missing on seasons GET: %+v", st.Episodes)
 	}
 }
 

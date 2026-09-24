@@ -122,6 +122,21 @@ describe("PlayFullscreenLink", () => {
     expect(screen.queryByLabelText("Fullscreen player for Inception")).toBeNull();
   });
 
+  it("renders Resume Show when resume is set", () => {
+    render(() => (
+      <PlayFullscreenLink
+        src="/api/modes/series/tracked/77/video?episodeId=11"
+        noun="Show"
+        title="Breaking Bad"
+        resume
+      />
+    ));
+    expect(screen.getByText("Resume Show →")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Resume Show fullscreen" }),
+    ).toBeInTheDocument();
+  });
+
   it("click mounts the video, plays, and requests fullscreen", async () => {
     const requestFullscreen = vi.fn().mockResolvedValue(undefined);
     const play = vi.fn().mockResolvedValue(undefined);

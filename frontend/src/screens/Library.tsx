@@ -165,10 +165,12 @@ export const trackedToDetailTarget = (
 
 // playableLibrarySrc is the in-app URL for Play Movie/Show/Scene under
 // Watch Trailer. Movies prefer the primary browser-playable file, then any
-// playable file, then the item URL. Adult uses the scene URL. Series has
-// no browser-playable file on GET /tracked today, so this returns "".
+// playable file, then the item URL. Adult uses the scene URL. Series still
+// returns "" — a show is not one file; DetailPopup computes Play Show from
+// GET .../seasons when seriesID is set.
 // Claude 2026-08-14: header play must not invent a Series episode stream.
-// Review if: GET /tracked starts sending a Series videoUrl.
+// Claude 2026-09-24: series playSrc comes from firstPlayableEpisodeSrc, not here.
+// Review if: GET /tracked starts sending a Series videoUrl (it should not).
 export const playableLibrarySrc = (mode: Mode, item: TrackedItem): string => {
   if (mode === "movies") {
     const files = item.files ?? [];
@@ -1087,6 +1089,11 @@ export const LibraryView: Component<{
                       canReplace
                       onClose={closeDetail}
                       onSelectRecommendation={setDetailTarget}
+                      seriesID={
+                        isLibraryTarget() && props.mode === "series"
+                          ? item().id
+                          : undefined
+                      }
                       playSrc={
                         isLibraryTarget()
                           ? playableLibrarySrc(props.mode, item()) || undefined

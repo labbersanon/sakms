@@ -1011,14 +1011,21 @@ func (c seasonCatalog) ensureSeriesByTMDB(ctx context.Context, tmdbID int) (*lib
 	return &created, nil
 }
 
-func writeSeasonStates(w http.ResponseWriter, states []library.SeasonState, episodes []library.Episode) {
+func writeSeasonStates(w http.ResponseWriter, ctx context.Context, lib *library.Store, seriesID int64, states []library.SeasonState, episodes []library.Episode) {
+	filesByEpisode := map[int64][]library.EpisodeFile{}
+	progressByEpisode := map[int64]library.EpisodeProgress{}
+	if lib != nil && seriesID > 0 {
+		// A list error still emits episode titles/hasFile; play URLs stay empty.
+		if listed, err := lib.ListEpisodeFilesForSeries(ctx, seriesID); err == nil {
+			filesByEpisode = listed
+		}
+		if listed, err := lib.ListEpisodeProgressForSeries(ctx, seriesID); err == nil {
+			progressByEpisode = listed
+		}
+	}
 	bySeason := map[int][]apidto.SeasonEpisode{}
 	for _, ep := range episodes {
-		bySeason[ep.SeasonNumber] = append(bySeason[ep.SeasonNumber], apidto.SeasonEpisode{
-			EpisodeNumber: ep.EpisodeNumber,
-			Title:         ep.Title,
-			HasFile:       ep.FilePath != "",
-		})
+		bySeason[ep.SeasonNumber] = append(bySeason[ep.SeasonNumber], seasonEpisodeDTO(seriesID, ep, filesByEpisode[ep.ID], progressByEpisode[ep.ID]))
 	}
 	out := make([]apidto.SeasonState, 0, len(states))
 	for _, st := range states {
@@ -1029,6 +1036,45 @@ func writeSeasonStates(w http.ResponseWriter, states []library.SeasonState, epis
 		})
 	}
 	writeJSON(w, out)
+}
+
+// Claude 2026-09-24: per-episode videoUrl, never a series-level URL.
+// Reason: a show is not one file; GET /tracked stays file-less for series.
+// Troubleshooting: catalog-only TMDB GETs pass seriesID 0 — titles still go out, play URLs stay empty.
+func seasonEpisodeDTO(seriesID int64, ep library.Episode, files []library.EpisodeFile, progress library.EpisodeProgress) apidto.SeasonEpisode {
+	out := apidto.SeasonEpisode{
+		ID:            ep.ID,
+		EpisodeNumber: ep.EpisodeNumber,
+		Title:         ep.Title,
+		AirDate:       ep.AirDate,
+		HasFile:       ep.FilePath != "",
+	}
+	if progress.EpisodeID == ep.ID && ep.ID > 0 {
+		out.PositionSeconds = progress.PositionSeconds
+		out.DurationSeconds = progress.DurationSeconds
+		out.Watched = progress.Watched
+	}
+	owned := seriesID > 0 && ep.ID > 0
+	for _, f := range files {
+		if f.FilePath != "" {
+			out.HasFile = true
+		}
+		tf := apidto.TrackedItemFile{
+			ID: f.ID, FilePath: f.FilePath, IsPrimary: f.IsPrimary,
+			QualityTier: f.QualityTier, Size: f.Size, Width: f.Width,
+			Height: f.Height, VideoCodec: f.VideoCodec, BitRate: f.BitRate,
+			DurationSec: f.DurationSec,
+		}
+		if owned && browserPlayableVideo(f.FilePath) {
+			tf.VideoURL = seriesEpisodeVideoURL(seriesID, ep.ID, f.ID)
+			out.VideoURL = seriesEpisodeVideoURL(seriesID, ep.ID, 0)
+		}
+		out.Files = append(out.Files, tf)
+	}
+	if out.VideoURL == "" && owned && browserPlayableVideo(ep.FilePath) {
+		out.VideoURL = seriesEpisodeVideoURL(seriesID, ep.ID, 0)
+	}
+	return out
 }
 
 // listSeasonStatesHandler backs GET /api/modes/series/library/{seriesID}/seasons
@@ -1048,7 +1094,7 @@ func listSeasonStatesHandler(catalog seasonCatalog) http.HandlerFunc {
 		if catalog.lib != nil {
 			episodes, _ = catalog.lib.ListEpisodes(r.Context(), seriesID)
 		}
-		writeSeasonStates(w, states, episodes)
+		writeSeasonStates(w, r.Context(), catalog.lib, seriesID, states, episodes)
 	}
 }
 
@@ -1068,12 +1114,14 @@ func listSeasonStatesByTMDBHandler(catalog seasonCatalog) http.HandlerFunc {
 			return
 		}
 		var episodes []library.Episode
+		var seriesID int64
 		if catalog.lib != nil {
 			if series, getErr := catalog.lib.GetSeriesByTMDBID(r.Context(), tmdbID); getErr == nil && series != nil {
+				seriesID = series.ID
 				episodes, _ = catalog.lib.ListEpisodes(r.Context(), series.ID)
 			}
 		}
-		writeSeasonStates(w, states, episodes)
+		writeSeasonStates(w, r.Context(), catalog.lib, seriesID, states, episodes)
 	}
 }
 

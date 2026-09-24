@@ -1128,6 +1128,91 @@ describe("DetailPopup — Watch Trailer link", () => {
         0,
     ).toBe(true);
   });
+
+  it("renders Play Show from owned series seasons, not catalog-only", async () => {
+    stubFetch((url) => {
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      if (url.includes("/discover/detail"))
+        return jsonResponse({ seasons: [seasonFixture(1)] });
+      if (url.includes("/library/") && /\/seasons$/.test(url)) {
+        return jsonResponse([
+          {
+            seasonNumber: 1,
+            episodeCount: 1,
+            missingCount: 0,
+            monitored: true,
+            episodes: [
+              {
+                id: 11,
+                episodeNumber: 1,
+                title: "Pilot",
+                hasFile: true,
+                videoUrl: "/api/modes/series/tracked/77/video?episodeId=11",
+              },
+            ],
+          },
+        ]);
+      }
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => (
+      <DetailPopup
+        target={{
+          mode: "series",
+          item: movie({ id: 1396, title: "Breaking Bad", mediaType: "tv" }),
+        }}
+        allowGrab={false}
+        seriesID={77}
+        onClose={() => {}}
+      />
+    ));
+    expect(await screen.findByText("Play Show →")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Play S01E01 · Pilot" }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders Resume Show when the playable episode is in progress", async () => {
+    stubFetch((url) => {
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      if (url.includes("/discover/detail"))
+        return jsonResponse({ seasons: [seasonFixture(1)] });
+      if (url.includes("/library/") && /\/seasons$/.test(url)) {
+        return jsonResponse([
+          {
+            seasonNumber: 1,
+            episodeCount: 1,
+            missingCount: 0,
+            monitored: true,
+            episodes: [
+              {
+                id: 11,
+                episodeNumber: 1,
+                title: "Pilot",
+                hasFile: true,
+                videoUrl: "/api/modes/series/tracked/77/video?episodeId=11",
+                positionSeconds: 40,
+                durationSeconds: 100,
+              },
+            ],
+          },
+        ]);
+      }
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => (
+      <DetailPopup
+        target={{
+          mode: "series",
+          item: movie({ id: 1396, title: "Breaking Bad", mediaType: "tv" }),
+        }}
+        allowGrab={false}
+        seriesID={77}
+        onClose={() => {}}
+      />
+    ));
+    expect(await screen.findByText("Resume Show →")).toBeInTheDocument();
+  });
 });
 
 describe("DetailPopup — Grab wiring (mirrors GrabDialog.pickManual's call shape)", () => {

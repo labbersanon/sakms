@@ -83,7 +83,11 @@ import { Button, ErrorText, Muted, PillSelector, yearOf } from "../../components
 import { PlayFullscreenLink } from "../../components/TrackedPlayback";
 import { MediaFallbackTile } from "../../components/media";
 import { SeasonsPanel } from "../../components/SeasonsPanel";
+import { SeriesEpisodesPanel } from "../../components/SeriesEpisodesPanel";
 import { TitleQualityPrefs } from "../../components/TitleQualityPrefs";
+import { fetchSeasonStatesFor } from "../../api/seasons";
+import { putEpisodeProgress } from "../../api/seriesProgress";
+import { headerPlayFromSeasons } from "../seriesPlay";
 import { type GrabTarget, FallbackPickList, Modal } from "./shared";
 import { PosterCard } from "./Mainstream";
 import { SeasonEpisodePicker } from "./SeasonEpisodePicker";
@@ -635,11 +639,15 @@ export const DetailPopup: Component<{
   // Reason: bad download → pick a replacement; play/tags stay visible.
   // Review if: owned grab is always-on again.
   canReplace?: boolean;
-  // Claude 2026-08-14: Library in-app play URL under Watch Trailer.
-  // Reason: operator asked a Play Movie/Show/Scene link that launches
-  // fullscreen. Discover omits it. Empty/undefined hides the control.
-  // Review if: Series episode playback starts sending a URL.
+  // Library in-app play URL under Watch Trailer. Movies/Adult pass a file URL.
+  // Owned series computes Play/Resume from GET .../seasons. Empty hides it.
   playSrc?: string;
+  // Claude 2026-09-24: library series id mounts SeriesEpisodesPanel + Play Show.
+  // Reason: catalog-only popups must not grow a play list; owned detail keys by
+  //   library_series.id, not TMDB id.
+  // Troubleshooting: Discover TMDB-keyed seasons are monitor-only (SeasonsPanel).
+  // Review if: Rematch rewrites the series id and this popup must remount.
+  seriesID?: number;
   // Claude 2026-08-14: Library Rating sits in the header stack next to the
   // poster (above More on TMDB / Trailer / Play). Discover omits it.
   // Review if: Rating leaves Library or Discover grows a lead slot.
@@ -671,6 +679,14 @@ export const DetailPopup: Component<{
   const item = () => props.target.item;
   const [replaceOpen, setReplaceOpen] = createSignal(false);
   const allowGrab = () => props.allowGrab !== false || replaceOpen();
+  const ownedSeriesID = () =>
+    mode() === "series" && (props.seriesID ?? 0) > 0 ? props.seriesID : undefined;
+  const [ownedSeasons] = createResource(ownedSeriesID, (id) =>
+    fetchSeasonStatesFor({ seriesID: id }).catch(() => []),
+  );
+  const headerPlay = () =>
+    headerPlayFromSeasons(ownedSeasons.error ? [] : (ownedSeasons() ?? []));
+  const headerPlaySrc = () => headerPlay()?.src || (props.playSrc ?? "").trim();
 
   // Series needs season/episode BEFORE the availability fetch can run.
   // Library (allowGrab=false) skips that gate so F1 metadata is immediate.
@@ -1132,13 +1148,9 @@ export const DetailPopup: Component<{
               Watch Trailer →
             </a>
           </Show>
-          {/* Claude 2026-08-14: Play Movie/Show/Scene in the same stack as
-              Watch Trailer. Reason: a second-row control under only the
-              trailer button left a ragged header. Discover has no playSrc.
-              Review if: Series episode playback lands. */}
-          <Show when={(props.playSrc ?? "").trim()}>
+          <Show when={headerPlaySrc()}>
             <PlayFullscreenLink
-              src={props.playSrc ?? ""}
+              src={headerPlaySrc()}
               noun={
                 mode() === "adult"
                   ? "Scene"
@@ -1148,6 +1160,22 @@ export const DetailPopup: Component<{
               }
               title={item().title}
               class={HEADER_ACTION_CLASS}
+              resume={headerPlay()?.resume}
+              onProgress={
+                (ownedSeriesID() ?? 0) > 0 && (headerPlay()?.episodeId ?? 0) > 0
+                  ? (info) => {
+                      void putEpisodeProgress(
+                        ownedSeriesID()!,
+                        headerPlay()!.episodeId,
+                        {
+                          positionSeconds: info.position,
+                          durationSeconds: info.duration,
+                          watched: info.ended,
+                        },
+                      ).catch(() => undefined);
+                    }
+                  : undefined
+              }
             />
           </Show>
           <Show when={props.canReplace && !replaceOpen()}>
@@ -1178,6 +1206,13 @@ export const DetailPopup: Component<{
       </Show>
       <Show when={allowGrab() && mode() === "series"}>
         <SeasonsPanel tmdbId={(item() as DiscoverItem).id} />
+      </Show>
+      <Show when={(ownedSeriesID() ?? 0) > 0}>
+        <SeriesEpisodesPanel
+          seriesID={ownedSeriesID()!}
+          seasons={ownedSeasons.error ? [] : (ownedSeasons() ?? [])}
+          loading={ownedSeasons.loading}
+        />
       </Show>
       {/* Claude 2026-09-22: Library children (quality/seasons/files/tags) follow
           poster + Discover quality/seasons so the info screen stays top-down.

@@ -862,6 +862,32 @@ describe("Library — per-season monitoring (Series only)", () => {
     ).toBeInTheDocument();
   };
 
+  it("plays the first playable episode from the owned series popup", async () => {
+    const playableSeasons: SeasonState[] = [
+      {
+        seasonNumber: 1,
+        episodeCount: 1,
+        missingCount: 0,
+        monitored: true,
+        episodes: [
+          {
+            id: 11,
+            episodeNumber: 1,
+            title: "Pilot",
+            hasFile: true,
+            videoUrl: "/api/modes/series/tracked/77/video?episodeId=11",
+          },
+        ],
+      },
+    ];
+    stubFetch(makeHandler([], { series: [breakingBad], seasons: playableSeasons }));
+    await openSeriesDetail();
+    expect(await screen.findByText("Play Show →")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Play S01E01 · Pilot" }),
+    ).toBeInTheDocument();
+  });
+
   it("lists each season with its counts and monitored state", async () => {
     stubFetch(makeHandler([], { series: [breakingBad], seasons }));
     await openSeriesDetail();
@@ -869,6 +895,7 @@ describe("Library — per-season monitoring (Series only)", () => {
     expect(await screen.findByLabelText("Monitor all seasons")).toBeInTheDocument();
     expect(screen.queryByLabelText("Monitor Season 1")).toBeNull();
     expect(screen.queryByText("Play Show →")).toBeNull();
+    expect(screen.getByText("Episodes")).toBeInTheDocument();
     await expandSeasonList();
 
     expect(await screen.findByLabelText("Monitor Season 1")).toBeInTheDocument();
@@ -998,15 +1025,17 @@ describe("Library — per-season monitoring (Series only)", () => {
     expect(put.url).toBe("/api/modes/series/library/77/seasons/0/monitored");
     expect(put.body).toEqual({ monitored: true });
 
-    // The panel re-reads rather than flipping a local copy: un-monitoring also
-    // cancels queued retries server-side, so the list is the only truth.
+    // The monitor panel re-reads rather than flipping a local copy: un-monitoring
+    // also cancels queued retries server-side, so the list is the only truth.
+    // DetailPopup also GETs .../seasons once for Play Show / episode rows, so
+    // the count is 3 (popup + panel + panel refetch), not 2.
     await waitFor(() =>
       expect(switchOf("Monitor Specials").getAttribute("aria-checked")).toBe(
         "true",
       ),
     );
     expect(calls.filter((c) => c.method === "GET" && c.url.includes("/seasons")))
-      .toHaveLength(2);
+      .toHaveLength(3);
   });
 
   it("the all-seasons toggle PUTs the bulk route once, not one call per season", async () => {

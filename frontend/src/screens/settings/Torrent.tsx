@@ -46,12 +46,17 @@ import {
 import { fetchUsenetAutoGrabEnabled } from "../../api/usenet";
 import { fetchAutoGrabSlots, putAutoGrabSlots } from "../../api/autograbSlots";
 import { FolderPicker } from "../../components/FolderPicker";
-import { ErrorText, Muted, inputClass, labelClass } from "../../components/ui";
+import {
+  Button,
+  ErrorText,
+  Muted,
+  inputClass,
+  labelClass,
+} from "../../components/ui";
 import {
   AutoGrabSlotFields,
   Card,
   SaveStatus,
-  SectionSave,
   type SectionSaveOutcome,
   autoGrabSlotsValid,
   useSaveStatus,
@@ -68,12 +73,14 @@ const LISTEN_PORT_MAX = 65535;
 // Seed-duration units. The wire value is minutes; these are display only.
 const DURATION_UNITS = { hours: 60, days: 1440 };
 
+// Claude 2026-09-24: each Torrent card saves itself; no page-level SectionSave.
+// Reason: Settings screens are immediate-apply / per-card Save.
+// Troubleshooting: one Save for both torrent cards → leftover wrapper.
+// Review if: engine + auto-grab slots need a single commit again.
 export const TorrentSection: Component = () => (
   <div>
-    <SectionSave>
-      <TorrentSettingsCard />
-      <TorrentAutoGrabSlotsCard />
-    </SectionSave>
+    <TorrentSettingsCard />
+    <TorrentAutoGrabSlotsCard />
   </div>
 );
 
@@ -289,10 +296,7 @@ const TorrentSettingsCard: Component = () => {
     }
   };
 
-  // Registered with the enclosing SectionSave so the page's one Save button
-  // drives this card — TorrentSection always provides one, so the card renders
-  // no Save button of its own, only the shared inline status line.
-  useSectionSaveItem({
+  const batched = useSectionSaveItem({
     id: "torrent-config",
     label: "torrent settings",
     dirty,
@@ -526,7 +530,16 @@ const TorrentSettingsCard: Component = () => {
           {applyNote()!.text}
         </p>
       </Show>
-      <div class="mt-3">
+      <div class="mt-3 flex items-center gap-2">
+        <Show when={!batched()}>
+          <Button
+            variant="primary"
+            disabled={!dirty() || !valid()}
+            onClick={() => void save().catch(() => {})}
+          >
+            Save
+          </Button>
+        </Show>
         <SaveStatus text={status.status().text} error={status.status().error} />
       </div>
     </Card>
@@ -566,7 +579,7 @@ const TorrentAutoGrabSlotsCard: Component = () => {
     }
   };
 
-  useSectionSaveItem({
+  const batched = useSectionSaveItem({
     id: "torrent-autograb-slots",
     label: "torrent auto-grab slots",
     dirty,
@@ -599,7 +612,18 @@ const TorrentAutoGrabSlotsCard: Component = () => {
           Couldn't load auto-grab slots: {loadError()?.message}
         </ErrorText>
       </Show>
-      <div class="mt-3">
+      <div class="mt-3 flex items-center gap-2">
+        <Show when={!batched()}>
+          <Button
+            variant="primary"
+            disabled={
+              !dirty() || !autoGrabSlotsValid(perCycle(), perSeries(), 0)
+            }
+            onClick={() => void save().catch(() => {})}
+          >
+            Save
+          </Button>
+        </Show>
         <SaveStatus text={status.status().text} error={status.status().error} />
       </div>
     </Card>

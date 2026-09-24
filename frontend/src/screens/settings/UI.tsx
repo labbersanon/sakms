@@ -6,13 +6,9 @@
 // relocated here unchanged — this tab only reparents them under one nav home.
 //
 // The inner Mainstream/Adult switch is a PLAIN ScreenTabBar, NOT ScreenTabs/
-// useScreenTabs. The app shell has a single global tab-bar slot, already held by
-// Settings' own SECTION_TABS. ScreenTabs registers a tab set with that slot, so
-// using it here would overwrite Settings' section tabs the moment this tab
-// mounts — a real, visible navigation bug, not a style choice. ScreenTabBar
-// renders inline and never touches the shell registration, so it stays scoped
-// to this subsection — the same solution ModeSelector uses for the Library/
-// Advanced tabs' inner Movies/Series/Adult switch.
+// useScreenTabs. Settings no longer registers a shell tab set (sidebar
+// children own navigation), but ScreenTabs would still claim the shell slot.
+// ScreenTabBar stays inline.
 
 import { type Component, createSignal, Match, Show, Switch } from "solid-js";
 import { ScreenTabBar, useAdultEnabled, type TabDef } from "../../components/ui";
@@ -20,7 +16,6 @@ import { SliderAdminSection } from "../SliderAdmin";
 import { AdultRowAdminSection } from "../AdultRowAdmin";
 import { RssFeedAdminSection } from "./RssFeedAdmin";
 import { TraktConnectionSection } from "./Trakt";
-import { SectionSave } from "./shared";
 
 const DISCOVER_TABS: TabDef[] = [
   { id: "mainstream", label: "Mainstream" },
@@ -63,17 +58,9 @@ export const UISection: Component = () => {
       {/* Trakt drives a Discover row, so it lives with the other Discover
           controls rather than in a connections list. It sits OUTSIDE the
           Mainstream/Adult sub-tab switch because the Watchlist row is
-          Mainstream-and-Adult-independent, and it must stay wrapped in its own
-          SectionSave: useSectionSaveItem returns false when it finds no
-          enclosing context, which would silently drop Trakt out of batched save
-          and pop its own "Save credentials" button back. UISection itself has no
-          SectionSave to inherit, so this wrapper is what keeps the relocation
-          functionally unchanged. */}
-      <div>
-        <SectionSave>
-          <TraktConnectionSection />
-        </SectionSave>
-      </div>
+          Mainstream-and-Adult-independent. Unbatched: Trakt renders its own
+          Save credentials button. */}
+      <TraktConnectionSection />
     </div>
   );
 };

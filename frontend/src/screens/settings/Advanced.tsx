@@ -41,7 +41,6 @@ import {
   Card,
   MODE_LABELS,
   SaveStatus,
-  SectionSave,
   useSaveStatus,
   useSectionSaveItem,
 } from "./shared";
@@ -494,7 +493,6 @@ export const AdvancedSection: Component<{ mode: () => Mode }> = (props) => {
   return (
     <>
       <Card title={`Advanced Settings (${MODE_LABELS[props.mode()]})`}>
-        <SectionSave>
         <NumberSetting
           id="phash-threshold"
           label="Dedup phash similarity threshold (0–256)"
@@ -535,7 +533,6 @@ export const AdvancedSection: Component<{ mode: () => Mode }> = (props) => {
         <Show when={props.mode() === "adult" && adultEnabled()}>
           <IdentifyEnabledSetting mode={props.mode} />
         </Show>
-        </SectionSave>
         <Show when={props.mode() !== "adult"}>
           <RenameGiveBackMainstreamSetting />
           <TMDBSessionSetting />

@@ -63,25 +63,22 @@ import {
   AutoGrabSlotFields,
   Card,
   SaveStatus,
-  SectionSave,
   autoGrabSlotsValid,
   useSaveStatus,
   useSectionSaveItem,
 } from "./shared";
 
-// One SectionSave wraps BOTH cards, so the page has a single Save button that
-// commits every dirty subscription row and the auto-grab toggle together (each
-// child still fires its OWN request — SectionSave batches the trigger, never
-// the payload). Add and Delete stay immediate, per-row actions.
+// Claude 2026-09-24: each Usenet card saves itself; no page-level SectionSave.
+// Reason: Settings screens are immediate-apply / per-card Save.
+// Troubleshooting: one Save for the whole Download page → leftover wrapper.
+// Review if: subscriptions + auto-grab need a single commit again.
 export const UsenetSection: Component = () => (
   <div>
-    <SectionSave>
-      <SubscriptionsCard />
-      <DownloadsCard />
-      <ResumeCard />
-      <AutoGrabCard />
-      <NativeSearchCard />
-    </SectionSave>
+    <SubscriptionsCard />
+    <DownloadsCard />
+    <ResumeCard />
+    <AutoGrabCard />
+    <NativeSearchCard />
   </div>
 );
 

@@ -1,6 +1,5 @@
 // API Connections — the global, mode-independent service connections, rendered
-// under Settings -> Advanced (above the mode selector, since none of these vary
-// by mode).
+// on the Settings → Connections screen.
 //
 // Named "API Connections", NOT "API": an APIAccessSection already exists on the
 // Auth tab for the break-glass X-Api-Key, and two things called "API" in

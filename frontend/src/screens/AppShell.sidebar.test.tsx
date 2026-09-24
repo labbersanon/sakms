@@ -26,7 +26,22 @@ const NAV_LABELS = [
 
 const ORGANIZE_CHILDREN = ["Rename", "Clean-up", "Dedup", "Browse"];
 const QUEUE_CHILDREN = ["Downloads", "Requests", "Calendar"];
+const SETTINGS_CHILDREN = [
+  "Roots",
+  "Metadata",
+  "Quality",
+  "Organize scans",
+  "Download",
+  "Discover UI",
+  "AI",
+  "Auth",
+  "Notifications",
+  "Nodes",
+  "Connections",
+  "Global",
+];
 const MEDIA_CHILDREN = ["Mainstream", "Adult"];
+const GROUP_LABELS = ["Discover", "Library", "Queue", "Organize", "Settings"];
 
 // renderSidebar mounts the Sidebar inside a Router (its <A> links need router
 // context) with its collapsed state owned by the persisted-bool helper — the
@@ -64,11 +79,15 @@ describe("Sidebar", () => {
     for (const label of QUEUE_CHILDREN) {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
+    for (const label of SETTINGS_CHILDREN) {
+      expect(screen.getByText(label)).toBeInTheDocument();
+    }
     for (const label of MEDIA_CHILDREN) {
       expect(screen.getAllByText(label)).toHaveLength(2);
     }
-    // 7 nav icons + 1 sidebar-collapse chevron + 4 group chevrons (Discover, Library, Queue, Organize).
-    expect(container.querySelectorAll("svg").length).toBe(12);
+    // 7 nav icons + 1 sidebar-collapse chevron + 5 group chevrons
+    // (Discover, Library, Queue, Organize, Settings).
+    expect(container.querySelectorAll("svg").length).toBe(13);
   });
 
   it("collapse toggle hides labels but keeps icons", () => {
@@ -76,7 +95,7 @@ describe("Sidebar", () => {
     fireEvent.click(screen.getByLabelText("Collapse sidebar"));
 
     for (const label of NAV_LABELS) {
-      if (label === "Discover" || label === "Library" || label === "Queue" || label === "Organize") {
+      if (GROUP_LABELS.includes(label)) {
         expect(screen.getByLabelText(label)).toBeInTheDocument();
         expect(screen.queryByText(label)).not.toBeInTheDocument();
         continue;
@@ -89,12 +108,15 @@ describe("Sidebar", () => {
     for (const label of QUEUE_CHILDREN) {
       expect(screen.queryByText(label)).not.toBeInTheDocument();
     }
+    for (const label of SETTINGS_CHILDREN) {
+      expect(screen.queryByText(label)).not.toBeInTheDocument();
+    }
     for (const label of MEDIA_CHILDREN) {
       expect(screen.queryByText(label)).not.toBeInTheDocument();
     }
     expect(container.querySelectorAll("svg").length).toBe(8);
     for (const label of NAV_LABELS) {
-      if (label === "Discover" || label === "Library" || label === "Queue" || label === "Organize") continue;
+      if (GROUP_LABELS.includes(label)) continue;
       expect(container.querySelector(`a[title="${label}"]`)).toBeTruthy();
     }
   });
@@ -112,6 +134,9 @@ describe("Sidebar", () => {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
     for (const label of QUEUE_CHILDREN) {
+      expect(screen.getByText(label)).toBeInTheDocument();
+    }
+    for (const label of SETTINGS_CHILDREN) {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
     for (const label of MEDIA_CHILDREN) {
@@ -147,6 +172,18 @@ describe("Sidebar", () => {
       screen.getByRole("menu", { name: "Organize workflows" }),
     ).toBeInTheDocument();
     for (const label of ORGANIZE_CHILDREN) {
+      expect(screen.getByRole("menuitem", { name: label })).toBeInTheDocument();
+    }
+  });
+
+  it("icon-collapsed Settings opens a flyout with screen links", () => {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, "true");
+    renderSidebar();
+    fireEvent.click(screen.getByLabelText("Settings"));
+    expect(
+      screen.getByRole("menu", { name: "Settings screens" }),
+    ).toBeInTheDocument();
+    for (const label of SETTINGS_CHILDREN) {
       expect(screen.getByRole("menuitem", { name: label })).toBeInTheDocument();
     }
   });

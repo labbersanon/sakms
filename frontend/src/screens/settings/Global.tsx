@@ -1010,9 +1010,15 @@ const GrabPreferredLanguagesSection: Component = () => {
   );
 };
 
+// Claude 2026-09-24: API connections left Global for the Connections screen.
+// Reason: Settings sidebar split Global vs Connections; Prowlarr/Stash/players
+//   are not mode-independent "global knobs" the way Adult mode / watch folders are.
+// Troubleshooting: Connections screen empty → this export, not GlobalSection.
+// Review if: a connection type moves back next to a library mode.
+export const ConnectionsSection: Component = () => <APISection />;
+
 export const GlobalSection: Component = () => (
   <>
-    <APISection />
     <AdultModeSection />
     <SectionLockSection />
     <DownloadRateLimitSection />

@@ -16,6 +16,7 @@ import {
   within,
 } from "@solidjs/testing-library";
 import { createResource, createSignal, Show } from "solid-js";
+import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
 import { buildConnectionUpsertBody, fetchAdultModeEnabled } from "../api/settings";
 import { buildTraktCredentialsBody } from "../api/trakt";
 import {
@@ -31,6 +32,10 @@ import {
   secondsToUnitAmount,
 } from "./settings/Advanced";
 import { SectionSave } from "./settings/shared";
+import {
+  type SettingsTabId,
+  settingsHref,
+} from "./settingsTabs";
 import { jsonResponse, noContent } from "../testing/http";
 
 
@@ -265,7 +270,29 @@ const stubFetch = (override?: Override) => {
   return calls;
 };
 
-const renderSettings = () => render(() => <Settings onReboot={() => {}} />);
+// Claude 2026-09-24: Settings reads ?tab= via useSearchParams, so every
+// case mounts inside MemoryRouter — same harness as Organize/Queue.
+// Reason: sidebar children replaced the in-page section tab bar.
+// Troubleshooting: useSearchParams throws outside a Router.
+// Review if: Settings moves to nested /settings/:tab paths.
+let settingsHistory: ReturnType<typeof createMemoryHistory>;
+
+const renderSettings = (url = "/settings") => {
+  settingsHistory = createMemoryHistory();
+  settingsHistory.set({ value: url, replace: true });
+  return render(() => (
+    <MemoryRouter history={settingsHistory}>
+      <Route
+        path="/settings"
+        component={() => <Settings onReboot={() => {}} />}
+      />
+      <Route
+        path="*/*"
+        component={() => <Settings onReboot={() => {}} />}
+      />
+    </MemoryRouter>
+  ));
+};
 
 // renderSettingsWithAdultMode mirrors AppShell's real ShellRoot wiring exactly
 // (createResource(fetchAdultModeEnabled) + AdultModeContext.Provider), rather
@@ -276,7 +303,9 @@ const renderSettings = () => render(() => <Settings onReboot={() => {}} />);
 // Advanced, UI tab) reactively sees the new value. Requires
 // /api/settings/adult-mode-enabled to be answered by defaultGet or an
 // override (defaultGet answers it with enabled:true by default, above).
-const renderSettingsWithAdultMode = () => {
+const renderSettingsWithAdultMode = (url = "/settings") => {
+  settingsHistory = createMemoryHistory();
+  settingsHistory.set({ value: url, replace: true });
   const Harness = () => {
     const [enabled, { refetch }] = createResource(fetchAdultModeEnabled);
     return (
@@ -287,58 +316,55 @@ const renderSettingsWithAdultMode = () => {
       </AdultModeContext.Provider>
     );
   };
-  return render(() => <Harness />);
+  return render(() => (
+    <MemoryRouter history={settingsHistory}>
+      <Route path="/settings" component={Harness} />
+      <Route path="*/*" component={Harness} />
+    </MemoryRouter>
+  ));
 };
 
-// goToSection clicks a top-level section tab. AI is a real SECTION_TABS entry
-// again (it was briefly folded in as a Connections sub-tab); there is no
-// Connections tab any more at all — its rows were redistributed to the section
-// each one belongs to. Buttons are queried by role+name so they never collide
-// with a Card's <legend> of the same text (legends aren't buttons) nor with the
-// Movies/Series/Adult mode buttons.
-// Scoped to the section tab bar itself, not the whole screen: several section
-// names also occur as button labels inside a section's own body — most sharply
-// "Usenet", which is both a tab and one of the quality-prefs protocol pills on
-// the (default) Library tab. "Auth" is unique screen-wide, so its tab button's
-// parent is a reliable handle on the bar.
-const sectionTabBar = () =>
-  within(screen.getByRole("button", { name: "Auth" }).parentElement!);
-const goToSection = (
-  name:
-    | "Auth"
-    | "AI"
-    | "Library"
-    | "Download"
-    | "Advanced"
-    | "UI"
-    | "Organize",
-) => fireEvent.click(sectionTabBar().getByRole("button", { name }));
+// SECTION_ALIAS maps the old in-page tab names (and the new screen labels)
+// onto ?tab= ids. Tests keep calling goToSection("Library") etc.; the
+// helper lands on the finer screen that owns that fixture.
+const SECTION_ALIAS: Record<string, SettingsTabId> = {
+  Auth: "auth",
+  AI: "ai",
+  Library: "roots",
+  Download: "download",
+  Advanced: "global",
+  UI: "discover",
+  Organize: "scans",
+  Roots: "roots",
+  Metadata: "metadata",
+  Quality: "quality",
+  Connections: "connections",
+  Global: "global",
+  "Organize scans": "scans",
+  "Discover UI": "discover",
+};
 
-// goToDownloadSubTab navigates to the Download section tab and then clicks one
-// of its inner Usenet/Torrent sub-tabs. The sub-tab bar is a plain ScreenTabBar
-// rendered in the BODY (see settings/Download.tsx), so it is deliberately NOT
-// scoped to sectionTabBar() — that scope holds only the shell-registered
-// section tabs. Usenet is the default sub-tab, so the click is a no-op for it
-// and is issued anyway, to keep every call site honest about which panel it
-// expects. Safe despite the "Usenet" collision the comment above warns about
-// (it is also a quality-prefs protocol pill): that pill is on the Library tab,
-// which is unmounted once Download is active.
-const goToDownloadSubTab = (name: "Usenet" | "Torrent") => {
+const goToSection = (name: keyof typeof SECTION_ALIAS) => {
+  const id = SECTION_ALIAS[name];
+  if (!id || !settingsHistory) {
+    throw new Error(`goToSection(${String(name)}): Settings not mounted`);
+  }
+  settingsHistory.set({ value: settingsHref(id) });
+};
+
+// goToDownloadSubTab opens Download then clicks Usenet/Torrent. Usenet is the
+// default sub-tab; the click is issued anyway so every call site names the panel.
+const goToDownloadSubTab = async (name: "Usenet" | "Torrent") => {
   goToSection("Download");
-  fireEvent.click(screen.getByRole("button", { name }));
+  fireEvent.click(await screen.findByRole("button", { name }));
 };
 
-// clickSectionSave clicks the one section-level Save button per tab. The batched-
-// save refactor consolidated the former per-row / per-card Save buttons into it.
-// Only usable on a tab that renders exactly ONE Save button (AI, Library, and
-// Download — UsenetSection wraps BOTH its cards in one SectionSave, and every
-// child there is batched, so neither the subscription rows nor the auto-grab
-// toggle renders a Save of its own. Download shows exactly one because its
-// Usenet/Torrent sub-tabs are a <Switch>: only the active panel, hence only its
-// own SectionSave, is ever mounted). The Advanced tab has several, so its connection
-// rows use clickAPISectionSave / clickMediaPlayersSave below.
-const clickSectionSave = () =>
-  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+// clickCardSave clicks the Save inside the named card. Settings screens no
+// longer have a tab-level batched Save — each card/row owns its button.
+const clickCardSave = (title: string | RegExp) => {
+  const card = screen.getByText(title).closest("div")!;
+  fireEvent.click(within(card).getByRole("button", { name: "Save" }));
+};
 
 // clickAPISectionSave scopes the click to the "API Connections" card's own
 // SectionSave button. Prowlarr/Stash live on the Advanced tab now, which also
@@ -359,20 +385,17 @@ const clickAPISectionSave = () => {
 const clickTraktSave = () => {
   const traktCard = screen.getByText("Trakt (Watchlist)").closest("div")!;
   fireEvent.click(
-    within(traktCard.parentElement!).getByRole("button", { name: "Save" }),
+    within(traktCard).getByRole("button", { name: "Save credentials" }),
   );
 };
 
-// goToAPIConnections opens the Advanced tab, where the Prowlarr/Stash singleton
-// connection rows now live (Advanced -> API Connections, rendered above the mode
-// selector because they are global, not per-mode).
-const goToAPIConnections = () => goToSection("Advanced");
+// goToAPIConnections opens the Connections screen (Prowlarr/Stash/players).
+const goToAPIConnections = () => goToSection("Connections");
 
-// goToLibraryConnections opens the Library tab's metadata-source rows for a
-// mode: TMDB under Movies, TVDB under Series, StashDB/FansDB/TPDB under Adult.
-// Movies is the default mode, so it needs no second click.
+// goToLibraryConnections opens Metadata's per-mode source rows: TMDB under
+// Movies, TVDB under Series, StashDB/FansDB/TPDB under Adult.
 const goToLibraryConnections = async (mode?: "Series" | "Adult") => {
-  goToSection("Library");
+  goToSection("Metadata");
   // The Adult mode button only exists once the adult-mode resource resolves, so
   // this waits rather than assuming it is on screen at first paint.
   if (mode) fireEvent.click(await screen.findByRole("button", { name: mode }));
@@ -479,6 +502,7 @@ const registryModePuts = (calls: Call[]) =>
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  localStorage.clear();
 });
 
 // --- The pure three-state gate (exhaustive) --------------------------------
@@ -683,10 +707,11 @@ describe("Connections table — untouched key is never sent (Acceptance Criterio
   it("Saves a fixed-URL row (tmdb) with no url — no client-side 'url is required' throw", async () => {
     const calls = stubFetch();
     renderSettings();
+    await goToLibraryConnections();
     // tmdb has no URL input; the operator only sets the API key.
     const keyInput = await screen.findByLabelText("tmdb API key");
     fireEvent.input(keyInput, { target: { value: "tmdb-key" } });
-    clickSectionSave();
+    clickCardSave(/^Metadata sources/);
 
     // The Save must reach the network (not throw "url is required" first).
     await waitFor(() =>
@@ -1353,9 +1378,7 @@ describe("AI provider/model", () => {
       expect(within(modelSelect).getByText("qwen2.5vl:7b")).toBeInTheDocument(),
     );
     fireEvent.change(modelSelect, { target: { value: "qwen2.5vl:7b" } });
-    // The AI tab's one section Save button commits the provider/model form
-    // (provider + model + fallback toggle) in a single click.
-    clickSectionSave();
+    clickCardSave("AI Fallback (optional)");
     await waitFor(() =>
       expect(
         calls.some(
@@ -1503,7 +1526,7 @@ describe("Per-mode panels", () => {
     )) as HTMLInputElement;
     await waitFor(() => expect(input.value).toBe("/media/movies"));
     fireEvent.input(input, { target: { value: "/media/films" } });
-    clickSectionSave();
+    clickCardSave(/^Movies library/);
     await waitFor(() =>
       expect(
         calls.some(
@@ -1557,24 +1580,23 @@ describe("Per-mode panels", () => {
     );
   });
 
-  it("Adult keeps root folder AND quality prefs but hides naming/kids", async () => {
+  it("Adult keeps the root folder but hides naming/kids; quality lives on Quality", async () => {
     stubFetch();
     renderSettings();
     goToSection("Library");
-    // Movies (default mode) shows all four per-mode panels on the Library tab...
     await screen.findByLabelText("Library root folder");
     expect(screen.getByLabelText("Kids root folder path")).toBeInTheDocument();
-    expect(screen.getByText(/Search quality preferences/)).toBeInTheDocument();
-    // ...and switching to Adult keeps the root-folder field (Adult has its own
-    // free-typed root folder, backend-wired) AND quality prefs (the Discover
-    // popup's availability grid applies to Adult too now), while hiding
-    // naming/kids (Adult has a fixed naming scheme, no kids classification).
+    expect(screen.queryByText(/Search quality preferences/)).toBeNull();
     fireEvent.click(screen.getByText("Adult"));
     await screen.findByText(/no naming preferences/);
     expect(screen.getByLabelText("Library root folder")).toBeInTheDocument();
     expect(screen.queryByLabelText("Kids root folder path")).toBeNull();
-    expect(screen.getByText(/Search quality preferences/)).toBeInTheDocument();
     expect(screen.queryByText(/File\/folder naming/)).toBeNull();
+
+    goToSection("Quality");
+    expect(
+      await screen.findByText(/Search quality preferences/),
+    ).toBeInTheDocument();
   });
 });
 
@@ -1862,21 +1884,19 @@ describe("DurationSetting — select-all-on-focus", () => {
 // fields (phash-threshold, match-confidence-threshold, identify-enabled), so
 // several "Save" buttons co-render on this tab — scoping to the Advanced
 // Settings card is what keeps this click unambiguous.
-const clickAdvancedSectionSave = () => {
-  const advancedCard = screen.getByText(/^Advanced Settings/).closest("div")!;
-  fireEvent.click(within(advancedCard).getByRole("button", { name: "Save" }));
-};
-
 // clickStandaloneSave scopes a click to a single standalone-save field's own
-// Save button — the same scoped-lookup pattern the pre-existing
-// watch-folders-poll-interval test uses (`.closest("div.mb-3")` on the input,
-// then find "Save" within that scope), needed now that recheck-interval is a
-// standalone (non-SectionSave-batched) field on the Global tab with its own
-// always-visible Save button, alongside Entity Database's and Watch Folders'
-// own standalone Save buttons on the same tab.
+// Save button — `.closest("div.mb-3")` on the input, then find "Save" within
+// that scope.
 const clickStandaloneSave = (input: HTMLElement) => {
   const container = input.closest("div.mb-3") as HTMLElement;
   fireEvent.click(within(container).getByRole("button", { name: "Save" }));
+};
+
+const clickAdvancedSectionSave = () => {
+  const input = screen.getByLabelText(
+    "Dedup phash similarity threshold (0–256)",
+  );
+  clickStandaloneSave(input);
 };
 
 // Claude 2026-08-03: added refreshNowButtonIn (discover-scheduled-refresh
@@ -2425,6 +2445,7 @@ describe("Adult mode disable switch", () => {
     goToAPIConnections();
     expect(await screen.findByText("stash")).toBeInTheDocument();
 
+    goToSection("Global");
     await openDisableDialog();
     fireEvent.click(screen.getByRole("button", { name: "Disable" }));
     await waitFor(() =>
@@ -2434,15 +2455,14 @@ describe("Adult mode disable switch", () => {
       ).toBe(false),
     );
 
-    // stash disappears from the very tab the switch was flipped on — live, with
-    // no remount and no page reload. prowlarr, which is not Adult-only, stays.
+    goToAPIConnections();
     await waitFor(() => expect(screen.queryByText("stash")).toBeNull());
-    expect(screen.getByText("prowlarr")).toBeInTheDocument();
+    expect(await screen.findByText("prowlarr")).toBeInTheDocument();
 
     // The other three are unreachable rather than merely hidden: Library's mode
     // selector drops the Adult mode entirely, so there is no longer a route to
     // the card that holds them. Non-Adult-exclusive rows stay.
-    goToSection("Library");
+    goToSection("Metadata");
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Adult" })).toBeNull(),
     );
@@ -2491,7 +2511,7 @@ describe("Adult mode disable switch", () => {
   it("Advanced's Adult-only IdentifyEnabledSetting never renders when disabled", async () => {
     stubFetch(adultModeFetch(false).override);
     renderSettingsWithAdultMode();
-    goToSection("Advanced");
+    goToSection("Metadata");
     await screen.findByText(/^Advanced Settings/);
     expect(screen.queryByText("Adult")).toBeNull();
     expect(
@@ -2515,18 +2535,14 @@ describe("Advanced Settings", () => {
   it("phash-threshold above 256 disables the section Save button (blocked before clicking, not after)", async () => {
     const calls = stubFetch();
     renderSettings();
-    goToSection("Advanced");
+    goToSection("Metadata");
     const input = (await screen.findByLabelText(
       "Dedup phash similarity threshold (0–256)",
     )) as HTMLInputElement;
-    // Scoped to the Advanced Settings card's own SectionSave button — the
-    // Watch Folders card below also renders its own (always-visible,
-    // non-disabling) "Save" button, so a bare "Save" query is no longer
-    // unique on this tab.
-    const advancedCard = screen.getByText(/^Advanced Settings/).closest("div")!;
-    const saveButton = within(advancedCard).getByRole("button", {
-      name: "Save",
-    }) as HTMLButtonElement;
+    const saveButton = within(input.closest("div.mb-3") as HTMLElement).getByRole(
+      "button",
+      { name: "Save" },
+    ) as HTMLButtonElement;
     fireEvent.input(input, { target: { value: "300" } });
     await waitFor(() => expect(saveButton.disabled).toBe(true));
     // A disabled button ignores clicks at the DOM level — confirms this
@@ -2557,7 +2573,7 @@ describe("Advanced Settings", () => {
       return undefined;
     });
     renderSettings();
-    goToSection("Advanced");
+    goToSection("Metadata");
     const input = (await screen.findByLabelText(
       "Dedup phash similarity threshold (0–256)",
     )) as HTMLInputElement;
@@ -2582,7 +2598,7 @@ describe("Advanced Settings", () => {
   it("match-confidence-threshold shows for Movies but NOT Adult", async () => {
     stubFetch();
     renderSettings();
-    goToSection("Advanced");
+    goToSection("Metadata");
     expect(
       await screen.findByLabelText("Rename match candidate count (1–20)"),
     ).toBeInTheDocument();
@@ -2601,7 +2617,7 @@ describe("Advanced Settings", () => {
       return undefined;
     });
     renderSettings();
-    goToSection("Advanced");
+    goToSection("Metadata");
     // Not present for Movies (default mode) — wait for a Movies-only Advanced
     // field to confirm the tab mounted before asserting the toggle's absence.
     await screen.findByLabelText("Rename match candidate count (1–20)");
@@ -2613,14 +2629,7 @@ describe("Advanced Settings", () => {
       "Adult phash-first identification enabled",
     )) as HTMLInputElement;
     fireEvent.change(toggle, { target: { checked: false } });
-    // The Advanced tab leads with the Global cards (Adult Mode, Monitored
-    // Title Refresh, Entity Database, Watch Folders — each with its own
-    // standalone Save button) before the per-mode SectionSave-batched fields
-    // (phash-threshold, match-confidence-threshold, identify-enabled), so a
-    // bare "Save" role query is NOT unique on this tab — scope to the Advanced
-    // Settings card, same as clickAdvancedSectionSave.
-    const advancedCard = screen.getByText(/^Advanced Settings/).closest("div")!;
-    fireEvent.click(within(advancedCard).getByRole("button", { name: "Save" }));
+    clickStandaloneSave(toggle);
     await waitFor(() =>
       expect(
         calls.some(
@@ -2649,14 +2658,14 @@ describe("Advanced Settings", () => {
       return undefined;
     });
     renderSettings();
-    goToSection("Advanced");
+    goToSection("Metadata");
     const input = (await screen.findByLabelText(
       "Dedup phash similarity threshold (0–256)",
     )) as HTMLInputElement;
-    const advancedCard = screen.getByText(/^Advanced Settings/).closest("div")!;
-    const saveButton = within(advancedCard).getByRole("button", {
-      name: "Save",
-    }) as HTMLButtonElement;
+    const saveButton = within(input.closest("div.mb-3") as HTMLElement).getByRole(
+      "button",
+      { name: "Save" },
+    ) as HTMLButtonElement;
     fireEvent.input(input, { target: { value: "12" } });
     expect(input.value).toBe("12");
     await waitFor(() => expect(saveButton.disabled).toBe(false));
@@ -2678,16 +2687,16 @@ describe("Advanced Settings", () => {
       return undefined;
     });
     renderSettings();
-    goToSection("Advanced");
+    goToSection("Metadata");
     await screen.findByLabelText("Rename match candidate count (1–20)");
     fireEvent.click(screen.getByText("Adult"));
     const toggle = (await screen.findByLabelText(
       "Adult phash-first identification enabled",
     )) as HTMLInputElement;
-    const advancedCard = screen.getByText(/^Advanced Settings/).closest("div")!;
-    const saveButton = within(advancedCard).getByRole("button", {
-      name: "Save",
-    }) as HTMLButtonElement;
+    const saveButton = within(toggle.closest("div.mb-3") as HTMLElement).getByRole(
+      "button",
+      { name: "Save" },
+    ) as HTMLButtonElement;
     fireEvent.change(toggle, { target: { checked: false } });
     expect(toggle.checked).toBe(false);
     await waitFor(() => expect(saveButton.disabled).toBe(false));
@@ -2730,44 +2739,26 @@ describe("DurationSetting — resync race", () => {
 
 // --- Section tabs (layout: one section on screen at a time) ----------------
 
-describe("Section tabs", () => {
-  it("defaults to Library and hides every other section", async () => {
+describe("Settings screens", () => {
+  it("defaults to Roots and hides every other screen", async () => {
     stubFetch();
     renderSettings();
-    // Library is the default tab now that Connections is gone: its root-folder
-    // field is on screen at mount, alongside the metadata-source connection
-    // rows that moved into it.
     expect(
       await screen.findByLabelText("Library root folder"),
     ).toBeInTheDocument();
-    expect(await screen.findByLabelText("tmdb API key")).toBeInTheDocument();
-    // The signature control of each other section is absent.
-    expect(screen.queryByText("Switch to this mode")).toBeNull(); // Auth
-    expect(screen.queryByPlaceholderText(/qwen2.5vl/)).toBeNull(); // AI
-    expect(screen.queryByLabelText("prowlarr URL")).toBeNull(); // Advanced -> API
-    expect(screen.queryByText("Subscriptions")).toBeNull(); // Usenet
+    expect(screen.queryByLabelText("tmdb API key")).toBeNull();
+    expect(screen.queryByText("Switch to this mode")).toBeNull();
+    expect(screen.queryByPlaceholderText(/qwen2.5vl/)).toBeNull();
+    expect(screen.queryByLabelText("prowlarr URL")).toBeNull();
+    expect(screen.queryByText("Subscriptions")).toBeNull();
     expect(
       screen.queryByLabelText("Monitored title refresh interval — global"),
-    ).toBeNull(); // Global
+    ).toBeNull();
   });
 
-  it("has no Connections tab at all", async () => {
+  it("Download is its own screen, with Usenet and Torrent as sub-tabs", async () => {
     stubFetch();
     renderSettings();
-    await screen.findByLabelText("Library root folder");
-    expect(screen.queryByRole("button", { name: "Connections" })).toBeNull();
-  });
-
-  it("Download is its own top-level tab, with Usenet and Torrent as sub-tabs", async () => {
-    stubFetch();
-    renderSettings();
-    // Usenet and Torrent are no longer top-level section tabs; Download took
-    // the slot Usenet held and Torrent's slot is gone entirely.
-    expect(sectionTabBar().queryByRole("button", { name: "Usenet" })).toBeNull();
-    expect(sectionTabBar().queryByRole("button", { name: "Torrent" })).toBeNull();
-    expect(sectionTabBar().getByRole("button", { name: "Download" })).toBeInTheDocument();
-
-    // Usenet is the default sub-tab, so clicking Download alone renders it.
     goToSection("Download");
     expect(await screen.findByText("Subscriptions")).toBeInTheDocument();
     expect(screen.getByText("Auto-grab")).toBeInTheDocument();
@@ -2856,12 +2847,10 @@ describe("Section tabs", () => {
     ).toBeNull();
   });
 
-  it("Advanced tab shows the Advanced panel and hides Library panels", async () => {
+  it("Metadata shows identify/phash fields and hides Roots panels", async () => {
     stubFetch();
     renderSettings();
-    goToSection("Advanced");
-    // phash-threshold is the signature per-mode Advanced field; asserting the
-    // Library root folder is absent confirms Library's panels didn't leak here.
+    goToSection("Metadata");
     expect(
       await screen.findByLabelText(
         "Dedup phash similarity threshold (0–256)",
@@ -2870,18 +2859,13 @@ describe("Section tabs", () => {
     expect(screen.queryByLabelText("Library root folder")).toBeNull();
   });
 
-  it("the selected mode persists from Library to Advanced (one shared signal, not two)", async () => {
+  it("the selected mode persists from Roots to Metadata (one shared signal)", async () => {
     stubFetch();
     renderSettings();
     goToSection("Library");
-    // Pick Adult on the Library tab — its naming/kids panels vanish there
-    // (root folder and quality prefs stay), confirming Adult is the active
-    // mode.
     fireEvent.click(await screen.findByText("Adult"));
     await screen.findByText(/no naming preferences/);
-    // Cross to Advanced: Adult must still be the active mode, so the Adult-only
-    // identify toggle shows and the Movies/Series-only confidence field doesn't.
-    goToSection("Advanced");
+    goToSection("Metadata");
     expect(
       await screen.findByLabelText("Adult phash-first identification enabled"),
     ).toBeInTheDocument();
@@ -2891,27 +2875,17 @@ describe("Section tabs", () => {
   });
 });
 
-// --- inner tab bars must not steal the shell's tab slot --------------------
+// --- Settings must not steal the shell tab slot ----------------------------
 //
-// The regression this guards: Settings' own SECTION_TABS register with the app
-// shell's single global tab slot (ScreenTabsContext). Settings has TWO
-// second-level tab bars — the UI tab's Mainstream/Adult switch and (since
-// 2026-08-10) the Download tab's Usenet/Torrent switch. Both are deliberately a
-// plain ScreenTabBar, NOT ScreenTabs —
-// if it were ScreenTabs it would call the shell's registration setter and
-// REPLACE the section tabs with Mainstream/Adult, wiping Settings' top-level nav.
-// A bare render() can't catch this (with no shell context ScreenTabs falls back
-// to inline and never registers), so this suite mounts Settings inside a
-// ScreenTabsContext.Provider exactly the way AppShell does — rendering the ONE
-// registered tab set in the shell's slot — and asserts that slot keeps holding
-// the section tabs even after the inner sub-tab is clicked.
+// Settings navigation lives in the sidebar. Mode pills / Usenet-Torrent /
+// Discover Mainstream-Adult stay inline. A ScreenTabs registration from this
+// screen would fill the shell slot the way Organize used to before its
+// sidebar-group move.
 
-describe("second-level sub-tabs do not hijack the shell tab slot", () => {
-  // renderSettingsInShell mirrors AppShell's ShellRoot: it provides the
-  // ScreenTabsContext setter and renders whatever tab set is registered inside a
-  // testid'd container (the shell's one slot). Assertions scoped to that
-  // container see ONLY the shell-registered tabs, never the body's inline bars.
-  const renderSettingsInShell = () => {
+describe("Settings does not register shell tabs", () => {
+  const renderSettingsInShell = (url = "/settings") => {
+    settingsHistory = createMemoryHistory();
+    settingsHistory.set({ value: url, replace: true });
     const Harness = () => {
       const [reg, setReg] = createSignal<ScreenTabsRegistration | null>(null);
       return (
@@ -2932,89 +2906,34 @@ describe("second-level sub-tabs do not hijack the shell tab slot", () => {
         </ScreenTabsContext.Provider>
       );
     };
-    return render(() => <Harness />);
+    return render(() => (
+      <MemoryRouter history={settingsHistory}>
+        <Route path="/settings" component={Harness} />
+        <Route path="*/*" component={Harness} />
+      </MemoryRouter>
+    ));
   };
 
-  it("keeps the section tabs in the shell slot when the inner Mainstream/Adult sub-tab changes", async () => {
+  it("leaves the shell slot empty after Discover UI Adult click", async () => {
     stubFetch();
-    const { getByTestId } = renderSettingsInShell();
-    const shellSlot = () => within(getByTestId("shell-slot"));
-
-    // Settings registers SECTION_TABS with the shell slot at mount: the section
-    // tabs — NOT any Mainstream/Adult — are what the shell draws. Scoped to the
-    // shell slot specifically, because the body renders inner tab bars of its
-    // own (the UI tab's Mainstream/Adult bar, the Library/Advanced mode
-    // selector) whose buttons an unscoped query could pick up.
-    expect(
-      await shellSlot().findByRole("button", { name: "Download" }),
-    ).toBeInTheDocument();
-    expect(shellSlot().getByText("UI")).toBeInTheDocument();
-    expect(shellSlot().getByText("Library")).toBeInTheDocument();
-    // AI's promotion out of the old Connections nesting is a claim about the
-    // SHELL-registered tab set specifically, not just about some button being
-    // on screen — so it is asserted here rather than only in the body.
-    expect(shellSlot().getByText("AI")).toBeInTheDocument();
-    expect(shellSlot().queryByText("Connections")).toBeNull();
-    expect(shellSlot().queryByText("Mainstream")).toBeNull();
-
-    // Navigate to the UI tab via the shell-registered section tab. Its inner
-    // Mainstream/Adult bar mounts in the body, NOT the shell slot.
-    fireEvent.click(shellSlot().getByText("UI"));
+    const { queryByTestId } = renderSettingsInShell();
+    await screen.findByLabelText("Library root folder");
+    expect(queryByTestId("shell-slot")).toBeNull();
+    goToSection("UI");
     await screen.findByText("+ New slider");
-    expect(shellSlot().getByText("Library")).toBeInTheDocument();
-    expect(shellSlot().queryByText("Mainstream")).toBeNull();
-
-    // The load-bearing click: switching the INNER sub-tab must not touch the
-    // shell registration. If UISection used ScreenTabs, this click would replace
-    // the shell slot's contents with Mainstream/Adult and drop the section tabs.
     fireEvent.click(screen.getByText("Adult"));
     await screen.findByText("+ New row");
-    // Shell slot still holds the section tabs, unchanged...
-    expect(shellSlot().getByText("UI")).toBeInTheDocument();
-    expect(shellSlot().getByText("Library")).toBeInTheDocument();
-    expect(shellSlot().getByText("Download")).toBeInTheDocument();
-    // ...and never adopted the inner sub-tab labels.
-    expect(shellSlot().queryByText("Mainstream")).toBeNull();
+    expect(queryByTestId("shell-slot")).toBeNull();
   });
 
-  // The Download tab's Usenet/Torrent switch is the SECOND second-level tab bar
-  // in Settings, added 2026-08-10 when the standalone Usenet and Torrent tabs
-  // were folded into one Download tab. It is a plain ScreenTabBar for exactly
-  // the same reason UISection's is, so it needs exactly the same guard: this is
-  // the only test that would catch a future refactor swapping it for
-  // ScreenTabs, which would wipe Settings' top-level nav the moment Download
-  // mounts.
-  it("keeps the section tabs in the shell slot when the inner Usenet/Torrent sub-tab changes", async () => {
+  it("leaves the shell slot empty after Download Usenet/Torrent switch", async () => {
     stubFetch();
-    const { getByTestId } = renderSettingsInShell();
-    const shellSlot = () => within(getByTestId("shell-slot"));
-
-    // The shell slot holds Download, and never the inner sub-tab labels.
-    expect(
-      await shellSlot().findByRole("button", { name: "Download" }),
-    ).toBeInTheDocument();
-    expect(shellSlot().queryByText("Usenet")).toBeNull();
-    expect(shellSlot().queryByText("Torrent")).toBeNull();
-
-    // Navigate to Download via the shell-registered section tab. Its inner
-    // Usenet/Torrent bar mounts in the body, NOT the shell slot.
-    fireEvent.click(shellSlot().getByText("Download"));
+    const { queryByTestId } = renderSettingsInShell("/settings?tab=download");
     await screen.findByText("Subscriptions");
-    expect(shellSlot().getByText("Library")).toBeInTheDocument();
-    expect(shellSlot().queryByText("Usenet")).toBeNull();
-
-    // The load-bearing click: switching the INNER sub-tab must not touch the
-    // shell registration. Asserted against a real rendered Torrent control, not
-    // the card title, so an unresolved config fetch can't make it pass hollow.
+    expect(queryByTestId("shell-slot")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Torrent" }));
     expect(await screen.findByLabelText("Staging directory")).toBeInTheDocument();
-    // Shell slot still holds the section tabs, unchanged...
-    expect(shellSlot().getByText("Library")).toBeInTheDocument();
-    expect(shellSlot().getByText("Download")).toBeInTheDocument();
-    expect(shellSlot().getByText("UI")).toBeInTheDocument();
-    // ...and still never adopted the inner sub-tab labels.
-    expect(shellSlot().queryByText("Usenet")).toBeNull();
-    expect(shellSlot().queryByText("Torrent")).toBeNull();
+    expect(queryByTestId("shell-slot")).toBeNull();
   });
 });
 
@@ -3161,8 +3080,7 @@ describe("Usenet subscriptions — multi-subscription CRUD", () => {
       "Subscription 1 host",
     )) as HTMLInputElement;
     fireEvent.input(host1, { target: { value: "news2.eweka.nl" } });
-    // One Save button on this tab drives both cards (see clickSectionSave).
-    clickSectionSave();
+    fireEvent.click(registryRow(host1).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(registryPuts(calls).length).toBe(1));
     const put = registryPuts(calls)[0]!;
     expect(put.url).toContain("/api/service-connections/1");
@@ -3233,7 +3151,7 @@ describe("Usenet subscriptions — three-state secret semantics through the UI",
         .placeholder,
     ).toContain("6789");
     fireEvent.input(host, { target: { value: "news2.eweka.nl" } });
-    clickSectionSave();
+    fireEvent.click(registryRow(host).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(registryPuts(calls).length).toBe(1));
     expect(registryPuts(calls)[0]!.body).not.toHaveProperty("secret");
   });
@@ -3244,7 +3162,7 @@ describe("Usenet subscriptions — three-state secret semantics through the UI",
     goToDownloadSubTab("Usenet");
     const secret = await screen.findByLabelText("Subscription 1 password");
     fireEvent.input(secret, { target: { value: "rotated-pass" } });
-    clickSectionSave();
+    fireEvent.click(registryRow(secret).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(registryPuts(calls).length).toBe(1));
     expect(
       (registryPuts(calls)[0]!.body as { secret?: string }).secret,
@@ -3258,7 +3176,7 @@ describe("Usenet subscriptions — three-state secret semantics through the UI",
     const secret = await screen.findByLabelText("Subscription 1 password");
     fireEvent.input(secret, { target: { value: "x" } });
     fireEvent.input(secret, { target: { value: "" } });
-    clickSectionSave();
+    fireEvent.click(registryRow(secret).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(registryPuts(calls).length).toBe(1));
     const body = registryPuts(calls)[0]!.body as { secret?: string };
     // Present-and-empty, which is the backend's "clear it" signal — the one
@@ -3277,7 +3195,7 @@ describe("Usenet subscriptions — three-state secret semantics through the UI",
       "Subscription 1 host",
     )) as HTMLInputElement;
     fireEvent.input(host, { target: { value: "news2.eweka.nl" } });
-    clickSectionSave();
+    fireEvent.click(registryRow(host).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(registryPuts(calls).length).toBe(1));
     const body = registryPuts(calls)[0]!.body as { secret?: string };
     expect(body).toHaveProperty("secret");
@@ -3333,7 +3251,7 @@ describe("Usenet auto-grab toggle", () => {
   // fetched value once onMount's promise settles — so every caller below waits
   // on the specific state it cares about rather than reading it immediately.
   const goToUsenet = async () => {
-    goToDownloadSubTab("Usenet");
+    await goToDownloadSubTab("Usenet");
     return (await screen.findByLabelText(
       "Enable auto-grab",
     )) as HTMLInputElement;
@@ -3374,7 +3292,11 @@ describe("Usenet auto-grab toggle", () => {
     const cb = await goToUsenet();
     await waitFor(() => expect(cb.disabled).toBe(false));
     fireEvent.click(cb);
-    clickSectionSave();
+    fireEvent.click(
+      within(
+        screen.getByRole("heading", { name: "Auto-grab" }).closest("div")!,
+      ).getByRole("button", { name: "Save" }),
+    );
     await waitFor(() =>
       expect(
         calls.some(
@@ -3403,19 +3325,34 @@ describe("Usenet auto-grab toggle", () => {
     const cycle = (await screen.findByLabelText(
       "Usenet slots per cycle",
     )) as HTMLInputElement;
-    await waitFor(() => expect(cycle.value).toBe("20"));
-    fireEvent.input(cycle, { target: { value: "40" } });
-    clickSectionSave();
     await waitFor(() =>
       expect(
         calls.some(
           (c) =>
-            c.method === "PUT" &&
-            c.url.includes("/api/settings/usenet-autograb-slots") &&
-            JSON.stringify(c.body).includes('"perCycle":40'),
+            c.method === "GET" &&
+            c.url.includes("/api/settings/usenet-autograb-slots"),
         ),
       ).toBe(true),
     );
+    await new Promise((r) => setTimeout(r, 0));
+    await waitFor(() => expect(cycle.disabled).toBe(false));
+    await waitFor(() => expect(cycle.value).toBe("20"));
+    fireEvent.input(cycle, { target: { value: "40" } });
+    const save = within(cycle.closest("div.mb-4") as HTMLElement).getByRole(
+      "button",
+      { name: "Save" },
+    ) as HTMLButtonElement;
+    await waitFor(() => expect(save.disabled).toBe(false));
+    fireEvent.click(save);
+    await waitFor(() => {
+      const slotsPuts = calls.filter(
+        (c) =>
+          c.method === "PUT" &&
+          c.url.includes("/api/settings/usenet-autograb-slots"),
+      );
+      expect(slotsPuts.length).toBeGreaterThan(0);
+      expect(slotsPuts.some((c) => JSON.stringify(c.body).includes('"perCycle":40'))).toBe(true);
+    });
   });
 
   it("turning it back off fires the off PUT, same single-request shape", async () => {
@@ -3431,7 +3368,11 @@ describe("Usenet auto-grab toggle", () => {
     const cb = await goToUsenet();
     await waitFor(() => expect(cb.checked).toBe(true));
     fireEvent.click(cb);
-    clickSectionSave();
+    fireEvent.click(
+      within(
+        screen.getByRole("heading", { name: "Auto-grab" }).closest("div")!,
+      ).getByRole("button", { name: "Save" }),
+    );
     await waitFor(() =>
       expect(
         calls.some(
@@ -3529,7 +3470,7 @@ describe("Media players — registry CRUD", () => {
   it("renders one row per player with its own provider and mode assignment", async () => {
     stubFetch(registryFetch(threePlayers));
     renderSettings();
-    goToSection("Advanced");
+    goToSection("Connections");
     await screen.findByLabelText("Player 7 URL");
     // All three providers coexist — the registry is many-rows, not one-per-kind.
     expect(
@@ -3563,7 +3504,7 @@ describe("Media players — registry CRUD", () => {
   it("Add player POSTs kind=player with the chosen provider and its modes in ONE request", async () => {
     const calls = stubFetch(registryFetch([]));
     renderSettings();
-    goToSection("Advanced");
+    goToSection("Connections");
     expect(
       await screen.findByText("No media players configured yet."),
     ).toBeInTheDocument();
@@ -3607,7 +3548,7 @@ describe("Media players — registry CRUD", () => {
   it("Add player refuses a blank URL client-side, firing no request", async () => {
     const calls = stubFetch(registryFetch([]));
     renderSettings();
-    goToSection("Advanced");
+    goToSection("Connections");
     await screen.findByText("No media players configured yet.");
     fireEvent.click(screen.getByRole("button", { name: "Add player" }));
     fireEvent.input(await screen.findByLabelText("New player label"), {
@@ -3625,7 +3566,7 @@ describe("Media players — registry CRUD", () => {
   it("editing a Plex row PUTs only that row, to its own id route", async () => {
     const calls = stubFetch(registryFetch(threePlayers));
     renderSettings();
-    goToSection("Advanced");
+    goToSection("Connections");
     const label = (await screen.findByLabelText(
       "Player 9 label",
     )) as HTMLInputElement;
@@ -3652,7 +3593,7 @@ describe("Media players — registry CRUD", () => {
   it("Delete removes exactly the player row it was clicked in", async () => {
     const calls = stubFetch(registryFetch(threePlayers));
     renderSettings();
-    goToSection("Advanced");
+    goToSection("Connections");
     await screen.findByLabelText("Player 7 URL");
     const embyUrl = screen.getByLabelText("Player 8 URL");
     fireEvent.click(registryRow(embyUrl).getByRole("button", { name: "Delete" }));
@@ -3686,7 +3627,7 @@ describe("Media players — mode assignment is a SECOND request", () => {
     // the UI — the checkboxes look identical either way.
     const calls = stubFetch(registryFetch([playerConn({ modes: ["movies"] })]));
     renderSettings();
-    goToSection("Advanced");
+    goToSection("Connections");
     const label = (await screen.findByLabelText(
       "Player 7 label",
     )) as HTMLInputElement;
@@ -3703,7 +3644,7 @@ describe("Media players — mode assignment is a SECOND request", () => {
   it("a mode change fires the field PUT FIRST, then the FULL replacement assignment to /modes", async () => {
     const calls = stubFetch(registryFetch([playerConn({ modes: ["movies"] })]));
     renderSettings();
-    goToSection("Advanced");
+    goToSection("Connections");
     const series = (await screen.findByLabelText(
       "Player 7 Series",
     )) as HTMLInputElement;
@@ -3729,7 +3670,7 @@ describe("Media players — mode assignment is a SECOND request", () => {
   it("unchecking every mode sends an empty assignment rather than skipping the request", async () => {
     const calls = stubFetch(registryFetch([playerConn({ modes: ["movies"] })]));
     renderSettings();
-    goToSection("Advanced");
+    goToSection("Connections");
     const movies = (await screen.findByLabelText(
       "Player 7 Movies",
     )) as HTMLInputElement;
@@ -3759,7 +3700,7 @@ describe("Media players — mode assignment is a SECOND request", () => {
       return undefined;
     });
     renderSettings();
-    goToSection("Advanced");
+    goToSection("Connections");
     const series = (await screen.findByLabelText(
       "Player 7 Series",
     )) as HTMLInputElement;
@@ -3790,7 +3731,7 @@ describe("Media players — three-state secret semantics through the UI", () => 
   it("saving after editing ONLY the URL OMITS secret from the PUT body", async () => {
     const calls = stubFetch(registryFetch([playerConn()]));
     renderSettings();
-    goToSection("Advanced");
+    goToSection("Connections");
     const url = (await screen.findByLabelText("Player 7 URL")) as HTMLInputElement;
     expect(
       (screen.getByLabelText("Player 7 API key") as HTMLInputElement).placeholder,
@@ -3812,7 +3753,7 @@ describe("Media players — three-state secret semantics through the UI", () => 
   it("typing an API key sends it as the replacement secret", async () => {
     const calls = stubFetch(registryFetch([playerConn()]));
     renderSettings();
-    goToSection("Advanced");
+    goToSection("Connections");
     const key = await screen.findByLabelText("Player 7 API key");
     fireEvent.input(key, { target: { value: "jf-rotated" } });
     clickMediaPlayersSave();
@@ -3825,7 +3766,7 @@ describe("Media players — three-state secret semantics through the UI", () => 
   it("typing then clearing the API key sends an explicit empty secret (the deliberate clear)", async () => {
     const calls = stubFetch(registryFetch([playerConn()]));
     renderSettings();
-    goToSection("Advanced");
+    goToSection("Connections");
     const key = await screen.findByLabelText("Player 7 API key");
     fireEvent.input(key, { target: { value: "x" } });
     fireEvent.input(key, { target: { value: "" } });
@@ -3849,7 +3790,7 @@ describe("Trakt lives in UI -> Discover, not in any connections table", () => {
   it("renders on the UI tab and on no other section", async () => {
     stubFetch();
     renderSettings();
-    goToSection("Advanced");
+    goToSection("Connections");
     await screen.findByLabelText("prowlarr URL");
     expect(screen.queryByLabelText("Trakt client ID")).toBeNull();
     expect(screen.queryByText("Trakt (Watchlist)")).toBeNull();
@@ -3875,7 +3816,7 @@ describe("Trakt lives in UI -> Discover, not in any connections table", () => {
     // "trakt URL"/"trakt API key" pair as a side effect of the redistribution.
     stubFetch();
     renderSettings();
-    goToSection("Advanced");
+    goToSection("Connections");
     await screen.findByLabelText("prowlarr URL");
     expect(screen.queryByLabelText("trakt URL")).toBeNull();
     expect(screen.queryByLabelText("trakt API key")).toBeNull();
@@ -3914,23 +3855,13 @@ describe("Trakt lives in UI -> Discover, not in any connections table", () => {
 
 // --- AI promoted out of the Connections nesting (AC 6) ---------------------
 
-describe("AI is its own top-level section tab", () => {
-  it("sits in the section tab bar, with no Connections tab or sub-tab to reach it through", async () => {
+describe("AI is its own Settings screen", () => {
+  it("is reachable without a nested Connections/AI sub-tab", async () => {
     stubFetch();
     renderSettings();
     await screen.findByLabelText("Library root folder");
-    // A real SECTION_TABS entry, reachable in ONE click from any other section.
-    expect(
-      sectionTabBar().getByRole("button", { name: "AI" }),
-    ).toBeInTheDocument();
-    expect(
-      sectionTabBar().queryByRole("button", { name: "Connections" }),
-    ).toBeNull();
     goToSection("AI");
     expect(await screen.findByLabelText("AI provider")).toBeInTheDocument();
-    // Exactly one "AI" button screen-wide: the section tab. If AI were still a
-    // sub-tab, its inner Connections/AI pill bar would render a second one.
-    expect(screen.getAllByRole("button", { name: "AI" })).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "Connections" })).toBeNull();
   });
 
@@ -3967,20 +3898,17 @@ describe("Pruning is no longer a section tab", () => {
     // cannot pass merely by running before anything rendered.
     await screen.findByLabelText("Library root folder");
 
-    expect(sectionTabBar().queryByRole("button", { name: "Pruning" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Pruning" })).toBeNull();
     expect(screen.queryByText("Pruning rules")).toBeNull();
     expect(screen.queryByText("+ New rule")).toBeNull();
   });
 });
 
-describe("Organize is its own top-level section tab", () => {
+describe("Organize scans is its own Settings screen", () => {
   it("renders all three scan-schedule panels when selected", async () => {
     stubFetch();
     renderSettings();
     await screen.findByLabelText("Library root folder");
-    expect(
-      sectionTabBar().getByRole("button", { name: "Organize" }),
-    ).toBeInTheDocument();
     goToSection("Organize");
 
     // One toggle + one interval picker per WORKFLOW (all three modes
@@ -4009,7 +3937,7 @@ describe("Settings — no bulk-action affordances", () => {
     // sub-tab bar also renders a "Connections" button, so that query would be
     // ambiguous here — this test isn't scoped to a shell-slot container the
     // way the shell-harness test above is.)
-    await screen.findByRole("heading", { name: "Settings" });
+    await screen.findByRole("heading", { name: "Roots" });
     expect(screen.queryByText(/save all/i)).toBeNull();
     expect(screen.queryByText(/apply all/i)).toBeNull();
     expect(screen.queryByText(/test all/i)).toBeNull();

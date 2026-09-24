@@ -42,20 +42,16 @@ import { ConnectionMiniTable, ConnectionRow } from "./ConnectionRow";
 import {
   Card,
   SaveStatus,
-  SectionSave,
   useSaveStatus,
   useSectionSaveItem,
 } from "./shared";
 
-// AISection is a thin shell so the provider/model form + provider/Brave
-// connection rows all sit INSIDE one SectionSave (so their registrations see
-// its context). The Entity Database card used to live here as a sibling,
-// outside the batched Save — it's moved to Advanced → Adult now (see above).
-export const AISection: Component = () => (
-  <SectionSave>
-    <AIProviderModelCard />
-  </SectionSave>
-);
+// Claude 2026-09-24: AI cards save themselves; no tab-level SectionSave.
+// Reason: Settings is immediate-apply / per-card Save, matching the rest of
+//   the reworked screens.
+// Troubleshooting: extra Save buttons on AI → a leftover SectionSave wrapper.
+// Review if: AI form and connection rows need a single commit again.
+export const AISection: Component = () => <AIProviderModelCard />;
 
 // AIProviderModelCard holds the batched AI fallback form and the provider/Brave
 // connection rows. It registers the form with the enclosing SectionSave and the

@@ -58,6 +58,7 @@ import {
   Card,
   MODE_LABELS,
   SaveStatus,
+  SectionSave,
   useSaveStatus,
   useSectionSaveItem,
 } from "./shared";
@@ -826,9 +827,14 @@ export const LibraryConnectionsSection: Component<{ mode: () => Mode }> = (
   const services = () => LIBRARY_MODE_SERVICES[props.mode()];
   return (
     <Card title={`Metadata sources (${MODE_LABELS[props.mode()]})`}>
-      {/* No SectionSave of its own: these rows join the Library tab's single
-          one, alongside root folder / quality prefs / naming / kids. */}
-      <ConnectionServiceTable services={services} />
+      {/* Claude 2026-09-24: card-level SectionSave for metadata source rows.
+          Reason: Settings dropped tab-level batched Save; a connection table
+            still needs one commit for dirty rows (three-state secret).
+          Troubleshooting: each TMDB/TVDB row showing its own Save → wrapper gone.
+          Review if: metadata rows become immediate-apply per field. */}
+      <SectionSave>
+        <ConnectionServiceTable services={services} />
+      </SectionSave>
     </Card>
   );
 };

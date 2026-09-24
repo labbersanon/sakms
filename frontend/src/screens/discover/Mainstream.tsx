@@ -857,6 +857,8 @@ export const MainstreamDiscover: Component<{
     setOwnedDetail({ mode, item });
     setDetailTarget(trackedToDetailTarget(mode, item) ?? null);
   };
+  const ownedMode = (): "movies" | "series" =>
+    props.contentType === "series" ? "series" : "movies";
   const closeDetail = () => {
     setDetailTarget(null);
     setOwnedDetail(null);
@@ -1399,7 +1401,8 @@ export const MainstreamDiscover: Component<{
       {/* Claude 2026-09-15: Monitored grid — replaces carousels when chip is on.
           No TMDB calls while chip is on (plan §4.1 guardrail).
           LibraryCard lazy-fetches posters via tmdbId and opens DetailPopup.
-          Cards with tmdbId===0 stay click-inert (existing LibraryCard behavior).
+          Movies with no TMDB id stay click-inert; series still open
+          (ownedCardOpenable), including anthology synthetics.
           Direct Show/For rather than PaginatedStrip: monitoredItems is a
           resource keyed on monitoredOnly(); rendering directly from the resource
           correctly handles the async timing (PaginatedStrip's load callback
@@ -1435,28 +1438,17 @@ export const MainstreamDiscover: Component<{
                 <For each={monitoredItems() ?? []}>
                   {(item) => (
                     <LibraryPosterCard
-                      mode={(props.contentType ?? "movies") as "movies" | "series"}
+                      mode={ownedMode()}
                       item={item}
                       selected={false}
-                      disabled={
-                        !ownedCardOpenable(
-                          (props.contentType ?? "movies") as "movies" | "series",
-                          item,
-                        )
-                      }
+                      disabled={!ownedCardOpenable(ownedMode(), item)}
                       onClick={() => {
-                        const mode = (props.contentType ?? "movies") as
-                          | "movies"
-                          | "series";
+                        const mode = ownedMode();
                         if (!ownedCardOpenable(mode, item)) return;
                         openOwned(mode, item);
                       }}
                       onRate={(rating) =>
-                        void setItemRating(
-                          (props.contentType ?? "movies") as "movies" | "series",
-                          item.id,
-                          rating,
-                        )
+                        void setItemRating(ownedMode(), item.id, rating)
                       }
                     />
                   )}

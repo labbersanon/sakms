@@ -157,11 +157,11 @@ const trackedToAdultDiscoverItem = (item: TrackedItem): AdultDiscoverItem => ({
   performers: item.cast ?? [],
 });
 
-// trackedToDetailTarget is undefined for a Movies row with no TMDB id
-// (DetailPopup would fetch against id 0). Series always has a target: play
-// keys on library_series.id, including anthology synthetics (tmdb_id < 0).
-// Adult always has a target: local scenes skip catalog description via
-// CATALOG_SOURCES.
+function positiveTmdbId(item: TrackedItem): number | undefined {
+  const id = item.tmdbId ?? 0;
+  return id > 0 ? id : undefined;
+}
+
 // Claude 2026-09-24: Laurel & Hardy tmdb -1498833576 must still open play.
 // Reason: owned play is seriesID, not TMDB; the old <=0 gate hid the popup.
 // Troubleshooting: In library fell back to Modal+DetailPanel with no Play.
@@ -173,17 +173,17 @@ export const trackedToDetailTarget = (
   if (mode === "adult") {
     return { mode: "adult", item: trackedToAdultDiscoverItem(item) };
   }
-  if (mode === "movies" && (item.tmdbId ?? 0) <= 0) return undefined;
+  if (mode === "movies" && !positiveTmdbId(item)) return undefined;
   return { mode, item: trackedToDiscoverItem(item, mode) };
 };
 
-// ownedCardOpenable is true when an owned poster should open detail.
-// Movies still need a positive TMDB id. Series opens on the library row
-// even when tmdb_id is 0 or a negative anthology synthetic.
 export const ownedCardOpenable = (
   mode: Mode,
   item: TrackedItem,
-): boolean => mode === "adult" || mode === "series" || (item.tmdbId ?? 0) > 0;
+): boolean => {
+  if (mode === "adult" || mode === "series") return true;
+  return positiveTmdbId(item) !== undefined;
+};
 
 // playableLibrarySrc is the in-app URL for Play Movie/Show/Scene under
 // Watch Trailer. Movies prefer the primary browser-playable file, then any
@@ -244,10 +244,12 @@ export const LibraryPosterCard: Component<{
   // Review if: GET /tracked starts carrying overview (drop the prose half) or
   // Adult catalog descriptions become available for library scenes.
   const [card] = createResource(
-    () =>
-      props.mode !== "adult" && (props.item.tmdbId ?? 0) > 0
-        ? ({ mode: props.mode as PosterMode, tmdbId: props.item.tmdbId as number })
-        : undefined,
+    () => {
+      const tmdbId = positiveTmdbId(props.item);
+      return props.mode !== "adult" && tmdbId
+        ? { mode: props.mode as PosterMode, tmdbId }
+        : undefined;
+    },
     ({ mode, tmdbId }) =>
       fetchTitleCard(mode, tmdbId).catch(() => ({
         posterPath: "",
@@ -450,10 +452,12 @@ const DetailPanel: Component<{
   const showTrackedCredits = () => props.showTrackedCredits !== false;
   const showRating = () => props.showRating !== false;
   const [posterSrcLazy] = createResource(
-    () =>
-      showPoster() && props.mode !== "adult" && (props.item.tmdbId ?? 0) > 0
-        ? ({ mode: props.mode as PosterMode, tmdbId: props.item.tmdbId as number })
-        : undefined,
+    () => {
+      const tmdbId = positiveTmdbId(props.item);
+      return showPoster() && props.mode !== "adult" && tmdbId
+        ? { mode: props.mode as PosterMode, tmdbId }
+        : undefined;
+    },
     ({ mode, tmdbId }) => fetchTitlePoster(mode, tmdbId).catch(() => ""),
   );
 
@@ -579,7 +583,7 @@ const DetailPanel: Component<{
       <Show
         when={
           props.mode === "series" ||
-          (props.mode === "movies" && (props.item.tmdbId ?? 0) > 0)
+          (props.mode === "movies" && positiveTmdbId(props.item) !== undefined)
         }
       >
         <TitleQualityPrefs

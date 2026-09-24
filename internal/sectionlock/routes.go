@@ -136,7 +136,10 @@ func Classify(rawPath string) Set {
 		out.Add(SectionSettings)
 	case "library":
 		// Claude 2026-09-23: GET /api/library/scan-status — Library banner.
+		// Claude 2026-09-24: also Discover — owned grid lives there now.
+		// Review if: scan-status is only read from Settings.
 		out.Add(SectionLibrary)
+		out.Add(SectionDiscover)
 	case "images", "posters", "notifications", "apikey", "auth", "setup",
 		"section-lock", "openapi.yaml":
 		// Deliberately unclassified, each for its own reason:
@@ -216,16 +219,19 @@ func classifyModes(rest []string, out Set) {
 		// Library detail panel. tracked was already {library}; these siblings
 		// belong with it.
 		// Troubleshooting: locking Library must gate tag vocab/add/remove too.
+		// Claude 2026-09-24: also Discover — owned catalog is In library.
 		// Review if: tag editing moves to a different screen.
 		out.Add(SectionLibrary)
+		out.Add(SectionDiscover)
 	case "library":
 		// /library/root-folder{,/test} is a Settings control; everything
 		// else under /library (series seasons, monitored flags) is the
-		// Library screen's own data.
+		// owned-catalog data (Discover In library after the 2026-09-24 merge).
 		if len(rest) >= 3 && (rest[2] == "root-folder" || rest[2] == "rescan") {
 			out.Add(SectionSettings)
 		} else {
 			out.Add(SectionLibrary)
+			out.Add(SectionDiscover)
 		}
 	case "identify-enabled", "naming-preset", "phash-threshold",
 		"quality-prefs", "rename-match-config":

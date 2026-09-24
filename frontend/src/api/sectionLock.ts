@@ -19,7 +19,7 @@ import type {
   SectionLockUnlockRequest,
 } from "@dto";
 
-// LOCKABLE_TAB_SECTIONS is the seven sidebar tabs, as section ids (each
+// LOCKABLE_TAB_SECTIONS is the six sidebar tabs, as section ids (each
 // NAV_ITEM's href minus its leading "/"), in sidebar order.
 //
 // WHY THIS IS AUTHORED HERE RATHER THAN DERIVED FROM NAV_ITEMS. Deriving it
@@ -52,7 +52,11 @@ import type {
 export const LOCKABLE_TAB_SECTIONS = [
   "dashboard",
   "discover",
-  "library",
+  // Claude 2026-09-24: "library" removed from the sidebar lock list.
+  // Reason: Library page merged into Discover. Stored library PINs still
+  //   display via sectionLabel; they gate leftover API classification.
+  // Review if: Library returns as a nav item.
+  // "library",
   "queue",
   "organize",
   "collections",
@@ -65,7 +69,7 @@ export const LOCKABLE_TAB_SECTIONS = [
 export const ADULT_CONTENT_SECTION = "adult-content";
 
 // ALL_LOCKABLE_SECTIONS is the full checkbox set for the Settings panel: the
-// seven tabs plus adult-content, in that fixed order.
+// six tabs plus adult-content, in that fixed order.
 //
 // ORDER IS LOAD-BEARING, not cosmetic. Both the per-checkbox save and the
 // "lock everything" convenience build their request array by filtering THIS

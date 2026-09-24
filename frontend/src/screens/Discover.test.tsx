@@ -118,6 +118,8 @@ const mainstreamDefaults = (url: string): Response | null => {
     ]);
   if (url.includes("/discover")) return jsonResponse([]);
   if (url.includes("/tracked")) return jsonResponse([]);
+  if (url.includes("/tags")) return jsonResponse([]);
+  if (url.includes("/api/library/scan-status")) return jsonResponse({});
   if (url.includes("/poster")) return jsonResponse({ posterPath: "" });
   if (url.includes("/api/trakt/status"))
     return jsonResponse({ configured: false, linked: false });
@@ -496,14 +498,14 @@ describe("Discover — existing-library row", () => {
     expect(screen.queryByText("Owned Movie")).not.toBeInTheDocument();
     expect(
       screen.getByRole("link", { name: "View all In your library" }),
-    ).toHaveAttribute("href", "/library/mainstream?tab=series");
+    ).toHaveAttribute("href", "/discover/mainstream?view=library&tab=series");
 
     clickMoviesTab();
     expect(await screen.findByText("Owned Movie")).toBeInTheDocument();
     expect(screen.queryByText("Owned Show")).not.toBeInTheDocument();
     expect(
       screen.getByRole("link", { name: "View all In your library" }),
-    ).toHaveAttribute("href", "/library/mainstream?tab=movies");
+    ).toHaveAttribute("href", "/discover/mainstream?view=library&tab=movies");
 
     // The lazily-resolved library poster renders through the proxy.
     const img = await screen.findByRole("img", { name: "Owned Movie" });
@@ -520,7 +522,7 @@ describe("Discover — existing-library row", () => {
   // capability that did not previously exist, not re-pointed old ones.
   // Reason: .omc/plans/autopilot-impl-discover-card-cleanup.md §2.3 and §0.3.
   // Review if: LibraryCard's click handler stops being guarded.
-  it("clicking a LibraryCard's body opens DetailPopup for that tracked title", async () => {
+  it("clicking an owned preview card opens DetailPopup with Search releases", async () => {
     stubFetch((url) => {
       if (url.includes("/api/modes/movies/tracked"))
         return jsonResponse([tracked({ id: 10, title: "Owned Movie", tmdbId: 500, year: 2020 })]);
@@ -544,8 +546,7 @@ describe("Discover — existing-library row", () => {
     expect(card).toHaveClass("w-[140px]");
 
     fireEvent.click(card);
-    // The popup's own resolution selector — markup a LibraryCard never renders.
-    expect(await screen.findByText("480p")).toBeInTheDocument();
+    expect(await screen.findByText("Search releases")).toBeInTheDocument();
   });
 
   // §0.3's guard. This is the ONLY verification of it, and the defect it
@@ -553,7 +554,7 @@ describe("Discover — existing-library row", () => {
   // tracked item TMDB never matched yields id 0, and DetailPopup reads item.id
   // unconditionally — opening it would fire three requests keyed on 0 that
   // cannot succeed, with a degraded popup and no error to show for it.
-  it("a LibraryCard with no TMDB id is click-inert — no popup, and no doomed detail/trailer/availability request", async () => {
+  it("an owned preview card with no TMDB id is click-inert — no popup, and no doomed detail/trailer/availability request", async () => {
     const calls = stubFetch((url) => {
       if (url.includes("/api/modes/movies/tracked"))
         // tmdbId 0 is what a tracked item TMDB never matched actually stores.
@@ -603,7 +604,7 @@ describe("Discover — existing-library row", () => {
   // recommendation rail could nest a second Modal inside the first — the exact
   // hazard `insideModal` used to guard. Deleting a guard is only safe while the
   // invariant that made it dead still holds, so the invariant gets its own test.
-  it("a LibraryCard body click is inert while select-mode is on (the invariant that let insideModal be removed)", async () => {
+  it("an owned preview card is inert while select-mode is on (the invariant that let insideModal be removed)", async () => {
     stubFetch((url) => {
       if (url.includes("/api/modes/movies/tracked"))
         return jsonResponse([tracked({ id: 10, title: "Owned Movie", tmdbId: 500, year: 2020 })]);
@@ -642,7 +643,33 @@ describe("Discover — existing-library row", () => {
     fireEvent.click(screen.getByText("Done selecting"));
     expect(card).not.toBeDisabled();
     fireEvent.click(card);
-    expect(await screen.findByText("480p")).toBeInTheDocument();
+    expect(await screen.findByText("Search releases")).toBeInTheDocument();
+  });
+});
+
+describe("Discover — In library chip", () => {
+  it("replaces carousels with the owned grid and keeps the page search box", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/tracked"))
+        return jsonResponse([
+          tracked({ id: 10, title: "Owned Movie", tmdbId: 500, year: 2020 }),
+        ]);
+      if (url.includes("/api/modes/movies/tags")) return jsonResponse([]);
+      if (url.includes("/api/library/scan-status")) return jsonResponse({});
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
+    expect(await screen.findByText("Trending Movies")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "In library" }));
+    expect(await screen.findByText("Owned Movie")).toBeInTheDocument();
+    expect(screen.queryByText("Trending Movies")).not.toBeInTheDocument();
+    expect(
+      screen.getByPlaceholderText("Search movies & shows…"),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Search")).not.toBeInTheDocument();
   });
 });
 
@@ -684,6 +711,30 @@ describe("Discover — Mainstream search (replaces rows, then restores)", () => 
     expect(await screen.findByText("Trending Movies")).toBeInTheDocument();
     expect(await screen.findByText("A Row Movie")).toBeInTheDocument();
     expect(screen.queryByText("Search results")).not.toBeInTheDocument();
+  });
+
+  it("owned identity wins over the matching catalog card", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/tmdb-search"))
+        return jsonResponse([movie({ id: 500, title: "Catalog Dup" })]);
+      if (url.includes("/api/modes/movies/tracked"))
+        return jsonResponse([
+          tracked({ id: 10, title: "Owned Dup", tmdbId: 500, year: 2020 }),
+        ]);
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
+    fireEvent.input(screen.getByPlaceholderText("Search movies & shows…"), {
+      target: { value: "dup" },
+    });
+    fireEvent.submit(
+      screen.getByPlaceholderText("Search movies & shows…").closest("form")!,
+    );
+    expect(await screen.findByText("Owned Dup")).toBeInTheDocument();
+    expect(screen.queryByText("Catalog Dup")).not.toBeInTheDocument();
   });
 });
 

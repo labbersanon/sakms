@@ -630,6 +630,11 @@ export const DetailPopup: Component<{
   // Reason: "Library cards need enrichment the same as discover minus grab."
   // Review if: Library ever grows a grab affordance of its own.
   allowGrab?: boolean;
+  // Claude 2026-09-24: owned titles can Search releases without making
+  //   grab the default owned view. Catalog omits this (allowGrab stays true).
+  // Reason: bad download → pick a replacement; play/tags stay visible.
+  // Review if: owned grab is always-on again.
+  canReplace?: boolean;
   // Claude 2026-08-14: Library in-app play URL under Watch Trailer.
   // Reason: operator asked a Play Movie/Show/Scene link that launches
   // fullscreen. Discover omits it. Empty/undefined hides the control.
@@ -664,7 +669,8 @@ export const DetailPopup: Component<{
 }> = (props) => {
   const mode = () => props.target.mode;
   const item = () => props.target.item;
-  const allowGrab = () => props.allowGrab !== false;
+  const [replaceOpen, setReplaceOpen] = createSignal(false);
+  const allowGrab = () => props.allowGrab !== false || replaceOpen();
 
   // Series needs season/episode BEFORE the availability fetch can run.
   // Library (allowGrab=false) skips that gate so F1 metadata is immediate.
@@ -1143,6 +1149,15 @@ export const DetailPopup: Component<{
               title={item().title}
               class={HEADER_ACTION_CLASS}
             />
+          </Show>
+          <Show when={props.canReplace && !replaceOpen()}>
+            <button
+              type="button"
+              class={HEADER_ACTION_CLASS}
+              onClick={() => setReplaceOpen(true)}
+            >
+              Search releases
+            </button>
           </Show>
         </div>
       </div>

@@ -56,7 +56,7 @@ const typeCurrentPin = (pin: string) => {
 
 describe("FE-2 — lock everything equals checking every box", () => {
   it("both paths PUT a byte-identical body", async () => {
-    // Path A: check all nine boxes by hand, then Save.
+    // Path A: check all seven boxes by hand, then Save.
     const fetchA = stubFetch();
     const viewA = renderPanel();
     typeCurrentPin("hunter2");

@@ -74,9 +74,12 @@ function titleCase(s: string): string {
 }
 
 function libraryTierHref(mode: string, tier: string): string {
-  if (mode === "adult") return `/library/adult?tab=scenes&tier=${tier}`;
+  // Claude 2026-09-24: Dashboard storage cells open Discover In library.
+  // Reason: /library* is a redirect; keep tab+tier on the owned grid.
+  // Review if: owned view stops using ?view=library.
+  if (mode === "adult") return `/discover/adult?view=library&tab=scenes&tier=${tier}`;
   const tab = mode === "movies" ? "movies" : "series";
-  return `/library/mainstream?tab=${tab}&tier=${tier}`;
+  return `/discover/mainstream?view=library&tab=${tab}&tier=${tier}`;
 }
 
 // formatGbps renders an aggregate disk throughput for the Disk I/O gauge label:

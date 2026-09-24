@@ -1,7 +1,7 @@
 // The authed app shell. Past auth it renders a LEFT SIDEBAR (Dashboard /
-// Discover / Library / Queue / Organize / Collections / Settings, each
+// Discover / Queue / Organize / Collections / Settings, each
 // an icon + label) beside the client-side router; the landing view is
-// Discover. The sidebar collapses to icon-only and persists that choice in
+// Discover. Library is Discover ?view=library (2026-09-24 merge). The sidebar collapses to icon-only and persists that choice in
 // localStorage. The router must never claim an /api/* path (see APP_ROUTES).
 //
 // LAYOUT (2026-07-14 mobile-responsive pass): the shell root is a fixed-height
@@ -83,8 +83,8 @@ import {
   sectionLabel,
 } from "../api/sectionLock";
 import { Dashboard } from "./Dashboard";
-import { AdultNewestRowView, DiscoverAdult, DiscoverMainstream, LibraryRowView, RssFeedRowView, SliderRowView, TmdbRowView, TraktWatchlistRowView } from "./Discover";
-import { LibraryAdult, LibraryMainstream } from "./Library";
+import { AdultNewestRowView, DiscoverAdult, DiscoverMainstream, RssFeedRowView, SliderRowView, TmdbRowView, TraktWatchlistRowView } from "./Discover";
+import { DiscoverLibraryRowRedirect, LibraryRedirect } from "./LibraryRedirect";
 import { Queue } from "./Queue";
 import { Organize } from "./Organize";
 import { Collections } from "./Collections";
@@ -112,6 +112,9 @@ export const APP_ROUTES = [
   "/discover/row/slider/:id",
   "/discover/row/library",
   "/discover/row/library/:mode",
+  // Claude 2026-09-24: /library* stays in APP_ROUTES so bookmarks still
+  //   resolve; the components are redirects to Discover ?view=library.
+  // Review if: those paths are deleted after a release.
   "/discover/row/trakt-watchlist",
   "/discover/row/trakt-watchlist/:type",
   "/discover/row/rssfeed/:id",
@@ -214,13 +217,16 @@ const IconDiscover: Component = () => (
     <polygon points="15.5 8.5 11 11 8.5 15.5 13 13" />
   </svg>
 );
-const IconLibrary: Component = () => (
-  <svg {...svgProps}>
-    <rect x="3" y="4" width="4" height="16" rx="1" />
-    <rect x="9" y="4" width="4" height="16" rx="1" />
-    <path d="m16.5 5.5 3.5 1-3.5 13-3.5-1z" />
-  </svg>
-);
+// Claude 2026-09-24: IconLibrary unused after Library left the sidebar.
+// Reason: owned catalog is Discover In library; keep the glyph for a restore.
+// Review if: Library returns as a nav item.
+// const IconLibrary: Component = () => (
+//   <svg {...svgProps}>
+//     <rect x="3" y="4" width="4" height="16" rx="1" />
+//     <rect x="9" y="4" width="4" height="16" rx="1" />
+//     <path d="m16.5 5.5 3.5 1-3.5 13-3.5-1z" />
+//   </svg>
+// );
 const IconQueue: Component = () => (
   <svg {...svgProps}>
     <path d="M12 3v10" />
@@ -276,7 +282,11 @@ type NavItem = {
 export const NAV_ITEMS: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: IconDashboard, section: "dashboard" },
   { href: "/discover/mainstream", label: "Discover", icon: IconDiscover, section: "discover", group: "discover" },
-  { href: "/library/mainstream", label: "Library", icon: IconLibrary, section: "library", group: "library" },
+  // Claude 2026-09-24: Library sidebar group removed — owned catalog is
+  //   Discover In library (?view=library). /library* redirects.
+  // Reason: one page, code reduction, Dashboard/search share Discover.
+  // Review if: a dedicated Library route is restored.
+  // { href: "/library/mainstream", label: "Library", icon: IconLibrary, section: "library", group: "library" },
   { href: "/queue", label: "Queue", icon: IconQueue, section: "queue" },
   { href: "/organize", label: "Organize", icon: IconRename, section: "organize" },
   { href: "/collections", label: "Collections", icon: IconCollections, section: "collections" },
@@ -1199,7 +1209,11 @@ export function createSectionLockControl(): SectionLockControl {
 // links /discover), so a bare slice(1) would yield "" and leave the landing
 // view ungated while /discover itself was overlaid.
 export function sectionForPath(pathname: string): string | null {
-  const id = (pathname === "/" ? "discover" : pathname.split("/")[1]) ?? "";
+  // Claude 2026-09-24: /library* redirects to Discover; gate as discover
+  //   so a leftover bookmark is not ungated during the Navigate.
+  // Review if: /library paths are removed from the router.
+  const raw = pathname === "/" ? "discover" : pathname.split("/")[1] ?? "";
+  const id = raw === "library" ? "discover" : raw;
   return (LOCKABLE_TAB_SECTIONS as readonly string[]).includes(id) ? id : null;
 }
 
@@ -1426,14 +1440,14 @@ export const AppShell: Component<{
       <Route path="/discover/row/tmdb/:key" component={TmdbRowView} />
       <Route path="/discover/row/adult-newest/:rowId" component={AdultNewestRowView} />
       <Route path="/discover/row/slider/:id" component={SliderRowView} />
-      <Route path="/discover/row/library" component={LibraryRowView} />
-      <Route path="/discover/row/library/:mode" component={LibraryRowView} />
+      <Route path="/discover/row/library" component={DiscoverLibraryRowRedirect} />
+      <Route path="/discover/row/library/:mode" component={DiscoverLibraryRowRedirect} />
       <Route path="/discover/row/trakt-watchlist" component={TraktWatchlistRowView} />
       <Route path="/discover/row/trakt-watchlist/:type" component={TraktWatchlistRowView} />
       <Route path="/discover/row/rssfeed/:id" component={RssFeedRowView} />
-      <Route path="/library" component={LibraryMainstream} />
-      <Route path="/library/mainstream" component={LibraryMainstream} />
-      <Route path="/library/adult" component={LibraryAdult} />
+      <Route path="/library" component={LibraryRedirect} />
+      <Route path="/library/mainstream" component={LibraryRedirect} />
+      <Route path="/library/adult" component={LibraryRedirect} />
       <Route path="/queue" component={Queue} />
       <Route path="/organize" component={Organize} />
       <Route path="/collections" component={Collections} />

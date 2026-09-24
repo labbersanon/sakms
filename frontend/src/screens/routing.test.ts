@@ -29,6 +29,12 @@ describe("client-side router scope (Guardrail #2 / requirement #7)", () => {
     expect(APP_ROUTES).toContain("/discover/row/rssfeed/:id");
   });
 
+  it("keeps /library* as redirect routes", () => {
+    expect(APP_ROUTES).toContain("/library");
+    expect(APP_ROUTES).toContain("/library/mainstream");
+    expect(APP_ROUTES).toContain("/library/adult");
+  });
+
   it("no longer serves the removed /tag route", () => {
     expect(APP_ROUTES as readonly string[]).not.toContain("/tag");
   });

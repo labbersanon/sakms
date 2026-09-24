@@ -45,6 +45,14 @@ import {
   isQueueTabId,
 } from "./queueTabs";
 import {
+  SETTINGS_NAV_EXPANDED_KEY,
+  SETTINGS_TABS,
+  settingsHref,
+  readStoredSettingsTab,
+  type SettingsTabId,
+  isSettingsTabId,
+} from "./settingsTabs";
+import {
   MEDIA_NAV_EXPANDED_KEY,
   MEDIA_SECTIONS,
   isMediaSection,
@@ -367,6 +375,13 @@ export const Sidebar: Component<{
               <OrganizeNavGroup
                 collapsed={props.collapsed}
                 locked={lock.isLocked("organize")}
+                onCloseMobile={closeMobile}
+              />
+            </Match>
+            <Match when={item.href === "/settings"}>
+              <SettingsNavGroup
+                collapsed={props.collapsed}
+                locked={lock.isLocked("settings")}
                 onCloseMobile={closeMobile}
               />
             </Match>
@@ -761,6 +776,188 @@ const OrganizeNavGroup: Component<{
   );
 };
 
+// Claude 2026-09-24: Settings collapsible group + icon-collapsed flyout.
+// Reason: Settings is the same sidebar-group pattern as Organize/Queue — each
+//   child is its own ?tab= screen instead of one 9-tab page.
+// Troubleshooting: parent click navigates to last ?tab= and expands children.
+// Review if: nested path routes replace query params.
+const SettingsNavGroup: Component<{
+  collapsed: () => boolean;
+  locked: boolean;
+  onCloseMobile: () => void;
+}> = (props) => {
+  const loc = useLocation();
+  const navigate = useNavigate();
+  const [groupOpen, setGroupOpen] = createPersistedBool(
+    SETTINGS_NAV_EXPANDED_KEY,
+    true,
+  );
+  const [flyoutOpen, setFlyoutOpen] = createSignal(false);
+  let flyoutTimer: ReturnType<typeof setTimeout> | undefined;
+  let rootEl: HTMLDivElement | undefined;
+
+  const onSettings = () =>
+    loc.pathname === "/settings" || loc.pathname === "/settings/";
+  const activeTab = (): SettingsTabId => {
+    const q = new URLSearchParams(loc.search).get("tab");
+    return isSettingsTabId(q) ? q : readStoredSettingsTab();
+  };
+
+  const openFlyout = () => {
+    if (flyoutTimer) clearTimeout(flyoutTimer);
+    setFlyoutOpen(true);
+  };
+  const scheduleCloseFlyout = () => {
+    if (flyoutTimer) clearTimeout(flyoutTimer);
+    flyoutTimer = setTimeout(() => setFlyoutOpen(false), 150);
+  };
+  const closeFlyoutNow = () => {
+    if (flyoutTimer) clearTimeout(flyoutTimer);
+    setFlyoutOpen(false);
+  };
+
+  const goSettings = (tab?: SettingsTabId) => {
+    const t = tab ?? readStoredSettingsTab();
+    setGroupOpen(true);
+    navigate(settingsHref(t));
+    closeFlyoutNow();
+    props.onCloseMobile();
+  };
+
+  createEffect(() => {
+    if (!flyoutOpen()) return;
+    const onDoc = (e: MouseEvent) => {
+      if (rootEl && !rootEl.contains(e.target as Node)) closeFlyoutNow();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeFlyoutNow();
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    onCleanup(() => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    });
+  });
+  onCleanup(() => {
+    if (flyoutTimer) clearTimeout(flyoutTimer);
+  });
+
+  const linkClass =
+    "flex items-center gap-3 rounded-md px-2 py-2 text-sm font-medium text-chrome-fg/60 transition hover:bg-white/10 hover:text-chrome-fg";
+  const activeLink = "!bg-white/10 !text-chrome-fg";
+
+  return (
+    <div
+      ref={rootEl}
+      class="relative"
+      onMouseEnter={() => {
+        if (props.collapsed()) openFlyout();
+      }}
+      onMouseLeave={() => {
+        if (props.collapsed()) scheduleCloseFlyout();
+      }}
+    >
+      <button
+        type="button"
+        title="Settings"
+        aria-label="Settings"
+        aria-expanded={props.collapsed() ? flyoutOpen() : groupOpen()}
+        aria-haspopup={props.collapsed() ? "menu" : undefined}
+        onClick={() => {
+          if (props.collapsed()) {
+            if (flyoutOpen()) goSettings();
+            else openFlyout();
+            return;
+          }
+          goSettings();
+        }}
+        class={linkClass}
+        classList={{ [activeLink]: onSettings() }}
+      >
+        <span class="flex shrink-0 items-center">
+          <IconSettings />
+        </span>
+        <Show when={!props.collapsed()}>
+          <span class="flex-1 text-left">Settings</span>
+          <span
+            class="flex shrink-0 items-center text-chrome-fg/60"
+            onClick={(e) => {
+              e.stopPropagation();
+              setGroupOpen(!groupOpen());
+            }}
+            role="presentation"
+          >
+            <IconChevron collapsed={!groupOpen()} />
+          </span>
+        </Show>
+        <Show when={props.locked}>
+          <span
+            class="ml-auto flex shrink-0 items-center text-chrome-fg/70"
+            title="Settings is locked"
+            aria-label="Settings is locked"
+          >
+            <LockGlyph />
+          </span>
+        </Show>
+      </button>
+
+      <Show when={!props.collapsed() && groupOpen()}>
+        <div class="ml-3 flex flex-col gap-0.5 border-l border-chrome-fg/15 pl-2">
+          <For each={[...SETTINGS_TABS]}>
+            {(tab) => (
+              <A
+                href={settingsHref(tab.id)}
+                title={tab.label}
+                onClick={() => {
+                  setGroupOpen(true);
+                  props.onCloseMobile();
+                }}
+                class={`${linkClass} py-1.5 text-xs`}
+                classList={{
+                  [activeLink]: onSettings() && activeTab() === tab.id,
+                }}
+              >
+                {tab.label}
+              </A>
+            )}
+          </For>
+        </div>
+      </Show>
+
+      <Show when={props.collapsed() && flyoutOpen()}>
+        <div
+          role="menu"
+          aria-label="Settings screens"
+          class="absolute left-full top-0 z-50 ml-1 min-w-[9rem] rounded-md border border-border bg-chrome p-1 shadow-lg"
+          onMouseEnter={openFlyout}
+          onMouseLeave={scheduleCloseFlyout}
+        >
+          <For each={[...SETTINGS_TABS]}>
+            {(tab) => (
+              <A
+                href={settingsHref(tab.id)}
+                role="menuitem"
+                title={tab.label}
+                onClick={() => {
+                  closeFlyoutNow();
+                  props.onCloseMobile();
+                }}
+                class={`${linkClass} py-1.5 text-xs`}
+                classList={{
+                  [activeLink]: onSettings() && activeTab() === tab.id,
+                }}
+              >
+                {tab.label}
+              </A>
+            )}
+          </For>
+        </div>
+      </Show>
+    </div>
+  );
+};
+
 // Claude 2026-08-29: Queue collapsible group + icon-collapsed flyout.
 // Reason: queue-sidebar-nest — nested Downloads/Requests/Calendar.
 // Troubleshooting: parent click navigates to last ?tab= and expands children.
@@ -1061,7 +1258,7 @@ export const AppShell: Component<{
   // active-link context. The tab bar slot is driven by whichever screen is
   // mounted: a screen registers its own tab set via ScreenTabsContext, and the
   // shell renders it here in one consistent location (empty when a screen
-  // registers nothing, e.g. Settings today).
+  // registers nothing, e.g. Settings — its children live in the sidebar).
   const ShellRoot: Component<{ children?: JSX.Element }> = (rootProps) => {
     const [tabReg, setTabReg] = createSignal<ScreenTabsRegistration | null>(null);
     // adultModeResource is fetched once here (not re-run on a settings

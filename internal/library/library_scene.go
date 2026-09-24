@@ -297,6 +297,32 @@ func (s *Store) UpgradeSceneIdentity(ctx context.Context, id int64, box, sceneID
 	return nil
 }
 
+// RematchScene rekeys one Adult scene's (box, scene_id) and display fields.
+// Claude 2026-09-24: owned-detail Rematch; row id stays stable for tags/files.
+func (s *Store) RematchScene(ctx context.Context, id int64, box, sceneID, title, studio, date string) error {
+	if id == 0 || strings.TrimSpace(box) == "" || strings.TrimSpace(sceneID) == "" || strings.TrimSpace(title) == "" {
+		return fmt.Errorf("library: RematchScene requires scene id, box, sceneId, and title")
+	}
+	existing, err := s.GetScene(ctx, box, sceneID)
+	if err == nil && existing != nil && existing.ID != id {
+		return ErrIdentityConflict
+	}
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	if err := s.UpgradeSceneIdentity(ctx, id, box, sceneID, title, studio, date); err != nil {
+		return err
+	}
+	got, err := s.GetSceneByID(ctx, id)
+	if err != nil {
+		return ErrNotFound
+	}
+	if got.Box != box || got.SceneID != sceneID {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // UpdateScenePHash writes a freshly-computed perceptual hash and its file-
 // identity key (size + mtime) onto an existing tracked scene, without
 // rewriting the rest of the row — the targeted write Dedup's Scan uses to

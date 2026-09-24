@@ -87,6 +87,14 @@ import {
 import { TraktWatchlistRow } from "../../components/TraktWatchlistRow";
 import { MediaCardShell, MediaFallbackTile, MEDIA_POSTER_GRID_CLASS, MEDIA_CAROUSEL_POSTER_CLASS } from "../../components/media";
 import { type DetailTarget, DetailPopup } from "./DetailPopup";
+import { OwnedRematch } from "../OwnedRematch";
+import {
+  applyPickToTracked,
+  identityFromPick,
+  putTrackedIdentity,
+  replaceSlotFromPick,
+} from "../../api/rematch";
+import type { TakeoverPick } from "../SearchTakeover";
 import { RssFeedRow } from "./RssFeedRows";
 import { RowEditor, type RowDescriptor } from "./RowEditor";
 import { AddRssFeedModal } from "./AddRssFeedModal";
@@ -834,6 +842,15 @@ export const MainstreamDiscover: Component<{
     mode: "movies" | "series";
     item: TrackedItem;
   } | null>(null);
+  const [rematchOwned, setRematchOwned] = createSignal<{
+    mode: "movies" | "series";
+    item: TrackedItem;
+  } | null>(null);
+  const [rematchPick, setRematchPick] = createSignal<TakeoverPick | null>(null);
+  const [replaceSlot, setReplaceSlot] = createSignal<{
+    season: number;
+    episode: number;
+  } | null>(null);
   const openOwned = (mode: "movies" | "series", item: TrackedItem) => {
     setOwnedDetail({ mode, item });
     setDetailTarget(trackedToDetailTarget(mode, item) ?? null);
@@ -841,6 +858,7 @@ export const MainstreamDiscover: Component<{
   const closeDetail = () => {
     setDetailTarget(null);
     setOwnedDetail(null);
+    setReplaceSlot(null);
   };
   const [setupError, setSetupError] = createSignal<unknown>(null);
   const [dismissedSetup, setDismissedSetup] = createSignal(false);
@@ -1236,6 +1254,39 @@ export const MainstreamDiscover: Component<{
 
   return (
     <div>
+      <Show when={rematchOwned()}>
+        {(owned) => (
+          <OwnedRematch
+            mode={owned().mode}
+            item={owned().item}
+            onCommit={async (pick) => {
+              setRematchPick(pick);
+              await putTrackedIdentity(
+                owned().mode,
+                owned().item.id,
+                identityFromPick(pick),
+              );
+            }}
+            onDone={() => {
+              const current = rematchOwned();
+              const pick = rematchPick();
+              setRematchOwned(null);
+              setRematchPick(null);
+              if (!current || !pick) return;
+              setReloadToken((n) => n + 1);
+              openOwned(current.mode, applyPickToTracked(current.item, pick));
+              setReplaceSlot(replaceSlotFromPick(pick));
+            }}
+            onCancel={() => {
+              const current = rematchOwned();
+              setRematchOwned(null);
+              setRematchPick(null);
+              if (current) openOwned(current.mode, current.item);
+            }}
+          />
+        )}
+      </Show>
+      <div classList={{ hidden: !!rematchOwned() }}>
       {/* Rows | Calendar view toggle + Monitored chip. Lives in the filter-bar
           area inside the Mainstream tab (not a third top-level Discover tab).
           Claude 2026-09-15: Monitored chip added here — not inside MainstreamFilterSortBar,
@@ -1554,15 +1605,28 @@ export const MainstreamDiscover: Component<{
                   undefined
                 : undefined
             }
+            replaceSlot={replaceSlot() ?? undefined}
+            onRematch={
+              ownedDetail()
+                ? () => {
+                    const owned = ownedDetail();
+                    if (!owned) return;
+                    setRematchOwned(owned);
+                    closeDetail();
+                  }
+                : undefined
+            }
             onClose={closeDetail}
             onSelectRecommendation={(next) => {
               setOwnedDetail(null);
+              setReplaceSlot(null);
               setDetailTarget(next);
             }}
             onGrab={setGrabTarget}
           />
         )}
       </Show>
+      </div>
     </div>
   );
 };

@@ -75,4 +75,17 @@ describe("SeriesEpisodesPanel", () => {
       screen.getByText("This format cannot play in the browser"),
     ).toBeInTheDocument();
   });
+
+  it("calls onReplace with the selected season and episode", () => {
+    const seen: { season: number; episode: number }[] = [];
+    render(() => (
+      <SeriesEpisodesPanel
+        seriesID={77}
+        seasons={seasons}
+        onReplace={(season, episode) => seen.push({ season, episode })}
+      />
+    ));
+    fireEvent.click(screen.getAllByRole("button", { name: "Replace" })[0]!);
+    expect(seen).toEqual([{ season: 1, episode: 1 }]);
+  });
 });

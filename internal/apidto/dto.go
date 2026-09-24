@@ -1782,6 +1782,19 @@ type LibraryRatingRequest struct {
 	Rating int `json:"rating"`
 }
 
+// TrackedIdentityRequest is PUT /api/modes/{mode}/tracked/{id}/identity —
+// owned-detail Rematch. Movies/Series send tmdbId+title; Adult sends box+sceneId.
+// Claude 2026-09-24: SearchTakeover fourth caller writes library rows, not proposals.
+type TrackedIdentityRequest struct {
+	TmdbId  int    `json:"tmdbId,omitempty"`
+	Title   string `json:"title"`
+	Year    int    `json:"year,omitempty"`
+	Box     string `json:"box,omitempty"`
+	SceneID string `json:"sceneId,omitempty"`
+	Studio  string `json:"studio,omitempty"`
+	Date    string `json:"date,omitempty"`
+}
+
 // TrackedItemFile is one primary or alternate video under a Movies tracked
 // title (GET /api/modes/movies/tracked). Series/Adult leave Files empty.
 type TrackedItemFile struct {

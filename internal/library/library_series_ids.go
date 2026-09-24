@@ -2,7 +2,10 @@ package library
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 )
 
 // SetSeriesTMDBID assigns a real TMDB id to a series row that was stored with
@@ -35,6 +38,44 @@ func (s *Store) SetSeriesTMDBID(ctx context.Context, seriesID int64, newTMDBID, 
 	}
 	if n == 0 {
 		return fmt.Errorf("library: could not set tmdb_id=%d on series %d (conflict or missing)", newTMDBID, seriesID)
+	}
+	return nil
+}
+
+// RematchSeries rekeys one library_series row to a new TMDB id and title.
+// Same-row rematch (already that tmdb_id) still updates title/year.
+// Claude 2026-09-24: owned-detail Rematch; row id stays stable for play URLs.
+// Reason: SearchTakeover must not go through Rename proposals.
+// Troubleshooting: conflict if another series already owns newTMDBID.
+// Review if: TVDB id is also picked on rematch.
+func (s *Store) RematchSeries(ctx context.Context, seriesID int64, newTMDBID int, title string, year int) error {
+	if seriesID == 0 || newTMDBID <= 0 || strings.TrimSpace(title) == "" {
+		return fmt.Errorf("library: RematchSeries requires series id, positive tmdb id, and title")
+	}
+	other, err := s.GetSeriesByTMDBID(ctx, newTMDBID)
+	if err == nil && other != nil && other.ID != seriesID {
+		return ErrIdentityConflict
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) && !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE library_series
+		SET tmdb_id = ?,
+		    title = ?,
+		    year = CASE WHEN ? > 0 THEN ? ELSE year END,
+		    updated_at = sakms_now()
+		WHERE id = ?
+	`, newTMDBID, title, year, year, seriesID)
+	if err != nil {
+		return fmt.Errorf("rematching series %d to tmdb_id=%d: %w", seriesID, newTMDBID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
 	}
 	return nil
 }

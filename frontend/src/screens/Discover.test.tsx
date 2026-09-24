@@ -552,6 +552,32 @@ describe("Discover — existing-library row", () => {
 
     fireEvent.click(card);
     expect(await screen.findByText("Search releases")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Rematch" })).toBeInTheDocument();
+  });
+
+  it("Rematch on an owned preview card opens SearchTakeover, not a nested dialog", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/tracked"))
+        return jsonResponse([tracked({ id: 10, title: "Owned Movie", tmdbId: 500, year: 2020 })]);
+      if (url.includes("/api/modes/movies/poster?tmdbId=500"))
+        return jsonResponse({ posterPath: "/libmovie.jpg" });
+      if (url.includes("/tmdb-search")) return jsonResponse([]);
+      const av = availabilityDefaults(url);
+      if (av) return av;
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
+    await screen.findByText("Owned Movie");
+    fireEvent.click(screen.getByRole("button", { name: "Owned Movie" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Rematch" }));
+    expect(
+      await screen.findByText("Rematch “Owned Movie”"),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Currently matched: Owned Movie/)).toBeInTheDocument();
   });
 
   // §0.3's guard. This is the ONLY verification of it, and the defect it

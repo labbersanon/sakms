@@ -2060,3 +2060,111 @@ describe("DetailPopup — lead and children order", () => {
     expect(follows(streaming, more)).toBe(true);
   });
 });
+
+describe("DetailPopup — owned Rematch and Replace", () => {
+  it("shows Rematch next to Search releases and notifies the parent", async () => {
+    stubFetch((url) => {
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      if (url.includes("/discover/detail")) return jsonResponse(emptyDetail());
+      throw new Error("unexpected fetch: " + url);
+    });
+    let rematch = false;
+    render(() => (
+      <DetailPopup
+        target={{ mode: "movies", item: movie({ id: 42, title: "Wrong" }) }}
+        allowGrab={false}
+        canReplace
+        onRematch={() => {
+          rematch = true;
+        }}
+        onClose={() => {}}
+      />
+    ));
+    expect(await screen.findByText("Search releases")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Rematch" }));
+    expect(rematch).toBe(true);
+  });
+
+  it("Search releases then Cancel replace returns to the owned header", async () => {
+    stubFetch((url) => {
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      if (url.includes("/discover/detail")) return jsonResponse(emptyDetail());
+      if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080 });
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => (
+      <DetailPopup
+        target={{ mode: "movies", item: movie({ id: 42 }) }}
+        allowGrab={false}
+        canReplace
+        onRematch={() => {}}
+        onClose={() => {}}
+      />
+    ));
+    fireEvent.click(await screen.findByRole("button", { name: "Search releases" }));
+    expect(
+      await screen.findByRole("button", { name: "Cancel replace" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Rematch" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel replace" }));
+    expect(
+      await screen.findByRole("button", { name: "Search releases" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Rematch" })).toBeInTheDocument();
+  });
+
+  it("replaceSlot skips the series picker and opens episode Replace", async () => {
+    stubFetch((url) => {
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      if (url.includes("/discover/detail"))
+        return jsonResponse({ seasons: [seasonFixture(1)] });
+      if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080 });
+      if (url.includes("/library/") && /\/seasons$/.test(url)) {
+        return jsonResponse([
+          {
+            seasonNumber: 1,
+            episodeCount: 1,
+            missingCount: 0,
+            monitored: true,
+            episodes: [
+              {
+                id: 11,
+                episodeNumber: 1,
+                title: "Pilot",
+                hasFile: true,
+                videoUrl: "/api/modes/series/tracked/77/video?episodeId=11",
+              },
+            ],
+          },
+        ]);
+      }
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => (
+      <DetailPopup
+        target={{
+          mode: "series",
+          item: movie({ id: 1396, title: "Breaking Bad", mediaType: "tv" }),
+        }}
+        allowGrab={false}
+        canReplace
+        seriesID={77}
+        replaceSlot={{ season: 1, episode: 1 }}
+        onClose={() => {}}
+      />
+    ));
+    expect(
+      await screen.findByRole("button", { name: "Cancel replace" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        "Pick a season (and optionally an episode) to check availability.",
+      ),
+    ).toBeNull();
+    expect(await screen.findByRole("button", { name: "Replace" })).toBeInTheDocument();
+  });
+});

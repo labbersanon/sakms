@@ -76,6 +76,13 @@ import {
 } from "./shared";
 import { useSelection } from "./selection";
 import { type DetailTarget, CATALOG_SOURCES, DetailPopup } from "./DetailPopup";
+import { OwnedRematch } from "../OwnedRematch";
+import {
+  applyPickToTracked,
+  identityFromPick,
+  putTrackedIdentity,
+} from "../../api/rematch";
+import type { TakeoverPick } from "../SearchTakeover";
 import { type RssFeed, fetchRssFeeds } from "../../api/rssFeeds";
 import { RssFeedRow } from "./RssFeedRows";
 import { RowEditor, type RowDescriptor } from "./RowEditor";
@@ -460,6 +467,8 @@ export const AdultDiscover: Component<{
   // Review if: a per-card single grab is ever restored to Adult Discover.
   const [detailTarget, setDetailTarget] = createSignal<DetailTarget | null>(null);
   const [ownedDetail, setOwnedDetail] = createSignal<TrackedItem | null>(null);
+  const [rematchItem, setRematchItem] = createSignal<TrackedItem | null>(null);
+  const [rematchPick, setRematchPick] = createSignal<TakeoverPick | null>(null);
   const openOwned = (item: TrackedItem) => {
     const t = trackedToDetailTarget("adult", item);
     if (!t) return;
@@ -892,6 +901,38 @@ export const AdultDiscover: Component<{
 
   return (
     <div>
+      <Show when={rematchItem()}>
+        {(item) => (
+          <OwnedRematch
+            mode="adult"
+            item={item()}
+            onCommit={async (pick) => {
+              setRematchPick(pick);
+              await putTrackedIdentity(
+                "adult",
+                item().id,
+                identityFromPick(pick),
+              );
+            }}
+            onDone={() => {
+              const current = rematchItem();
+              const pick = rematchPick();
+              setRematchItem(null);
+              setRematchPick(null);
+              if (!current || !pick) return;
+              setReloadToken((n) => n + 1);
+              openOwned(applyPickToTracked(current, pick));
+            }}
+            onCancel={() => {
+              const current = rematchItem();
+              setRematchItem(null);
+              setRematchPick(null);
+              if (current) openOwned(current);
+            }}
+          />
+        )}
+      </Show>
+      <div classList={{ hidden: !!rematchItem() }}>
       <div class="mb-3 flex flex-wrap items-center gap-1">
         <FilterChip
           label="In library"
@@ -1239,10 +1280,21 @@ export const AdultDiscover: Component<{
                 ? playableLibrarySrc("adult", ownedDetail()!) || undefined
                 : undefined
             }
+            onRematch={
+              ownedDetail()
+                ? () => {
+                    const owned = ownedDetail();
+                    if (!owned) return;
+                    setRematchItem(owned);
+                    closeDetail();
+                  }
+                : undefined
+            }
             onClose={closeDetail}
           />
         )}
       </Show>
+      </div>
     </div>
   );
 };

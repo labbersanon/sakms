@@ -9466,3 +9466,21 @@ status stays active.
 | `frontend/src/screens/discover/DetailPopup.tsx` | Owned series Play/Resume + panel |
 | `frontend/src/screens/seriesPlay.ts` | First playable / Resume pick |
 
+## 2026-09-24 — Owned-detail Rematch and episode Replace
+
+**Problem:** A wrong catalog match or a bad episode file had no owned-detail path. Rename's SearchTakeover writes proposals; title-level Search releases existed but series still required the season picker even when the episode was already known.
+**Fix:** `PUT /api/modes/{mode}/tracked/{id}/identity` rematches movies/series/adult on the same library row. Owned detail Rematch mounts SearchTakeover as a full page (fourth caller), then reopens the patched title. Series episode rows have Replace; a rematch pick with S/E pre-sets that slot so the picker is skipped. Upgrade-on-import still retires the old file. Play URLs stay on the stable row id.
+**Outcome:** Identity write is 204 / 409. Owned Discover and In library detail show Rematch + Search releases; episode Replace opens grab for that S/E.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/library/library_*_ids.go` / `library_scene.go` | `RematchMovie` / `RematchSeries` / `RematchScene` |
+| `internal/api/tracked_identity.go` | PUT identity handler |
+| `frontend/src/screens/OwnedRematch.tsx` | SearchTakeover fourth caller |
+| `frontend/src/screens/discover/DetailPopup.tsx` | Rematch, Cancel replace, `replaceSlot`, episode Replace |
+| `frontend/src/screens/discover/Mainstream.tsx` | Rematch takeover + reopen |
+| `frontend/src/screens/Library.tsx` | In library Rematch |
+| `frontend/src/screens/discover/Adult.tsx` | Adult Rematch |
+

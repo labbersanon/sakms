@@ -1753,6 +1753,20 @@ export interface LibraryRatingRequest {
   rating: number /* int */;
 }
 /**
+ * TrackedIdentityRequest is PUT /api/modes/{mode}/tracked/{id}/identity —
+ * owned-detail Rematch. Movies/Series send tmdbId+title; Adult sends box+sceneId.
+ * Claude 2026-09-24: SearchTakeover fourth caller writes library rows, not proposals.
+ */
+export interface TrackedIdentityRequest {
+  tmdbId?: number /* int */;
+  title: string;
+  year?: number /* int */;
+  box?: string;
+  sceneId?: string;
+  studio?: string;
+  date?: string;
+}
+/**
  * TrackedItemFile is one primary or alternate video under a Movies tracked
  * title (GET /api/modes/movies/tracked). Series/Adult leave Files empty.
  */

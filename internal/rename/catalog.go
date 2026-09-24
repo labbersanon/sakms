@@ -89,9 +89,6 @@ func catalogEpisodeAtPath(ctx context.Context, sess *mode.Session, libStore *lib
 	hint := trustedSeriesSidecar(videoPath, showFolder, foundRoot)
 	tmdbID := catalogShowTMDBID(ctx, sess, hint, videoPath)
 	pathTMDB := tmdbID
-	if movieTMDBNotSeries(ctx, sess, tmdbID, yearFromShowFolder(showFolder)) {
-		tmdbID = 0
-	}
 	season, eps, parsed := library.ParseEpisodeNumbersNested(videoPath, foundRoot)
 	if dummyMovieEpisodeParse(season, eps) {
 		parsed = false
@@ -107,25 +104,24 @@ func catalogEpisodeAtPath(ctx context.Context, sess *mode.Session, libStore *lib
 		}
 	}
 	if !parsed {
-		parent, nestSeason, nestEp, ok := findEpisodeNest(ctx, libStore, nestTitleHint(hint.Title, showFolder, videoPath))
+		titleHint := nestTitleHint(hint.Title, showFolder, videoPath)
+		parent, nestSeason, nestEp, ok := findEpisodeNest(ctx, libStore, titleHint)
+		var epTitle, airDate string
+		if !ok {
+			parent, nestSeason, nestEp, epTitle, airDate, ok = findTVDBEpisodeNest(ctx, sess, libStore, titleHint, yearFromShowFolder(showFolder))
+		}
 		if !ok {
 			return false, nil
 		}
-		ok, err := upsertCatalogedEpisode(ctx, sess, libStore, catalogEpisode{
+		cataloged, err := upsertCatalogedEpisode(ctx, sess, libStore, catalogEpisode{
 			TMDBID: parent.TMDBID, TVDBID: parent.TVDBID, Title: parent.Title, Year: parent.Year,
 			Season: nestSeason, Episodes: []int{nestEp}, VideoPath: videoPath, FoundRoot: foundRoot,
-			AttachExtra: true,
+			AttachExtra: true, EpisodeTitle: epTitle, AirDate: airDate,
 		})
-		if err != nil || !ok {
-			return ok, err
+		if err != nil || !cataloged {
+			return cataloged, err
 		}
-		if pathTMDB > 0 && pathTMDB != parent.TMDBID {
-			if stray, getErr := libStore.GetSeriesByTMDBID(ctx, pathTMDB); getErr == nil && stray != nil {
-				if has, hasErr := libStore.SeriesHasOnDiskFile(ctx, stray.ID); hasErr == nil && !has {
-					_ = libStore.DeleteSeries(ctx, stray.ID)
-				}
-			}
-		}
+		retireStrayMovieSeries(ctx, libStore, pathTMDB, videoPath, parent.TMDBID)
 		return true, nil
 	}
 	if tmdbID == 0 {
@@ -139,15 +135,17 @@ func catalogEpisodeAtPath(ctx context.Context, sess *mode.Session, libStore *lib
 }
 
 type catalogEpisode struct {
-	TMDBID      int
-	TVDBID      int
-	Title       string
-	Year        int
-	Season      int
-	Episodes    []int
-	VideoPath   string
-	FoundRoot   string
-	AttachExtra bool
+	TMDBID       int
+	TVDBID       int
+	Title        string
+	Year         int
+	Season       int
+	Episodes     []int
+	VideoPath    string
+	FoundRoot    string
+	AttachExtra  bool
+	EpisodeTitle string
+	AirDate      string
 }
 
 func upsertCatalogedEpisode(ctx context.Context, sess *mode.Session, libStore *library.Store, in catalogEpisode) (bool, error) {
@@ -200,10 +198,21 @@ func upsertCatalogedEpisode(ctx context.Context, sess *mode.Session, libStore *l
 			cataloged = true
 			continue
 		}
+		epTitle, airDate := in.EpisodeTitle, in.AirDate
+		if got != nil {
+			if epTitle == "" {
+				epTitle = got.Title
+			}
+			if airDate == "" {
+				airDate = got.AirDate
+			}
+		}
 		_, err = libStore.UpsertEpisode(ctx, library.Episode{
 			SeriesID:      series.ID,
 			SeasonNumber:  in.Season,
 			EpisodeNumber: epNum,
+			Title:         epTitle,
+			AirDate:       airDate,
 			FilePath:      in.VideoPath,
 			Size:          library.FileSize(in.VideoPath),
 		})

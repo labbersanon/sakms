@@ -85,8 +85,7 @@ describe("SeriesEpisodesPanel", () => {
         onReplace={(season, episode) => seen.push({ season, episode })}
       />
     ));
-    const buttons = screen.getAllByRole("button", { name: "Replace" });
-    fireEvent.click(buttons[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: "Replace" })[0]!);
     expect(seen).toEqual([{ season: 1, episode: 1 }]);
   });
 });

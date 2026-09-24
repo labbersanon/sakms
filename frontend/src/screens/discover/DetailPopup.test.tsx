@@ -2099,6 +2099,7 @@ describe("DetailPopup — owned Rematch and Replace", () => {
         target={{ mode: "movies", item: movie({ id: 42 }) }}
         allowGrab={false}
         canReplace
+        onRematch={() => {}}
         onClose={() => {}}
       />
     ));
@@ -2164,6 +2165,6 @@ describe("DetailPopup — owned Rematch and Replace", () => {
         "Pick a season (and optionally an episode) to check availability.",
       ),
     ).toBeNull();
-    expect(screen.getByRole("button", { name: "Replace" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Replace" })).toBeInTheDocument();
   });
 });

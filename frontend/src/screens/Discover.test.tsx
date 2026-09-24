@@ -507,8 +507,13 @@ describe("Discover — existing-library row", () => {
       screen.getByRole("link", { name: "View all In your library" }),
     ).toHaveAttribute("href", "/discover/mainstream?view=library&tab=movies");
 
-    // The lazily-resolved library poster renders through the proxy.
-    const img = await screen.findByRole("img", { name: "Owned Movie" });
+    // LibraryPosterCard keeps alt="" (title lives on the button).
+    const card = screen.getByRole("button", { name: "Owned Movie" });
+    const img = await waitFor(() => {
+      const el = card.querySelector("img");
+      expect(el).toBeTruthy();
+      return el!;
+    });
     const src = img.getAttribute("src") ?? "";
     expect(decodeURIComponent(src)).toMatch(/libmovie/);
     expect(src.startsWith("/api/images/proxy?url=")).toBe(true);

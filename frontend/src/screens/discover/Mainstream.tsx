@@ -649,13 +649,35 @@ const LIBRARY_PAGE_SIZE = 20;
 // same paging shape PaginatedRow uses — so DOM size and concurrent per-card
 // poster fetches stay bounded. Reloads on reloadToken alongside the category
 // rows; the visible count resets to one page on every reload.
+const OwnedPreviewCard: Component<{
+  mode: "movies" | "series";
+  item: TrackedItem;
+  onOwned?: (mode: "movies" | "series", item: TrackedItem) => void;
+}> = (props) => {
+  const selection = useSelection();
+  const blocked = () =>
+    (selection?.selectMode() ?? false) || (props.item.tmdbId ?? 0) <= 0;
+  return (
+    <LibraryPosterCard
+      class={MEDIA_CAROUSEL_POSTER_CLASS}
+      mode={props.mode}
+      item={props.item}
+      selected={false}
+      disabled={blocked()}
+      onClick={() => {
+        if (blocked()) return;
+        props.onOwned?.(props.mode, props.item);
+      }}
+      onRate={(rating) => void setItemRating(props.mode, props.item.id, rating)}
+    />
+  );
+};
+
 const LibraryRow: Component<{
   mode?: "movies" | "series";
   reloadToken: () => number;
   onOwned?: (mode: "movies" | "series", item: TrackedItem) => void;
 }> = (props) => {
-  const selection = useSelection();
-  const inert = () => selection?.selectMode() ?? false;
   const [entries] = createResource(
     () => [props.reloadToken(), props.mode] as const,
     async ([, mode]) => {
@@ -690,23 +712,13 @@ const LibraryRow: Component<{
       <Carousel
         title="In your library"
         items={shown()}
-        renderItem={(e) => {
-          const blocked = inert() || (e.item.tmdbId ?? 0) <= 0;
-          return (
-            <LibraryPosterCard
-              class={MEDIA_CAROUSEL_POSTER_CLASS}
-              mode={e.mode}
-              item={e.item}
-              selected={false}
-              disabled={blocked}
-              onClick={() => {
-                if (blocked) return;
-                props.onOwned?.(e.mode, e.item);
-              }}
-              onRate={(rating) => void setItemRating(e.mode, e.item.id, rating)}
-            />
-          );
-        }}
+        renderItem={(e) => (
+          <OwnedPreviewCard
+            mode={e.mode}
+            item={e.item}
+            onOwned={props.onOwned}
+          />
+        )}
         onLoadMore={() => setVisible((n) => n + LIBRARY_PAGE_SIZE)}
         hasMore={hasMore()}
         // Claude 2026-09-24: View all turns on In library (?view=library).

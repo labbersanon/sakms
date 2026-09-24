@@ -178,6 +178,11 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 
 	mux.HandleFunc("GET /api/modes/{mode}/tracked", listTrackedHandler(libStore, grabsStore))
 	mux.HandleFunc("GET /api/modes/{mode}/tracked/{id}/video", trackedVideoHandler(libStore))
+	// Claude 2026-09-24: Series-only play head. Literal `series` so Movies/Adult
+	//   cannot hit it; {id} is library_series.id, {episodeId} must belong to it.
+	// Reason: Resume Show and episode bars need a write the seasons GET can read.
+	// Review if: Movies/Adult start recording progress.
+	mux.HandleFunc("PUT /api/modes/series/tracked/{id}/episodes/{episodeId}/progress", putSeriesEpisodeProgressHandler(libStore))
 	mux.HandleFunc("GET /api/modes/{mode}/collections", collectionsHandler(libStore))
 	mux.HandleFunc("GET /api/modes/{mode}/library/root-folder", getLibraryRootFolderHandler(settingsStore))
 	mux.HandleFunc("PUT /api/modes/{mode}/library/root-folder", putLibraryRootFolderHandler(httpClient, connStore, scStore, settingsStore, propStore, libStore, prober, videoHasher, entityStore))

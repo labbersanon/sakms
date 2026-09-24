@@ -791,11 +791,174 @@ func TestTrackedVideoHandler_MoviesInvalidFileId(t *testing.T) {
 	}
 }
 
-func TestTrackedVideoHandler_SeriesStillUnsupported(t *testing.T) {
+func TestTrackedVideoHandler_SeriesRequiresEpisodeID(t *testing.T) {
 	_, srv := newTrackedTestServer(t)
 	resp, _ := getModeTrackedVideo(t, srv, "series", 1, "")
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400 for series tracked video, got %d", resp.StatusCode)
+		t.Fatalf("expected 400 without episodeId, got %d", resp.StatusCode)
+	}
+	resp, _ = getModeTrackedVideo(t, srv, "series", 1, "?episodeId=abc")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for non-numeric episodeId, got %d", resp.StatusCode)
+	}
+}
+
+func TestTrackedVideoHandler_SeriesServesPlayableEpisode(t *testing.T) {
+	libStore, srv := newTrackedTestServer(t)
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "s01e01.mp4")
+	if err := os.WriteFile(path, []byte("episode-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	series, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 1396, Title: "Breaking Bad", Year: 2008, RootFolderPath: filepath.Dir(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 1, Title: "Pilot", FilePath: path,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, body := getModeTrackedVideo(t, srv, "series", series.ID, fmt.Sprintf("?episodeId=%d", ep.ID))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", resp.StatusCode, body)
+	}
+	if string(body) != "episode-bytes" {
+		t.Fatalf("body = %q, want episode-bytes", body)
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "private, max-age=3600" {
+		t.Fatalf("Cache-Control = %q, want private max-age", got)
+	}
+}
+
+func TestTrackedVideoHandler_SeriesServesRange(t *testing.T) {
+	libStore, srv := newTrackedTestServer(t)
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "s01e01.mp4")
+	if err := os.WriteFile(path, []byte("episode-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	series, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 1, Title: "Show", Year: 2020, RootFolderPath: filepath.Dir(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 1, FilePath: path,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/api/modes/series/tracked/%d/video?episodeId=%d", srv.URL, series.ID, ep.ID), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Range", "bytes=0-4")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusPartialContent {
+		t.Fatalf("expected 206, got %d body=%q", resp.StatusCode, body)
+	}
+	if string(body) != "episo" {
+		t.Fatalf("range body = %q, want episo", body)
+	}
+}
+
+func TestTrackedVideoHandler_SeriesEpisodeMustBelongToSeries(t *testing.T) {
+	libStore, srv := newTrackedTestServer(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	aPath := filepath.Join(dir, "a.mp4")
+	bPath := filepath.Join(dir, "b.mp4")
+	if err := os.WriteFile(aPath, []byte("aaa"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bPath, []byte("bbb"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 1, Title: "A", Year: 2020, RootFolderPath: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 2, Title: "B", Year: 2021, RootFolderPath: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	epB, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: b.ID, SeasonNumber: 1, EpisodeNumber: 1, FilePath: bPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, body := getModeTrackedVideo(t, srv, "series", a.ID, fmt.Sprintf("?episodeId=%d", epB.ID))
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for sibling episodeId, got %d body=%q", resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), "bbb") {
+		t.Fatalf("sibling episode bytes leaked: %q", body)
+	}
+}
+
+func TestTrackedVideoHandler_SeriesFileIdMustBelongToEpisode(t *testing.T) {
+	libStore, srv := newTrackedTestServer(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	primary := filepath.Join(dir, "primary.mp4")
+	alt := filepath.Join(dir, "alt.mp4")
+	other := filepath.Join(dir, "other.mp4")
+	for _, p := range []string{primary, alt, other} {
+		if err := os.WriteFile(p, []byte(filepath.Base(p)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	series, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 1, Title: "Show", Year: 2020, RootFolderPath: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep1, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 1, FilePath: primary,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep2, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 2, FilePath: other,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	altFile, err := libStore.UpsertEpisodeFile(ctx, library.EpisodeFile{
+		EpisodeID: ep1.ID, FilePath: alt, IsPrimary: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep2Files, err := libStore.ListEpisodeFiles(ctx, ep2.ID)
+	if err != nil || len(ep2Files) != 1 {
+		t.Fatalf("ep2 files: %v err=%v", ep2Files, err)
+	}
+
+	resp, body := getModeTrackedVideo(t, srv, "series", series.ID, fmt.Sprintf("?episodeId=%d&fileId=%d", ep1.ID, altFile.ID))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for own fileId, got %d body=%q", resp.StatusCode, body)
+	}
+	if string(body) != "alt.mp4" {
+		t.Fatalf("alt body = %q, want alt.mp4", body)
+	}
+
+	resp, body = getModeTrackedVideo(t, srv, "series", series.ID, fmt.Sprintf("?episodeId=%d&fileId=%d", ep1.ID, ep2Files[0].ID))
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for sibling fileId, got %d body=%q", resp.StatusCode, body)
 	}
 }
 

@@ -14,9 +14,47 @@
 //   Play / Hide player for {label}  on the toggle
 //   Play {label} fullscreen         on the Fullscreen button
 //   Video player for {label}        on the <video>
-import { type Component, createSignal, Show } from "solid-js";
+import { type Component, createSignal, onCleanup, Show } from "solid-js";
 import Maximize2 from "lucide-solid/icons/maximize-2";
 import { Button } from "./ui";
+
+export type VideoProgress = {
+  position: number;
+  duration: number;
+  ended: boolean;
+};
+
+// bindVideoProgress reports timeupdate (throttled 5s), pause, and ended.
+// Claude 2026-09-24: Series play head only; Movies/Adult omit onProgress.
+// Reason: PUT .../progress must not fire on every timeupdate tick.
+// Troubleshooting: timeupdate fires many times per second.
+export function bindVideoProgress(
+  el: HTMLVideoElement,
+  onProgress?: (info: VideoProgress) => void,
+): () => void {
+  if (!onProgress) return () => undefined;
+  let last = 0;
+  const emit = (ended: boolean) => {
+    const duration = Number.isFinite(el.duration) ? el.duration : 0;
+    onProgress({ position: el.currentTime || 0, duration, ended });
+  };
+  const onTime = () => {
+    const now = Date.now();
+    if (now - last < 5000) return;
+    last = now;
+    emit(false);
+  };
+  const onPause = () => emit(false);
+  const onEnded = () => emit(true);
+  el.addEventListener("timeupdate", onTime);
+  el.addEventListener("pause", onPause);
+  el.addEventListener("ended", onEnded);
+  return () => {
+    el.removeEventListener("timeupdate", onTime);
+    el.removeEventListener("pause", onPause);
+    el.removeEventListener("ended", onEnded);
+  };
+}
 
 type VideoWithWebkit = HTMLVideoElement & {
   webkitEnterFullscreen?: () => void;
@@ -45,20 +83,21 @@ export async function enterVideoFullscreen(el: HTMLVideoElement): Promise<void> 
 
 // PlayFullscreenLink is the Library header control under Watch Trailer.
 // One click mounts the same inline <video> as TrackedPlayback, enters
-// fullscreen, and starts playback. Discover omits it (no playSrc).
-// Claude 2026-08-14: noun is Movie/Show/Scene so the label matches the
-// Library tab. Series has no browser-playable file URL today, so Library
-// simply does not pass playSrc for shows.
-// Review if: Series episode playback lands.
+// fullscreen, and starts playback. Discover catalog-only omits playSrc.
+// Owned series passes the next episode URL (Play Show / Resume Show).
 export const PlayFullscreenLink: Component<{
   src: string;
   noun: "Movie" | "Show" | "Scene";
   title: string;
   class?: string;
+  resume?: boolean;
+  onProgress?: (info: VideoProgress) => void;
 }> = (props) => {
   const [open, setOpen] = createSignal(false);
   const [wantFs, setWantFs] = createSignal(false);
   let videoEl: HTMLVideoElement | undefined;
+  let unbindProgress: (() => void) | undefined;
+  onCleanup(() => unbindProgress?.());
 
   const start = (el: HTMLVideoElement) => {
     void (async () => {
@@ -69,11 +108,18 @@ export const PlayFullscreenLink: Component<{
 
   const bindVideo = (el: HTMLVideoElement) => {
     videoEl = el;
+    unbindProgress?.();
+    unbindProgress = bindVideoProgress(el, props.onProgress);
     if (wantFs()) {
       start(el);
       setWantFs(false);
     }
   };
+
+  const playLabel = () =>
+    props.resume && props.noun === "Show"
+      ? "Resume Show →"
+      : `Play ${props.noun} →`;
 
   return (
     <>
@@ -83,7 +129,11 @@ export const PlayFullscreenLink: Component<{
           props.class ??
           "inline-flex w-full items-center justify-center rounded-md border border-border bg-surface-2 px-3 py-1.5 text-xs font-medium text-fg transition hover:opacity-90"
         }
-        aria-label={`Play ${props.noun} fullscreen`}
+        aria-label={
+          props.resume && props.noun === "Show"
+            ? "Resume Show fullscreen"
+            : `Play ${props.noun} fullscreen`
+        }
         onClick={() => {
           if (videoEl) {
             start(videoEl);
@@ -93,7 +143,7 @@ export const PlayFullscreenLink: Component<{
           setOpen(true);
         }}
       >
-        {`Play ${props.noun} →`}
+        {playLabel()}
       </button>
       <Show when={open()}>
         {/* Claude 2026-08-14: bg-black so fullscreen pillarbox is not cream.
@@ -114,15 +164,21 @@ export const PlayFullscreenLink: Component<{
   );
 };
 
-export const TrackedPlayback: Component<{ src: string; label: string }> = (
-  props,
-) => {
+export const TrackedPlayback: Component<{
+  src: string;
+  label: string;
+  onProgress?: (info: VideoProgress) => void;
+}> = (props) => {
   const [open, setOpen] = createSignal(false);
   const [wantFs, setWantFs] = createSignal(false);
   let videoEl: HTMLVideoElement | undefined;
+  let unbindProgress: (() => void) | undefined;
+  onCleanup(() => unbindProgress?.());
 
   const bindVideo = (el: HTMLVideoElement) => {
     videoEl = el;
+    unbindProgress?.();
+    unbindProgress = bindVideoProgress(el, props.onProgress);
     if (wantFs()) {
       void enterVideoFullscreen(el);
       setWantFs(false);

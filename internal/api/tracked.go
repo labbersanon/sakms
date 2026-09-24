@@ -353,6 +353,10 @@ func listTrackedHandler(libStore *library.Store, grabsStore *grabs.Store) http.H
 // (TestTrackedVideoHandler_AdultLockedRefusesBeforeAnyBytes pins that ordering).
 // Movies does not run that check — locking Adult must not blank movie playback
 // (TestTrackedVideoHandler_MoviesServesWhileAdultLocked).
+// Claude 2026-09-24: series episode stream via ?episodeId=&fileId=; no Adult lock.
+// Reason: a show is not one file; Play Show / episode Play reuse serveLocalVideoFile.
+// Troubleshooting: unknown-mode 400 used to also catch series ("adult scenes and movies").
+// Review if: transcoding lands and this handler starts returning HLS.
 func trackedVideoHandler(libStore *library.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
@@ -361,8 +365,10 @@ func trackedVideoHandler(libStore *library.Store) http.HandlerFunc {
 			serveAdultTrackedVideo(w, r, libStore)
 		case mode.Movies:
 			serveMoviesTrackedVideo(w, r, libStore)
+		case mode.Series:
+			serveSeriesTrackedVideo(w, r, libStore)
 		default:
-			http.Error(w, "tracked video is only supported for adult scenes and movies right now", http.StatusBadRequest)
+			http.Error(w, "tracked video is only supported for adult scenes, movies, and series episodes", http.StatusBadRequest)
 		}
 	}
 }
@@ -408,6 +414,48 @@ func serveMoviesTrackedVideo(w http.ResponseWriter, r *http.Request, libStore *l
 		return
 	}
 	serveLocalVideoFile(w, r, path, "movie")
+}
+
+func serveSeriesTrackedVideo(w http.ResponseWriter, r *http.Request, libStore *library.Store) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid tracked id", http.StatusBadRequest)
+		return
+	}
+	episodeID, ok := parseRequiredEpisodeID(w, r)
+	if !ok {
+		return
+	}
+	fileID, ok := parseOptionalFileID(w, r)
+	if !ok {
+		return
+	}
+	path, err := seriesTrackedVideoPath(r.Context(), libStore, id, episodeID, fileID)
+	if err != nil {
+		if errors.Is(err, library.ErrNotFound) {
+			http.Error(w, "no tracked series video with that id", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	serveLocalVideoFile(w, r, path, "episode")
+}
+
+// parseRequiredEpisodeID reads ?episodeId=. Missing or invalid 400 — series
+// video is always one episode, never the show as a whole.
+func parseRequiredEpisodeID(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get("episodeId"))
+	if raw == "" {
+		http.Error(w, "episodeId is required", http.StatusBadRequest)
+		return 0, false
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id < 1 {
+		http.Error(w, "invalid episodeId", http.StatusBadRequest)
+		return 0, false
+	}
+	return id, true
 }
 
 // parseOptionalFileID reads ?fileId= from the query. Missing/empty means
@@ -461,8 +509,53 @@ func movieTrackedVideoPath(ctx context.Context, libStore *library.Store, itemID,
 	return item.FilePath, nil
 }
 
+// seriesTrackedVideoPath resolves one episode file for a series tracked row.
+// episodeID must belong to seriesID. fileID 0 means the primary (then first
+// listed file, then the denormalized episode.FilePath). A non-zero fileID
+// must belong to this episode — ListEpisodeFiles is scoped to episodeID.
+func seriesTrackedVideoPath(ctx context.Context, libStore *library.Store, seriesID, episodeID, fileID int64) (string, error) {
+	ep, err := libStore.GetEpisodeByID(ctx, episodeID)
+	if err != nil {
+		return "", err
+	}
+	if ep.SeriesID != seriesID {
+		return "", library.ErrNotFound
+	}
+	files, err := libStore.ListEpisodeFiles(ctx, episodeID)
+	if err != nil {
+		return "", err
+	}
+	if fileID > 0 {
+		for _, f := range files {
+			if f.ID == fileID {
+				return f.FilePath, nil
+			}
+		}
+		return "", library.ErrNotFound
+	}
+	for _, f := range files {
+		if f.IsPrimary && strings.TrimSpace(f.FilePath) != "" {
+			return f.FilePath, nil
+		}
+	}
+	if len(files) > 0 && strings.TrimSpace(files[0].FilePath) != "" {
+		return files[0].FilePath, nil
+	}
+	return ep.FilePath, nil
+}
+
+// seriesEpisodeVideoURL is the in-app stream path for one episode. fileID 0
+// omits ?fileId= (primary / denormalized path).
+func seriesEpisodeVideoURL(seriesID, episodeID, fileID int64) string {
+	u := fmt.Sprintf("/api/modes/series/tracked/%d/video?episodeId=%d", seriesID, episodeID)
+	if fileID > 0 {
+		u += fmt.Sprintf("&fileId=%d", fileID)
+	}
+	return u
+}
+
 // serveLocalVideoFile opens path and hands it to http.ServeContent (Range/seek
-// works). kind is only for the error string ("scene" / "movie").
+// works). kind is only for the error string ("scene" / "movie" / "episode").
 func serveLocalVideoFile(w http.ResponseWriter, r *http.Request, path, kind string) {
 	if path == "" {
 		http.Error(w, "tracked "+kind+" has no video file", http.StatusNotFound)

@@ -3170,11 +3170,34 @@ type SeasonState struct {
 	Episodes []SeasonEpisode `json:"episodes,omitempty"`
 }
 
-// SeasonEpisode is one episode under SeasonState for the Library season list.
+// SeasonEpisode is one episode under SeasonState for the Library season list
+// and the owned-series play list. Catalog-only TMDB seasons may omit id /
+// videoUrl / files when no library_episodes row exists.
+// Claude 2026-09-24: id + airDate + videoUrl + files for in-app episode play.
+// Reason: GET /tracked must not carry a series-level videoUrl; play is per episode.
+// Troubleshooting: Play Show and SeriesEpisodesPanel need a stream URL + episode id.
+// Review if: a dedicated GET .../episodes replaces this embed.
 type SeasonEpisode struct {
-	EpisodeNumber int    `json:"episodeNumber"`
-	Title         string `json:"title"`
-	HasFile       bool   `json:"hasFile"`
+	ID            int64             `json:"id,omitempty"`
+	EpisodeNumber int               `json:"episodeNumber"`
+	Title         string            `json:"title"`
+	AirDate       string            `json:"airDate,omitempty"`
+	HasFile       bool              `json:"hasFile"`
+	VideoURL      string            `json:"videoUrl,omitempty"`
+	Files         []TrackedItemFile `json:"files,omitempty"`
+	// Claude 2026-09-24: play head for Resume / episode bars. Absent = never played.
+	// Review if: Movies/Adult start reporting the same fields.
+	PositionSeconds float64 `json:"positionSeconds,omitempty"`
+	DurationSeconds float64 `json:"durationSeconds,omitempty"`
+	Watched         bool    `json:"watched,omitempty"`
+}
+
+// EpisodeProgressRequest is PUT /api/modes/series/tracked/{id}/episodes/{episodeId}/progress.
+// The handler marks watched when Watched is true or position is ~90% of duration.
+type EpisodeProgressRequest struct {
+	PositionSeconds float64 `json:"positionSeconds"`
+	DurationSeconds float64 `json:"durationSeconds"`
+	Watched         bool    `json:"watched,omitempty"`
 }
 
 // SetSeasonMonitoredRequest is the body of both season-monitoring writes: the

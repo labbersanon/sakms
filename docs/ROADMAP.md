@@ -1411,6 +1411,40 @@ CHANGELOG.md's "transactional multi-episode upserts" entry.
 
 ## Backlog (not yet started, roughly in discussion order)
 
+<!-- Claude 2026-09-24: parked Series episode in-app playback plan.
+     Reason: operator approved Jellyfin-style series Play/Resume + season
+       picker + episode rows, then asked to save and do a different change first.
+     Troubleshooting: this is HTML5 episode play (Movies player extended), NOT
+       the transcoding / native-TV "Streaming media player" item below.
+     Review if: the feature ships or the operator withdraws it.
+     Related files: docs/series-episode-playback.md -->
+
+### Series episode in-app playback (Jellyfin-style series page) — parked 2026-09-24, plan saved, not authorized to build
+
+Library Movies can play in-app (`TrackedPlayback` +
+`GET /api/modes/movies/tracked/{id}/video`). Library Series cannot: the
+video handler returns 400, `playableLibrarySrc` is empty, and
+`SeasonsPanel` is monitor-only text. Episode files already exist on
+`library_episodes` / `library_episode_files`. There is no watch-progress
+store, so Resume and progress bars are a later phase.
+
+**Operator decisions (2026-09-24):** in-app player (not Jellyfin
+deep-link); full series page in the existing detail modal (Play/Resume,
+season picker, episode rows with play + progress); Library Series detail
+**and** Discover Series `DetailPopup`. Discover play only when the series
+is already tracked. No poster-card play, no transcoding, no Adult series.
+
+**This is not item 13 / native-TV transcoding.** That remains a separate
+legal-gated backlog item. This plan only wires Series into the shipped
+HTML5 Movies player.
+
+Full sequence (phase 1 stream+list+Play, phase 2 Discover, phase 3
+progress+Resume, phase 4 optional player queue):
+`docs/series-episode-playback.md`.
+
+**Do not start implementation from this ROADMAP entry.** The operator
+explicitly parked it to do other work first.
+
 ### Multi-idea planning session (2026-07-31) — active, 11 items, specs banked incrementally
 Wade brought 11 feature ideas in one session, each getting its own full
 deep-interview per `CLAUDE.md`'s mandatory pipeline. This entry is updated

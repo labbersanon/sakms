@@ -438,10 +438,10 @@ export interface PerformerSummary {
  * without an extra TMDB fan-out per card.
  * Claude 2026-09-22: PosterURL added for TVDB/AI absolute art + cache hits.
  * Reason: TMDB-relative posterPath cannot express TVDB/AI hosts; tracked rows
- *   persist absolute poster_url for reuse.
+ * 	persist absolute poster_url for reuse.
  * Claude 2026-09-23: regenerate dto.gen.ts via gendto after DTO edits.
  * Reason: #79 committed posterUrl in dto.gen.ts by hand; tygo output disagreed
- *   and TestNoDrift failed every later main push.
+ * 	and TestNoDrift failed every later main push.
  * Troubleshooting: `go test ./internal/apidto/gen` — run `go run ./cmd/gendto`.
  * Review if: a dedicated per-card metadata endpoint is added, or GET /tracked
  * starts carrying overview (then the card can read it from the list payload

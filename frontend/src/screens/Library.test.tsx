@@ -832,7 +832,16 @@ describe("Library — per-season monitoring (Series only)", () => {
   const breakingBad = item({ id: 77, title: "Breaking Bad", tmdbId: 1396 });
   const seasons: SeasonState[] = [
     { seasonNumber: 0, episodeCount: 3, missingCount: 3, monitored: false },
-    { seasonNumber: 1, episodeCount: 7, missingCount: 2, monitored: true },
+    {
+      seasonNumber: 1,
+      episodeCount: 7,
+      missingCount: 2,
+      monitored: true,
+      episodes: [
+        { episodeNumber: 1, title: "Pilot", hasFile: true },
+        { episodeNumber: 2, title: "Cat's in the Bag...", hasFile: false },
+      ],
+    },
   ];
 
   const openSeriesDetail = async () => {
@@ -871,6 +880,8 @@ describe("Library — per-season monitoring (Series only)", () => {
     // episodeCount is the TOTAL episode row count (on disk or not), shown
     // beside missingCount — never relabelled as "on disk".
     expect(screen.getByText("7 episodes · 2 missing")).toBeInTheDocument();
+    expect(screen.getByText("E01 · Pilot")).toBeInTheDocument();
+    expect(screen.getByText("E02 · Cat's in the Bag... · missing")).toBeInTheDocument();
     expect(screen.getByText("3 episodes · 3 missing")).toBeInTheDocument();
 
     expect(switchOf("Monitor Season 1").getAttribute("aria-checked")).toBe("true");

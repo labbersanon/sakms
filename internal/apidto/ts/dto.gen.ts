@@ -438,10 +438,10 @@ export interface PerformerSummary {
  * without an extra TMDB fan-out per card.
  * Claude 2026-09-22: PosterURL added for TVDB/AI absolute art + cache hits.
  * Reason: TMDB-relative posterPath cannot express TVDB/AI hosts; tracked rows
- *   persist absolute poster_url for reuse.
+ * 	persist absolute poster_url for reuse.
  * Claude 2026-09-23: regenerate dto.gen.ts via gendto after DTO edits.
  * Reason: #79 committed posterUrl in dto.gen.ts by hand; tygo output disagreed
- *   and TestNoDrift failed every later main push.
+ * 	and TestNoDrift failed every later main push.
  * Troubleshooting: `go test ./internal/apidto/gen` — run `go run ./cmd/gendto`.
  * Review if: a dedicated per-card metadata endpoint is added, or GET /tracked
  * starts carrying overview (then the card can read it from the list payload
@@ -3148,6 +3148,20 @@ export interface SeasonState {
   episodeCount: number /* int */;
   missingCount: number /* int */;
   monitored: boolean;
+  /**
+   * Claude 2026-09-23: nested episode titles on Library season rows.
+   * Reason: Laurel & Hardy (negative TMDB) had no episode list in the popup.
+   * Review if: a dedicated GET .../episodes replaces this embed.
+   */
+  episodes?: SeasonEpisode[];
+}
+/**
+ * SeasonEpisode is one episode under SeasonState for the Library season list.
+ */
+export interface SeasonEpisode {
+  episodeNumber: number /* int */;
+  title: string;
+  hasFile: boolean;
 }
 /**
  * SetSeasonMonitoredRequest is the body of both season-monitoring writes: the

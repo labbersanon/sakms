@@ -18,7 +18,9 @@ import (
 //
 // Claude 2026-09-23: catalog existing kids/main orphans that Rename skipped.
 // Reason: MatchesMovieSchema skips already-named folders; nfo files still
-//   never entered library_items unless Apply ran.
+//
+//	never entered library_items unless Apply ran.
+//
 // Troubleshooting: Kids root saved, Library empty, no scan progress.
 // Review if: catalog grows a TMDB-search fallback for nfo-less orphans.
 func catalogMovieAtPath(ctx context.Context, libStore *library.Store, videoPath, foundRoot string) (bool, error) {
@@ -86,12 +88,10 @@ func catalogEpisodeAtPath(ctx context.Context, sess *mode.Session, libStore *lib
 	showFolder := showFolderName(videoPath, roots)
 	hint := trustedSeriesSidecar(videoPath, showFolder, foundRoot)
 	tmdbID := catalogShowTMDBID(ctx, sess, hint, videoPath)
-	if tmdbID == 0 {
-		return false, nil
-	}
-	season, eps, ok := library.ParseEpisodeNumbersNested(videoPath, foundRoot)
-	if !ok || len(eps) == 0 {
-		return false, nil
+	pathTMDB := tmdbID
+	season, eps, parsed := library.ParseEpisodeNumbersNested(videoPath, foundRoot)
+	if dummyMovieEpisodeParse(season, eps) {
+		parsed = false
 	}
 	title := strings.TrimSpace(hint.Title)
 	if title == "" {
@@ -103,6 +103,30 @@ func catalogEpisodeAtPath(ctx context.Context, sess *mode.Session, libStore *lib
 			title = showFolder
 		}
 	}
+	if !parsed {
+		titleHint := nestTitleHint(hint.Title, showFolder, videoPath)
+		parent, nestSeason, nestEp, ok := findEpisodeNest(ctx, libStore, titleHint)
+		var epTitle, airDate string
+		if !ok {
+			parent, nestSeason, nestEp, epTitle, airDate, ok = findTVDBEpisodeNest(ctx, sess, libStore, titleHint, yearFromShowFolder(showFolder))
+		}
+		if !ok {
+			return false, nil
+		}
+		cataloged, err := upsertCatalogedEpisode(ctx, sess, libStore, catalogEpisode{
+			TMDBID: parent.TMDBID, TVDBID: parent.TVDBID, Title: parent.Title, Year: parent.Year,
+			Season: nestSeason, Episodes: []int{nestEp}, VideoPath: videoPath, FoundRoot: foundRoot,
+			AttachExtra: true, EpisodeTitle: epTitle, AirDate: airDate,
+		})
+		if err != nil || !cataloged {
+			return cataloged, err
+		}
+		retireStrayMovieSeries(ctx, libStore, pathTMDB, videoPath, parent.TMDBID)
+		return true, nil
+	}
+	if tmdbID == 0 {
+		return false, nil
+	}
 	return upsertCatalogedEpisode(ctx, sess, libStore, catalogEpisode{
 		TMDBID: tmdbID, TVDBID: hint.TVDBID, Title: title, Year: hint.Year,
 		Season: season, Episodes: eps, VideoPath: videoPath, FoundRoot: foundRoot,
@@ -111,15 +135,17 @@ func catalogEpisodeAtPath(ctx context.Context, sess *mode.Session, libStore *lib
 }
 
 type catalogEpisode struct {
-	TMDBID    int
-	TVDBID    int
-	Title     string
-	Year      int
-	Season    int
-	Episodes  []int
-	VideoPath   string
-	FoundRoot   string
-	AttachExtra bool
+	TMDBID       int
+	TVDBID       int
+	Title        string
+	Year         int
+	Season       int
+	Episodes     []int
+	VideoPath    string
+	FoundRoot    string
+	AttachExtra  bool
+	EpisodeTitle string
+	AirDate      string
 }
 
 func upsertCatalogedEpisode(ctx context.Context, sess *mode.Session, libStore *library.Store, in catalogEpisode) (bool, error) {
@@ -172,10 +198,21 @@ func upsertCatalogedEpisode(ctx context.Context, sess *mode.Session, libStore *l
 			cataloged = true
 			continue
 		}
+		epTitle, airDate := in.EpisodeTitle, in.AirDate
+		if got != nil {
+			if epTitle == "" {
+				epTitle = got.Title
+			}
+			if airDate == "" {
+				airDate = got.AirDate
+			}
+		}
 		_, err = libStore.UpsertEpisode(ctx, library.Episode{
 			SeriesID:      series.ID,
 			SeasonNumber:  in.Season,
 			EpisodeNumber: epNum,
+			Title:         epTitle,
+			AirDate:       airDate,
 			FilePath:      in.VideoPath,
 			Size:          library.FileSize(in.VideoPath),
 		})

@@ -132,7 +132,9 @@ const (
 //
 // Claude 2026-09-16: added dispatch bool parameter.
 // Reason: exactly ONE owner of air-date dispatch at runtime (plan guardrail).
-//   runUsenetRetryCycle passes dispatch=false when autograb_drain_interval_seconds>0.
+//
+//	runUsenetRetryCycle passes dispatch=false when autograb_drain_interval_seconds>0.
+//
 // Review if: drain and daily dispatch ownership model changes.
 func monitorAirDates(ctx context.Context, deps AutoGrabDeps, build sessionBuilderFunc,
 	libStore *library.Store, excluded map[string]bool, dispatch bool, now time.Time) {
@@ -320,12 +322,16 @@ func dispatchAirDateGrabs(ctx context.Context, deps AutoGrabDeps, sess *mode.Ses
 //
 // Claude 2026-09-16: ordering flipped to NEWEST air date first.
 // Reason: newest/recently-aired-first is the locked product decision (#1).
-//   Oldest-first caused a classic backlog (one series with many old episodes)
-//   to starve newly-aired episodes every cycle — the 20/cycle cap consumed all
-//   slots before reaching recent episodes of other series.
+//
+//	Oldest-first caused a classic backlog (one series with many old episodes)
+//	to starve newly-aired episodes every cycle — the 20/cycle cap consumed all
+//	slots before reaching recent episodes of other series.
+//
 // Cascade: seriesBackfill.runOnce calls this function, so a monitor-on click
-//   also dispatches newest-first. That is correct — an operator enabling a show
-//   wants its recent season first, not its pilot.
+//
+//	also dispatches newest-first. That is correct — an operator enabling a show
+//	wants its recent season first, not its pilot.
+//
 // Review if: the locked newest-first decision is revisited.
 func dispatchAirDateGrabsScoped(ctx context.Context, deps AutoGrabDeps, sess *mode.Session,
 	libStore *library.Store, seriesList []library.Series, seasons map[int]bool,
@@ -887,7 +893,10 @@ func (c seasonCatalog) states(ctx context.Context, seriesID int64) ([]library.Se
 	}
 	// Same guard, same reason, as syncSeriesCatalog's: library_series.tmdb_id has
 	// no positive constraint, and GET /tv/0 is a wasted round trip per panel open.
-	if series.TMDBID == 0 {
+	// Claude 2026-09-23: also skip negative anthology synthetics (Laurel & Hardy).
+	// Reason: GET /tv/-1498833576 cannot succeed; local episode rows are the list.
+	// Review if: a real positive TMDB TV id exists for that show.
+	if series.TMDBID <= 0 {
 		return states, nil
 	}
 
@@ -1002,12 +1011,21 @@ func (c seasonCatalog) ensureSeriesByTMDB(ctx context.Context, tmdbID int) (*lib
 	return &created, nil
 }
 
-func writeSeasonStates(w http.ResponseWriter, states []library.SeasonState) {
+func writeSeasonStates(w http.ResponseWriter, states []library.SeasonState, episodes []library.Episode) {
+	bySeason := map[int][]apidto.SeasonEpisode{}
+	for _, ep := range episodes {
+		bySeason[ep.SeasonNumber] = append(bySeason[ep.SeasonNumber], apidto.SeasonEpisode{
+			EpisodeNumber: ep.EpisodeNumber,
+			Title:         ep.Title,
+			HasFile:       ep.FilePath != "",
+		})
+	}
 	out := make([]apidto.SeasonState, 0, len(states))
 	for _, st := range states {
 		out = append(out, apidto.SeasonState{
 			SeasonNumber: st.SeasonNumber, EpisodeCount: st.EpisodeCount,
 			MissingCount: st.MissingCount, Monitored: st.Monitored,
+			Episodes: bySeason[st.SeasonNumber],
 		})
 	}
 	writeJSON(w, out)
@@ -1026,7 +1044,11 @@ func listSeasonStatesHandler(catalog seasonCatalog) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeSeasonStates(w, states)
+		var episodes []library.Episode
+		if catalog.lib != nil {
+			episodes, _ = catalog.lib.ListEpisodes(r.Context(), seriesID)
+		}
+		writeSeasonStates(w, states, episodes)
 	}
 }
 
@@ -1045,7 +1067,13 @@ func listSeasonStatesByTMDBHandler(catalog seasonCatalog) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeSeasonStates(w, states)
+		var episodes []library.Episode
+		if catalog.lib != nil {
+			if series, getErr := catalog.lib.GetSeriesByTMDBID(r.Context(), tmdbID); getErr == nil && series != nil {
+				episodes, _ = catalog.lib.ListEpisodes(r.Context(), series.ID)
+			}
+		}
+		writeSeasonStates(w, states, episodes)
 	}
 }
 

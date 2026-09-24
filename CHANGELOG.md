@@ -9379,3 +9379,34 @@ status stays active.
 |---|---|
 | `internal/api/requests_promote_test.go` | DueForRetry cutoff uses wall clock |
 | `internal/api/downloadreconcile_test.go` | Drain wait 2s → 10s |
+
+## 2026-09-23 — Nest Laurel & Hardy movie-id shorts; show episode titles
+
+**Problem:** Individual L&H shorts (One Good Turn, Night Owls, Leave 'Em Laughing) were Library series cards. Each used a TMDB movie id that collides with a different TV show. S00E00 parsed as a real episode so anthology never nested them. The main Laurel & Hardy popup listed season counts only.
+**Fix:** S00E00 is not a parse. Catalog attaches a matching-titled extra onto the anthology series and deletes a now-empty movie-id series. SeasonState embeds episode titles. TVDetails is skipped for negative anthology TMDB ids.
+**Outcome:** Unit tests nest One Good Turn under S07E08 and render E01 · Pilot in the season list.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/rename/catalog_nest.go` | Dummy S00E00 + title nest |
+| `internal/rename/catalog.go` | Nest before creating a movie-id series |
+| `internal/library/library_series.go` | FindEpisodesByTitleKey |
+| `internal/apidto/dto.go` | SeasonEpisode on SeasonState |
+| `frontend/src/components/SeasonsPanel.tsx` | Episode titles under each season |
+
+## 2026-09-23 — Place untracked L&H shorts from TVDB; un-hide dummy S00E00
+
+**Problem:** The first nest pass only attached a short when Laurel & Hardy already had that episode title (One Good Turn). Night Owls, Leave 'Em Laughing, and Early to Bed are not in the 87 on-disk rows. Scan also marked their S00E00 paths known, so catalog never ran. Jellyfin-shaped Season 00 folders skipped anthology.
+**Fix:** Catalog looks up a unique exact title key (plus folder year when both are known) in established TVDB series catalogs and writes that slot in place. Dummy S00E00 rows on a positive TMDB series are removed from `known` so Scan sees them. MatchesSeriesSchema does not skip dummy S00E00. After a nest, the dummy row is deleted and an empty movie-id series is removed; a 2023 Night Owls card with S01 files stays.
+**Outcome:** Unit tests place Night Owls and Leave 'Em Laughing under Laurel & Hardy, reject a 2023 year mismatch and Tribute to the Boys, and keep a series that still has other files.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/rename/catalog_nest.go` | TVDB catalog nest + retire stray movie series |
+| `internal/rename/catalog.go` | TVDB fallback; keep episode title/air date |
+| `internal/rename/rename.go` | Un-hide dummy S00E00; do not schema-skip dummy |
+| `internal/rename/catalog_test.go` | TVDB nest, year mismatch, tribute, scan-known |

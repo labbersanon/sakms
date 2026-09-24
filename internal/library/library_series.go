@@ -450,6 +450,78 @@ func (s *Store) CountEpisodesByFilePath(ctx context.Context, filePath string) (i
 	return count, nil
 }
 
+// EpisodeTitleHit is one titled episode plus its parent series, for nesting
+// a movie-id short under an already-tracked anthology slot.
+type EpisodeTitleHit struct {
+	Episode
+	Series Series
+}
+
+// FindEpisodesByTitleKey returns episodes whose letters+digits title key
+// equals key (case-insensitive, punctuation stripped).
+func (s *Store) FindEpisodesByTitleKey(ctx context.Context, key string) ([]EpisodeTitleHit, error) {
+	if key == "" {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT e.id, e.series_id, e.season_number, e.episode_number, e.title, e.air_date,
+		       e.file_path, e.phash, e.phash_file_size, e.phash_file_mtime, e.created_at, e.updated_at,
+		       e.size, e.quality_tier,
+		       s.id, s.tmdb_id, s.tvdb_id, s.title, s.year, s.root_folder_path
+		FROM library_episodes e
+		JOIN library_series s ON s.id = e.series_id
+		WHERE e.title != ''
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("finding episodes by title: %w", err)
+	}
+	defer rows.Close()
+	var out []EpisodeTitleHit
+	for rows.Next() {
+		var h EpisodeTitleHit
+		if err := rows.Scan(
+			&h.ID, &h.SeriesID, &h.SeasonNumber, &h.EpisodeNumber, &h.Title, &h.AirDate,
+			&h.FilePath, &h.PHash, &h.PHashFileSize, &h.PHashFileMTime, &h.CreatedAt, &h.UpdatedAt,
+			&h.Size, &h.QualityTier,
+			&h.Series.ID, &h.Series.TMDBID, &h.Series.TVDBID, &h.Series.Title, &h.Series.Year, &h.Series.RootFolderPath,
+		); err != nil {
+			return nil, fmt.Errorf("scanning episode title hit: %w", err)
+		}
+		if episodeTitleKey(h.Title) == key {
+			out = append(out, h)
+		}
+	}
+	return out, rows.Err()
+}
+
+func episodeTitleKey(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(strings.TrimSpace(s)) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// SeriesHasOnDiskFile is true when any episode or extra file path is set.
+func (s *Store) SeriesHasOnDiskFile(ctx context.Context, seriesID int64) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM (
+			SELECT 1 FROM library_episodes WHERE series_id = ? AND file_path <> ''
+			UNION ALL
+			SELECT 1 FROM library_episode_files f
+			JOIN library_episodes e ON e.id = f.episode_id
+			WHERE e.series_id = ? AND f.file_path <> ''
+		) x
+	`, seriesID, seriesID).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("checking on-disk files for series %d: %w", seriesID, err)
+	}
+	return n > 0, nil
+}
+
 // ListEpisodes returns every episode of seriesID, ordered by season then
 // episode number.
 func (s *Store) ListEpisodes(ctx context.Context, seriesID int64) ([]Episode, error) {

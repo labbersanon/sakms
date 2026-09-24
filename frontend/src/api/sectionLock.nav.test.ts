@@ -32,6 +32,12 @@ describe("FE-1 — NAV_ITEMS / LOCKABLE_TAB_SECTIONS drift", () => {
 });
 
 describe("sectionForPath — the route table's one special case", () => {
+  it("maps leftover /library paths to discover", () => {
+    expect(sectionForPath("/library")).toBe("discover");
+    expect(sectionForPath("/library/mainstream")).toBe("discover");
+    expect(sectionForPath("/library/adult")).toBe("discover");
+  });
+
   it("maps '/' to discover", () => {
     // "/" is in APP_ROUTES and renders Discover, but it is NOT in NAV_ITEMS
     // (the sidebar links /discover). A bare slice(1) would yield "" and leave

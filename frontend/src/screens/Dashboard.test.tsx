@@ -365,16 +365,16 @@ describe("Dashboard view", () => {
     // string, and .href would be absolutized to http://localhost/…
     const links = [...container.querySelectorAll("a")];
     const hrefs = links.map((a) => a.getAttribute("href"));
-    expect(hrefs).toContain("/library/mainstream?tab=movies&tier=lossless");
-    expect(hrefs).toContain("/library/mainstream?tab=movies&tier=medium");
-    expect(hrefs).toContain("/library/mainstream?tab=series&tier=high");
+    expect(hrefs).toContain("/discover/mainstream?view=library&tab=movies&tier=lossless");
+    expect(hrefs).toContain("/discover/mainstream?view=library&tab=movies&tier=medium");
+    expect(hrefs).toContain("/discover/mainstream?view=library&tab=series&tier=high");
     // The Unknown tier is a real, linkable drill-down target, not a dead cell.
-    expect(hrefs).toContain("/library/mainstream?tab=series&tier=unknown");
+    expect(hrefs).toContain("/discover/mainstream?view=library&tab=series&tier=unknown");
 
     const movies = links.find(
       (a) =>
         a.getAttribute("href") ===
-        "/library/mainstream?tab=movies&tier=lossless",
+        "/discover/mainstream?view=library&tab=movies&tier=lossless",
     );
     expect(movies!.textContent).toContain("5.0 TB");
     expect(movies!.textContent).toContain("12 items");
@@ -386,16 +386,16 @@ describe("Dashboard view", () => {
 
     const links = [...container.querySelectorAll("a")];
     const hrefs = links.map((a) => a.getAttribute("href"));
-    expect(hrefs).toContain("/library/adult?tab=scenes&tier=low");
+    expect(hrefs).toContain("/discover/adult?view=library&tab=scenes&tier=low");
 
     const adultRow = container.querySelectorAll("tbody tr")[2]!;
     expect(adultRow.textContent).toContain("Adult");
     const adultLinks = [...adultRow.querySelectorAll("a")];
     expect(adultLinks.length).toBeGreaterThan(0);
-    expect(adultLinks[0]!.getAttribute("href")).toContain("/library/adult?tab=scenes&tier=");
+    expect(adultLinks[0]!.getAttribute("href")).toContain("/discover/adult?view=library&tab=scenes&tier=");
 
     const low = links.find(
-      (a) => a.getAttribute("href") === "/library/adult?tab=scenes&tier=low",
+      (a) => a.getAttribute("href") === "/discover/adult?view=library&tab=scenes&tier=low",
     );
     expect(low!.textContent).toContain("6.0 TB");
     expect(low!.textContent).toContain("100 items");

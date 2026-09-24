@@ -38,6 +38,18 @@ import {
   tmdbPoster,
 } from "../../api/discover";
 import { type TrackedItem, fetchTrackedItems } from "../../api/tag";
+import { setItemRating } from "../../api/rating";
+import {
+  LibraryPosterCard,
+  LibraryView,
+  playableLibrarySrc,
+  trackedToDetailTarget,
+} from "../Library";
+import {
+  discoverOwnedHref,
+  mergeOwnedCatalogSearch,
+  type DiscoverSearchHit,
+} from "../discoverHref";
 import { fetchRequests } from "../../api/requests";
 import { Button, ErrorText, FilterChip, Muted, yearOf } from "../../components/ui";
 import {
@@ -92,7 +104,8 @@ type MainstreamView = "rows" | "calendar";
 // path: a Series card first opens the season/episode picker, a Movies card
 // grabs directly. Passing one fixed mode across a mixed row would silently
 // route a series through the movie grab path, breaking auto-grab.
-type ModedTitle = { mode: "movies" | "series"; item: DiscoverItem };
+// Claude 2026-09-24: ModedTitle folded into DiscoverSearchHit catalog rows.
+// type ModedTitle = { mode: "movies" | "series"; item: DiscoverItem };
 
 // MAINSTREAM_ROWS is the fixed set of TMDB category rows the Mainstream page
 // stacks: both modes × both categories. Each row paginates independently.
@@ -525,6 +538,12 @@ const PaginatedRow: Component<{
   );
 };
 
+// Claude 2026-09-24: LibraryCard is not mounted in production. Discover
+//   preview/search/monitored use LibraryPosterCard; /discover/row/library
+//   redirects to ?view=library. Kept so a restore does not rewrite the grab
+//   card. Do not re-wire this into LibraryRow.
+// Reason: merge deletes the third owned-card path (this grab-shaped card).
+// Review if: a grab-shaped owned card is restored.
 // LibraryCard is one owned-library title on the existing-library row. Its mode
 // is per-item (the row mixes movies+series), which drives both the lazy poster
 // fetch and which mode DetailPopup opens in. The library caches no poster art, so the
@@ -628,11 +647,34 @@ const LIBRARY_PAGE_SIZE = 20;
 // same paging shape PaginatedRow uses — so DOM size and concurrent per-card
 // poster fetches stay bounded. Reloads on reloadToken alongside the category
 // rows; the visible count resets to one page on every reload.
+const OwnedPreviewCard: Component<{
+  mode: "movies" | "series";
+  item: TrackedItem;
+  onOwned?: (mode: "movies" | "series", item: TrackedItem) => void;
+}> = (props) => {
+  const selection = useSelection();
+  const blocked = () =>
+    (selection?.selectMode() ?? false) || (props.item.tmdbId ?? 0) <= 0;
+  return (
+    <LibraryPosterCard
+      class={MEDIA_CAROUSEL_POSTER_CLASS}
+      mode={props.mode}
+      item={props.item}
+      selected={false}
+      disabled={blocked()}
+      onClick={() => {
+        if (blocked()) return;
+        props.onOwned?.(props.mode, props.item);
+      }}
+      onRate={(rating) => void setItemRating(props.mode, props.item.id, rating)}
+    />
+  );
+};
+
 const LibraryRow: Component<{
   mode?: "movies" | "series";
   reloadToken: () => number;
-  onGrab: (t: GrabTarget) => void;
-  onDetail: (t: DetailTarget) => void;
+  onOwned?: (mode: "movies" | "series", item: TrackedItem) => void;
 }> = (props) => {
   const [entries] = createResource(
     () => [props.reloadToken(), props.mode] as const,
@@ -669,23 +711,22 @@ const LibraryRow: Component<{
         title="In your library"
         items={shown()}
         renderItem={(e) => (
-          <LibraryCard
+          <OwnedPreviewCard
             mode={e.mode}
             item={e.item}
-            onGrab={props.onGrab}
-            onDetail={props.onDetail}
+            onOwned={props.onOwned}
           />
         )}
         onLoadMore={() => setVisible((n) => n + LIBRARY_PAGE_SIZE)}
         hasMore={hasMore()}
-        // Claude 2026-08-14: View all opens Library, not /discover/row/library.
-        // Reason: Library is the mode-tab catalog (search/filter/tags). Discover
-        //   Movies → ?tab=movies, Series → ?tab=series — same tab keys Dashboard
-        //   already uses. Adult Discover has no In your library row.
-        // Troubleshooting: wrong Library tab → LibraryRow did not get contentType.
-        // Review if: Adult Discover gains an In your library row (/library/adult).
+        // Claude 2026-09-24: View all turns on In library (?view=library).
+        // Reason: preview row stays; full grid is the chip, not a third page.
+        // Troubleshooting: leftover /discover/row/library is a redirect.
+        // Review if: Adult Discover gains an In your library preview row.
         viewAll={{
-          href: `/library/mainstream?tab=${props.mode === "series" ? "series" : "movies"}`,
+          href: discoverOwnedHref("mainstream", {
+            tab: props.mode === "series" ? "series" : "movies",
+          }),
         }}
       />
     </Show>
@@ -781,9 +822,26 @@ export const MainstreamDiscover: Component<{
   // a filter result. The filter state lives here; the toggle button lives one
   // level up, so this is the minimal upward signal to gate it.
   onFilteringChange?: (active: boolean) => void;
+  // Claude 2026-09-24: In library chip — owned grid (LibraryView), not a page.
+  ownedOnly?: () => boolean;
+  onOwnedOnlyChange?: (on: boolean) => void;
+  initialTier?: string;
 }> = (props) => {
+  const ownedOnly = () => props.ownedOnly?.() ?? false;
   const [grabTarget, setGrabTarget] = createSignal<GrabTarget | null>(null);
   const [detailTarget, setDetailTarget] = createSignal<DetailTarget | null>(null);
+  const [ownedDetail, setOwnedDetail] = createSignal<{
+    mode: "movies" | "series";
+    item: TrackedItem;
+  } | null>(null);
+  const openOwned = (mode: "movies" | "series", item: TrackedItem) => {
+    setOwnedDetail({ mode, item });
+    setDetailTarget(trackedToDetailTarget(mode, item) ?? null);
+  };
+  const closeDetail = () => {
+    setDetailTarget(null);
+    setOwnedDetail(null);
+  };
   const [setupError, setSetupError] = createSignal<unknown>(null);
   const [dismissedSetup, setDismissedSetup] = createSignal(false);
   const [reloadToken, setReloadToken] = createSignal(0);
@@ -836,7 +894,9 @@ export const MainstreamDiscover: Component<{
   // monitoredOnly also disables Edit (reordering carousels against a replacement grid is meaningless).
   const [view, setView] = createSignal<MainstreamView>("rows");
   createEffect(() =>
-    props.onFilteringChange?.(filtering() || monitoredOnly() || view() === "calendar"),
+    props.onFilteringChange?.(
+      filtering() || monitoredOnly() || ownedOnly() || view() === "calendar",
+    ),
   );
 
   // selectView switches the top-level view; entering calendar clears any active
@@ -846,6 +906,7 @@ export const MainstreamDiscover: Component<{
     if (v === "calendar") {
       clearSearch();
       setMonitoredOnly(false);
+      props.onOwnedOnlyChange?.(false);
     }
     setView(v);
   };
@@ -867,6 +928,7 @@ export const MainstreamDiscover: Component<{
   const applyFilters = (f: MainstreamFilters) => {
     clearSearch();
     setMonitoredOnly(false);
+    props.onOwnedOnlyChange?.(false);
     setFilters(f);
   };
   const resetFilters = () =>
@@ -877,25 +939,36 @@ export const MainstreamDiscover: Component<{
 
   const [results] = createResource(
     () => (searching() ? submitted().trim() : null),
-    async (q): Promise<ModedTitle[]> => {
+    async (q): Promise<DiscoverSearchHit[]> => {
       // A search error is surfaced the same way a category row's is: hand it to
       // setSetupError so a "tmdb isn't configured yet" failure raises the same
       // setup modal (the render's notConfiguredService gate decides modal vs.
       // plain error), instead of being swallowed into an empty "No results
       // found". Reusing the row plumbing keeps one detection path, not two.
       try {
-        if (props.contentType) {
-          const items = await fetchTmdbSearch(props.contentType, q);
-          return items.map((item) => ({ mode: props.contentType!, item }));
-        }
-        const [movies, series] = await Promise.all([
-          fetchTmdbSearch("movies", q),
-          fetchTmdbSearch("series", q),
+        const mode = props.contentType ?? "movies";
+        const [catalog, tracked] = await Promise.all([
+          props.contentType
+            ? fetchTmdbSearch(props.contentType, q)
+            : Promise.all([
+                fetchTmdbSearch("movies", q),
+                fetchTmdbSearch("series", q),
+              ]).then(([movies, series]) =>
+                [...movies, ...series] as DiscoverItem[],
+              ),
+          fetchTrackedItems(mode).catch(() => [] as TrackedItem[]),
         ]);
-        return [
-          ...movies.map((item) => ({ mode: "movies" as const, item })),
-          ...series.map((item) => ({ mode: "series" as const, item })),
-        ];
+        const catalogItems: { mode: "movies" | "series"; item: DiscoverItem }[] =
+          props.contentType
+            ? (catalog as DiscoverItem[]).map((item) => ({
+                mode: props.contentType!,
+                item,
+              }))
+            : (catalog as DiscoverItem[]).map((item) => ({
+                mode: item.mediaType === "tv" ? "series" : "movies",
+                item,
+              }));
+        return mergeOwnedCatalogSearch(q, catalogItems, tracked, mode);
       } catch (e) {
         setSetupError(e);
         return [];
@@ -1140,8 +1213,7 @@ export const MainstreamDiscover: Component<{
         <LibraryRow
           mode={props.contentType}
           reloadToken={reloadToken}
-          onGrab={setGrabTarget}
-          onDetail={setDetailTarget}
+          onOwned={openOwned}
         />
       );
     if (key.startsWith("slider:")) {
@@ -1188,6 +1260,20 @@ export const MainstreamDiscover: Component<{
           )}
         </For>
         <FilterChip
+          label="In library"
+          size="sm"
+          active={ownedOnly}
+          onToggle={() => {
+            const turningOn = !ownedOnly();
+            if (turningOn) {
+              setMonitoredOnly(false);
+              setView("rows");
+              resetFilters();
+            }
+            props.onOwnedOnlyChange?.(turningOn);
+          }}
+        />
+        <FilterChip
           label="Monitored"
           size="sm"
           active={monitoredOnly}
@@ -1196,6 +1282,7 @@ export const MainstreamDiscover: Component<{
             if (turningOn) {
               clearSearch();
               resetFilters();
+              props.onOwnedOnlyChange?.(false);
             }
             setMonitoredOnly((v) => !v);
           }}
@@ -1227,7 +1314,7 @@ export const MainstreamDiscover: Component<{
             </Show>
           </form>
 
-          <Show when={!searching()}>
+          <Show when={!searching() && !ownedOnly()}>
             <MainstreamFilterSortBar
               value={filters}
               onChange={applyFilters}
@@ -1267,6 +1354,15 @@ export const MainstreamDiscover: Component<{
           The list is bounded by what the operator actually monitors, not an
           unbounded TMDB catalog, so one-shot full render is appropriate.
           Review if: a dedicated /api/modes/{mode}/monitored endpoint is added. */}
+      <Show when={ownedOnly() && !searching()}>
+        <LibraryView
+          mode={props.contentType === "series" ? "series" : "movies"}
+          hideTitleSearch
+          initialTier={props.initialTier}
+        />
+      </Show>
+
+      <Show when={!ownedOnly() || searching()}>
       <Show when={monitoredOnly()}>
         <section class="mt-6">
           <div class="mb-2 flex items-center justify-between gap-3">
@@ -1285,11 +1381,25 @@ export const MainstreamDiscover: Component<{
               <div class={MEDIA_POSTER_GRID_CLASS}>
                 <For each={monitoredItems() ?? []}>
                   {(item) => (
-                    <LibraryCard
+                    <LibraryPosterCard
                       mode={(props.contentType ?? "movies") as "movies" | "series"}
                       item={item}
-                      onDetail={setDetailTarget}
-                      layout="grid"
+                      selected={false}
+                      disabled={(item.tmdbId ?? 0) <= 0}
+                      onClick={() => {
+                        if ((item.tmdbId ?? 0) <= 0) return;
+                        openOwned(
+                          (props.contentType ?? "movies") as "movies" | "series",
+                          item,
+                        );
+                      }}
+                      onRate={(rating) =>
+                        void setItemRating(
+                          (props.contentType ?? "movies") as "movies" | "series",
+                          item.id,
+                          rating,
+                        )
+                      }
                     />
                   )}
                 </For>
@@ -1380,15 +1490,34 @@ export const MainstreamDiscover: Component<{
               >
                 <div class={MEDIA_POSTER_GRID_CLASS}>
                   <For each={results()}>
-                    {(e) => (
-                      <PosterCard
-                        mode={e.mode}
-                        item={e.item}
-                        onGrab={setGrabTarget}
-                        onDetail={setDetailTarget}
-                        layout="grid"
-                      />
-                    )}
+                    {(e) =>
+                      e.kind === "owned" ? (
+                        <LibraryPosterCard
+                          mode={e.mode}
+                          item={e.item}
+                          selected={false}
+                          disabled={(e.item.tmdbId ?? 0) <= 0}
+                          onClick={() => {
+                            if ((e.item.tmdbId ?? 0) <= 0) return;
+                            openOwned(e.mode, e.item);
+                          }}
+                          onRate={(rating) =>
+                            void setItemRating(e.mode, e.item.id, rating)
+                          }
+                        />
+                      ) : (
+                        <PosterCard
+                          mode={e.mode}
+                          item={e.item}
+                          onGrab={setGrabTarget}
+                          onDetail={(t) => {
+                            setOwnedDetail(null);
+                            setDetailTarget(t);
+                          }}
+                          layout="grid"
+                        />
+                      )
+                    }
                   </For>
                 </div>
               </Show>
@@ -1396,6 +1525,7 @@ export const MainstreamDiscover: Component<{
           </section>
         </Show>
         </Show>
+      </Show>
       </Show>
 
       <Show when={grabTarget()}>
@@ -1411,8 +1541,19 @@ export const MainstreamDiscover: Component<{
         {(t) => (
           <DetailPopup
             target={t}
-            onClose={() => setDetailTarget(null)}
-            onSelectRecommendation={setDetailTarget}
+            allowGrab={!ownedDetail()}
+            canReplace={!!ownedDetail()}
+            playSrc={
+              ownedDetail()
+                ? playableLibrarySrc(ownedDetail()!.mode, ownedDetail()!.item) ||
+                  undefined
+                : undefined
+            }
+            onClose={closeDetail}
+            onSelectRecommendation={(next) => {
+              setOwnedDetail(null);
+              setDetailTarget(next);
+            }}
             onGrab={setGrabTarget}
           />
         )}

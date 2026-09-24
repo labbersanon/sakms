@@ -52,13 +52,15 @@
 // BulkResultModal.tsx; this file is the thin tab shell.
 
 import {
+  type Accessor,
   type Component,
+  type Setter,
   createEffect,
   createSignal,
   on,
   Show,
 } from "solid-js";
-import { useLocation } from "@solidjs/router";
+import { useLocation, useSearchParams } from "@solidjs/router";
 import {
   Button,
   Muted,
@@ -78,6 +80,77 @@ import {
   type AdultMediaTab,
   type MainstreamMediaTab,
 } from "../mediaNav";
+import {
+  DISCOVER_VIEW_LIBRARY,
+  isDiscoverOwnedView,
+  sanitizeAdultTab,
+  sanitizeMainstreamTab,
+} from "../discoverHref";
+
+function firstQuery(v: string | string[] | undefined): string | undefined {
+  if (typeof v === "string") return v;
+  if (Array.isArray(v)) return v[0];
+  return undefined;
+}
+
+type SearchParamMap = Record<string, string | string[] | undefined>;
+
+function useDiscoverOwnedQuery<T extends string>(
+  sanitizeTab: (raw: string | undefined) => T,
+): {
+  tab: Accessor<T>;
+  setTab: Setter<T>;
+  ownedOnly: Accessor<boolean>;
+  setOwnedOnly: Setter<boolean>;
+  ownedTier: () => string;
+  persistQuery: (nextOwned: boolean, nextTab: T) => void;
+} {
+  let readParams: () => SearchParamMap = () => ({});
+  let writeParams: (
+    next: Record<string, string | undefined>,
+    opts?: { replace?: boolean },
+  ) => void = () => {};
+  let hasSearchParams = false;
+  try {
+    const [sp, setSp] = useSearchParams();
+    readParams = () => sp;
+    writeParams = setSp;
+    hasSearchParams = true;
+  } catch {
+    /* unit tests mount without Router */
+  }
+
+  const [tab, setTab] = createSignal<T>(
+    sanitizeTab(firstQuery(readParams().tab)),
+  );
+  const [ownedOnly, setOwnedOnly] = createSignal(
+    isDiscoverOwnedView(firstQuery(readParams().view)),
+  );
+  const ownedTier = () => firstQuery(readParams().tier) ?? "";
+
+  createEffect(() => {
+    // Claude 2026-09-24: skip URL sync when tests mount without Router.
+    // Reason: empty params would reset tab and clear In library.
+    // Review if: Discover tests wrap a MemoryRouter with search params.
+    if (!hasSearchParams) return;
+    const nextTab = sanitizeTab(firstQuery(readParams().tab));
+    if (nextTab !== tab()) setTab(() => nextTab);
+    setOwnedOnly(isDiscoverOwnedView(firstQuery(readParams().view)));
+  });
+
+  const persistQuery = (nextOwned: boolean, nextTab: T) => {
+    writeParams(
+      {
+        tab: nextTab,
+        view: nextOwned ? DISCOVER_VIEW_LIBRARY : undefined,
+        tier: nextOwned ? ownedTier() || undefined : undefined,
+      },
+      { replace: true },
+    );
+  };
+
+  return { tab, setTab, ownedOnly, setOwnedOnly, ownedTier, persistQuery };
+}
 
 // Claude 2026-08-13: LEGACY_DISCOVER_TABS retired with the unrouted Discover shell.
 // Reason: Slice 1.5 — AppShell routes DiscoverMainstream / DiscoverAdult only.
@@ -101,7 +174,8 @@ import {
 // no-longer-visible title — plan pre-mortem #5) carries across a context change.
 export const DiscoverMainstream: Component = () => {
   const selection = createSelection();
-  const [tab, setTab] = createSignal<MainstreamMediaTab>("series");
+  const { tab, setTab, ownedOnly, setOwnedOnly, ownedTier, persistQuery } =
+    useDiscoverOwnedQuery(sanitizeMainstreamTab);
   const [editMode, setEditMode] = createSignal(false);
   // mainstreamFiltering mirrors MainstreamDiscover's active-filter state (it
   // owns the filter signal; this toggle lives one level up). Row-reordering
@@ -137,7 +211,7 @@ export const DiscoverMainstream: Component = () => {
 
   // Edit is disabled while a filter/sort grid is up (its rows can't reorder);
   // Select never is.
-  const editDisabled = () => mainstreamFiltering();
+  const editDisabled = () => mainstreamFiltering() || ownedOnly();
 
   const toggleSelect = () => {
     const on = !selection.selectMode();
@@ -176,6 +250,7 @@ export const DiscoverMainstream: Component = () => {
     selection.setSelectMode(false);
     selection.clear();
     setTab(id as MainstreamMediaTab);
+    persistQuery(ownedOnly(), id as MainstreamMediaTab);
   };
 
   return (
@@ -193,6 +268,12 @@ export const DiscoverMainstream: Component = () => {
             contentType={tab()}
             editMode={editMode}
             onFilteringChange={setMainstreamFiltering}
+            ownedOnly={ownedOnly}
+            onOwnedOnlyChange={(on) => {
+              setOwnedOnly(on);
+              persistQuery(on, tab());
+            }}
+            initialTier={ownedTier()}
           />
         </div>
         <BulkBar />
@@ -206,7 +287,8 @@ export const DiscoverAdult: Component = () => {
   const lock = useSectionLock();
   const adultLocked = () => lock.isLocked(ADULT_CONTENT_SECTION);
   const selection = createSelection();
-  const [tab, setTab] = createSignal<AdultMediaTab>("scenes");
+  const { tab, setTab, ownedOnly, setOwnedOnly, ownedTier, persistQuery } =
+    useDiscoverOwnedQuery(sanitizeAdultTab);
   const [editMode, setEditMode] = createSignal(false);
   const [adultSorting, setAdultSorting] = createSignal(false);
   createEffect(() => {
@@ -251,7 +333,7 @@ export const DiscoverAdult: Component = () => {
       </Button>
       <Button
         class="!px-3 !py-1.5 !text-sm"
-        disabled={adultSorting()}
+        disabled={adultSorting() || ownedOnly()}
         onClick={toggleEdit}
       >
         {editMode() ? "Done" : "Edit"}
@@ -264,6 +346,7 @@ export const DiscoverAdult: Component = () => {
     selection.setSelectMode(false);
     selection.clear();
     setTab(id as AdultMediaTab);
+    persistQuery(ownedOnly(), id as AdultMediaTab);
   };
 
   return (
@@ -291,6 +374,12 @@ export const DiscoverAdult: Component = () => {
                   kind="movie"
                   editMode={editMode}
                   onSortingChange={setAdultSorting}
+                  ownedOnly={ownedOnly}
+                  onOwnedOnlyChange={(on) => {
+                    setOwnedOnly(on);
+                    persistQuery(on, tab());
+                  }}
+                  initialTier={ownedTier()}
                 />
               }
             >
@@ -298,6 +387,12 @@ export const DiscoverAdult: Component = () => {
                 kind="scene"
                 editMode={editMode}
                 onSortingChange={setAdultSorting}
+                ownedOnly={ownedOnly}
+                onOwnedOnlyChange={(on) => {
+                  setOwnedOnly(on);
+                  persistQuery(on, tab());
+                }}
+                initialTier={ownedTier()}
               />
             </Show>
           </Show>

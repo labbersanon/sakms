@@ -30,7 +30,7 @@
 // path anywhere in the codebase.
 package sectionlock
 
-// Canonical section identifiers. These are the seven live sidebar hrefs
+// Canonical section identifiers. These are the six live sidebar hrefs
 // (frontend/src/screens/AppShell.tsx's NAV_ITEMS, minus the leading "/")
 // plus the mode-scoped pseudo-section adult-content, which is not a tab at
 // all — it cuts across every tab that can show Adult material.
@@ -61,7 +61,12 @@ const (
 var tabSections = []string{
 	SectionDashboard,
 	SectionDiscover,
-	SectionLibrary,
+	// Claude 2026-09-24: SectionLibrary removed from sidebar tabs.
+	// Reason: Library page merged into Discover. Constant stays so stored
+	//   PINs and API classification still compile. KnownSection no longer
+	//   accepts new "library" writes via AllSections().
+	// Review if: Library returns as a nav item.
+	// SectionLibrary,
 	SectionQueue,
 	SectionOrganize,
 	SectionCollections,

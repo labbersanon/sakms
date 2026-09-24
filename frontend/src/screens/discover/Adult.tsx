@@ -58,7 +58,15 @@ import {
   updateAdultNewestRow,
 } from "../../api/adultNewestRows";
 import { MediaCardShell, MediaFallbackTile, MEDIA_POSTER_GRID_CLASS, MEDIA_CAROUSEL_ADULT_CLASS, MEDIA_CAROUSEL_ENTITY_CLASS } from "../../components/media";
-import { Button, ErrorText, Muted, Switch, yearOf } from "../../components/ui";
+import { Button, ErrorText, FilterChip, Muted, Switch, yearOf } from "../../components/ui";
+import {
+  LibraryPosterCard,
+  LibraryView,
+  playableLibrarySrc,
+  trackedToDetailTarget,
+} from "../Library";
+import { adultOwnedIdentityKey } from "../discoverHref";
+import { fetchTrackedItems, type TrackedItem } from "../../api/tag";
 import {
   type GrabTarget,
   ConfigureConnectionModal,
@@ -423,6 +431,9 @@ type AdultDrill = {
 export const AdultDiscover: Component<{
   editMode?: () => boolean;
   onSortingChange?: (active: boolean) => void;
+  ownedOnly?: () => boolean;
+  onOwnedOnlyChange?: (on: boolean) => void;
+  initialTier?: string;
   // Claude 2026-08-13: "movie" is Discover Adult Movies (1A). Default "scene"
   // keeps every existing mount on Scenes. One component, two Show-swapped
   // mounts — per-tab state reset is expected.
@@ -434,6 +445,7 @@ export const AdultDiscover: Component<{
   kind?: "scene" | "movie";
 }> = (props) => {
   const kind = () => props.kind ?? "scene";
+  const ownedOnly = () => props.ownedOnly?.() ?? false;
   const cardAspect = () => (kind() === "movie" ? "poster" : "video");
   // Claude 2026-08-02: the grabTarget signal (and the <GrabDialog> it drove)
   // was removed along with AdultCard's inline Grab button — AdultCard was its
@@ -447,6 +459,17 @@ export const AdultDiscover: Component<{
   // uses it for the bulk-grab registration.
   // Review if: a per-card single grab is ever restored to Adult Discover.
   const [detailTarget, setDetailTarget] = createSignal<DetailTarget | null>(null);
+  const [ownedDetail, setOwnedDetail] = createSignal<TrackedItem | null>(null);
+  const openOwned = (item: TrackedItem) => {
+    const t = trackedToDetailTarget("adult", item);
+    if (!t) return;
+    setOwnedDetail(item);
+    setDetailTarget(t);
+  };
+  const closeDetail = () => {
+    setDetailTarget(null);
+    setOwnedDetail(null);
+  };
   const [setupError, setSetupError] = createSignal<unknown>(null);
   const [dismissedSetup, setDismissedSetup] = createSignal(false);
   const [reloadToken, setReloadToken] = createSignal(0);
@@ -549,7 +572,7 @@ export const AdultDiscover: Component<{
   // When sorting, a single sorted grid replaces the browse rows.
   const [adultSort, setAdultSort] = createSignal<AdultSortValue>("default");
   const sorting = () => !searching() && !drill() && adultSort() !== "default";
-  createEffect(() => props.onSortingChange?.(sorting()));
+  createEffect(() => props.onSortingChange?.(sorting() || ownedOnly()));
 
   // Changing the sort clears search and any drill-down (all three views are
   // mutually exclusive).
@@ -617,6 +640,18 @@ export const AdultDiscover: Component<{
   });
   const performerGenders = () => performerGendersData() ?? [];
 
+  const [ownedHits] = createResource(
+    () => (searching() ? submitted().trim() : null),
+    async (q): Promise<TrackedItem[]> => {
+      const aspect = kind() === "movie" ? "vertical" : "horizontal";
+      const tracked = await fetchTrackedItems("adult", aspect).catch(
+        () => [] as TrackedItem[],
+      );
+      const needle = q.toLowerCase();
+      return tracked.filter((item) => item.title.toLowerCase().includes(needle));
+    },
+  );
+
   const [results] = createResource(
     () => (searching() ? submitted().trim() : null),
     async (q): Promise<AdultSearchScenesPage> => {
@@ -633,6 +668,17 @@ export const AdultDiscover: Component<{
       }
     },
   );
+  const catalogHits = () => {
+    const keys = new Set(
+      (ownedHits() ?? [])
+        .map((item) => adultOwnedIdentityKey(item.box, item.sceneId))
+        .filter(Boolean),
+    );
+    return (results()?.items ?? []).filter((s) => {
+      const k = adultOwnedIdentityKey(s.scene.source, s.scene.id);
+      return !k || !keys.has(k);
+    });
+  };
 
   const clearSearch = () => {
     setDraft("");
@@ -846,6 +892,21 @@ export const AdultDiscover: Component<{
 
   return (
     <div>
+      <div class="mb-3 flex flex-wrap items-center gap-1">
+        <FilterChip
+          label="In library"
+          size="sm"
+          active={ownedOnly}
+          onToggle={() => {
+            const turningOn = !ownedOnly();
+            if (turningOn) {
+              setDrill(null);
+              setAdultSort("default");
+            }
+            props.onOwnedOnlyChange?.(turningOn);
+          }}
+        />
+      </div>
       <form
         class="mb-4 flex gap-2"
         onSubmit={(e) => {
@@ -872,7 +933,7 @@ export const AdultDiscover: Component<{
         </Show>
       </form>
 
-      <Show when={!searching() && !drill()}>
+      <Show when={!searching() && !drill() && !ownedOnly()}>
         <AdultSortBar
           value={adultSort}
           onChange={applyAdultSort}
@@ -899,6 +960,17 @@ export const AdultDiscover: Component<{
         </Show>
       </Show>
 
+      <Show when={ownedOnly() && !searching()}>
+        <LibraryView
+          mode="adult"
+          hideTitleSearch
+          initialTier={props.initialTier}
+          aspect={kind() === "movie" ? "vertical" : "horizontal"}
+          posterAspect={kind() === "movie" ? "2 / 3" : "16 / 9"}
+        />
+      </Show>
+
+      <Show when={!ownedOnly() || searching()}>
       <Show
         when={searching()}
         fallback={
@@ -1118,15 +1190,32 @@ export const AdultDiscover: Component<{
           </h2>
           <Show when={!results.loading} fallback={<Muted>Searching…</Muted>}>
             <Show
-              when={(results()?.items?.length ?? 0) > 0}
+              when={
+                (ownedHits()?.length ?? 0) + catalogHits().length > 0
+              }
               fallback={<Muted>No {kind() === "movie" ? "movies" : "scenes"} found.</Muted>}
             >
               <div class={MEDIA_POSTER_GRID_CLASS}>
-                <For each={results()?.items}>
+                <For each={ownedHits() ?? []}>
+                  {(item) => (
+                    <LibraryPosterCard
+                      mode="adult"
+                      item={item}
+                      selected={false}
+                      posterAspect={kind() === "movie" ? "2 / 3" : "16 / 9"}
+                      onClick={() => openOwned(item)}
+                      onRate={() => {}}
+                    />
+                  )}
+                </For>
+                <For each={catalogHits()}>
                   {(s) => (
                     <AdultCard
                       item={s.scene}
-                      onDetail={setDetailTarget}
+                      onDetail={(t) => {
+                        setOwnedDetail(null);
+                        setDetailTarget(t);
+                      }}
                       aspect={cardAspect()}
                       layout="grid"
                     />
@@ -1137,9 +1226,22 @@ export const AdultDiscover: Component<{
           </Show>
         </section>
       </Show>
+      </Show>
 
       <Show when={detailTarget()}>
-        {(t) => <DetailPopup target={t()} onClose={() => setDetailTarget(null)} />}
+        {(t) => (
+          <DetailPopup
+            target={t()}
+            allowGrab={!ownedDetail()}
+            canReplace={!!ownedDetail()}
+            playSrc={
+              ownedDetail()
+                ? playableLibrarySrc("adult", ownedDetail()!) || undefined
+                : undefined
+            }
+            onClose={closeDetail}
+          />
+        )}
       </Show>
     </div>
   );

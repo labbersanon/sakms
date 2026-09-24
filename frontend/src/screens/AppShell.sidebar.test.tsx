@@ -17,7 +17,6 @@ import { AdultModeContext } from "../components/ui";
 const NAV_LABELS = [
   "Dashboard",
   "Discover",
-  "Library",
   "Queue",
   "Organize",
   "Collections",
@@ -41,7 +40,7 @@ const SETTINGS_CHILDREN = [
   "Global",
 ];
 const MEDIA_CHILDREN = ["Mainstream", "Adult"];
-const GROUP_LABELS = ["Discover", "Library", "Queue", "Organize", "Settings"];
+const GROUP_LABELS = ["Discover", "Queue", "Organize", "Settings"];
 
 // renderSidebar mounts the Sidebar inside a Router (its <A> links need router
 // context) with its collapsed state owned by the persisted-bool helper — the
@@ -83,11 +82,11 @@ describe("Sidebar", () => {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
     for (const label of MEDIA_CHILDREN) {
-      expect(screen.getAllByText(label)).toHaveLength(2);
+      expect(screen.getAllByText(label)).toHaveLength(1);
     }
-    // 7 nav icons + 1 sidebar-collapse chevron + 5 group chevrons
-    // (Discover, Library, Queue, Organize, Settings).
-    expect(container.querySelectorAll("svg").length).toBe(13);
+    // 6 nav icons + 1 sidebar-collapse chevron + 4 group chevrons
+    // (Discover, Queue, Organize, Settings).
+    expect(container.querySelectorAll("svg").length).toBe(11);
   });
 
   it("collapse toggle hides labels but keeps icons", () => {
@@ -114,7 +113,7 @@ describe("Sidebar", () => {
     for (const label of MEDIA_CHILDREN) {
       expect(screen.queryByText(label)).not.toBeInTheDocument();
     }
-    expect(container.querySelectorAll("svg").length).toBe(8);
+    expect(container.querySelectorAll("svg").length).toBe(7);
     for (const label of NAV_LABELS) {
       if (GROUP_LABELS.includes(label)) continue;
       expect(container.querySelector(`a[title="${label}"]`)).toBeTruthy();
@@ -140,7 +139,7 @@ describe("Sidebar", () => {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
     for (const label of MEDIA_CHILDREN) {
-      expect(screen.getAllByText(label)).toHaveLength(2);
+      expect(screen.getAllByText(label)).toHaveLength(1);
     }
   });
 
@@ -160,7 +159,7 @@ describe("Sidebar", () => {
     const { container } = renderSidebar();
 
     expect(screen.queryByText("Discover")).not.toBeInTheDocument();
-    expect(container.querySelectorAll("svg").length).toBe(8);
+    expect(container.querySelectorAll("svg").length).toBe(7);
     expect(screen.getByLabelText("Expand sidebar")).toBeInTheDocument();
   });
 
@@ -200,20 +199,20 @@ describe("Sidebar", () => {
     }
   });
 
-  it("icon-collapsed Library opens a flyout with media sections", () => {
+  it("icon-collapsed Discover opens a flyout with media sections", () => {
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, "true");
     renderSidebar();
-    fireEvent.click(screen.getByLabelText("Library"));
+    fireEvent.click(screen.getByLabelText("Discover"));
     expect(
-      screen.getByRole("menu", { name: "Library sections" }),
+      screen.getByRole("menu", { name: "Discover sections" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Mainstream" })).toHaveAttribute(
       "href",
-      "/library/mainstream",
+      "/discover/mainstream",
     );
     expect(screen.getByRole("menuitem", { name: "Adult" })).toHaveAttribute(
       "href",
-      "/library/adult",
+      "/discover/adult",
     );
   });
 
@@ -241,7 +240,7 @@ describe("Sidebar", () => {
       </Router>
     ));
 
-    expect(screen.getAllByText("Mainstream")).toHaveLength(2);
+    expect(screen.getAllByText("Mainstream")).toHaveLength(1);
     expect(screen.queryByText("Adult")).not.toBeInTheDocument();
   });
 });

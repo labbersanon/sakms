@@ -20,7 +20,7 @@ func TestTabSectionsMatchesSidebar(t *testing.T) {
 	want := []string{
 		"dashboard",
 		"discover",
-		"library",
+		// "library" retired as a sidebar tab 2026-09-24 (Discover merge).
 		"queue",
 		"organize",
 		"collections",

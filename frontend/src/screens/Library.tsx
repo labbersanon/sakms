@@ -152,7 +152,7 @@ const trackedToAdultDiscoverItem = (item: TrackedItem): AdultDiscoverItem => ({
 // trackedToDetailTarget is undefined for a Movies/Series row with no tmdbId
 // (DetailPopup would fetch against id 0). Adult always has a target: local
 // scenes simply skip the catalog description fetch via CATALOG_SOURCES.
-const trackedToDetailTarget = (
+export const trackedToDetailTarget = (
   mode: Mode,
   item: TrackedItem,
 ): DetailTarget | undefined => {
@@ -169,7 +169,7 @@ const trackedToDetailTarget = (
 // no browser-playable file on GET /tracked today, so this returns "".
 // Claude 2026-08-14: header play must not invent a Series episode stream.
 // Review if: GET /tracked starts sending a Series videoUrl.
-const playableLibrarySrc = (mode: Mode, item: TrackedItem): string => {
+export const playableLibrarySrc = (mode: Mode, item: TrackedItem): string => {
   if (mode === "movies") {
     const files = item.files ?? [];
     const primary = files.find((f) => f.isPrimary && f.videoUrl);
@@ -193,7 +193,7 @@ const adultHoverText = (item: TrackedItem): string =>
 // (Adult scenes have no tmdbId, so that is their only artwork) and then to a
 // grey tile with the first letter of the title. Selected state is indicated
 // with an accent ring; unselected uses a transparent border.
-const PosterCard: Component<{
+export const LibraryPosterCard: Component<{
   item: TrackedItem;
   mode: Mode;
   selected: boolean;
@@ -204,6 +204,12 @@ const PosterCard: Component<{
   // Threaded as a value so a future catalog poster does not bake the tab into
   // the card. Review if: Adult catalog artwork lands and 2B is revisited.
   posterAspect?: string;
+  // Claude 2026-09-24: Discover preview/search can mark a card inert
+  //   (no tmdbId, or Select-mode bulk grab). Library grid omits this.
+  // Reason: owned cards stay LibraryPosterCard; they are not grab-selectable.
+  // Review if: LibraryPosterCard grows its own select-mode awareness.
+  disabled?: boolean;
+  class?: string;
 }> = (props) => {
   // Key the resource on tmdbId — when absent, the source accessor returns
   // undefined and Solid skips the fetch entirely.
@@ -275,9 +281,10 @@ const PosterCard: Component<{
   return (
     <div class="relative">
     <MediaCardShell
-      class="group w-full"
+      class={props.class ? `group ${props.class}` : "group w-full"}
       label={props.item.title}
       selected={props.selected}
+      disabled={props.disabled}
       onClick={props.onClick}
     >
       <div
@@ -668,11 +675,15 @@ const DetailPanel: Component<{
 // and Tag-style callers stay unfiltered. posterAspect is the card/modal/skeleton
 // frame (2B). Both go in the resource key and datalistId so a later
 // single-instance refactor cannot skip refetch or collide ids.
-const LibraryView: Component<{
+export const LibraryView: Component<{
   mode: Mode;
   initialTier?: string;
   aspect?: "vertical" | "horizontal";
   posterAspect?: string;
+  // Claude 2026-09-24: Discover owns the page search box (owned+catalog).
+  // Reason: one box searches both; this grid keeps genre/tier/sort only.
+  // Review if: owned browse needs its own title filter again.
+  hideTitleSearch?: boolean;
 }> = (props) => {
   const [vocab, { refetch: refetchVocab }] = createResource(
     () => ({ mode: props.mode, aspect: props.aspect ?? "" }),
@@ -907,6 +918,7 @@ const LibraryView: Component<{
               Review if: FilterSortBar's frame class changes. */}
           <div class="mb-4 rounded-xl border border-border bg-surface p-4">
           <div class={FILTER_BAR_FIELDS_CLASS}>
+            <Show when={!props.hideTitleSearch}>
             <div class="w-full min-w-0 sm:min-w-[12rem] sm:flex-1">
               <label class={labelClass} for="library-search">
                 Search
@@ -924,6 +936,7 @@ const LibraryView: Component<{
                 }}
               />
             </div>
+            </Show>
             <div class="flex w-full flex-col sm:w-auto">
               <label class={labelClass} for="library-genre">
                 Genre
@@ -1022,7 +1035,7 @@ const LibraryView: Component<{
                 <div class={MEDIA_POSTER_GRID_CLASS}>
                   <For each={visibleItems()}>
                     {(item) => (
-                      <PosterCard
+                      <LibraryPosterCard
                         item={item}
                         mode={props.mode}
                         posterAspect={props.posterAspect}
@@ -1071,6 +1084,7 @@ const LibraryView: Component<{
                     <DetailPopup
                       target={target}
                       allowGrab={false}
+                      canReplace
                       onClose={closeDetail}
                       onSelectRecommendation={setDetailTarget}
                       playSrc={

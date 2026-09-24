@@ -39,7 +39,8 @@ import {
 import { DISCOVER_NAV_LINK_CLASS } from "../../components/ViewAllLink";
 import { MEDIA_POSTER_GRID_CLASS } from "../../components/media";
 import { ADULT_CONTENT_SECTION, sectionLabel } from "../../api/sectionLock";
-import { MAINSTREAM_ROWS, PosterCard, LibraryCard } from "./Mainstream";
+import { MAINSTREAM_ROWS, PosterCard } from "./Mainstream";
+import { LibraryPosterCard, trackedToDetailTarget } from "../Library";
 import { AdultCard, toAdultDiscoverItem } from "./Adult";
 import { RssFeedCard } from "./RssFeedCard";
 import { WatchlistCard } from "../../components/TraktWatchlistRow";
@@ -374,11 +375,15 @@ export const LibraryRowView: Component = () => {
         singlePage
       >
         {(entry) => (
-          <LibraryCard
+          <LibraryPosterCard
             mode={entry.mode}
             item={entry.item}
-            onDetail={setDetailTarget}
-            layout="grid"
+            selected={false}
+            onClick={() => {
+              const t = trackedToDetailTarget(entry.mode, entry.item);
+              if (t) setDetailTarget(t);
+            }}
+            onRate={() => {}}
           />
         )}
       </PaginatedStrip>

@@ -9427,3 +9427,23 @@ status stays active.
 | `internal/rename/rename.go` | Optional ProposeNestedMoves |
 | `internal/api/library.go` | Main Save scan, POST rescan, propose-nested-moves setting |
 | `frontend/src/screens/settings/Library.tsx` | Rescan next to Save; Series nested-shorts toggle |
+
+## 2026-09-24 — Merge Library into Discover via In library filter
+
+**Problem:** Library and Discover were two sidebar groups with a third owned-card path and a second search box.
+**Fix:** Owned catalog is Discover `?view=library`. An In library chip mounts LibraryView on Mainstream and Adult. `/library*` and `/discover/row/library*` redirect. Library leaves the sidebar and the Settings PIN checkbox list. Search always covers owned + catalog; owned identity wins (TMDB id; Adult `box:sceneId`). Preview-row View all turns the chip on. Owned detail can Search releases (Replace). Rematch (wrong-identity SearchTakeover) is not in this change.
+**Outcome:** Frontend and section-lock tests pass. Series episode in-app play stays parked.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/discover/index.tsx` | `?view=library` + In library chip wiring |
+| `frontend/src/screens/discover/Mainstream.tsx` | Owned grid, unified search, LibraryPosterCard preview |
+| `frontend/src/screens/discover/Adult.tsx` | In library chip, owned search wins |
+| `frontend/src/screens/Library.tsx` | LibraryView export; hideTitleSearch; Search releases |
+| `frontend/src/screens/AppShell.tsx` | Library nav removed; `/library*` redirects |
+| `frontend/src/screens/discoverHref.ts` | Owned URL + search-merge helpers |
+| `internal/sectionlock/sections.go` | Library removed from lockable tabs |
+| `internal/sectionlock/routes.go` | Owned APIs also Discover |
+

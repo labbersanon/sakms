@@ -506,3 +506,40 @@ func TestUpsertScene_RejectsPrivatePosterURL(t *testing.T) {
 		t.Fatalf("private host must not persist, got %q", created.PosterURL)
 	}
 }
+
+func TestRematchScene_UpdatesSameRow(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	sc, err := s.UpsertScene(ctx, Scene{
+		Box: "local", SceneID: "old", Title: "Wrong", Studio: "A", Date: "2020-01-01",
+		RootFolderPath: "/adult",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RematchScene(ctx, sc.ID, "stashdb", "catalog-uuid", "Right", "Studio", "2023-06-15"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetSceneByID(ctx, sc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Box != "stashdb" || got.SceneID != "catalog-uuid" || got.Title != "Right" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestRematchScene_Conflict(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if _, err := s.UpsertScene(ctx, Scene{Box: "stashdb", SceneID: "taken", Title: "A", RootFolderPath: "/adult"}); err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.UpsertScene(ctx, Scene{Box: "local", SceneID: "old", Title: "B", RootFolderPath: "/adult"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RematchScene(ctx, b.ID, "stashdb", "taken", "A", "", ""); !errors.Is(err, ErrIdentityConflict) {
+		t.Fatalf("got %v", err)
+	}
+}

@@ -86,6 +86,14 @@ import {
 } from "./mediaNav";
 import { Modal } from "./discover/shared";
 import { DetailPopup, type DetailTarget } from "./discover/DetailPopup";
+import { OwnedRematch } from "./OwnedRematch";
+import {
+  applyPickToTracked,
+  identityFromPick,
+  putTrackedIdentity,
+  replaceSlotFromPick,
+} from "../api/rematch";
+import type { TakeoverPick } from "./SearchTakeover";
 import { useWorkflowActions } from "./workflowHooks";
 
 type PosterMode = Exclude<Mode, "adult">;
@@ -706,6 +714,12 @@ export const LibraryView: Component<{
   // Reason: deriving a new object each render would remount a keyed popup.
   // Review if: Library stops using DetailPopup.
   const [detailTarget, setDetailTarget] = createSignal<DetailTarget | null>(null);
+  const [rematchItem, setRematchItem] = createSignal<TrackedItem | null>(null);
+  const [rematchPick, setRematchPick] = createSignal<TakeoverPick | null>(null);
+  const [replaceSlot, setReplaceSlot] = createSignal<{
+    season: number;
+    episode: number;
+  } | null>(null);
   // search filters the grid by title (client-side).
   const [search, setSearch] = createSignal("");
   // genre filters the grid to one genre; "" means all genres.
@@ -747,6 +761,9 @@ export const LibraryView: Component<{
       resetOnModeChange: () => {
         setSelectedId(null);
         setDetailTarget(null);
+        setRematchItem(null);
+        setRematchPick(null);
+        setReplaceSlot(null);
         setSearch("");
         setDetailDraft("");
         setGenre("");
@@ -823,6 +840,7 @@ export const LibraryView: Component<{
   const closeDetail = () => {
     setSelectedId(null);
     setDetailTarget(null);
+    setReplaceSlot(null);
     setDetailDraft("");
   };
 
@@ -876,6 +894,51 @@ export const LibraryView: Component<{
 
   return (
     <div>
+      <Show when={rematchItem()}>
+        {(item) => (
+          <OwnedRematch
+            mode={props.mode}
+            item={item()}
+            onCommit={async (pick) => {
+              setRematchPick(pick);
+              await putTrackedIdentity(
+                props.mode,
+                item().id,
+                identityFromPick(pick),
+              );
+            }}
+            onDone={() => {
+              const current = rematchItem();
+              const pick = rematchPick();
+              setRematchItem(null);
+              setRematchPick(null);
+              if (!current || !pick) return;
+              const patched = applyPickToTracked(current, pick);
+              void refresh().then(() => {
+                const latest =
+                  (tracked() ?? []).find((row) => row.id === current.id) ??
+                  patched;
+                setSelectedId(current.id);
+                setDetailTarget(
+                  trackedToDetailTarget(props.mode, latest) ?? null,
+                );
+                setReplaceSlot(replaceSlotFromPick(pick));
+              });
+            }}
+            onCancel={() => {
+              const current = rematchItem();
+              setRematchItem(null);
+              setRematchPick(null);
+              if (!current) return;
+              setSelectedId(current.id);
+              setDetailTarget(
+                trackedToDetailTarget(props.mode, current) ?? null,
+              );
+            }}
+          />
+        )}
+      </Show>
+      <div classList={{ hidden: !!rematchItem() }}>
       <Show when={scanBanner()}>
         <p class="mb-3 text-sm text-fg" aria-live="polite">
           {scanBanner()}
@@ -1099,6 +1162,17 @@ export const LibraryView: Component<{
                           ? playableLibrarySrc(props.mode, item()) || undefined
                           : undefined
                       }
+                      replaceSlot={replaceSlot() ?? undefined}
+                      onRematch={
+                        isLibraryTarget()
+                          ? () => {
+                              const current = selectedItem();
+                              if (!current) return;
+                              setRematchItem(current);
+                              setDetailTarget(null);
+                            }
+                          : undefined
+                      }
                       lead={
                         isLibraryTarget() ? (
                           <DetailRating
@@ -1147,6 +1221,7 @@ export const LibraryView: Component<{
           </div>
         </Show>
       </Show>
+      </div>
     </div>
   );
 };

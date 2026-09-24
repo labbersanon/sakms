@@ -2,7 +2,9 @@ package library
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/labbersanon/sakms/internal/mode"
 )
@@ -38,6 +40,39 @@ func (s *Store) SetMovieTMDBID(ctx context.Context, itemID int64, newTMDBID int,
 	}
 	if n == 0 {
 		return fmt.Errorf("library: could not set tmdb_id=%d on movie item %d (conflict or missing)", newTMDBID, itemID)
+	}
+	return nil
+}
+
+// RematchMovie rekeys one Movies row. Same-row rematch still updates title/year.
+// Claude 2026-09-24: owned-detail Rematch; row id stays stable for play URLs.
+func (s *Store) RematchMovie(ctx context.Context, itemID int64, newTMDBID int, title string, year int) error {
+	if itemID == 0 || newTMDBID <= 0 || strings.TrimSpace(title) == "" {
+		return fmt.Errorf("library: RematchMovie requires item id, positive tmdb id, and title")
+	}
+	other, err := s.GetByTMDBID(ctx, mode.Movies, newTMDBID)
+	if err == nil && other != nil && other.ID != itemID {
+		return ErrIdentityConflict
+	}
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE library_items
+		SET tmdb_id = ?, title = ?,
+		    year = CASE WHEN ? > 0 THEN ? ELSE year END,
+		    updated_at = sakms_now()
+		WHERE id = ? AND mode = ?
+	`, newTMDBID, title, year, year, itemID, string(mode.Movies))
+	if err != nil {
+		return fmt.Errorf("rematching movie %d to tmdb_id=%d: %w", itemID, newTMDBID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
 	}
 	return nil
 }

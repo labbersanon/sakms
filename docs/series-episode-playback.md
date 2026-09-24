@@ -1,12 +1,12 @@
 # Plan: Series episode in-app playback (Jellyfin-style series page)
 
-**Status:** Phase 1 + Phase 3 implemented on
-`cursor/series-episode-playback-c2d5`. Phase 4 (player queue) and Phase 5
-(per-episode Replace) are still later. Rematch is still out of this change.
+**Status:** Phase 1 + Phase 3 shipped as `#84` (`0ed3f5e`). Phase 5
+(per-episode Replace) and owned-detail Rematch are on
+`cursor/owned-rematch-replace-c2d5`. Phase 4 (player queue) is still later.
 **Saved:** 2026-09-24. **Revised:** 2026-09-24 after the Discover/Library
 merge. Merge shipped as `#83` (`1be70e7`); series play mounts on the
 merged Discover owned detail.
-**Base:** `main` at `1be70e7`.
+**Base:** `main` at `0ed3f5e`.
 
 This is the git-tracked copy. A local pointer also lives at
 `.omc/plans/series-episode-playback.md` (`.omc/` is gitignored).
@@ -319,7 +319,12 @@ Migration + PUT + bars + Resume vs Play + Next Up rule in §3.
 Next/prev episode in the open `<video>` (Jellyfin OSD). Play from here.
 Not required to ship 1+3.
 
-### Phase 5 — Episode Replace (if merge shipped Replace for movies only)
+### Phase 5 — Episode Replace + Rematch (in progress on owned-rematch-replace)
+
+Title-level Search releases already shipped with the merge. This phase adds
+per-episode Replace on `SeriesEpisodesPanel` and Rematch via
+`PUT .../tracked/{id}/identity` + `OwnedRematch` (SearchTakeover fourth
+caller). Movies, series, and adult rematch; per-episode Replace is series-only.
 
 Per-episode Search releases on the episode row / owned popup, upgrade-on-import.
 Skip if Replace on owned series detail already landed with the merge.

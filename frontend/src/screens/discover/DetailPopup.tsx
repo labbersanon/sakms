@@ -655,6 +655,13 @@ export const DetailPopup: Component<{
   // Library-only footer (tags / seasons / files) inside this Modal so one
   // click does not drop Library-owned affordances. Discover omits it.
   children?: JSX.Element;
+  // Claude 2026-09-24: parent closes this popup and mounts OwnedRematch.
+  // Reason: SearchTakeover is a full page; nesting it here stacks two overlays.
+  // Review if: Rematch also rewrites on-disk file names.
+  onRematch?: () => void;
+  // Claude 2026-09-24: rematch pick with S/E, or episode-row Replace.
+  // Reason: pre-set slot skips SeasonEpisodePicker so grab is the episode.
+  replaceSlot?: { season: number; episode: number };
   // onSelectRecommendation re-targets THIS popup to a clicked "More like this"
   // card: the parent (Mainstream.tsx) swaps its detailTarget, and — because the
   // popup is rendered <Show keyed> — the whole popup remounts, resetting every
@@ -677,7 +684,7 @@ export const DetailPopup: Component<{
 }> = (props) => {
   const mode = () => props.target.mode;
   const item = () => props.target.item;
-  const [replaceOpen, setReplaceOpen] = createSignal(false);
+  const [replaceOpen, setReplaceOpen] = createSignal(!!props.replaceSlot);
   const allowGrab = () => props.allowGrab !== false || replaceOpen();
   const ownedSeriesID = () =>
     mode() === "series" && (props.seriesID ?? 0) > 0 ? props.seriesID : undefined;
@@ -692,7 +699,7 @@ export const DetailPopup: Component<{
   // Library (allowGrab=false) skips that gate so F1 metadata is immediate.
   const [seasonEpisode, setSeasonEpisode] = createSignal<
     { season: number; episode: number } | null
-  >(null);
+  >(props.replaceSlot ?? null);
   const ready = () =>
     !allowGrab() || mode() !== "series" || seasonEpisode() !== null;
 
@@ -1187,6 +1194,24 @@ export const DetailPopup: Component<{
               Search releases
             </button>
           </Show>
+          <Show when={props.canReplace && !replaceOpen() && props.onRematch}>
+            <button
+              type="button"
+              class={HEADER_ACTION_CLASS}
+              onClick={() => props.onRematch?.()}
+            >
+              Rematch
+            </button>
+          </Show>
+          <Show when={props.canReplace && replaceOpen()}>
+            <button
+              type="button"
+              class={HEADER_ACTION_CLASS}
+              onClick={() => setReplaceOpen(false)}
+            >
+              Cancel replace
+            </button>
+          </Show>
         </div>
       </div>
 
@@ -1212,6 +1237,14 @@ export const DetailPopup: Component<{
           seriesID={ownedSeriesID()!}
           seasons={ownedSeasons.error ? [] : (ownedSeasons() ?? [])}
           loading={ownedSeasons.loading}
+          onReplace={
+            props.canReplace
+              ? (season, episode) => {
+                  setSeasonEpisode({ season, episode });
+                  setReplaceOpen(true);
+                }
+              : undefined
+          }
         />
       </Show>
       {/* Claude 2026-09-22: Library children (quality/seasons/files/tags) follow

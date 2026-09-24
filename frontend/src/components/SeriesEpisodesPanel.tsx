@@ -1,9 +1,5 @@
 // SeriesEpisodesPanel is the owned-series play list: season chips + episode
 // rows with TrackedPlayback. SeasonsPanel stays monitor-only.
-// Claude 2026-09-24: mount only when DetailPopup has a library series id.
-// Reason: catalog-only series have nothing to stream; grab keeps SeasonEpisodePicker.
-// Troubleshooting: Library SeasonsPanel listed titles without a Play control.
-// Review if: per-episode Replace lands on these rows.
 
 import { type Component, For, Show, createSignal } from "solid-js";
 import type { SeasonEpisode, SeasonState } from "@dto";
@@ -21,6 +17,7 @@ export const SeriesEpisodesPanel: Component<{
   seriesID: number;
   seasons: SeasonState[];
   loading?: boolean;
+  onReplace?: (season: number, episode: number) => void;
 }> = (props) => {
   const [picked, setPicked] = createSignal<number | null>(null);
   const selected = () =>
@@ -126,6 +123,17 @@ export const SeriesEpisodesPanel: Component<{
                           : undefined
                       }
                     />
+                  </Show>
+                  <Show when={props.onReplace}>
+                    <button
+                      type="button"
+                      class="mt-1 text-[11px] text-muted underline hover:text-fg"
+                      onClick={() =>
+                        props.onReplace?.(selected(), ep.episodeNumber)
+                      }
+                    >
+                      Replace
+                    </button>
                   </Show>
                 </li>
               );

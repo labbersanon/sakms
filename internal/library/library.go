@@ -44,6 +44,9 @@ import (
 // ErrNotFound is returned by Get/GetByTMDBID when no matching item exists.
 var ErrNotFound = errors.New("library: no item found")
 
+// ErrIdentityConflict is a rematch that would steal another row's catalog id.
+var ErrIdentityConflict = errors.New("library: catalog identity already belongs to another title")
+
 // Claude 2026-09-17: content-unusable sentinel for the library layer.
 // Reason: ResolveVideoFile/ResolveEpisodeVideoFiles return a bare fmt.Errorf today.
 //   The api layer needs errors.Is to distinguish "no usable video in staging" (try

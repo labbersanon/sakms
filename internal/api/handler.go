@@ -178,6 +178,10 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 
 	mux.HandleFunc("GET /api/modes/{mode}/tracked", listTrackedHandler(libStore, grabsStore))
 	mux.HandleFunc("GET /api/modes/{mode}/tracked/{id}/video", trackedVideoHandler(libStore))
+	// Claude 2026-09-24: owned Rematch. {id} is the library row, not TMDB/box.
+	// Reason: SearchTakeover fourth caller writes identity, not a Rename proposal.
+	// Troubleshooting: 409 when another row already owns that catalog id.
+	mux.HandleFunc("PUT /api/modes/{mode}/tracked/{id}/identity", putTrackedIdentityHandler(libStore))
 	// Claude 2026-09-24: Series-only play head. Literal `series` so Movies/Adult
 	//   cannot hit it; {id} is library_series.id, {episodeId} must belong to it.
 	// Reason: Resume Show and episode bars need a write the seasons GET can read.

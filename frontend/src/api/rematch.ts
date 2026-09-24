@@ -1,5 +1,4 @@
-// Owned-detail Rematch. Writes GET /tracked row identity; not a Rename proposal.
-// Claude 2026-09-24: SearchTakeover fourth caller.
+// Claude 2026-09-24: SearchTakeover fourth caller. PUT /tracked/{id}/identity.
 // Reason: wrong catalog match stays a library row with a new tmdb/box key.
 // Review if: Rematch starts rewriting file names on disk.
 
@@ -24,22 +23,8 @@ export function applyPickToTracked(
   item: TrackedItem,
   pick: TakeoverPick,
 ): TrackedItem {
-  if (pick.kind === "adult") {
-    return {
-      ...item,
-      title: pick.title,
-      box: pick.box,
-      sceneId: pick.sceneId,
-      studio: pick.studio,
-      date: pick.date,
-    };
-  }
-  return {
-    ...item,
-    title: pick.title,
-    tmdbId: pick.tmdbId,
-    year: pick.year ?? item.year,
-  };
+  const identity = identityFromPick(pick);
+  return { ...item, ...identity, year: identity.year ?? item.year };
 }
 
 export function replaceSlotFromPick(

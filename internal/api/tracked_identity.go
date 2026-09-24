@@ -34,41 +34,37 @@ func putTrackedIdentityHandler(libStore *library.Store) http.HandlerFunc {
 			http.Error(w, "title is required", http.StatusBadRequest)
 			return
 		}
+		if (m == mode.Movies || m == mode.Series) && req.TmdbId <= 0 {
+			http.Error(w, "tmdbId is required", http.StatusBadRequest)
+			return
+		}
+		if m == mode.Adult && (strings.TrimSpace(req.Box) == "" || strings.TrimSpace(req.SceneID) == "") {
+			http.Error(w, "box and sceneId are required", http.StatusBadRequest)
+			return
+		}
 		ctx := r.Context()
 		switch m {
 		case mode.Movies:
-			if req.TmdbId <= 0 {
-				http.Error(w, "tmdbId is required", http.StatusBadRequest)
-				return
-			}
 			err = libStore.RematchMovie(ctx, id, req.TmdbId, title, req.Year)
 		case mode.Series:
-			if req.TmdbId <= 0 {
-				http.Error(w, "tmdbId is required", http.StatusBadRequest)
-				return
-			}
 			err = libStore.RematchSeries(ctx, id, req.TmdbId, title, req.Year)
 		case mode.Adult:
-			if strings.TrimSpace(req.Box) == "" || strings.TrimSpace(req.SceneID) == "" {
-				http.Error(w, "box and sceneId are required", http.StatusBadRequest)
-				return
-			}
 			err = libStore.RematchScene(ctx, id, req.Box, req.SceneID, title, req.Studio, req.Date)
 		default:
 			http.Error(w, "unknown mode", http.StatusBadRequest)
 			return
 		}
-		if err == nil {
-			w.WriteHeader(http.StatusNoContent)
+		if err != nil {
+			switch {
+			case errors.Is(err, library.ErrNotFound):
+				http.Error(w, err.Error(), http.StatusNotFound)
+			case errors.Is(err, library.ErrIdentityConflict):
+				http.Error(w, err.Error(), http.StatusConflict)
+			default:
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
 			return
 		}
-		switch {
-		case errors.Is(err, library.ErrNotFound):
-			http.Error(w, err.Error(), http.StatusNotFound)
-		case errors.Is(err, library.ErrIdentityConflict):
-			http.Error(w, err.Error(), http.StatusConflict)
-		default:
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-		}
+		w.WriteHeader(http.StatusNoContent)
 	}
 }

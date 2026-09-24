@@ -1,5 +1,3 @@
-// OwnedRematch is SearchTakeover's fourth caller: wrong-identity on an
-// owned Discover/Library title. It is a full-page section, never a Modal.
 // Claude 2026-09-24: owned detail Rematch. onCommit writes PUT .../identity.
 // Reason: Rename's takeover commits proposals; this one updates the library row.
 // Troubleshooting: nesting this inside DetailPopup would stack two overlays.

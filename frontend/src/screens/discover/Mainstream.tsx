@@ -107,8 +107,6 @@ type MainstreamView = "rows" | "calendar";
 // Claude 2026-09-24: ModedTitle folded into DiscoverSearchHit catalog rows.
 // type ModedTitle = { mode: "movies" | "series"; item: DiscoverItem };
 
-type SearchHit = DiscoverSearchHit;
-
 // MAINSTREAM_ROWS is the fixed set of TMDB category rows the Mainstream page
 // stacks: both modes × both categories. Each row paginates independently.
 // `key` is this row's stable identity in the Discover row-order feature (see
@@ -941,7 +939,7 @@ export const MainstreamDiscover: Component<{
 
   const [results] = createResource(
     () => (searching() ? submitted().trim() : null),
-    async (q): Promise<SearchHit[]> => {
+    async (q): Promise<DiscoverSearchHit[]> => {
       // A search error is surfaced the same way a category row's is: hand it to
       // setSetupError so a "tmdb isn't configured yet" failure raises the same
       // setup modal (the render's notConfiguredService gate decides modal vs.

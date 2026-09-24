@@ -1,7 +1,7 @@
 // The authed app shell. Past auth it renders a LEFT SIDEBAR (Dashboard /
 // Discover / Queue / Organize / Collections / Settings, each
 // an icon + label) beside the client-side router; the landing view is
-// Discover. Library is Discover ?view=library (2026-09-24 merge). The sidebar collapses to icon-only and persists that choice in
+// Discover. The sidebar collapses to icon-only and persists that choice in
 // localStorage. The router must never claim an /api/* path (see APP_ROUTES).
 //
 // LAYOUT (2026-07-14 mobile-responsive pass): the shell root is a fixed-height

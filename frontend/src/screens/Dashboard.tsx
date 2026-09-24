@@ -37,6 +37,7 @@ import { A } from "@solidjs/router";
 import type { StorageAllocationCell, SysinfoSnapshot } from "@dto";
 import { fetchStorageAllocation } from "../api/storage";
 import { Card, Muted } from "../components/ui";
+import { discoverOwnedHref } from "./discoverHref";
 
 // formatBps renders a bytes/sec value: <1024 → "X B/s", <1MB → "X KB/s",
 // else "X.X MB/s".
@@ -77,9 +78,11 @@ function libraryTierHref(mode: string, tier: string): string {
   // Claude 2026-09-24: Dashboard storage cells open Discover In library.
   // Reason: /library* is a redirect; keep tab+tier on the owned grid.
   // Review if: owned view stops using ?view=library.
-  if (mode === "adult") return `/discover/adult?view=library&tab=scenes&tier=${tier}`;
+  if (mode === "adult") {
+    return discoverOwnedHref("adult", { tab: "scenes", tier });
+  }
   const tab = mode === "movies" ? "movies" : "series";
-  return `/discover/mainstream?view=library&tab=${tab}&tier=${tier}`;
+  return discoverOwnedHref("mainstream", { tab, tier });
 }
 
 // formatGbps renders an aggregate disk throughput for the Disk I/O gauge label:

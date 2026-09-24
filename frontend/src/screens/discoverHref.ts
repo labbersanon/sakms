@@ -63,14 +63,9 @@ export function adultOwnedIdentityKey(
 
 export const DISCOVER_VIEW_LIBRARY = "library";
 
-export type DiscoverOwnedQuery = {
-  tab?: string;
-  tier?: string;
-};
-
 export function discoverOwnedHref(
   section: MediaSection,
-  opts: DiscoverOwnedQuery = {},
+  opts: { tab?: string; tier?: string } = {},
 ): string {
   const q = new URLSearchParams();
   q.set("view", DISCOVER_VIEW_LIBRARY);

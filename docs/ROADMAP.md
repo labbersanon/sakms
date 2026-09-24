@@ -1412,38 +1412,43 @@ CHANGELOG.md's "transactional multi-episode upserts" entry.
 ## Backlog (not yet started, roughly in discussion order)
 
 <!-- Claude 2026-09-24: parked Series episode in-app playback plan.
-     Reason: operator approved Jellyfin-style series Play/Resume + season
-       picker + episode rows, then asked to save and do a different change first.
-     Troubleshooting: this is HTML5 episode play (Movies player extended), NOT
-       the transcoding / native-TV "Streaming media player" item below.
-     Review if: the feature ships or the operator withdraws it.
+     Reason: operator approved Jellyfin-style Play/Resume, then merged
+       Library into Discover (In library filter, unified search, owned
+       Replace/Rematch). Plan rewritten the same day for that world.
+     Troubleshooting: HTML5 episode play only; NOT native-TV transcoding.
+       Do not implement against /library pages — those are going away.
+     Review if: the feature ships, the merge plan is withdrawn, or play
+       is authorized.
      Related files: docs/series-episode-playback.md -->
 
-### Series episode in-app playback (Jellyfin-style series page) — parked 2026-09-24, plan saved, not authorized to build
+### Series episode in-app playback (Jellyfin-style series page) — parked 2026-09-24, plan revised same day, not authorized to build
 
 Library Movies can play in-app (`TrackedPlayback` +
-`GET /api/modes/movies/tracked/{id}/video`). Library Series cannot: the
-video handler returns 400, `playableLibrarySrc` is empty, and
-`SeasonsPanel` is monitor-only text. Episode files already exist on
-`library_episodes` / `library_episode_files`. There is no watch-progress
-store, so Resume and progress bars are a later phase.
+`GET /api/modes/movies/tracked/{id}/video`). Series cannot: the video
+handler returns 400, `playableLibrarySrc` is empty, and `SeasonsPanel`
+is monitor-only text. Episode files already exist on `library_episodes`
+/ `library_episode_files`. There is no watch-progress store, so Resume
+and progress bars are a later phase.
 
-**Operator decisions (2026-09-24):** in-app player (not Jellyfin
-deep-link); full series page in the existing detail modal (Play/Resume,
-season picker, episode rows with play + progress); Library Series detail
-**and** Discover Series `DetailPopup`. Discover play only when the series
-is already tracked. No poster-card play, no transcoding, no Adult series.
+**Prerequisite:** Discover/Library merge (In library chip, delete Library
+nav/routes/`LibraryCard`, one search box always owned+catalog with owned
+wins, owned detail Replace + Rematch). Series play mounts on **owned
+series detail only**. Catalog-only series stay grab-only. Do not build
+this against `/library/mainstream`.
 
-**This is not item 13 / native-TV transcoding.** That remains a separate
-legal-gated backlog item. This plan only wires Series into the shipped
-HTML5 Movies player.
+**Operator decisions (2026-09-24):** in-app player; collapsed Jellyfin
+page in the owned modal (Play/Resume, season picker, episode rows +
+progress); no poster-card play, no transcoding, no Adult series. Afternoon
+revision: original “Library page + Discover popup” surfaces are stale.
 
-Full sequence (phase 1 stream+list+Play, phase 2 Discover, phase 3
-progress+Resume, phase 4 optional player queue):
-`docs/series-episode-playback.md`.
+**This is not item 13 / native-TV transcoding.** Separate legal-gated
+item. This only wires Series into the shipped HTML5 Movies player.
 
-**Do not start implementation from this ROADMAP entry.** The operator
-explicitly parked it to do other work first.
+Full sequence (merge first; then stream+owned Play; no second Discover
+phase; progress+Resume; optional player queue; episode Replace if not
+already in the merge): `docs/series-episode-playback.md`.
+
+**Do not start implementation from this ROADMAP entry.** Still parked.
 
 ### Multi-idea planning session (2026-07-31) — active, 11 items, specs banked incrementally
 Wade brought 11 feature ideas in one session, each getting its own full

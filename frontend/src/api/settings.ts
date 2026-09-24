@@ -38,6 +38,8 @@ import type {
   IdentifyEnabledRequest,
   IdentifyEnabledResponse,
   KidsRootPathRequest,
+  ProposeNestedMovesRequest,
+  ProposeNestedMovesResponse,
   KidsRootPathResponse,
   LibraryRootFolderRequest,
   LibraryRootFolderResponse,
@@ -537,6 +539,27 @@ export function fetchKidsRootPath(mode: Mode): Promise<string> {
 export function putKidsRootPath(mode: Mode, path: string): Promise<void> {
   const body: KidsRootPathRequest = { path };
   return api<void>(`/api/modes/${mode}/rename/kids-root-path`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export function postLibraryRescan(mode: Mode): Promise<void> {
+  return api<void>(`/api/modes/${mode}/library/rescan`, { method: "POST" });
+}
+
+export function fetchProposeNestedMoves(mode: Mode): Promise<boolean> {
+  return api<ProposeNestedMovesResponse>(
+    `/api/modes/${mode}/rename/propose-nested-moves`,
+  ).then((r) => r.enabled);
+}
+
+export function putProposeNestedMoves(
+  mode: Mode,
+  enabled: boolean,
+): Promise<void> {
+  const body: ProposeNestedMovesRequest = { enabled };
+  return api<void>(`/api/modes/${mode}/rename/propose-nested-moves`, {
     method: "PUT",
     body: JSON.stringify(body),
   });

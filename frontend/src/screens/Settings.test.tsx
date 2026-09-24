@@ -156,6 +156,9 @@ function defaultGet(url: string): Response | undefined {
     });
   if (url.includes("/naming-preset")) return jsonResponse({ preset: "jellyfin" });
   if (url.includes("/rename/kids-root-path")) return jsonResponse({ path: "" });
+  if (url.includes("/rename/propose-nested-moves"))
+    return jsonResponse({ enabled: false });
+  if (url.includes("/library/rescan")) return noContent();
   if (url.includes("/rename/scan/status") || url.includes("/library/scan-status"))
     return jsonResponse({});
   if (url.includes("/phash-threshold")) return jsonResponse({ threshold: 8 });
@@ -1516,6 +1519,27 @@ describe("Per-mode panels", () => {
         c.url.includes("/api/modes/movies/library/root-folder"),
     )!;
     expect(put.body).toEqual({ path: "/media/films" });
+  });
+
+  it("Rescan posts library/rescan for the selected mode", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/movies/library/root-folder") && url.includes("/api"))
+        return jsonResponse({ path: "/media/movies" });
+      return undefined;
+    });
+    renderSettings();
+    goToSection("Library");
+    await screen.findByLabelText("Library root folder");
+    fireEvent.click(screen.getByRole("button", { name: "Rescan library" }));
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.method === "POST" &&
+            c.url.includes("/api/modes/movies/library/rescan"),
+        ),
+      ).toBe(true),
+    );
   });
 
   it("switching to Series refetches the per-mode panels against /series/", async () => {

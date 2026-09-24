@@ -35,6 +35,9 @@ type ProgressFunc func(current, total int, name string)
 type MatchConfig struct {
 	CandidateN           int
 	DurationTolerancePct int
+	// ProposeNestedMoves, when true, lets ScanLibrarySeries stage a Pending
+	// move for a short that catalog already nested in place. Off by default.
+	ProposeNestedMoves bool
 	// OnProgress is not a stored setting — scan callers attach it per run.
 	OnProgress ProgressFunc
 }

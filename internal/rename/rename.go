@@ -906,6 +906,11 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 				season, eps, parsed := library.ParseEpisodeNumbersNested(videoPath, batch.root)
 				dummy := parsed && dummyMovieEpisodeParse(season, eps)
 				if cataloged && dummy {
+					if cfg.ProposeNestedMoves {
+						if p, ok := proposeNestedShortMove(ctx, libStore, videoPath, batch.root); ok {
+							out = append(out, p)
+						}
+					}
 					continue
 				}
 				// Claude 2026-09-23: S00E00 movie folders look Jellyfin-shaped.

@@ -417,6 +417,42 @@ func (s *Store) GetEpisode(ctx context.Context, seriesID int64, seasonNumber, ep
 	return &ep, nil
 }
 
+// Claude 2026-09-24: EpisodeOwningFile finds the episode that already claims path.
+// Reason: Organize's optional nested-short move proposal needs the parent
+//   slot after catalog nest, without a second title-key search.
+// Troubleshooting: ProposeNestedMoves emits a proposal for the wrong show.
+// Review if: library_episode_files is the only owner of paths.
+func (s *Store) EpisodeOwningFile(ctx context.Context, filePath string) (*Episode, *Series, error) {
+	if filePath == "" {
+		return nil, nil, ErrNotFound
+	}
+	var epID int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id FROM (
+			SELECT e.id FROM library_episodes e WHERE e.file_path = ?
+			UNION
+			SELECT e.id FROM library_episode_files f
+			JOIN library_episodes e ON e.id = f.episode_id
+			WHERE f.file_path = ?
+		) t LIMIT 1
+	`, filePath, filePath).Scan(&epID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil, ErrNotFound
+		}
+		return nil, nil, fmt.Errorf("finding episode for %q: %w", filePath, err)
+	}
+	ep, err := s.GetEpisodeByID(ctx, epID)
+	if err != nil {
+		return nil, nil, err
+	}
+	ser, err := s.GetSeries(ctx, ep.SeriesID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return ep, ser, nil
+}
+
 // CountEpisodesByFilePath reports how many Episode rows (across every
 // series, not scoped to one) currently have exactly filePath as their
 // FilePath. A path names exactly one filesystem location, so this is a

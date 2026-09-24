@@ -1988,6 +1988,17 @@ export interface IdentifyEnabledRequest {
   enabled: boolean;
 }
 /**
+ * ProposeNestedMovesResponse / ProposeNestedMovesRequest back
+ * GET/PUT /api/modes/{mode}/rename/propose-nested-moves — Series-only Organize
+ * toggle (default off) to stage move proposals after a short is nested in place.
+ */
+export interface ProposeNestedMovesResponse {
+  enabled: boolean;
+}
+export interface ProposeNestedMovesRequest {
+  enabled: boolean;
+}
+/**
  * RecheckIntervalResponse / RecheckIntervalRequest back
  * GET/PUT /api/settings/recheck-interval — the background recheck cadence in
  * whole seconds. GLOBAL (not per-mode). 0 = off (the opt-in default); a

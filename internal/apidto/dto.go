@@ -2039,6 +2039,17 @@ type IdentifyEnabledRequest struct {
 	Enabled bool `json:"enabled"`
 }
 
+// ProposeNestedMovesResponse / ProposeNestedMovesRequest back
+// GET/PUT /api/modes/{mode}/rename/propose-nested-moves — Series-only Organize
+// toggle (default off) to stage move proposals after a short is nested in place.
+type ProposeNestedMovesResponse struct {
+	Enabled bool `json:"enabled"`
+}
+
+type ProposeNestedMovesRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
 // RecheckIntervalResponse / RecheckIntervalRequest back
 // GET/PUT /api/settings/recheck-interval — the background recheck cadence in
 // whole seconds. GLOBAL (not per-mode). 0 = off (the opt-in default); a

@@ -833,6 +833,20 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 			if ep.FilePath == "" {
 				continue // known from TMDB but not on disk yet — not a duplicate
 			}
+			// Claude 2026-09-23: dummy S00E00 on a movie-id series is not "already organized".
+			// Reason: AllEpisodeFilePaths + this loop hid One Good Turn / Night Owls
+			//   so catalog nest never ran; stray Library cards stayed forever.
+			// Troubleshooting: L&H shorts remain their own cards after Series Scan.
+			// Review if: Organize stops writing Season 00 / S00E00 for movie-as-series.
+			if dummyMovieEpisodeParse(ep.SeasonNumber, []int{ep.EpisodeNumber}) && series.TMDBID > 0 {
+				delete(known, ep.FilePath)
+				if files, listErr := libStore.ListEpisodeFiles(ctx, ep.ID); listErr == nil {
+					for _, f := range files {
+						delete(known, f.FilePath)
+					}
+				}
+				continue
+			}
 			// Marking just the file path is enough — ScanRootFolder's
 			// recursive walk decides atomicity dynamically from known at
 			// whatever depth it encounters a directory, so a new season
@@ -889,10 +903,17 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 				if catErr != nil {
 					log.Printf("rename catalog episode %q: %v", videoPath, catErr)
 				}
-				if season, eps, parsed := library.ParseEpisodeNumbersNested(videoPath, batch.root); cataloged && parsed && dummyMovieEpisodeParse(season, eps) {
+				season, eps, parsed := library.ParseEpisodeNumbersNested(videoPath, batch.root)
+				dummy := parsed && dummyMovieEpisodeParse(season, eps)
+				if cataloged && dummy {
 					continue
 				}
-				if naming.MatchesSeriesSchema(videoPath, preset) {
+				// Claude 2026-09-23: S00E00 movie folders look Jellyfin-shaped.
+				// Reason: Season 00 + Title S00E00 + [tmdbid-N] matches schema,
+				//   so Night Owls never reached anthology after a failed nest.
+				// Troubleshooting: dummy shorts stay Unmatched / un-nested.
+				// Review if: Organize stops writing Season 00 / S00E00 for movie-as-series.
+				if naming.MatchesSeriesSchema(videoPath, preset) && !dummy {
 					continue // already organized under the active preset — nothing to propose
 				}
 				pin := pinnedShow{}

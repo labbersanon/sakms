@@ -8,6 +8,7 @@ import (
 
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/naming"
 	"github.com/labbersanon/sakms/internal/proposals"
 )
 
@@ -228,6 +229,17 @@ func TestCatalogEpisodeAtPath_NestsMovieShortUnderAnthology(t *testing.T) {
 	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	stray, err := libStore.UpsertSeries(ctx, library.Series{
+		TMDBID: 48903, Title: "One Good Turn", Year: 1931, RootFolderPath: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: stray.ID, SeasonNumber: 0, EpisodeNumber: 0, Title: "One Good Turn", FilePath: video,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	ok, err := catalogEpisodeAtPath(ctx, nil, libStore, video, root, []string{root})
 	if err != nil || !ok {
 		t.Fatalf("catalog ok=%v err=%v", ok, err)
@@ -273,6 +285,213 @@ func TestTitleFromShowFolder(t *testing.T) {
 	}
 	if yearFromShowFolder("Night Owls (1930) [tmdbid-48889]") != 1930 {
 		t.Fatal("year")
+	}
+}
+
+func seedLaurelHardyParent(t *testing.T, libStore *library.Store, root string) library.Series {
+	t.Helper()
+	ctx := context.Background()
+	parent, err := libStore.UpsertSeries(ctx, library.Series{
+		TMDBID: -1498833576, TVDBID: 73910, Title: "Laurel & Hardy", Year: 1919, RootFolderPath: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: parent.ID, SeasonNumber: 7, EpisodeNumber: 8, Title: "One Good Turn",
+		FilePath: filepath.Join(root, "Laurel & Hardy (1919)", "Season 07", "S07E08.mp4"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return parent
+}
+
+func TestCatalogEpisodeAtPath_NestsFromTVDBCatalog(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	libStore := newTestLibraryStore(t)
+	parent := seedLaurelHardyParent(t, libStore, root)
+	dir := filepath.Join(root, "Night Owls (1930) [tmdbid-48889]", "Season 00")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(dir, "Night Owls S00E00.mkv")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stray, err := libStore.UpsertSeries(ctx, library.Series{
+		TMDBID: 48889, Title: "Night Owls", Year: 2023, RootFolderPath: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: stray.ID, SeasonNumber: 0, EpisodeNumber: 0, Title: "Night Owls", FilePath: video,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sess := &mode.Session{Mode: mode.Series, TVDB: fakeTVDBEpisodesServer(t, []fakeTVDBEpisode{
+		{ID: 20, SeriesID: 73910, Name: "Night Owls", Number: 4, SeasonNumber: 5, Aired: "1930-01-04"},
+		{ID: 8, SeriesID: 73910, Name: "One Good Turn", Number: 8, SeasonNumber: 7, Aired: "1931-10-31"},
+	})}
+	ok, err := catalogEpisodeAtPath(ctx, sess, libStore, video, root, []string{root})
+	if err != nil || !ok {
+		t.Fatalf("catalog ok=%v err=%v", ok, err)
+	}
+	if _, err := libStore.GetSeriesByTMDBID(ctx, 48889); err == nil {
+		t.Fatal("expected stray movie-id series to be removed")
+	}
+	ep, err := libStore.GetEpisode(ctx, parent.ID, 5, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ep.Title != "Night Owls" || ep.FilePath != video {
+		t.Fatalf("episode = %+v", ep)
+	}
+}
+
+func TestCatalogEpisodeAtPath_YearMismatchDoesNotNest(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	libStore := newTestLibraryStore(t)
+	seedLaurelHardyParent(t, libStore, root)
+	dir := filepath.Join(root, "Night Owls (2023) [tmdbid-48889]", "Season 00")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(dir, "Night Owls S00E00.mkv")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess := &mode.Session{Mode: mode.Series, TVDB: fakeTVDBEpisodesServer(t, []fakeTVDBEpisode{
+		{ID: 20, SeriesID: 73910, Name: "Night Owls", Number: 4, SeasonNumber: 5, Aired: "1930-01-04"},
+	})}
+	ok, err := catalogEpisodeAtPath(ctx, sess, libStore, video, root, []string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("2023 Night Owls folder must not nest onto the 1930 short")
+	}
+}
+
+func TestCatalogEpisodeAtPath_KeepsEstablishedMovieSeriesWhenOtherFilesRemain(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	libStore := newTestLibraryStore(t)
+	parent := seedLaurelHardyParent(t, libStore, root)
+	dir := filepath.Join(root, "Night Owls (1930) [tmdbid-48889]", "Season 00")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(dir, "Night Owls S00E00.mkv")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s01 := filepath.Join(root, "Night Owls (2023) [tmdbid-48889]", "Season 01", "Night Owls S01E12.mkv")
+	stray, err := libStore.UpsertSeries(ctx, library.Series{
+		TMDBID: 48889, Title: "Night Owls", Year: 2023, RootFolderPath: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: stray.ID, SeasonNumber: 0, EpisodeNumber: 0, Title: "Night Owls", FilePath: video,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: stray.ID, SeasonNumber: 1, EpisodeNumber: 12, Title: "Episode 12", FilePath: s01,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sess := &mode.Session{Mode: mode.Series, TVDB: fakeTVDBEpisodesServer(t, []fakeTVDBEpisode{
+		{ID: 20, SeriesID: 73910, Name: "Night Owls", Number: 4, SeasonNumber: 5, Aired: "1930-01-04"},
+	})}
+	ok, err := catalogEpisodeAtPath(ctx, sess, libStore, video, root, []string{root})
+	if err != nil || !ok {
+		t.Fatalf("catalog ok=%v err=%v", ok, err)
+	}
+	kept, err := libStore.GetSeriesByTMDBID(ctx, 48889)
+	if err != nil {
+		t.Fatal("2023 Night Owls card must remain")
+	}
+	if _, err := libStore.GetEpisode(ctx, kept.ID, 1, 12); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := libStore.GetEpisode(ctx, parent.ID, 5, 4); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCatalogEpisodeAtPath_TributeDoesNotNest(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	libStore := newTestLibraryStore(t)
+	seedLaurelHardyParent(t, libStore, root)
+	dir := filepath.Join(root, "Tribute to the Boys (1992) [tmdbid-48739]", "Season 00")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(dir, "Tribute to the Boys S00E00.mkv")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess := &mode.Session{Mode: mode.Series, TVDB: fakeTVDBEpisodesServer(t, []fakeTVDBEpisode{
+		{ID: 20, SeriesID: 73910, Name: "Night Owls", Number: 4, SeasonNumber: 5, Aired: "1930-01-04"},
+	})}
+	ok, err := catalogEpisodeAtPath(ctx, sess, libStore, video, root, []string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("Tribute must stay a separate show")
+	}
+}
+
+func TestScanLibrarySeries_NestsAlreadyTrackedDummyShort(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	libStore := newTestLibraryStore(t)
+	parent := seedLaurelHardyParent(t, libStore, root)
+	dir := filepath.Join(root, "Leave 'Em Laughing (1928) [tmdbid-48823]", "Season 00")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(dir, "Leave 'Em Laughing S00E00.mkv")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stray, err := libStore.UpsertSeries(ctx, library.Series{
+		TMDBID: 48823, Title: "Leave 'Em Laughing", Year: 1928, RootFolderPath: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: stray.ID, SeasonNumber: 0, EpisodeNumber: 0, Title: "Leave 'Em Laughing", FilePath: video,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sess := &mode.Session{
+		Mode: mode.Series,
+		TMDB: fatalTMDBSeriesServer(t),
+		TVDB: fakeTVDBEpisodesServer(t, []fakeTVDBEpisode{
+			{ID: 11, SeriesID: 73910, Name: "Leave 'Em Laughing", Number: 2, SeasonNumber: 2, Aired: "1928-01-28"},
+		}),
+	}
+	if _, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := libStore.GetSeriesByTMDBID(ctx, 48823); err == nil {
+		t.Fatal("expected stray Leave 'Em Laughing series to be removed")
+	}
+	ep, err := libStore.GetEpisode(ctx, parent.ID, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ep.Title != "Leave 'Em Laughing" || ep.FilePath != video {
+		t.Fatalf("episode = %+v", ep)
 	}
 }
 

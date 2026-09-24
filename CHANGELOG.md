@@ -9395,3 +9395,18 @@ status stays active.
 | `internal/library/library_series.go` | FindEpisodesByTitleKey |
 | `internal/apidto/dto.go` | SeasonEpisode on SeasonState |
 | `frontend/src/components/SeasonsPanel.tsx` | Episode titles under each season |
+
+## 2026-09-23 — Place untracked L&H shorts from TVDB; un-hide dummy S00E00
+
+**Problem:** The first nest pass only attached a short when Laurel & Hardy already had that episode title (One Good Turn). Night Owls, Leave 'Em Laughing, and Early to Bed are not in the 87 on-disk rows. Scan also marked their S00E00 paths known, so catalog never ran. Jellyfin-shaped Season 00 folders skipped anthology.
+**Fix:** Catalog looks up a unique exact title key (plus folder year when both are known) in established TVDB series catalogs and writes that slot in place. Dummy S00E00 rows on a positive TMDB series are removed from `known` so Scan sees them. MatchesSeriesSchema does not skip dummy S00E00. After a nest, the dummy row is deleted and an empty movie-id series is removed; a 2023 Night Owls card with S01 files stays.
+**Outcome:** Unit tests place Night Owls and Leave 'Em Laughing under Laurel & Hardy, reject a 2023 year mismatch and Tribute to the Boys, and keep a series that still has other files.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/rename/catalog_nest.go` | TVDB catalog nest + retire stray movie series |
+| `internal/rename/catalog.go` | TVDB fallback; keep episode title/air date |
+| `internal/rename/rename.go` | Un-hide dummy S00E00; do not schema-skip dummy |
+| `internal/rename/catalog_test.go` | TVDB nest, year mismatch, tribute, scan-known |

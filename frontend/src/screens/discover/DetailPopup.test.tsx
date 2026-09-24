@@ -983,6 +983,15 @@ describe("DetailPopup — external database link (poster + \"More on …\")", ()
     expect(externalDetailURL(target)).toBe("https://www.themoviedb.org/tv/7");
   });
 
+  it("externalDetailURL is omitted for anthology synthetics", () => {
+    expect(
+      externalDetailURL({
+        mode: "series",
+        item: movie({ id: -1498833576, title: "Laurel & Hardy", mediaType: "tv" }),
+      }),
+    ).toBeUndefined();
+  });
+
   // TPDB is slug-path (theporndb.net/scenes/{slug}), NOT id-path — confirmed
   // against a real example URL
   // (theporndb.net/scenes/evilangel-ivy-ireland-dp-dvp-threesome-1). An
@@ -1212,6 +1221,55 @@ describe("DetailPopup — Watch Trailer link", () => {
       />
     ));
     expect(await screen.findByText("Resume Show →")).toBeInTheDocument();
+  });
+
+  it("plays an owned anthology series without TMDB trailer or detail fetches", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/library/") && /\/seasons$/.test(url)) {
+        return jsonResponse([
+          {
+            seasonNumber: 3,
+            episodeCount: 1,
+            missingCount: 0,
+            monitored: true,
+            episodes: [
+              {
+                id: 1549,
+                episodeNumber: 1,
+                title: "Duck Soup",
+                hasFile: true,
+                videoUrl: "/api/modes/series/tracked/1485/video?episodeId=1549",
+              },
+            ],
+          },
+        ]);
+      }
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => (
+      <DetailPopup
+        target={{
+          mode: "series",
+          item: movie({
+            id: -1498833576,
+            title: "Laurel & Hardy",
+            mediaType: "tv",
+          }),
+        }}
+        allowGrab={false}
+        canReplace
+        seriesID={1485}
+        onClose={() => {}}
+      />
+    ));
+    expect(await screen.findByText("Play Show →")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Play S03E01 · Duck Soup" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/More on TMDB/)).toBeNull();
+    expect(calls.some((c) => c.url.includes("/discover/trailer"))).toBe(false);
+    expect(calls.some((c) => c.url.includes("/discover/detail"))).toBe(false);
+    expect(calls.some((c) => c.url.includes("/library/1485/seasons"))).toBe(true);
   });
 });
 

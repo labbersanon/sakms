@@ -42,6 +42,7 @@ import { setItemRating } from "../../api/rating";
 import {
   LibraryPosterCard,
   LibraryView,
+  ownedCardOpenable,
   playableLibrarySrc,
   trackedToDetailTarget,
 } from "../Library";
@@ -662,7 +663,8 @@ const OwnedPreviewCard: Component<{
 }> = (props) => {
   const selection = useSelection();
   const blocked = () =>
-    (selection?.selectMode() ?? false) || (props.item.tmdbId ?? 0) <= 0;
+    (selection?.selectMode() ?? false) ||
+    !ownedCardOpenable(props.mode, props.item);
   return (
     <LibraryPosterCard
       class={MEDIA_CAROUSEL_POSTER_CLASS}
@@ -1436,13 +1438,18 @@ export const MainstreamDiscover: Component<{
                       mode={(props.contentType ?? "movies") as "movies" | "series"}
                       item={item}
                       selected={false}
-                      disabled={(item.tmdbId ?? 0) <= 0}
-                      onClick={() => {
-                        if ((item.tmdbId ?? 0) <= 0) return;
-                        openOwned(
+                      disabled={
+                        !ownedCardOpenable(
                           (props.contentType ?? "movies") as "movies" | "series",
                           item,
-                        );
+                        )
+                      }
+                      onClick={() => {
+                        const mode = (props.contentType ?? "movies") as
+                          | "movies"
+                          | "series";
+                        if (!ownedCardOpenable(mode, item)) return;
+                        openOwned(mode, item);
                       }}
                       onRate={(rating) =>
                         void setItemRating(
@@ -1547,9 +1554,9 @@ export const MainstreamDiscover: Component<{
                           mode={e.mode}
                           item={e.item}
                           selected={false}
-                          disabled={(e.item.tmdbId ?? 0) <= 0}
+                          disabled={!ownedCardOpenable(e.mode, e.item)}
                           onClick={() => {
-                            if ((e.item.tmdbId ?? 0) <= 0) return;
+                            if (!ownedCardOpenable(e.mode, e.item)) return;
                             openOwned(e.mode, e.item);
                           }}
                           onRate={(rating) =>

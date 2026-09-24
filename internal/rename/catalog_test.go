@@ -204,6 +204,78 @@ func TestCatalogEpisodeAtPath_NestedDiscYearFolder(t *testing.T) {
 	}
 }
 
+func TestCatalogEpisodeAtPath_NestsMovieShortUnderAnthology(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	libStore := newTestLibraryStore(t)
+	parent, err := libStore.UpsertSeries(ctx, library.Series{
+		TMDBID: -1498833576, TVDBID: 73910, Title: "Laurel & Hardy", Year: 1919, RootFolderPath: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: parent.ID, SeasonNumber: 7, EpisodeNumber: 8, Title: "One Good Turn",
+		FilePath: filepath.Join(root, "Laurel & Hardy (1919)", "Season 07", "S07E08.mp4"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "One Good Turn (1931) [tmdbid-48903]", "Season 00")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(dir, "One Good Turn S00E00.mkv")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := catalogEpisodeAtPath(ctx, nil, libStore, video, root, []string{root})
+	if err != nil || !ok {
+		t.Fatalf("catalog ok=%v err=%v", ok, err)
+	}
+	if _, err := libStore.GetSeriesByTMDBID(ctx, 48903); err == nil {
+		t.Fatal("did not expect a standalone series for the movie TMDB id")
+	}
+	ep, err := libStore.GetEpisode(ctx, parent.ID, 7, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := libStore.ListEpisodeFiles(ctx, ep.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := ep.FilePath == video
+	for _, f := range files {
+		if f.FilePath == video {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("short was not attached to S07E08; primary=%q files=%+v", ep.FilePath, files)
+	}
+}
+
+func TestDummyMovieEpisodeParse(t *testing.T) {
+	if !dummyMovieEpisodeParse(0, []int{0}) {
+		t.Fatal("S00E00 should be dummy")
+	}
+	if dummyMovieEpisodeParse(0, []int{11}) {
+		t.Fatal("S00E11 is a real special")
+	}
+	if dummyMovieEpisodeParse(7, []int{8}) {
+		t.Fatal("S07E08 is real")
+	}
+}
+
+func TestTitleFromShowFolder(t *testing.T) {
+	got := titleFromShowFolder("One Good Turn (1931) [tmdbid-48903]")
+	if got != "One Good Turn" {
+		t.Fatalf("title = %q", got)
+	}
+	if yearFromShowFolder("Night Owls (1930) [tmdbid-48889]") != 1930 {
+		t.Fatal("year")
+	}
+}
+
 func TestCatalogEpisodeAtPath_KeepsAnthologyNegativeTMDBID(t *testing.T) {
 	root := t.TempDir()
 	season := filepath.Join(root, "Laurel & Hardy (1919)", "Season 06")

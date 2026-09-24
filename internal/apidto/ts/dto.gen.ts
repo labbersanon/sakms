@@ -3148,6 +3148,20 @@ export interface SeasonState {
   episodeCount: number /* int */;
   missingCount: number /* int */;
   monitored: boolean;
+  /**
+   * Claude 2026-09-23: nested episode titles on Library season rows.
+   * Reason: Laurel & Hardy (negative TMDB) had no episode list in the popup.
+   * Review if: a dedicated GET .../episodes replaces this embed.
+   */
+  episodes?: SeasonEpisode[];
+}
+/**
+ * SeasonEpisode is one episode under SeasonState for the Library season list.
+ */
+export interface SeasonEpisode {
+  episodeNumber: number /* int */;
+  title: string;
+  hasFile: boolean;
 }
 /**
  * SetSeasonMonitoredRequest is the body of both season-monitoring writes: the

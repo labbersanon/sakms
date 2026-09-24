@@ -171,29 +171,42 @@ export const SeasonsPanel: Component<SeasonKey> = (props) => {
           <div id="season-monitor-list">
             <For each={rows()}>
               {(s) => (
-                <div class="flex items-center justify-between gap-2 py-1">
-                  <div class="min-w-0">
-                    <p class="truncate text-xs text-fg">
-                      {seasonLabel(s.seasonNumber)}
-                    </p>
-                    {/* episodeCount is every episode ROW the season has, on disk or
-                        not — it is NOT an on-disk count. Labelled as the total, with
-                        missing shown beside it, so downloaded reads as the
-                        difference rather than being misreported. */}
-                    <p class="text-[11px] text-muted">
-                      {`${s.episodeCount} episodes · ${s.missingCount} missing`}
-                    </p>
+                <div class="py-1">
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="min-w-0">
+                      <p class="truncate text-xs text-fg">
+                        {seasonLabel(s.seasonNumber)}
+                      </p>
+                      {/* episodeCount is every episode ROW the season has, on disk or
+                          not — it is NOT an on-disk count. Labelled as the total, with
+                          missing shown beside it, so downloaded reads as the
+                          difference rather than being misreported. */}
+                      <p class="text-[11px] text-muted">
+                        {`${s.episodeCount} episodes · ${s.missingCount} missing`}
+                      </p>
+                    </div>
+                    <Switch
+                      checked={s.monitored}
+                      disabled={switchesDisabled()}
+                      ariaLabel={`Monitor ${seasonLabel(s.seasonNumber)}`}
+                      onChange={(next) =>
+                        void write(() =>
+                          putSeasonMonitoredFor(key(), s.seasonNumber, next),
+                        )
+                      }
+                    />
                   </div>
-                  <Switch
-                    checked={s.monitored}
-                    disabled={switchesDisabled()}
-                    ariaLabel={`Monitor ${seasonLabel(s.seasonNumber)}`}
-                    onChange={(next) =>
-                      void write(() =>
-                        putSeasonMonitoredFor(key(), s.seasonNumber, next),
-                      )
-                    }
-                  />
+                  <Show when={(s.episodes ?? []).length > 0}>
+                    <ul class="mt-1 space-y-0.5 pl-2">
+                      <For each={s.episodes}>
+                        {(ep) => (
+                          <li class="truncate text-[11px] text-muted">
+                            {`E${String(ep.episodeNumber).padStart(2, "0")}${ep.title ? ` · ${ep.title}` : ""}${ep.hasFile ? "" : " · missing"}`}
+                          </li>
+                        )}
+                      </For>
+                    </ul>
+                  </Show>
                 </div>
               )}
             </For>

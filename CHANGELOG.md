@@ -9379,3 +9379,19 @@ status stays active.
 |---|---|
 | `internal/api/requests_promote_test.go` | DueForRetry cutoff uses wall clock |
 | `internal/api/downloadreconcile_test.go` | Drain wait 2s → 10s |
+
+## 2026-09-23 — Nest Laurel & Hardy movie-id shorts; show episode titles
+
+**Problem:** Individual L&H shorts (One Good Turn, Night Owls, Leave 'Em Laughing) were Library series cards. Each used a TMDB movie id that collides with a different TV show. S00E00 parsed as a real episode so anthology never nested them. The main Laurel & Hardy popup listed season counts only.
+**Fix:** S00E00 is not a parse. Catalog attaches a matching-titled extra onto the anthology series and deletes a now-empty movie-id series. SeasonState embeds episode titles. TVDetails is skipped for negative anthology TMDB ids.
+**Outcome:** Unit tests nest One Good Turn under S07E08 and render E01 · Pilot in the season list.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/rename/catalog_nest.go` | Dummy S00E00 + title nest |
+| `internal/rename/catalog.go` | Nest before creating a movie-id series |
+| `internal/library/library_series.go` | FindEpisodesByTitleKey |
+| `internal/apidto/dto.go` | SeasonEpisode on SeasonState |
+| `frontend/src/components/SeasonsPanel.tsx` | Episode titles under each season |

@@ -885,8 +885,12 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 				// Claude 2026-09-23: tvshow.nfo orphans enter Library without Apply.
 				// Reason: kids-root save left 1000+ identified episodes untracked.
 				// Review if: catalog grows a title-search fallback.
-				if _, catErr := catalogEpisodeAtPath(ctx, sess, libStore, videoPath, batch.root, roots); catErr != nil {
+				cataloged, catErr := catalogEpisodeAtPath(ctx, sess, libStore, videoPath, batch.root, roots)
+				if catErr != nil {
 					log.Printf("rename catalog episode %q: %v", videoPath, catErr)
+				}
+				if season, eps, parsed := library.ParseEpisodeNumbersNested(videoPath, batch.root); cataloged && parsed && dummyMovieEpisodeParse(season, eps) {
+					continue
 				}
 				if naming.MatchesSeriesSchema(videoPath, preset) {
 					continue // already organized under the active preset — nothing to propose
@@ -1074,6 +1078,14 @@ func proposeOneEpisodeLibrary(
 	if !ok {
 		season, episodes, ok = library.ParseEpisodeNumbersLoose(name, filepath.Dir(videoPath))
 	}
+	// Claude 2026-09-23: S00E00 is not a real parse — send the file to anthology.
+	// Reason: movie-as-series folders (One Good Turn [tmdbid-48903]/Season 00)
+	//   parse as S00E00 and never reach tvdbAnthologyPass, so shorts stay
+	//   un-nested under Laurel & Hardy.
+	// Review if: Organize stops writing dummy S00E00 folders.
+	if dummyMovieEpisodeParse(season, episodes) {
+		ok = false
+	}
 	if !ok {
 		// Claude 2026-08-07: compact eNNNN episode code, rename-path-only (plan §1.2/§1.3)
 		// Reason: 13 real "The Red Skelton Show" rows name the episode as
@@ -1119,96 +1131,96 @@ func proposeOneEpisodeLibrary(
 		if hint.TMDBID == 0 && sess != nil && sess.TMDB != nil {
 			hint.TMDBID = resolveTMDBFromTVDB(ctx, sess.TMDB, hint.TVDBID)
 		}
-	if hint.TMDBID != 0 {
-		// Claude 2026-08-07: SITE 1 of 7 — tracked slot is now an alternate, not a decline (plan §5.2.2)
-		// Reason: deep-interview-sakms-series-parsing-accuracy-improvements §5.2 —
-		//   this branch used to set Unmatched (".nfo TMDB id %d appears to already
-		//   be in the library ...") and return early. Series now has Movies-parity
-		//   alternate-version support, so a second file on an already-filled slot
-		//   is a legitimate alternate. This is the ONE site the spec's acceptance
-		//   criteria name explicitly (the Beverly Hillbillies .nfo case).
-		//   Structurally the odd one out of the seven: det is not in scope here,
-		//   so we record the duplicate and FALL THROUGH to the TMDB-confirm block
-		//   below, which populates Title/Year/RootFolderPath exactly as a
-		//   non-duplicate's would — the only difference is the Reason.
-		// Troubleshooting: a .nfo duplicate Applied and OVERWROTE the slot's
-		//   library_episodes row instead of folding in — the Apply-side fold-in
-		//   gate (existing.FilePath != "") did not fire; check §0.3.
-		// Review if: operators report unwanted alternates accumulating and want
-		//   same-slot duplicates declined again.
-		isDuplicateSlot := tracked[episodeKey{tmdbID: hint.TMDBID, season: season, episode: episode}]
-		if hint.TMDBID < 0 {
-			// Claude 2026-09-23: keep anthology synthetic TMDB ids off FindTVByTVDBID.
-			// Reason: Laurel & Hardy (1919) nfo is tmdb -1498833576 / tvdb 73910;
-			//   TVDB→TMDB previously returned the 1966 cartoon (117523).
-			// Review if: a real positive TMDB TV id exists for the 1919 shorts.
-			title := strings.TrimSpace(hint.Title)
-			if title == "" {
-				title = showFolderName(videoPath, roots)
-			}
-			targetRoot := generalRoot
-			if sess != nil && foundRoot == sess.KidsRootPath {
-				targetRoot = foundRoot
-			}
-			p.Status = proposals.Pending
-			p.Title = title
-			p.TMDBID = hint.TMDBID
-			p.TVDBID = hint.TVDBID
-			p.Year = hint.Year
-			p.SeasonNumber = season
-			p.EpisodeNumber = episode
-			if len(extraEpisodes) > 0 {
-				p.ExtraEpisodeNumbers = extraEpisodes
-			}
-			p.RootFolderPath = targetRoot
-			if isDuplicateSlot {
-				acceptDuplicatePendingEpisode(&p, title, season, episode)
-			}
-			return p, false
-		}
-		// Claude 2026-08-06: NFO season-confirm miss falls through to TMDB/TVDB/web
-		// Reason: wrong or incomplete TMDB seasons in sidecars (e.g. Monster S02)
-		//   used to hard-unmatch before TVDB/search could recover.
-		// Troubleshooting: still unmatched after TVDB configured → NFO path returned early.
-		// Review if: NFO TVDB id field is preferred when TMDB season 404s.
-		if sess != nil && sess.TMDB != nil && seriesSeasonAcceptable(ctx, sess.TMDB, hint.TMDBID, season) {
-			det, err := sess.TMDB.TVDetails(ctx, hint.TMDBID)
-			if err != nil {
-				p.Status = proposals.Unmatched
-				p.Reason = fmt.Sprintf(".nfo TMDB id %d: lookup failed: %v", hint.TMDBID, err)
+		if hint.TMDBID != 0 {
+			// Claude 2026-08-07: SITE 1 of 7 — tracked slot is now an alternate, not a decline (plan §5.2.2)
+			// Reason: deep-interview-sakms-series-parsing-accuracy-improvements §5.2 —
+			//   this branch used to set Unmatched (".nfo TMDB id %d appears to already
+			//   be in the library ...") and return early. Series now has Movies-parity
+			//   alternate-version support, so a second file on an already-filled slot
+			//   is a legitimate alternate. This is the ONE site the spec's acceptance
+			//   criteria name explicitly (the Beverly Hillbillies .nfo case).
+			//   Structurally the odd one out of the seven: det is not in scope here,
+			//   so we record the duplicate and FALL THROUGH to the TMDB-confirm block
+			//   below, which populates Title/Year/RootFolderPath exactly as a
+			//   non-duplicate's would — the only difference is the Reason.
+			// Troubleshooting: a .nfo duplicate Applied and OVERWROTE the slot's
+			//   library_episodes row instead of folding in — the Apply-side fold-in
+			//   gate (existing.FilePath != "") did not fire; check §0.3.
+			// Review if: operators report unwanted alternates accumulating and want
+			//   same-slot duplicates declined again.
+			isDuplicateSlot := tracked[episodeKey{tmdbID: hint.TMDBID, season: season, episode: episode}]
+			if hint.TMDBID < 0 {
+				// Claude 2026-09-23: keep anthology synthetic TMDB ids off FindTVByTVDBID.
+				// Reason: Laurel & Hardy (1919) nfo is tmdb -1498833576 / tvdb 73910;
+				//   TVDB→TMDB previously returned the 1966 cartoon (117523).
+				// Review if: a real positive TMDB TV id exists for the 1919 shorts.
+				title := strings.TrimSpace(hint.Title)
+				if title == "" {
+					title = showFolderName(videoPath, roots)
+				}
+				targetRoot := generalRoot
+				if sess != nil && foundRoot == sess.KidsRootPath {
+					targetRoot = foundRoot
+				}
+				p.Status = proposals.Pending
+				p.Title = title
+				p.TMDBID = hint.TMDBID
+				p.TVDBID = hint.TVDBID
+				p.Year = hint.Year
+				p.SeasonNumber = season
+				p.EpisodeNumber = episode
+				if len(extraEpisodes) > 0 {
+					p.ExtraEpisodeNumbers = extraEpisodes
+				}
+				p.RootFolderPath = targetRoot
+				if isDuplicateSlot {
+					acceptDuplicatePendingEpisode(&p, title, season, episode)
+				}
 				return p, false
 			}
-			targetRoot := generalRoot
-			switch {
-			case foundRoot == sess.KidsRootPath:
-				targetRoot = sess.KidsRootPath
-			case sess.KidsRootPath != "" && sess.MainstreamAI != nil:
-				if result, err := classify.WithAI(ctx, sess.MainstreamAI, det.Title, ""); err == nil && result.IsKids {
-					targetRoot = sess.KidsRootPath
+			// Claude 2026-08-06: NFO season-confirm miss falls through to TMDB/TVDB/web
+			// Reason: wrong or incomplete TMDB seasons in sidecars (e.g. Monster S02)
+			//   used to hard-unmatch before TVDB/search could recover.
+			// Troubleshooting: still unmatched after TVDB configured → NFO path returned early.
+			// Review if: NFO TVDB id field is preferred when TMDB season 404s.
+			if sess != nil && sess.TMDB != nil && seriesSeasonAcceptable(ctx, sess.TMDB, hint.TMDBID, season) {
+				det, err := sess.TMDB.TVDetails(ctx, hint.TMDBID)
+				if err != nil {
+					p.Status = proposals.Unmatched
+					p.Reason = fmt.Sprintf(".nfo TMDB id %d: lookup failed: %v", hint.TMDBID, err)
+					return p, false
 				}
+				targetRoot := generalRoot
+				switch {
+				case foundRoot == sess.KidsRootPath:
+					targetRoot = sess.KidsRootPath
+				case sess.KidsRootPath != "" && sess.MainstreamAI != nil:
+					if result, err := classify.WithAI(ctx, sess.MainstreamAI, det.Title, ""); err == nil && result.IsKids {
+						targetRoot = sess.KidsRootPath
+					}
+				}
+				p.Status = proposals.Pending
+				p.Title = det.Title
+				p.TMDBID = hint.TMDBID
+				p.Year = hint.Year
+				p.SeasonNumber = season
+				p.EpisodeNumber = episode
+				if len(extraEpisodes) > 0 {
+					p.ExtraEpisodeNumbers = extraEpisodes
+				}
+				p.RootFolderPath = targetRoot
+				p.Genres = det.Genres
+				if cast, err := sess.TMDB.TVAggregateCredits(ctx, hint.TMDBID); err == nil {
+					p.Cast = cast
+				}
+				// Site 1's softened outcome — Status+Reason only, never Title/Year/Root.
+				if isDuplicateSlot {
+					acceptDuplicatePendingEpisode(&p, det.Title, season, episode)
+				}
+				return p, false
 			}
-			p.Status = proposals.Pending
-			p.Title = det.Title
-			p.TMDBID = hint.TMDBID
-			p.Year = hint.Year
-			p.SeasonNumber = season
-			p.EpisodeNumber = episode
-			if len(extraEpisodes) > 0 {
-				p.ExtraEpisodeNumbers = extraEpisodes
-			}
-			p.RootFolderPath = targetRoot
-			p.Genres = det.Genres
-			if cast, err := sess.TMDB.TVAggregateCredits(ctx, hint.TMDBID); err == nil {
-				p.Cast = cast
-			}
-			// Site 1's softened outcome — Status+Reason only, never Title/Year/Root.
-			if isDuplicateSlot {
-				acceptDuplicatePendingEpisode(&p, det.Title, season, episode)
-			}
-			return p, false
-		}
-		// Season missing on the NFO's TMDB id — continue into filename search /
-		// TVDB / web-authority instead of hard-unmatching.
+			// Season missing on the NFO's TMDB id — continue into filename search /
+			// TVDB / web-authority instead of hard-unmatching.
 		}
 	}
 

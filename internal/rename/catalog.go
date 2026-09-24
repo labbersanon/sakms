@@ -108,7 +108,9 @@ func catalogEpisodeAtPath(ctx context.Context, sess *mode.Session, libStore *lib
 		parent, nestSeason, nestEp, ok := findEpisodeNest(ctx, libStore, titleHint)
 		var epTitle, airDate string
 		if !ok {
-			parent, nestSeason, nestEp, epTitle, airDate, ok = findTVDBEpisodeNest(ctx, sess, libStore, titleHint, yearFromShowFolder(showFolder), foundRoot)
+			dummyFolder := isDummyMovieFolder(showFolder, videoPath)
+			allowSearch := allowNestSearchCreate(showFolder, titleHint, dummyFolder)
+			parent, nestSeason, nestEp, epTitle, airDate, ok = findTVDBEpisodeNest(ctx, sess, libStore, titleHint, yearFromShowFolder(showFolder), foundRoot, allowSearch)
 		}
 		if !ok {
 			return false, nil

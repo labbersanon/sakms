@@ -117,15 +117,33 @@ func findEpisodeNest(ctx context.Context, libStore *library.Store, title string)
 	return first.Series, first.SeasonNumber, first.EpisodeNumber, true
 }
 
+func isDummyMovieFolder(showFolder, videoPath string) bool {
+	if strings.Contains(strings.ToLower(showFolder), "tmdbid") {
+		return true
+	}
+	season, eps, parsed := library.ParseEpisodeNumbers(filepath.Base(videoPath))
+	return parsed && dummyMovieEpisodeParse(season, eps)
+}
+
 func nestTitleHint(hintTitle, showFolder, videoPath string) string {
 	if t := strings.TrimSpace(hintTitle); t != "" {
 		return t
 	}
-	if t := titleFromShowFolder(showFolder); t != "" {
-		return t
+	if isDummyMovieFolder(showFolder, videoPath) {
+		if t := titleFromShowFolder(showFolder); t != "" {
+			return t
+		}
 	}
 	base := strings.TrimSuffix(filepath.Base(videoPath), filepath.Ext(videoPath))
 	return strings.TrimSpace(base)
+}
+
+func allowNestSearchCreate(showFolder, titleHint string, dummyFolder bool) bool {
+	if dummyFolder {
+		return true
+	}
+	folderKey := episodeTitleKey(titleFromShowFolder(showFolder))
+	return folderKey != "" && folderKey == episodeTitleKey(titleHint)
 }
 
 // Exact title key only — token overlap would nest "laughing" under Leave 'Em Laughing.
@@ -211,7 +229,7 @@ func ensureTVDBParent(ctx context.Context, libStore *library.Store, all []librar
 //   SearchSeries hit whose catalog has exactly one exact-key episode.
 // Troubleshooting: shorts stay their own cards when the anthology is untracked.
 // Review if: TVDB adds a global episode-title search.
-func findTVDBEpisodeNest(ctx context.Context, sess *mode.Session, libStore *library.Store, title string, folderYear int, foundRoot string) (library.Series, int, int, string, string, bool) {
+func findTVDBEpisodeNest(ctx context.Context, sess *mode.Session, libStore *library.Store, title string, folderYear int, foundRoot string, allowSearchCreate bool) (library.Series, int, int, string, string, bool) {
 	key := episodeTitleKey(title)
 	if sess == nil || sess.TVDB == nil || libStore == nil || key == "" || genericEpisodeTitleKey(key) {
 		return library.Series{}, 0, 0, "", "", false
@@ -249,6 +267,9 @@ func findTVDBEpisodeNest(ctx context.Context, sess *mode.Session, libStore *libr
 	}
 	if have {
 		return found.series, found.season, found.ep, found.name, found.aired, true
+	}
+	if !allowSearchCreate {
+		return library.Series{}, 0, 0, "", "", false
 	}
 	return searchCreateEpisodeParent(ctx, sess, libStore, all, title, key, folderYear, foundRoot)
 }

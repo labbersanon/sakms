@@ -155,10 +155,9 @@ const seriesFetch = (seasons: unknown[], movies: DiscoverItem[] = []) =>
 
 const commitSpy = () => vi.fn(async (_pick: TakeoverPick) => {});
 
-// pickShow drives step 1 → step 2: search, then Assign episode. The title tile
-// itself now commits show-level (title selection); season/episode still needs
-// this sibling control. The wait is on the control's aria-label, not the
-// title text, because the title also appears in the card footer.
+// pickShow is search → Assign episode (step 2). The title tile commits
+// show-level; wait on the sibling control's aria-label, not the title text
+// (that string is also in the card footer).
 const pickShow = async (title = "A Show") => {
   fireEvent.click(screen.getByText("Search"));
   fireEvent.click(await screen.findByLabelText(`Assign episode for ${title}`));
@@ -1143,9 +1142,7 @@ describe("SearchTakeover — Series search merges the movies catalog", () => {
     fireEvent.click(screen.getByText("Search"));
     fireEvent.click(await screen.findByLabelText("Assign episode for A Short Film"));
 
-    // Step 2 via Assign episode — the title tile now commits show-level.
-    // useCatalogItem still branches on props.searchMode for presetSlot, never
-    // on the hit's origin.
+    // Assign episode, not the title tile — tile click commits show-level.
     expect(
       await screen.findByText("Use show-level match only"),
     ).toBeInTheDocument();

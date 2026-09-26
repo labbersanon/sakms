@@ -461,11 +461,9 @@ export const SearchTakeover: Component<{
   // Review if: series search should require a season/episode before commit.
   // Related files: SearchTakeover.test.tsx, Rename.test.tsx, Rename.repick.test.tsx
   //
-  // Episode assignment stays on openSeriesStep2 ("Assign episode"). ROUTING
-  // STILL BRANCHES ON props.searchMode, NOT ON hit.mode, for the presetSlot
-  // path: a TVDB episode hit in Series mode one-click commits that slot.
-  // `origin` is still threaded onto PickedShow so step 2 can render the
-  // movie-origin advisory; see PickedShow's own doc comment.
+  // Slot assignment is openSeriesStep2 ("Assign episode"). presetSlot still
+  // branches on props.searchMode, not hit.mode: a TVDB episode hit one-click
+  // commits that slot.
   const catalogShow = (
     item: DiscoverItem,
     origin: "movies" | "series",
@@ -480,10 +478,10 @@ export const SearchTakeover: Component<{
   const openSeriesStep2 = (
     item: DiscoverItem,
     origin: "movies" | "series",
-    opts?: { seriesTitle?: string },
+    seriesTitle?: string,
   ) => {
     setCommitError(null);
-    setPicked(catalogShow(item, origin, opts?.seriesTitle));
+    setPicked(catalogShow(item, origin, seriesTitle));
   };
 
   const useCatalogItem = (
@@ -818,9 +816,7 @@ export const SearchTakeover: Component<{
                               aria-label={`Assign episode for ${item.title}`}
                               disabled={busy()}
                               onClick={() =>
-                                openSeriesStep2(item, hit.mode, {
-                                  seriesTitle: hit.seriesTitle,
-                                })
+                                openSeriesStep2(item, hit.mode, hit.seriesTitle)
                               }
                             >
                               Assign episode

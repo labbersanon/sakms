@@ -1484,10 +1484,6 @@ describe("Dedup — Move to another mode (AC6)", () => {
         return jsonResponse([
           { id: 555, title: "New Show", releaseDate: "2020-01-01" },
         ]);
-      // A series target drills into SeasonEpisodePicker, which self-fetches
-      // its season list. Empty seasons routes it to its degraded free-text
-      // fallback, which is irrelevant here — this test commits show-level.
-      if (url.includes("/discover/detail")) return jsonResponse({ seasons: [] });
       if (
         url.includes("/api/proposals/32/move-mode") &&
         (init?.method ?? "").toUpperCase() === "POST"
@@ -1927,7 +1923,6 @@ describe("Dedup — takeover scroll restore (N4, N4b)", () => {
         return jsonResponse([
           { id: 999, title: "New Show", releaseDate: "2021-01-01" },
         ]);
-      if (url.includes("/discover/detail")) return jsonResponse({ seasons: [] });
       if (
         url.includes("/api/proposals/61/move-mode") &&
         (init?.method ?? "").toUpperCase() === "POST"

@@ -139,8 +139,8 @@ const stubRawFetch = (opts: { series?: Proposal[]; movies?: Proposal[] }) => {
         return jsonResponse(opts.movies?.length ? [tmdbResult] : []);
       if (url.includes("/tmdb-search")) return jsonResponse([tmdbResult]);
       // Unmatched Series with no title auto-searches TVDB (kind=episode).
-      // Omit season/episode so the hit has no presetSlot and still opens the
-      // accordion — the path these tests exist to cover.
+      // Omit season/episode so there is no presetSlot: Assign episode stays
+      // visible (a preset slot one-click commits and hides that control).
       if (url.includes("/tvdb-search"))
         return jsonResponse([
           {

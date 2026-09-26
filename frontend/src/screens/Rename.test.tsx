@@ -469,25 +469,6 @@ describe("Rename — Series Re-pick (auto-search → use a new tmdb match)", () 
         return jsonResponse([
           tmdbItem({ id: 999, title: "The Right Show", releaseDate: "2018-01-01" }),
         ]);
-      // SeasonEpisodeAccordion self-fetches its season list. Without this
-      // branch the handler's trailing throw would reject it, the accordion
-      // would resolve to [] and silently render its degraded free-text
-      // fallback — where the show-level button below is still clickable, so
-      // the rest of this test would pass while exercising the wrong state
-      // entirely.
-      if (url.includes("/api/modes/series/discover/detail"))
-        return jsonResponse({
-          seasons: [
-            {
-              seasonNumber: 1,
-              name: "Season 1",
-              airDate: "2018-01-01",
-              episodeCount: 1,
-              posterPath: "",
-              episodes: [],
-            },
-          ],
-        });
       if (
         url.includes("/api/proposals/12/repick") &&
         (init?.method ?? "").toUpperCase() === "POST"
@@ -500,8 +481,7 @@ describe("Rename — Series Re-pick (auto-search → use a new tmdb match)", () 
     fireEvent.click(await screen.findByText("Series"));
     await runRowAction("Wrong.Match.Show", "repick");
 
-    // Title tile click commits show-level — that is the Series title-selection
-    // path. Season/episode assignment is the sibling "Assign episode" control.
+    // Title tile click is the Series title-selection path (show-level commit).
     fireEvent.click(await screen.findByLabelText("Use The Right Show"));
 
     await waitFor(() =>
@@ -1175,7 +1155,6 @@ describe("Rename — search takeover container semantics (N1, N2, N5)", () => {
         return jsonResponse([
           tmdbItem({ id: 901, title: "Target Show", releaseDate: "2019-01-01" }),
         ]);
-      if (url.includes("/discover/detail")) return jsonResponse({ seasons: [] });
       if (
         url.includes("/api/proposals/72/move-mode") &&
         (init?.method ?? "").toUpperCase() === "POST"
@@ -1319,7 +1298,6 @@ describe("Rename — takeover scroll restore (N4, N4b)", () => {
         return jsonResponse([
           tmdbItem({ id: 902, title: "Target Show", releaseDate: "2019-01-01" }),
         ]);
-      if (url.includes("/discover/detail")) return jsonResponse({ seasons: [] });
       if (
         url.includes("/api/proposals/74/move-mode") &&
         (init?.method ?? "").toUpperCase() === "POST"

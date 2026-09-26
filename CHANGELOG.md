@@ -9527,3 +9527,21 @@ status stays active.
 | `internal/prowlarr/client.go` | Empty movie `type=movie` → `type=search` title retry |
 | `internal/prowlarr/client_test.go` | Fallback / no-fallback guards |
 
+## 2026-09-26 — Downloads card detail popup
+
+**Problem:** Downloads cards showed only filename, phase, speed, and pause/cancel — no way to inspect Usenet segment/STAT/sidecar state or torrent swarm/files/trackers.
+**Fix:** Card filename or Details opens a live popup fed by the existing SSE row. Usenet: catalog title + NZB name, indexer, segments + current file, STAT/wait reason, PAR2 file, sidecar age, connections, staging path + on-disk bytes, full error + failing segment + alternate-park history. Torrent: catalog + name, seeds/peers/availability, uploaded/ratio/seed goals, file list with skip/priority, trackers, infohash/magnet copy, piece counts + heatmap, save path + on-disk bytes, Force reannounce and Recheck. Card actions stay Pause/Resume/Cancel.
+**Outcome:** Clicking a card opens details that update with the queue stream.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/apidto/dto.go` | Nested usenet/torrent detail DTOs + file-priority request |
+| `internal/usenet/*` | Segment/file/STAT/sidecar/conn fields on the queue snapshot |
+| `internal/downloader/*` | Swarm/files/trackers/hash + reannounce/recheck/priority |
+| `internal/api/downloads.go` | Grab enrichment (catalog title, indexer, parks) |
+| `internal/api/download_details.go` | Mapping + torrent action handlers |
+| `frontend/src/screens/DownloadDetailPopup.tsx` | Popup UI |
+| `frontend/src/screens/Downloads.tsx` | Details entry + live popup |
+

@@ -44,7 +44,7 @@ func TestPrecheck_FullCheck_OkWhenAllPresent(t *testing.T) {
 	srv := newFakeNNTP(t)
 	srv.serveAll(p)
 	m := New(Config{Servers: []ServerConfig{srv.cfg()}, StagingDir: t.TempDir()})
-	res, err := m.precheckNZB(context.Background(), parsePayloadNZB(t, p), nil)
+	res, err := m.precheckNZB(context.Background(), parsePayloadNZB(t, p), nil, "")
 	if err != nil {
 		t.Fatalf("precheckNZB: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestPrecheck_OverlappingBlockAtCapacity(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := m.precheckNZB(context.Background(), parsePayloadNZB(t, p), nil)
+		_, err := m.precheckNZB(context.Background(), parsePayloadNZB(t, p), nil, "")
 		done <- err
 	}()
 

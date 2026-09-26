@@ -2774,6 +2774,89 @@ export interface Download {
    * Review if: durable queue restore should preserve original add time across restart.
    */
   addedAt?: string;
+  /**
+   * Claude 2026-09-26: Downloads card detail popup fields.
+   * Reason: cards stay compact; the popup needs catalog identity plus
+   *   protocol-specific telemetry that does not belong on the row chrome.
+   * Troubleshooting: popup heading empty — expect catalogTitle from the grab.
+   * Review if: a dedicated GET /api/downloads/{gid} replaces list enrichment.
+   */
+  catalogTitle?: string;
+  indexer?: string;
+  usenet?: UsenetDownloadDetails;
+  torrent?: TorrentDownloadDetails;
+}
+/**
+ * UsenetDownloadDetails is the Usenet-only payload for the Downloads popup.
+ */
+export interface UsenetDownloadDetails {
+  segmentDone?: number /* int64 */;
+  segmentTotal?: number /* int64 */;
+  currentFile?: string;
+  currentSeg?: number /* int */;
+  currentSegTotal?: number /* int */;
+  statDone?: number /* int64 */;
+  statTotal?: number /* int64 */;
+  waitReason?: string;
+  repairFile?: string;
+  sidecarAgeSec?: number /* int64 */;
+  activeConns?: number /* int */;
+  maxConns?: number /* int */;
+  stagingPath?: string;
+  bytesOnDisk?: number /* int64 */;
+  failingSegment?: string;
+  triedReleases?: DownloadTriedRelease[];
+}
+/**
+ * DownloadTriedRelease is one prior Usenet park in the current alternate episode.
+ */
+export interface DownloadTriedRelease {
+  label: string;
+  reason: string;
+}
+/**
+ * TorrentDownloadDetails is the torrent-only payload for the Downloads popup.
+ */
+export interface TorrentDownloadDetails {
+  peerCount?: number /* int64 */;
+  availability?: number /* float64 */;
+  uploaded?: number /* int64 */;
+  ratio?: number /* float64 */;
+  seedRatioGoal?: number /* float64 */;
+  seedTimeGoalSec?: number /* int64 */;
+  infoHash?: string;
+  magnet?: string;
+  piecesHave?: number /* int */;
+  piecesTotal?: number /* int */;
+  pieceHeatmap?: string;
+  files?: TorrentFileDetail[];
+  trackers?: TorrentTrackerDetail[];
+  savePath?: string;
+  bytesOnDisk?: number /* int64 */;
+}
+/**
+ * TorrentFileDetail is one inner torrent file for the Downloads popup.
+ */
+export interface TorrentFileDetail {
+  path: string;
+  length: number /* int64 */;
+  completed: number /* int64 */;
+  priority: string; // "skip" | "normal" | "high"
+}
+/**
+ * TorrentTrackerDetail is one announce URL plus a best-effort status.
+ */
+export interface TorrentTrackerDetail {
+  url: string;
+  status: string;
+  message?: string;
+}
+/**
+ * DownloadFilePriorityRequest is PUT /api/downloads/{gid}/files.
+ */
+export interface DownloadFilePriorityRequest {
+  path: string;
+  priority: string; // "skip" | "normal" | "high"
 }
 /**
  * DownloadProtocolTorrent and DownloadProtocolUsenet are the two values

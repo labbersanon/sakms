@@ -445,11 +445,8 @@ describe("Rename — Series Re-pick (auto-search → use a new tmdb match)", () 
   // The ONLY end-to-end repick-commit test that runs through Rename's real row
   // wiring (runRowAction -> SearchTakeover -> commitRepick), so it must survive
   // every refactor of that path rather than being replaced by a component-level
-  // render. It does double duty: it is simultaneously that commit guard AND
-  // D-5's show-level-escape-hatch guard — leaving both slot fields off is the
-  // default, most common Series repick, and the accordion structurally cannot
-  // express it (SeasonEpisodeAccordion always requires expanding a season row
-  // first).
+  // render. The title tile now commits show-level (both slot fields omitted),
+  // which is the default Series title-selection path.
   it("re-points the proposal at the NEWLY chosen tmdbId, not its current one", async () => {
     const calls = stubFetch((url, init) => {
       if (url.includes("/api/modes/movies/rename/proposals"))
@@ -472,25 +469,6 @@ describe("Rename — Series Re-pick (auto-search → use a new tmdb match)", () 
         return jsonResponse([
           tmdbItem({ id: 999, title: "The Right Show", releaseDate: "2018-01-01" }),
         ]);
-      // SeasonEpisodeAccordion self-fetches its season list. Without this
-      // branch the handler's trailing throw would reject it, the accordion
-      // would resolve to [] and silently render its degraded free-text
-      // fallback — where the show-level button below is still clickable, so
-      // the rest of this test would pass while exercising the wrong state
-      // entirely.
-      if (url.includes("/api/modes/series/discover/detail"))
-        return jsonResponse({
-          seasons: [
-            {
-              seasonNumber: 1,
-              name: "Season 1",
-              airDate: "2018-01-01",
-              episodeCount: 1,
-              posterPath: "",
-              episodes: [],
-            },
-          ],
-        });
       if (
         url.includes("/api/proposals/12/repick") &&
         (init?.method ?? "").toUpperCase() === "POST"
@@ -503,19 +481,8 @@ describe("Rename — Series Re-pick (auto-search → use a new tmdb match)", () 
     fireEvent.click(await screen.findByText("Series"));
     await runRowAction("Wrong.Match.Show", "repick");
 
-    // Step 1 — the auto-search resolves and the candidate tile is clicked. For
-    // Series this COMMITS NOTHING; it mounts the season/episode picker.
+    // Title tile click is the Series title-selection path (show-level commit).
     fireEvent.click(await screen.findByLabelText("Use The Right Show"));
-
-    // Step 2 — the picker really mounted, in its GRID state (a season tile),
-    // not the degraded fallback. Asserting only the loading skeleton would not
-    // discriminate: it is shown on the failing path too.
-    expect(
-      await screen.findByRole("button", { name: /Season 1/ }),
-    ).toBeInTheDocument();
-    expect(calls.some((c) => c.url.includes("sections=seasons"))).toBe(true);
-
-    fireEvent.click(screen.getByText("Use show-level match only"));
 
     await waitFor(() =>
       expect(calls.some((c) => c.url.includes("/repick"))).toBe(true),
@@ -1188,7 +1155,6 @@ describe("Rename — search takeover container semantics (N1, N2, N5)", () => {
         return jsonResponse([
           tmdbItem({ id: 901, title: "Target Show", releaseDate: "2019-01-01" }),
         ]);
-      if (url.includes("/discover/detail")) return jsonResponse({ seasons: [] });
       if (
         url.includes("/api/proposals/72/move-mode") &&
         (init?.method ?? "").toUpperCase() === "POST"
@@ -1206,9 +1172,6 @@ describe("Rename — search takeover container semantics (N1, N2, N5)", () => {
 
     fireEvent.click(screen.getByText("Search"));
     fireEvent.click(await screen.findByLabelText("Use Target Show"));
-    // Series target with zero seasons → the picker degrades and the
-    // show-level escape hatch is the commit.
-    fireEvent.click(await screen.findByText("Use show-level match only"));
 
     await waitFor(() =>
       expect(calls.some((c) => c.url.includes("/move-mode"))).toBe(true),
@@ -1335,7 +1298,6 @@ describe("Rename — takeover scroll restore (N4, N4b)", () => {
         return jsonResponse([
           tmdbItem({ id: 902, title: "Target Show", releaseDate: "2019-01-01" }),
         ]);
-      if (url.includes("/discover/detail")) return jsonResponse({ seasons: [] });
       if (
         url.includes("/api/proposals/74/move-mode") &&
         (init?.method ?? "").toUpperCase() === "POST"
@@ -1356,7 +1318,6 @@ describe("Rename — takeover scroll restore (N4, N4b)", () => {
 
     fireEvent.click(screen.getByText("Search"));
     fireEvent.click(await screen.findByLabelText("Use Target Show"));
-    fireEvent.click(await screen.findByText("Use show-level match only"));
 
     await waitFor(() =>
       expect(

@@ -9498,3 +9498,19 @@ status stays active.
 | `frontend/src/screens/discover/Mainstream.tsx` | Preview/search/monitored cards clickable for series |
 | `frontend/src/screens/discover/DetailPopup.tsx` | Skip TMDB fetches and links when id ≤ 0 |
 
+## 2026-09-26 — Rename Search title selection
+
+**Problem:** Rename Search showed catalog results but clicking a Series title did not select it — the click only opened the season/episode step, whose confirm was labeled "Use show-level match only".
+**Fix:** A Series result tile click commits the title (show-level, no slot), matching Movies/Adult. Season/episode assignment stays on a sibling "Assign episode" control. TVDB hits with a preset slot still one-click commit that slot.
+**Outcome:** Search results are choosable as the match. Episode assignment remains available without nesting buttons.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/SearchTakeover.tsx` | Title tile commits show-level; Assign episode opens step 2 |
+| `frontend/src/screens/SearchTakeover.test.tsx` | Title-selection guard; step 2 via Assign episode |
+| `frontend/src/screens/Rename.test.tsx` | Series repick/move commit on title click |
+| `frontend/src/screens/Rename.repick.test.tsx` | Accordion path via Assign episode |
+| `frontend/src/screens/Dedup.test.tsx` | Series move commits on title click |
+

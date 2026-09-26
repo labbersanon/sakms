@@ -70,6 +70,13 @@
 //    adding one is out of scope (spec Non-Goal: "no changes to selection/confirm
 //    logic"), so the notice stays unconditional and absence assertions stay
 //    forbidden.
+//
+// APPENDED 2026-09-26: a Series result tile click SELECTS THE TITLE (show-level
+// commit), matching Movies/Adult. Step 2 is still required for season/episode
+// assignment — it is reached from the sibling "Assign episode" control, not
+// from the title tile. Do not route the title tile back through setPicked:
+// that is the defect this note records (search worked; the title could not
+// be chosen). TVDB hits with presetSlot still one-click commit the slot.
 
 import {
   type Component,
@@ -99,7 +106,7 @@ import { SeasonEpisodeAccordion } from "./discover/SeasonEpisodeAccordion";
 // cheaper and more honest call under this repo's no-premature-abstraction rule.
 const GRID_CLASS = "grid grid-cols-3 gap-2 sm:grid-cols-4";
 const TILE_CLASS =
-  "overflow-hidden rounded border border-border text-left transition hover:border-accent";
+  "cursor-pointer overflow-hidden rounded border border-border text-left transition hover:border-accent";
 
 function isAdultResolveURL(q: string): boolean {
   const t = q.trim();
@@ -446,40 +453,51 @@ export const SearchTakeover: Component<{
       year: show.year,
     });
 
-  // useCatalogItem: Movies/Adult commit on a single click (today's behaviour);
-  // Series drills into step 2 instead.
+  // Claude 2026-09-26: series tile click selects the title (show-level commit).
+  // Reason: Rename Search showed results but a title could not be chosen —
+  //   the click only opened step 2, and the confirm control was labeled
+  //   "Use show-level match only". Movies/Adult already committed on click.
+  // Troubleshooting: search works; clicking a result does not apply the title.
+  // Review if: series search should require a season/episode before commit.
+  // Related files: SearchTakeover.test.tsx, Rename.test.tsx, Rename.repick.test.tsx
   //
-  // ROUTING BRANCHES ON props.searchMode, NOT ON hit.mode — deliberately, and
-  // it needed no change when series search started merging in movie results.
-  // A movie-origin pick in Series mode goes to step 2 exactly like a
-  // series-origin one: the operator is placing a file into their SERIES
-  // library, so it needs a season/episode slot regardless of which TMDB
-  // catalog the id came from. Branching on `hit.mode` here would send a short
-  // film straight to a show-level commit and silently skip the slot
-  // assignment. `origin` IS still threaded through — onto `PickedShow`, not
-  // into this routing decision — purely so step 2 can render the movie-origin
-  // advisory below; see PickedShow's own doc comment.
+  // Slot assignment is openSeriesStep2 ("Assign episode"). presetSlot still
+  // branches on props.searchMode, not hit.mode: a TVDB episode hit one-click
+  // commits that slot.
+  const catalogShow = (
+    item: DiscoverItem,
+    origin: "movies" | "series",
+    seriesTitle?: string,
+  ): PickedShow => ({
+    tmdbId: item.id,
+    title: seriesTitle ?? item.title,
+    year: yearOf(item.releaseDate),
+    origin,
+  });
+
+  const openSeriesStep2 = (
+    item: DiscoverItem,
+    origin: "movies" | "series",
+    seriesTitle?: string,
+  ) => {
+    setCommitError(null);
+    setPicked(catalogShow(item, origin, seriesTitle));
+  };
+
   const useCatalogItem = (
     item: DiscoverItem,
     origin: "movies" | "series",
     opts?: { presetSlot?: { season: number; episode: number }; seriesTitle?: string },
   ) => {
-    const showTitle = opts?.seriesTitle ?? item.title;
-    const show: PickedShow = {
-      tmdbId: item.id,
-      title: showTitle,
-      year: yearOf(item.releaseDate),
-      origin,
-    };
-    if (props.searchMode === "series") {
-      if (opts?.presetSlot) {
-        commitSlot(show, opts.presetSlot.season, opts.presetSlot.episode);
-        return;
-      }
-      setCommitError(null);
-      setPicked(show);
+    const show = catalogShow(item, origin, opts?.seriesTitle);
+    if (props.searchMode === "series" && opts?.presetSlot) {
+      commitSlot(show, opts.presetSlot.season, opts.presetSlot.episode);
       return;
     }
+    // Previous Series-without-slot path (title click opened step 2 only):
+    // setCommitError(null);
+    // setPicked(show);
+    // return;
     showLevelCommit(show);
   };
 
@@ -713,6 +731,7 @@ export const SearchTakeover: Component<{
                         // matching the badge's own visibility.
                         const badgeId = createUniqueId();
                         return (
+                          <div class="flex flex-col">
                           <button
                             type="button"
                             class={TILE_CLASS}
@@ -784,6 +803,26 @@ export const SearchTakeover: Component<{
                               </div>
                             </div>
                           </button>
+                          {/* Claude 2026-09-26: sibling of the title tile, not nested.
+                              Reason: tile click now commits the title; episode
+                              assignment must stay reachable without a nested button.
+                              Troubleshooting: series search applied a title but
+                              could not set S/E.
+                              Review if: tile click opens step 2 again. */}
+                          <Show when={props.searchMode === "series" && !hit.presetSlot}>
+                            <button
+                              type="button"
+                              class="mt-1 rounded border border-border px-1.5 py-1 text-[11px] text-fg hover:border-accent disabled:opacity-50"
+                              aria-label={`Assign episode for ${item.title}`}
+                              disabled={busy()}
+                              onClick={() =>
+                                openSeriesStep2(item, hit.mode, hit.seriesTitle)
+                              }
+                            >
+                              Assign episode
+                            </button>
+                          </Show>
+                          </div>
                         );
                       }}
                     </For>

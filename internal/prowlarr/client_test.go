@@ -389,8 +389,6 @@ func TestSearchByID_PropagatesErrorStatus(t *testing.T) {
 
 func TestSearchByID_MovieEmptyFallsBackToTitleSearch(t *testing.T) {
 	var calls int
-	var secondType, secondQuery, secondCats string
-	var secondIDs []string
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		q := r.URL.Query()
@@ -404,10 +402,18 @@ func TestSearchByID_MovieEmptyFallsBackToTitleSearch(t *testing.T) {
 			w.Write([]byte("[]"))
 			return
 		}
-		secondType = q.Get("type")
-		secondQuery = q.Get("query")
-		secondCats = q.Get("categories")
-		secondIDs = q["indexerIds"]
+		if q.Get("type") != "search" {
+			t.Errorf("fallback type: want search, got %q", q.Get("type"))
+		}
+		if q.Get("query") != "Phineas and Ferb the Movie" {
+			t.Errorf("fallback query should be the title only, got %q", q.Get("query"))
+		}
+		if q.Get("categories") != "2000" {
+			t.Errorf("fallback categories: want 2000, got %q", q.Get("categories"))
+		}
+		if ids := q["indexerIds"]; len(ids) != 1 || ids[0] != "-1" {
+			t.Errorf("fallback should keep ScopeUsenet indexerIds=-1, got %v", ids)
+		}
 		w.Write([]byte(searchFixture))
 	})
 
@@ -424,21 +430,6 @@ func TestSearchByID_MovieEmptyFallsBackToTitleSearch(t *testing.T) {
 	if calls != 2 {
 		t.Fatalf("expected a type=search retry after empty type=movie, got %d calls", calls)
 	}
-	if secondType != "search" {
-		t.Errorf("fallback type: want search, got %q", secondType)
-	}
-	if secondQuery != "Phineas and Ferb the Movie" {
-		t.Errorf("fallback query should be the title only, got %q", secondQuery)
-	}
-	if strings.Contains(secondQuery, "{") {
-		t.Errorf("fallback must not send ID tokens, got %q", secondQuery)
-	}
-	if secondCats != "2000" {
-		t.Errorf("fallback categories: want 2000, got %q", secondCats)
-	}
-	if len(secondIDs) != 1 || secondIDs[0] != "-1" {
-		t.Errorf("fallback should keep ScopeUsenet indexerIds=-1, got %v", secondIDs)
-	}
 	if len(releases) != 2 {
 		t.Errorf("expected fallback hits, got %d", len(releases))
 	}
@@ -448,8 +439,8 @@ func TestSearchByID_TVEmptyDoesNotFallBack(t *testing.T) {
 	var calls int
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		if r.URL.Query().Get("type") != "tvsearch" {
-			t.Errorf("TV search type: want tvsearch, got %q", r.URL.Query().Get("type"))
+		if got := r.URL.Query().Get("type"); got != "tvsearch" {
+			t.Errorf("TV search type: want tvsearch, got %q", got)
 		}
 		w.Write([]byte("[]"))
 	})

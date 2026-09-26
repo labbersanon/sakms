@@ -297,11 +297,8 @@ func (c *Client) SearchByID(ctx context.Context, params SearchByIDParams) ([]Rel
 	if err != nil {
 		return nil, err
 	}
-	if isTV || len(releases) > 0 {
-		return releases, nil
-	}
 	title := strings.TrimSpace(params.Query)
-	if title == "" {
+	if isTV || len(releases) > 0 || title == "" {
 		return releases, nil
 	}
 	// Claude 2026-09-26: movie type=movie empty → type=search title retry.
@@ -315,12 +312,9 @@ func (c *Client) SearchByID(ctx context.Context, params SearchByIDParams) ([]Rel
 	//   returning hits — this retry then never runs.
 	// Related files: internal/api/autograb.go, internal/availability/availability.go
 	log.Printf("prowlarr: type=movie returned 0 for %q — retrying type=search", title)
-	fallback := url.Values{}
-	fallback.Set("type", "search")
-	fallback.Set("query", title)
-	addCategories(fallback, params.Categories)
-	addIndexerScope(fallback, params.Scope, params.IndexerIDs)
-	return c.search(ctx, fallback)
+	q.Set("type", "search")
+	q.Set("query", title)
+	return c.search(ctx, q)
 }
 
 // addCategories appends the shared Newznab-category param used by both

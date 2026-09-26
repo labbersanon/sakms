@@ -445,11 +445,8 @@ describe("Rename — Series Re-pick (auto-search → use a new tmdb match)", () 
   // The ONLY end-to-end repick-commit test that runs through Rename's real row
   // wiring (runRowAction -> SearchTakeover -> commitRepick), so it must survive
   // every refactor of that path rather than being replaced by a component-level
-  // render. It does double duty: it is simultaneously that commit guard AND
-  // D-5's show-level-escape-hatch guard — leaving both slot fields off is the
-  // default, most common Series repick, and the accordion structurally cannot
-  // express it (SeasonEpisodeAccordion always requires expanding a season row
-  // first).
+  // render. The title tile now commits show-level (both slot fields omitted),
+  // which is the default Series title-selection path.
   it("re-points the proposal at the NEWLY chosen tmdbId, not its current one", async () => {
     const calls = stubFetch((url, init) => {
       if (url.includes("/api/modes/movies/rename/proposals"))
@@ -503,19 +500,9 @@ describe("Rename — Series Re-pick (auto-search → use a new tmdb match)", () 
     fireEvent.click(await screen.findByText("Series"));
     await runRowAction("Wrong.Match.Show", "repick");
 
-    // Step 1 — the auto-search resolves and the candidate tile is clicked. For
-    // Series this COMMITS NOTHING; it mounts the season/episode picker.
+    // Title tile click commits show-level — that is the Series title-selection
+    // path. Season/episode assignment is the sibling "Assign episode" control.
     fireEvent.click(await screen.findByLabelText("Use The Right Show"));
-
-    // Step 2 — the picker really mounted, in its GRID state (a season tile),
-    // not the degraded fallback. Asserting only the loading skeleton would not
-    // discriminate: it is shown on the failing path too.
-    expect(
-      await screen.findByRole("button", { name: /Season 1/ }),
-    ).toBeInTheDocument();
-    expect(calls.some((c) => c.url.includes("sections=seasons"))).toBe(true);
-
-    fireEvent.click(screen.getByText("Use show-level match only"));
 
     await waitFor(() =>
       expect(calls.some((c) => c.url.includes("/repick"))).toBe(true),
@@ -1206,9 +1193,6 @@ describe("Rename — search takeover container semantics (N1, N2, N5)", () => {
 
     fireEvent.click(screen.getByText("Search"));
     fireEvent.click(await screen.findByLabelText("Use Target Show"));
-    // Series target with zero seasons → the picker degrades and the
-    // show-level escape hatch is the commit.
-    fireEvent.click(await screen.findByText("Use show-level match only"));
 
     await waitFor(() =>
       expect(calls.some((c) => c.url.includes("/move-mode"))).toBe(true),
@@ -1356,7 +1340,6 @@ describe("Rename — takeover scroll restore (N4, N4b)", () => {
 
     fireEvent.click(screen.getByText("Search"));
     fireEvent.click(await screen.findByLabelText("Use Target Show"));
-    fireEvent.click(await screen.findByText("Use show-level match only"));
 
     await waitFor(() =>
       expect(

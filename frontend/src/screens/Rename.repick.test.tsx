@@ -198,7 +198,8 @@ afterEach(() => {
 describe("Rename re-pick — season/episode assignment through the accordion", () => {
   it("renders a season row after a series candidate is picked", async () => {
     const calls = stubRawFetch({ series: [seriesProposal] });
-    fireEvent.click(await openRepick("Series", "a3f9c2e1b7d84f0e.mkv"));
+    await openRepick("Series", "a3f9c2e1b7d84f0e.mkv");
+    fireEvent.click(screen.getByLabelText("Assign episode for The Path"));
 
     // A real season ROW, not just the loading skeleton: the skeleton also
     // renders while a doomed fetch is in flight, so it cannot tell the
@@ -225,7 +226,8 @@ describe("Rename re-pick — season/episode assignment through the accordion", (
   // regression cannot pass it.
   it("sends a literal seasonNumber 0 (Specials) rather than omitting it", async () => {
     const calls = stubRawFetch({ series: [seriesProposal] });
-    fireEvent.click(await openRepick("Series", "a3f9c2e1b7d84f0e.mkv"));
+    await openRepick("Series", "a3f9c2e1b7d84f0e.mkv");
+    fireEvent.click(screen.getByLabelText("Assign episode for The Path"));
 
     fireEvent.click(await screen.findByRole("button", { name: /Specials/ }));
     fireEvent.click(await screen.findByRole("button", { name: /E3/ }));
@@ -238,7 +240,8 @@ describe("Rename re-pick — season/episode assignment through the accordion", (
 
   it("omits both keys entirely on the show-level escape hatch", async () => {
     const calls = stubRawFetch({ series: [seriesProposal] });
-    fireEvent.click(await openRepick("Series", "a3f9c2e1b7d84f0e.mkv"));
+    await openRepick("Series", "a3f9c2e1b7d84f0e.mkv");
+    fireEvent.click(screen.getByLabelText("Assign episode for The Path"));
 
     // Reached from the loaded-seasons state, so this proves the escape hatch
     // coexists with the accordion rather than only surviving in its degraded

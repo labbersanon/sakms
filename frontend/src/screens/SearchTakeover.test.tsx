@@ -155,12 +155,13 @@ const seriesFetch = (seasons: unknown[], movies: DiscoverItem[] = []) =>
 
 const commitSpy = () => vi.fn(async (_pick: TakeoverPick) => {});
 
-// pickShow drives step 1: search, then click the candidate tile. The wait is on
-// the tile's aria-label, not on the title text, because the title also appears
-// in the card footer.
+// pickShow drives step 1 → step 2: search, then Assign episode. The title tile
+// itself now commits show-level (title selection); season/episode still needs
+// this sibling control. The wait is on the control's aria-label, not the
+// title text, because the title also appears in the card footer.
 const pickShow = async (title = "A Show") => {
   fireEvent.click(screen.getByText("Search"));
-  fireEvent.click(await screen.findByLabelText(`Use ${title}`));
+  fireEvent.click(await screen.findByLabelText(`Assign episode for ${title}`));
 };
 
 describe("SearchTakeover — search 403 is section-agnostic", () => {
@@ -500,6 +501,38 @@ describe("SearchTakeover — currentSlot reaches the accordion", () => {
   });
 });
 
+describe("SearchTakeover — series title selection", () => {
+  it("clicking a series result commits the title without opening step 2", async () => {
+    vi.stubGlobal("fetch", seriesFetch([season4]));
+    const onCommit = commitSpy();
+    const onDone = vi.fn();
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick “Wrong.Match.Show”"
+        searchMode="series"
+        initialQuery="A Show"
+        autoSearch={false}
+        onCommit={onCommit}
+        onDone={onDone}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText("Search"));
+    fireEvent.click(await screen.findByLabelText("Use A Show"));
+
+    await waitFor(() => expect(onCommit).toHaveBeenCalledTimes(1));
+    const pick = onCommit.mock.calls[0]![0];
+    expect(pick).toHaveProperty("tmdbId", 42);
+    expect(pick).toHaveProperty("title", "A Show");
+    expect(pick).not.toHaveProperty("seasonNumber");
+    expect(pick).not.toHaveProperty("episodeNumber");
+    expect(screen.queryByText("Use show-level match only")).toBeNull();
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+  });
+});
+
 describe("SearchTakeover — 'Use show-level match only' (D-5)", () => {
   it("commits the no-slot payload without ever expanding a season row", async () => {
     const fetchMock = seriesFetch([season4]);
@@ -666,7 +699,7 @@ describe("SearchTakeover — the takeover is never a dialog", () => {
     // Step 2 is the only place a nested modal could ever appear (the picker
     // renders inline here, deliberately), so this is the half that carries the
     // weight.
-    fireEvent.click(screen.getByLabelText("Use A Show"));
+    fireEvent.click(screen.getByLabelText("Assign episode for A Show"));
     await screen.findByText("Season 4");
     expectNotADialog(container);
   });
@@ -1108,10 +1141,11 @@ describe("SearchTakeover — Series search merges the movies catalog", () => {
     ));
 
     fireEvent.click(screen.getByText("Search"));
-    fireEvent.click(await screen.findByLabelText("Use A Short Film"));
+    fireEvent.click(await screen.findByLabelText("Assign episode for A Short Film"));
 
-    // Step 2, not an immediate commit — useCatalogItem branches on
-    // props.searchMode, never on the hit's origin.
+    // Step 2 via Assign episode — the title tile now commits show-level.
+    // useCatalogItem still branches on props.searchMode for presetSlot, never
+    // on the hit's origin.
     expect(
       await screen.findByText("Use show-level match only"),
     ).toBeInTheDocument();
@@ -1174,7 +1208,7 @@ describe("SearchTakeover — Series search merges the movies catalog", () => {
     ));
 
     fireEvent.click(screen.getByText("Search"));
-    fireEvent.click(await screen.findByLabelText("Use A Short Film"));
+    fireEvent.click(await screen.findByLabelText("Assign episode for A Short Film"));
 
     // A REAL episode number, deliberately not blank: a blank Episode hits the
     // D-1 rule and collapses to a show-level commit, which would not exercise
@@ -1295,14 +1329,14 @@ describe("SearchTakeover — Series search merges the movies catalog", () => {
     ));
 
     fireEvent.click(screen.getByText("Search"));
-    fireEvent.click(await screen.findByLabelText("Use A Short Film"));
+    fireEvent.click(await screen.findByLabelText("Assign episode for A Short Film"));
 
     expect(
       await screen.findByText(/came from TMDB's movie catalog/),
     ).toBeInTheDocument();
 
     fireEvent.click(screen.getByText("Change show"));
-    fireEvent.click(await screen.findByLabelText("Use A Show"));
+    fireEvent.click(await screen.findByLabelText("Assign episode for A Show"));
 
     expect(
       screen.queryByText(/came from TMDB's movie catalog/),

@@ -1514,12 +1514,6 @@ describe("Dedup — Move to another mode (AC6)", () => {
     await screen.findByText(/Move .+ to another section/);
     fireEvent.click(screen.getByText("Search"));
     fireEvent.click(await screen.findByLabelText("Use New Show"));
-    // A SERIES target drills into the slot step instead of committing on the
-    // tile click (SearchTakeover's useCatalogItem). "Use show-level match
-    // only" is the no-slot commit — it sends the identical
-    // {tmdbId,title,year} body the old single-click "Use this" sent, so this
-    // is still a selector-level change: nothing about what is asserted moved.
-    fireEvent.click(await screen.findByText("Use show-level match only"));
 
     await waitFor(() =>
       expect(
@@ -1957,7 +1951,6 @@ describe("Dedup — takeover scroll restore (N4, N4b)", () => {
 
     fireEvent.click(screen.getByText("Search"));
     fireEvent.click(await screen.findByLabelText("Use New Show"));
-    fireEvent.click(await screen.findByText("Use show-level match only"));
 
     await waitFor(() =>
       expect(

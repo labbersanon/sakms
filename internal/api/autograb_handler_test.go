@@ -130,7 +130,9 @@ func TestAutoGrabHandler_Movies_QualifiedGrabsExactlyOne(t *testing.T) {
 // asserting on the outgoing request instead of the grab outcome.
 func TestAutoGrabHandler_Movies_SearchIncludesQueryAlongsideIDs(t *testing.T) {
 	tmdbSrv := fakeTMDBMovieRuntime(t, 100)
-	prowlarr, lastQuery := fakeProwlarrRecording(t, `[]`)
+	// Non-empty so SearchByID does not take the type=search title fallback;
+	// this test asserts the first (id-scoped type=movie) request shape.
+	prowlarr, lastQuery := fakeProwlarrRecording(t, `[{"guid":"1","title":"Some.Movie.2023.1080p.WEB-DL.x265-GROUP","indexer":"I","protocol":"torrent","size":1,"seeders":1,"downloadUrl":"magnet:?xt=urn:btih:ABCDEF1234567890abcdef1234567890abcdef12"}]`)
 
 	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
 	ctx := context.Background()

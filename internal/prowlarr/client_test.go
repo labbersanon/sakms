@@ -386,3 +386,97 @@ func TestSearchByID_PropagatesErrorStatus(t *testing.T) {
 		t.Fatal("expected an error for a 401 response")
 	}
 }
+
+func TestSearchByID_MovieEmptyFallsBackToTitleSearch(t *testing.T) {
+	var calls int
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		q := r.URL.Query()
+		if calls == 1 {
+			if q.Get("type") != "movie" {
+				t.Errorf("first request type: want movie, got %q", q.Get("type"))
+			}
+			if !strings.Contains(q.Get("query"), "{TmdbId:594328}") {
+				t.Errorf("first request should keep ID tokens, got %q", q.Get("query"))
+			}
+			w.Write([]byte("[]"))
+			return
+		}
+		if q.Get("type") != "search" {
+			t.Errorf("fallback type: want search, got %q", q.Get("type"))
+		}
+		if q.Get("query") != "Phineas and Ferb the Movie" {
+			t.Errorf("fallback query should be the title only, got %q", q.Get("query"))
+		}
+		if q.Get("categories") != "2000" {
+			t.Errorf("fallback categories: want 2000, got %q", q.Get("categories"))
+		}
+		if ids := q["indexerIds"]; len(ids) != 1 || ids[0] != "-1" {
+			t.Errorf("fallback should keep ScopeUsenet indexerIds=-1, got %v", ids)
+		}
+		w.Write([]byte(searchFixture))
+	})
+
+	releases, err := c.SearchByID(context.Background(), SearchByIDParams{
+		Query:      "Phineas and Ferb the Movie",
+		TMDBID:     594328,
+		IMDBID:     "tt1817232",
+		Categories: []int{2000},
+		Scope:      ScopeUsenet,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected a type=search retry after empty type=movie, got %d calls", calls)
+	}
+	if len(releases) != 2 {
+		t.Errorf("expected fallback hits, got %d", len(releases))
+	}
+}
+
+func TestSearchByID_TVEmptyDoesNotFallBack(t *testing.T) {
+	var calls int
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if got := r.URL.Query().Get("type"); got != "tvsearch" {
+			t.Errorf("TV search type: want tvsearch, got %q", got)
+		}
+		w.Write([]byte("[]"))
+	})
+
+	releases, err := c.SearchByID(context.Background(), SearchByIDParams{
+		Query:           "Some Show",
+		TVDBID:          81189,
+		Season:          4,
+		SeasonSpecified: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("TV empty search must not retry as type=search, got %d calls", calls)
+	}
+	if len(releases) != 0 {
+		t.Errorf("expected empty TV result, got %d", len(releases))
+	}
+}
+
+func TestSearchByID_MovieEmptyWithoutTitleDoesNotFallBack(t *testing.T) {
+	var calls int
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Write([]byte("[]"))
+	})
+
+	releases, err := c.SearchByID(context.Background(), SearchByIDParams{TMDBID: 550})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("title-less movie miss must not retry, got %d calls", calls)
+	}
+	if len(releases) != 0 {
+		t.Errorf("expected empty result, got %d", len(releases))
+	}
+}

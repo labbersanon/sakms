@@ -17,6 +17,7 @@ package prowlarr
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -237,6 +238,11 @@ type SearchByIDParams struct {
 // encoding moved.
 // Review if: Prowlarr adds real top-level id params to its manual-search
 // API in a future version (there is no such indication as of this date).
+//
+// APPENDED 2026-09-26: a Movies type=movie search that returns zero hits
+// retries as type=search with the title only (no {TmdbId}/{ImdbId} tokens).
+// NZBGeek and TPB do not advertise movie-ID capabilities, so Prowlarr skips
+// them and answers [] in ~20ms. Series tvsearch is unchanged.
 func (c *Client) SearchByID(ctx context.Context, params SearchByIDParams) ([]Release, error) {
 	q := url.Values{}
 
@@ -287,6 +293,27 @@ func (c *Client) SearchByID(ctx context.Context, params SearchByIDParams) ([]Rel
 	addCategories(q, params.Categories)
 	addIndexerScope(q, params.Scope, params.IndexerIDs)
 
+	releases, err := c.search(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	title := strings.TrimSpace(params.Query)
+	if isTV || len(releases) > 0 || title == "" {
+		return releases, nil
+	}
+	// Claude 2026-09-26: movie type=movie empty → type=search title retry.
+	// Reason: Prowlarr skips NZBGeek/TPB on type=movie + {TmdbId}/{ImdbId}
+	//   as unsupported capabilities and returns []. Generic t=search with
+	//   the title and movie category still hits those indexers.
+	// Troubleshooting: Discover movie availability / autograb showed
+	//   "No matching releases found" with 0 raw releases while NZBGeek
+	//   RSS t=search still returned 100 movie hits.
+	// Review if: a movie-capable indexer is added and type=movie starts
+	//   returning hits — this retry then never runs.
+	// Related files: internal/api/autograb.go, internal/availability/availability.go
+	log.Printf("prowlarr: type=movie returned 0 for %q — retrying type=search", title)
+	q.Set("type", "search")
+	q.Set("query", title)
 	return c.search(ctx, q)
 }
 

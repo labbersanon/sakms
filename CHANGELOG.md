@@ -9514,3 +9514,16 @@ status stays active.
 | `frontend/src/screens/Rename.repick.test.tsx` | Accordion path via Assign episode |
 | `frontend/src/screens/Dedup.test.tsx` | Series move commits on title click |
 
+## 2026-09-26 — Movie release search fallback when type=movie is empty
+
+**Problem:** Discover movie availability and Grab showed “No matching releases found” even when NZBGeek had the title.
+**Fix:** `SearchByID` still tries `type=movie` with TMDB/IMDB tokens first. If that returns zero hits and a title is present, it retries `type=search` with the title and the same movie category / indexer scope — no ID tokens (those are the capability skip). Series `tvsearch` is unchanged.
+**Outcome:** Availability, autograb, and CheckMovie share the fallback. Unit tests cover movie retry, TV no-retry, and title-less no-retry.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/prowlarr/client.go` | Empty movie `type=movie` → `type=search` title retry |
+| `internal/prowlarr/client_test.go` | Fallback / no-fallback guards |
+

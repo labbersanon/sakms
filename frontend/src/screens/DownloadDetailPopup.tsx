@@ -76,10 +76,6 @@ export function posterDisplayName(poster: string): string {
   return trimmed;
 }
 
-function newsGroupHref(group: string): string {
-  return `news:${group}`;
-}
-
 function tickMarks(done: number, total: number, buckets = 20): number[] {
   if (total <= 0) return Array.from({ length: buckets }, () => 0);
   const filled = Math.round((done / total) * buckets);
@@ -218,7 +214,7 @@ const UsenetPipeline: Component<{ dl: Download }> = (props) => {
                   <>
                     {i() > 0 ? ", " : null}
                     <a
-                      href={newsGroupHref(g)}
+                      href={`news:${g}`}
                       class="text-accent underline"
                     >
                       {g}

@@ -8,12 +8,11 @@ import {
   createResource,
   createSignal,
 } from "solid-js";
-import type { AutoGrabRequest, DiscoverItem } from "@dto";
+import type { AutoGrabRequest } from "@dto";
 import type { Mode } from "../api/discover";
 import { fetchMissingEpisodes } from "../api/requests";
 import { Button, ErrorText, Muted } from "../components/ui";
-import { type GrabTarget, GrabDialog } from "./discover/shared";
-import { type DetailTarget, DetailPopup } from "./discover/DetailPopup";
+import { type GrabTarget, GrabDialog, ReleasePickDialog } from "./discover/shared";
 
 export type SeriesDetailSource = {
   title: string;
@@ -44,19 +43,6 @@ function episodeGrabTarget(
   return { mode: "series" as Mode, label, request };
 }
 
-function seriesDetailTarget(series: SeriesDetailSource): DetailTarget {
-  const item: DiscoverItem = {
-    id: series.tmdbId,
-    title: series.title,
-    posterPath: "",
-    overview: "",
-    releaseDate: "",
-    voteAverage: 0,
-    mediaType: "tv",
-  };
-  return { mode: "series", item };
-}
-
 export const RequestsSeriesDetail: Component<{
   series: SeriesDetailSource;
   onBack: () => void;
@@ -66,9 +52,7 @@ export const RequestsSeriesDetail: Component<{
     (id) => fetchMissingEpisodes(id),
   );
   const [grabTarget, setGrabTarget] = createSignal<GrabTarget | null>(null);
-  const [detailTarget, setDetailTarget] = createSignal<DetailTarget | null>(
-    null,
-  );
+  const [pickTarget, setPickTarget] = createSignal<GrabTarget | null>(null);
 
   return (
     <div>
@@ -79,8 +63,8 @@ export const RequestsSeriesDetail: Component<{
         </h2>
       </div>
       <Muted class="mb-3 block text-xs">
-        Missing episodes — Grab auto-picks the best match; Search & pick opens
-        the release picker.
+        Missing episodes — Grab auto-picks the best match; Search & pick lists
+        download alternatives for this episode.
       </Muted>
 
       <Show when={data.error}>
@@ -122,9 +106,20 @@ export const RequestsSeriesDetail: Component<{
                     >
                       Grab
                     </Button>
+                    {/* Claude 2026-09-26: episode Search & pick is a pick list.
+                        Reason: DetailPopup was show-level Discover chrome and
+                          hid the NZB/torrent alternatives for this slot.
+                        Review if: GET /search accepts season/episode params. */}
                     <Button
                       onClick={() =>
-                        setDetailTarget(seriesDetailTarget(props.series))
+                        setPickTarget(
+                          episodeGrabTarget(
+                            props.series,
+                            ep.seasonNumber,
+                            ep.episodeNumber,
+                            ep.title ?? "",
+                          ),
+                        )
                       }
                     >
                       Search & pick
@@ -140,13 +135,11 @@ export const RequestsSeriesDetail: Component<{
       <Show when={grabTarget()}>
         {(t) => <GrabDialog target={t()} onClose={() => setGrabTarget(null)} />}
       </Show>
-      <Show when={detailTarget()} keyed>
+      <Show when={pickTarget()}>
         {(t) => (
-          <DetailPopup
-            target={t}
-            onClose={() => setDetailTarget(null)}
-            onSelectRecommendation={setDetailTarget}
-            onGrab={setGrabTarget}
+          <ReleasePickDialog
+            target={t()}
+            onClose={() => setPickTarget(null)}
           />
         )}
       </Show>

@@ -2,7 +2,7 @@
 //
 // Row actions (for every status except In Library / Downloading):
 //   Grab          — one-click auto-grab (GrabDialog)
-//   Search & pick — open DetailPopup (or GrabDialog for Adult) to choose a release
+//   Search & pick — release pick list (GET /search); Adult stays GrabDialog
 //   Promote       — bump grabId to the front of the DueForRetry schedule
 // Series rows open RequestsSeriesDetail (missing episodes + per-episode Grab).
 
@@ -32,7 +32,7 @@ import {
   Muted,
   SelectField,
 } from "../components/ui";
-import { type GrabTarget, GrabDialog } from "./discover/shared";
+import { type GrabTarget, GrabDialog, ReleasePickDialog } from "./discover/shared";
 import { type DetailTarget, DetailPopup } from "./discover/DetailPopup";
 import {
   RequestsSeriesDetail,
@@ -192,6 +192,7 @@ export const Requests: Component = () => {
   const [modeFilter, setModeFilter] = createSignal<string | null>(null);
   const [missingOnly, setMissingOnly] = createSignal(false);
   const [grabTarget, setGrabTarget] = createSignal<GrabTarget | null>(null);
+  const [pickTarget, setPickTarget] = createSignal<GrabTarget | null>(null);
   const [detailTarget, setDetailTarget] = createSignal<DetailTarget | null>(null);
   const [seriesDetail, setSeriesDetail] = createSignal<SeriesDetailSource | null>(
     null,
@@ -294,13 +295,18 @@ export const Requests: Component = () => {
     }
   };
 
+  // Claude 2026-09-26: Search & pick opens the release list, not DetailPopup.
+  // Reason: DetailPopup is Discover chrome (trailer / quality pills / one Grab)
+  //   and does not list download alternatives. Adult has no GET /search list
+  //   shape, so it still uses GrabDialog.
+  // Troubleshooting: operator could not pick a specific NZB/torrent.
+  // Review if: Adult GET /search is flattened to SearchReleaseResult[].
   const searchAndPick = (item: RequestItem) => {
-    const detail = detailTargetFor(item);
-    if (detail) {
-      setDetailTarget(detail);
+    if (item.mode === "adult" || !item.tmdbId) {
+      setGrabTarget(grabTargetFor(item));
       return;
     }
-    setGrabTarget(grabTargetFor(item));
+    setPickTarget(grabTargetFor(item));
   };
 
   return (
@@ -475,6 +481,14 @@ export const Requests: Component = () => {
           <Show when={grabTarget()}>
             {(t) => (
               <GrabDialog target={t()} onClose={() => setGrabTarget(null)} />
+            )}
+          </Show>
+          <Show when={pickTarget()}>
+            {(t) => (
+              <ReleasePickDialog
+                target={t()}
+                onClose={() => setPickTarget(null)}
+              />
             )}
           </Show>
           <Show when={detailTarget()} keyed>

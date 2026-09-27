@@ -14,7 +14,7 @@ next DueForRetry cycle — especially for titles parked far out on the progressi
 | Action | Where | Meaning |
 | ------ | ----- | ------- |
 | **Grab** | Requests row (auto) | Same auto-grab path as Discover (`GrabDialog` / `GrabTarget`) |
-| **Search & pick** | Requests row | Open release search / `DetailPopup` (Adult falls back to GrabDialog) |
+| **Search & pick** | Requests row | Open the GET `/search` release pick list (Adult still uses GrabDialog) |
 | **Promote** | Requests row with `grabId` | Move that grab to the front of the **regular** retry schedule |
 | Series detail | Click a Series row | Missing-episode list + per-episode Grab / Search & pick |
 

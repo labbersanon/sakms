@@ -17,6 +17,7 @@ import (
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/release"
 	"github.com/labbersanon/sakms/internal/usenet"
 )
 
@@ -103,6 +104,23 @@ func TestSearchHandler_ScoresAndSortsResults(t *testing.T) {
 	}
 	if results[0].GUID != "2" {
 		t.Errorf("expected the 1080p WEB-DL release scored first, got %+v", results[0])
+	}
+	if results[0].Resolution != 1080 || results[0].Quality != "medium" {
+		t.Errorf("1080p WEB-DL: resolution/quality = %d/%q, want 1080/medium", results[0].Resolution, results[0].Quality)
+	}
+	if results[1].Resolution != 480 || results[1].Quality != "medium" {
+		t.Errorf("480p HDTV x264: resolution/quality = %d/%q, want 480/medium", results[1].Resolution, results[1].Quality)
+	}
+}
+
+func TestSearchReleaseQuality(t *testing.T) {
+	res, q := searchReleaseQuality(release.Parse("Foo.2160p.BluRay.REMUX-G"))
+	if res != 2160 || q != "lossless" {
+		t.Fatalf("remux = %d/%q, want 2160/lossless", res, q)
+	}
+	res, q = searchReleaseQuality(release.Parse("Foo.NoTokens-G"))
+	if res != 0 || q != "" {
+		t.Fatalf("unknown = %d/%q, want 0/empty", res, q)
 	}
 }
 

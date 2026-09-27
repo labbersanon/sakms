@@ -682,6 +682,72 @@ describe("Requests", () => {
     });
   });
 
+  it("Search & pick filters the list by quality and protocol", async () => {
+    stubReqFetch((url) => {
+      if (url.includes("/api/requests") && !url.includes("/search"))
+        return jsonResponse({
+          items: [
+            item({
+              title: "Stuck Movie",
+              status: "Pending Retry",
+              grabId: 9,
+              tmdbId: 42,
+            }),
+          ],
+        });
+      if (url.includes("/api/modes/movies/search?q="))
+        return jsonResponse([
+          {
+            guid: "g1",
+            title: "Stuck.Movie.1080p.WEB-DL",
+            indexer: "NZBGeek",
+            protocol: "usenet",
+            size: 1000,
+            seeders: 0,
+            downloadUrl: "https://idx/nzb",
+            publishDate: "",
+            score: 10,
+            resolution: 1080,
+            quality: "medium",
+          },
+          {
+            guid: "g2",
+            title: "Stuck.Movie.2160p.REMUX",
+            indexer: "TPB",
+            protocol: "torrent",
+            size: 2000,
+            seeders: 20,
+            downloadUrl: "https://idx/tor",
+            publishDate: "",
+            score: 8,
+            resolution: 2160,
+            quality: "lossless",
+          },
+        ]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Requests />);
+    fireEvent.click(await screen.findByRole("button", { name: "Search & pick" }));
+    expect(await screen.findByText("Stuck.Movie.1080p.WEB-DL")).toBeInTheDocument();
+    expect(screen.getByText("Stuck.Movie.2160p.REMUX")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Usenet" }));
+    expect(screen.getByText("Stuck.Movie.1080p.WEB-DL")).toBeInTheDocument();
+    expect(screen.queryByText("Stuck.Movie.2160p.REMUX")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Usenet" }));
+    fireEvent.click(screen.getByRole("button", { name: "Lossless" }));
+    expect(screen.queryByText("Stuck.Movie.1080p.WEB-DL")).toBeNull();
+    expect(screen.getByText("Stuck.Movie.2160p.REMUX")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Medium" }));
+    expect(screen.getByText("Stuck.Movie.1080p.WEB-DL")).toBeInTheDocument();
+    expect(screen.queryByText("Stuck.Movie.2160p.REMUX")).toBeNull();
+    expect(screen.getByRole("button", { name: "Torrent" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "2160p" })).toBeDisabled();
+  });
+
   it("shows Grab, Search & pick, and Promote on a Pending Retry row", async () => {
     stubRequests({
       items: [

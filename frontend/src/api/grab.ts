@@ -25,6 +25,7 @@ import type {
   AutoGrabRequest,
   AutoGrabResponse,
   Grab,
+  SearchReleaseResult,
 } from "@dto";
 
 export type {
@@ -36,6 +37,7 @@ export type {
   AutoGrabRequest,
   AutoGrabResponse,
   Grab,
+  SearchReleaseResult,
 };
 
 // autoGrab triggers Discover's one-click unattended grab for exactly one
@@ -93,6 +95,20 @@ interface ManualGrabBody {
   protocol: string;
   downloadUrl: string;
   rootFolderPath: string;
+}
+
+// Claude 2026-09-26: Movies/Series GET /search is the manual pick list.
+// Reason: POST /autograb dispatches when something qualifies, so Search & pick
+//   cannot reuse GrabDialog if the operator needs to choose a release.
+// Troubleshooting: Requests Search & pick used to open DetailPopup (no list).
+// Review if: GET /search starts accepting tmdbId / season / episode params.
+export function fetchSearchReleases(
+  mode: string,
+  query: string,
+): Promise<SearchReleaseResult[]> {
+  return api<SearchReleaseResult[]>(
+    `/api/modes/${mode}/search?q=${encodeURIComponent(query)}`,
+  );
 }
 
 // manualGrab sends one operator-picked fallback release to the download client

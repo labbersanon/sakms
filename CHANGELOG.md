@@ -9571,3 +9571,19 @@ status stays active.
 | `frontend/src/screens/Downloads.tsx` | Card `onClick` + action `stopPropagation` |
 | `frontend/src/screens/Downloads.test.tsx` | Card-body / Cancel / Pause / checkbox guards |
 
+## 2026-09-26 — Requests Search & pick lists download alternatives
+
+**Problem:** Search & pick opened the Discover DetailPopup (trailer, quality pills, one Grab) and never showed individual NZB/torrent alternatives.
+**Fix:** Movies/Series Search & pick opens `ReleasePickDialog` — GET `/api/modes/{mode}/search` pick list, then POST `/search/grab` on "Grab this". Series missing-episode Search & pick scopes the query to `Title SxxExx`. Adult still uses GrabDialog. Row click still opens DetailPopup for catalog chrome.
+**Outcome:** Search & pick is a manual release picker; Grab stays one-click auto-grab.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/api/grab.ts` | `fetchSearchReleases` |
+| `frontend/src/screens/discover/shared.tsx` | `ReleasePickDialog` |
+| `frontend/src/screens/Requests.tsx` | Search & pick → pick list |
+| `frontend/src/screens/RequestsSeriesDetail.tsx` | Episode-scoped pick list |
+| `docs/requests-grab-promote.md` | Search & pick copy |
+

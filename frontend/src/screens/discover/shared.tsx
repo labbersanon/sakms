@@ -25,7 +25,9 @@ import {
   type AutoGrabCandidate,
   type AutoGrabRequest,
   type AutoGrabResponse,
+  type SearchReleaseResult,
   autoGrab,
+  fetchSearchReleases,
   libraryRootFolder,
   manualGrab,
 } from "../../api/grab";
@@ -592,6 +594,127 @@ export const GrabDialog: Component<{ target: GrabTarget; onClose: () => void }> 
                   </Show>
                 </Match>
               </Switch>
+            )}
+          </Show>
+        </Show>
+      </Show>
+    </Modal>
+  );
+};
+
+// Claude 2026-09-26: Search & pick lists GET /search releases, no auto-dispatch.
+// Reason: DetailPopup is catalog chrome (trailer / pills / one Grab). The
+//   operator asked for download alternatives they can pick by hand.
+// Troubleshooting: Requests Search & pick used to setDetailTarget.
+// Review if: GET /search grows tmdbId / season / episode query params.
+export function releaseSearchQuery(req: AutoGrabRequest): string {
+  const title = req.title.trim();
+  if (
+    req.seasonSpecified &&
+    req.seasonNumber != null &&
+    (req.episodeNumber ?? 0) > 0
+  ) {
+    const s = String(req.seasonNumber).padStart(2, "0");
+    const e = String(req.episodeNumber).padStart(2, "0");
+    return `${title} S${s}E${e}`;
+  }
+  return title;
+}
+
+function searchResultsToPickList(
+  results: SearchReleaseResult[],
+): AutoGrabResponse {
+  return {
+    grabbed: false,
+    fallback: true,
+    message: "Pick a release to grab.",
+    candidates: results.map((r) => ({
+      title: r.title,
+      indexer: r.indexer,
+      protocol: r.protocol,
+      downloadUrl: r.downloadUrl,
+      size: r.size,
+      seeders: r.seeders,
+      status: "",
+      score: r.score,
+      impliedMbps: 0,
+      floorMbps: 0,
+      qualified: false,
+    })),
+  };
+}
+
+export const ReleasePickDialog: Component<{
+  target: GrabTarget;
+  onClose: () => void;
+}> = (props) => {
+  const [result, { refetch }] = createResource(
+    () => props.target,
+    (t) => fetchSearchReleases(t.mode, releaseSearchQuery(t.request)),
+  );
+  const [grabbing, setGrabbing] = createSignal("");
+  const [manualError, setManualError] = createSignal("");
+  const [manualGrabbed, setManualGrabbed] = createSignal<string | null>(null);
+
+  const pickManual = async (c: AutoGrabCandidate) => {
+    setManualError("");
+    setGrabbing(c.downloadUrl);
+    try {
+      const root = await libraryRootFolder(props.target.mode);
+      if (!root) {
+        throw new Error(
+          "no root folder configured for this mode — set one in Settings first",
+        );
+      }
+      await manualGrab(props.target.mode, {
+        title: props.target.request.title,
+        tmdbId: props.target.request.tmdbId,
+        seasonNumber: props.target.request.seasonNumber,
+        episodeNumber: props.target.request.episodeNumber,
+        seasonSpecified: props.target.request.seasonSpecified,
+        indexer: c.indexer,
+        protocol: c.protocol,
+        downloadUrl: c.downloadUrl,
+        rootFolderPath: root,
+      });
+      setManualGrabbed(c.title);
+    } catch (e) {
+      setManualError((e as Error).message);
+    } finally {
+      setGrabbing("");
+    }
+  };
+
+  return (
+    <Modal title={`Releases — ${props.target.label}`} onClose={props.onClose}>
+      <Show
+        when={!result.loading}
+        fallback={<Muted>Searching releases…</Muted>}
+      >
+        <Show
+          when={!result.error}
+          fallback={
+            <GrabError error={result.error as Error} onConfigured={refetch} />
+          }
+        >
+          <Show when={result()}>
+            {(rows) => (
+              <Show
+                when={manualGrabbed()}
+                fallback={
+                  <FallbackPickList
+                    response={searchResultsToPickList(rows())}
+                    onPick={(c) => void pickManual(c)}
+                    grabbing={grabbing()}
+                    error={manualError()}
+                  />
+                }
+              >
+                <div class="text-sm text-ok">
+                  Grabbed “{manualGrabbed()}”. Tracked in Calendar's History
+                  view.
+                </div>
+              </Show>
             )}
           </Show>
         </Show>

@@ -618,6 +618,70 @@ describe("Requests", () => {
     expect(await screen.findByRole("button", { name: "Close" })).toBeInTheDocument();
   });
 
+  it("Search & pick lists GET /search releases instead of opening DetailPopup", async () => {
+    const calls = stubReqFetch((url) => {
+      if (url.includes("/api/requests") && !url.includes("/search"))
+        return jsonResponse({
+          items: [
+            item({
+              title: "Stuck Movie",
+              status: "Pending Retry",
+              grabId: 9,
+              tmdbId: 42,
+            }),
+          ],
+        });
+      if (url.includes("/api/modes/movies/search?q="))
+        return jsonResponse([
+          {
+            guid: "g1",
+            title: "Stuck.Movie.1080p.WEB",
+            indexer: "NZBGeek",
+            protocol: "usenet",
+            size: 1000,
+            seeders: 0,
+            downloadUrl: "https://idx/nzb",
+            publishDate: "",
+            score: 10,
+          },
+        ]);
+      if (url.includes("/library/root-folder"))
+        return jsonResponse({ path: "/media/movies" });
+      if (url.includes("/search/grab")) return jsonResponse({ id: 1 });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Requests />);
+    fireEvent.click(await screen.findByRole("button", { name: "Search & pick" }));
+
+    expect(
+      await screen.findByRole("dialog", { name: /Releases — Stuck Movie/ }),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("Stuck.Movie.1080p.WEB")).toBeInTheDocument();
+    expect(screen.getByText("Pick a release to grab.")).toBeInTheDocument();
+    expect(screen.queryByText("Watch Trailer →")).toBeNull();
+    expect(
+      calls.some((c) => c.url.includes("/discover/availability")),
+    ).toBe(false);
+    expect(
+      calls.some((c) => c.url.includes("/api/modes/movies/search?q=")),
+    ).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Grab this" }));
+    await waitFor(() =>
+      expect(calls.some((c) => c.url.includes("/search/grab"))).toBe(true),
+    );
+    const grab = calls.find((c) => c.url.includes("/search/grab"))!;
+    expect(grab.method).toBe("POST");
+    expect(grab.body).toMatchObject({
+      title: "Stuck Movie",
+      tmdbId: 42,
+      downloadUrl: "https://idx/nzb",
+      protocol: "usenet",
+      rootFolderPath: "/media/movies",
+    });
+  });
+
   it("shows Grab, Search & pick, and Promote on a Pending Retry row", async () => {
     stubRequests({
       items: [

@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
 import type { Download } from "@dto";
-import { DownloadDetailPopup } from "./DownloadDetailPopup";
+import {
+  DownloadDetailPopup,
+  usenetStageIndex,
+} from "./DownloadDetailPopup";
 import { jsonResponse, noContent } from "../testing/http";
 
 afterEach(() => {
@@ -89,7 +92,23 @@ describe("DownloadDetailPopup — usenet", () => {
     expect(screen.getByText("59 / 79")).toBeInTheDocument();
     expect(screen.getByText(/part028.rar 59\/79/)).toBeInTheDocument();
     expect(screen.getByText(/1 prior NZB/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Usenet stages")).toBeInTheDocument();
+    expect(screen.getByText("Downloading")).toBeInTheDocument();
     expect(screen.queryByText("Force reannounce")).toBeNull();
+  });
+
+  it("marks Repairing as the current Usenet stage", () => {
+    expect(
+      usenetStageIndex(usenetDl({ phase: "repairing" })),
+    ).toBe(3);
+    render(() => (
+      <DownloadDetailPopup
+        dl={usenetDl({ phase: "repairing" })}
+        onClose={() => {}}
+        onAction={() => {}}
+      />
+    ));
+    expect(screen.getByText("Repairing").closest("li")?.querySelector("[aria-current='step']")).toBeTruthy();
   });
 });
 

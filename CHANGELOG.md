@@ -9545,3 +9545,16 @@ status stays active.
 | `frontend/src/screens/DownloadDetailPopup.tsx` | Popup UI |
 | `frontend/src/screens/Downloads.tsx` | Details entry + live popup |
 
+## 2026-09-26 — Downloads detail popup pipeline layout
+
+**Problem:** The first Downloads popup was a plain label/value list.
+**Fix:** Restyle the popup only (Downloads cards unchanged) to mockup B: Usenet stage rail (Precheck → Unpack), current-file stack, segment thermometer, status ribbon, park timeline. Torrents use the same chrome with a Queued → Downloading → Seeding rail, file bars, and piece heatmap.
+**Outcome:** Details dialog is graphical; list cards are untouched.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/DownloadDetailPopup.tsx` | Pipeline layout |
+| `frontend/src/screens/DownloadDetailPopup.test.tsx` | Stage-rail + existing content guards |
+

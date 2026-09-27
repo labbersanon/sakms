@@ -24,7 +24,7 @@ func TestNormalizeObfuscatedPar2Names_RenamesMatroska(t *testing.T) {
 	fake := filepath.Join(dir, "show.vol-01.par2")
 	writeMatroskaPayload(t, fake)
 
-	got, err := verifyAndRepair(dir, []string{fake}, nil)
+	got, err := verifyAndRepair(dir, []string{fake}, nil, nil)
 	if err != nil {
 		t.Fatalf("verifyAndRepair: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestVerifyAndRepair_ProgressCallback(t *testing.T) {
 	var calls [][2]int64
 	_, err := verifyAndRepair(dir, []string{par2a, par2b, data}, func(done, total int64) {
 		calls = append(calls, [2]int64{done, total})
-	})
+	}, nil)
 	if err == nil {
 		t.Fatal("want parse error on junk PAR2")
 	}

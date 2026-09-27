@@ -50,7 +50,9 @@ const pollInterval = 500 * time.Millisecond
 
 // Claude 2026-09-21: how long a Complete row stays on Downloads before Forget.
 // Reason: operator wants a glance window after download (and after seeding
-//   ends); errors stay until Cancel. Mirrors usenet.dismissCompleteAfter.
+//
+//	ends); errors stay until Cancel. Mirrors usenet.dismissCompleteAfter.
+//
 // Troubleshooting: Complete torrent rows lingering forever after seed stop.
 // Review if: Settings gains a dismiss-delay control.
 var dismissCompleteAfter = 30 * time.Second
@@ -165,11 +167,46 @@ type Download struct {
 	ErrorMessage    string
 	// Claude 2026-09-20: when the entry was added — List() sorts by this ASC.
 	AddedAt time.Time
+	// Claude 2026-09-26: Downloads popup torrent telemetry.
+	// Reason: cards stay compact; the popup needs swarm/files/trackers/hash.
+	// Troubleshooting: popup swarm empty — expect these on SSE while the handle is live.
+	// Review if: a dedicated details endpoint replaces list enrichment.
+	PeerCount       int64
+	Availability    float64
+	Uploaded        int64
+	Ratio           float64
+	SeedRatioGoal   float64
+	SeedTimeGoalSec int64
+	InfoHash        string
+	Magnet          string
+	PiecesHave      int
+	PiecesTotal     int
+	PieceHeatmap    string
+	TorrentFiles    []TorrentFile
+	Trackers        []TrackerStatus
+}
+
+// TorrentFile is one inner file for the Downloads popup.
+type TorrentFile struct {
+	Path      string
+	Length    int64
+	Completed int64
+	Priority  string
+}
+
+// TrackerStatus is one announce URL plus a best-effort status.
+type TrackerStatus struct {
+	URL     string
+	Status  string
+	Message string
 }
 
 type seenKey struct {
-	status    string
-	completed int64
+	status     string
+	completed  int64
+	peerCount  int64
+	piecesHave int
+	uploaded   int64
 }
 
 type entry struct {
@@ -1156,7 +1193,9 @@ func (m *Manager) Cancel(gid string) error {
 //
 // Claude 2026-09-21: queue dismiss after Complete / seed-stop (not Cancel).
 // Reason: Cancel deletes staging files; Downloads just needs the row gone after
-//   a glance window. Seeding teardown already Drop'd the handle in stopSeeding.
+//
+//	a glance window. Seeding teardown already Drop'd the handle in stopSeeding.
+//
 // Troubleshooting: Complete rows lingering on Downloads after seeding ends.
 // Review if: Cancel gains a "drop from queue, keep files" mode.
 func (m *Manager) Forget(gid string) bool {
@@ -1545,7 +1584,7 @@ func (m *Manager) buildEntry(gid string, e *entry) Download {
 	if dir == "" {
 		dir = m.cfg.StagingDir
 	}
-	return Download{
+	d := Download{
 		GID:             gid,
 		Status:          e.status,
 		Filename:        e.filename,
@@ -1558,7 +1597,15 @@ func (m *Manager) buildEntry(gid string, e *entry) Download {
 		Files:           e.files,
 		ErrorMessage:    e.errorMsg,
 		AddedAt:         e.addedAt,
+		SeedRatioGoal:   m.cfg.SeedRatioLimit,
 	}
+	if mins := m.cfg.SeedDurationMinutes; mins > 0 {
+		d.SeedTimeGoalSec = int64(mins) * 60
+	}
+	if e.t != nil {
+		fillTorrentDetails(&d, e)
+	}
+	return d
 }
 
 // readSnapshot builds the current Download list from cached entry fields.
@@ -2192,7 +2239,7 @@ func sameSnapshot(a, b []Download) bool {
 func diffKeys(dls []Download) map[string]seenKey {
 	out := make(map[string]seenKey, len(dls))
 	for _, d := range dls {
-		out[d.GID] = seenKey{status: d.Status, completed: d.CompletedLength}
+		out[d.GID] = seenKey{status: d.Status, completed: d.CompletedLength, peerCount: d.PeerCount, piecesHave: d.PiecesHave, uploaded: d.Uploaded}
 	}
 	return out
 }

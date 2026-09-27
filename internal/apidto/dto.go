@@ -2806,6 +2806,81 @@ type Download struct {
 	// Reason: Downloads SSE was reshuffling on map iteration; clients sort/merge by this.
 	// Review if: durable queue restore should preserve original add time across restart.
 	AddedAt string `json:"addedAt,omitempty"`
+	// Claude 2026-09-26: Downloads card detail popup fields.
+	// Reason: cards stay compact; the popup needs catalog identity plus
+	//   protocol-specific telemetry that does not belong on the row chrome.
+	// Troubleshooting: popup heading empty — expect catalogTitle from the grab.
+	// Review if: a dedicated GET /api/downloads/{gid} replaces list enrichment.
+	CatalogTitle string                  `json:"catalogTitle,omitempty"`
+	Indexer      string                  `json:"indexer,omitempty"`
+	Usenet       *UsenetDownloadDetails  `json:"usenet,omitempty"`
+	Torrent      *TorrentDownloadDetails `json:"torrent,omitempty"`
+}
+
+// UsenetDownloadDetails is the Usenet-only payload for the Downloads popup.
+type UsenetDownloadDetails struct {
+	SegmentDone     int64                  `json:"segmentDone,omitempty"`
+	SegmentTotal    int64                  `json:"segmentTotal,omitempty"`
+	CurrentFile     string                 `json:"currentFile,omitempty"`
+	CurrentSeg      int                    `json:"currentSeg,omitempty"`
+	CurrentSegTotal int                    `json:"currentSegTotal,omitempty"`
+	StatDone        int64                  `json:"statDone,omitempty"`
+	StatTotal       int64                  `json:"statTotal,omitempty"`
+	WaitReason      string                 `json:"waitReason,omitempty"`
+	RepairFile      string                 `json:"repairFile,omitempty"`
+	SidecarAgeSec   *int64                 `json:"sidecarAgeSec,omitempty"`
+	ActiveConns     int                    `json:"activeConns,omitempty"`
+	MaxConns        int                    `json:"maxConns,omitempty"`
+	StagingPath     string                 `json:"stagingPath,omitempty"`
+	BytesOnDisk     int64                  `json:"bytesOnDisk,omitempty"`
+	FailingSegment  string                 `json:"failingSegment,omitempty"`
+	TriedReleases   []DownloadTriedRelease `json:"triedReleases,omitempty"`
+}
+
+// DownloadTriedRelease is one prior Usenet park in the current alternate episode.
+type DownloadTriedRelease struct {
+	Label  string `json:"label"`
+	Reason string `json:"reason"`
+}
+
+// TorrentDownloadDetails is the torrent-only payload for the Downloads popup.
+type TorrentDownloadDetails struct {
+	PeerCount       int64                  `json:"peerCount,omitempty"`
+	Availability    float64                `json:"availability,omitempty"`
+	Uploaded        int64                  `json:"uploaded,omitempty"`
+	Ratio           float64                `json:"ratio,omitempty"`
+	SeedRatioGoal   float64                `json:"seedRatioGoal,omitempty"`
+	SeedTimeGoalSec int64                  `json:"seedTimeGoalSec,omitempty"`
+	InfoHash        string                 `json:"infoHash,omitempty"`
+	Magnet          string                 `json:"magnet,omitempty"`
+	PiecesHave      int                    `json:"piecesHave,omitempty"`
+	PiecesTotal     int                    `json:"piecesTotal,omitempty"`
+	PieceHeatmap    string                 `json:"pieceHeatmap,omitempty"`
+	Files           []TorrentFileDetail    `json:"files,omitempty"`
+	Trackers        []TorrentTrackerDetail `json:"trackers,omitempty"`
+	SavePath        string                 `json:"savePath,omitempty"`
+	BytesOnDisk     int64                  `json:"bytesOnDisk,omitempty"`
+}
+
+// TorrentFileDetail is one inner torrent file for the Downloads popup.
+type TorrentFileDetail struct {
+	Path      string `json:"path"`
+	Length    int64  `json:"length"`
+	Completed int64  `json:"completed"`
+	Priority  string `json:"priority"` // "skip" | "normal" | "high"
+}
+
+// TorrentTrackerDetail is one announce URL plus a best-effort status.
+type TorrentTrackerDetail struct {
+	URL     string `json:"url"`
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
+}
+
+// DownloadFilePriorityRequest is PUT /api/downloads/{gid}/files.
+type DownloadFilePriorityRequest struct {
+	Path     string `json:"path"`
+	Priority string `json:"priority"` // "skip" | "normal" | "high"
 }
 
 // DownloadProtocolTorrent and DownloadProtocolUsenet are the two values

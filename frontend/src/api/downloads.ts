@@ -65,6 +65,33 @@ export function resumeDownload(gid: string): Promise<void> {
   });
 }
 
+// Claude 2026-09-26: torrent-only Downloads popup actions.
+// Reason: reannounce / recheck / file priority are not on the compact card.
+// Troubleshooting: 400 on nzb-* GIDs — those actions are torrent-only.
+// Review if: Usenet gains a comparable force-full action in the popup.
+export function reannounceDownload(gid: string): Promise<void> {
+  return api<void>(`/api/downloads/${encodeURIComponent(gid)}/reannounce`, {
+    method: "POST",
+  });
+}
+
+export function recheckDownload(gid: string): Promise<void> {
+  return api<void>(`/api/downloads/${encodeURIComponent(gid)}/recheck`, {
+    method: "POST",
+  });
+}
+
+export function setDownloadFilePriority(
+  gid: string,
+  path: string,
+  priority: string,
+): Promise<void> {
+  return api<void>(`/api/downloads/${encodeURIComponent(gid)}/files`, {
+    method: "PUT",
+    body: JSON.stringify({ path, priority }),
+  });
+}
+
 // Claude 2026-09-21: adaptive Usenet hardware priors + go-forward ETA samples.
 // Reason: SPA seeds repair/unpack BPS from the engine (calibrated REPLACE base
 //   ± in-process EMA); accuracy POSTs are log-only.

@@ -226,6 +226,7 @@ func toDTODownload(d downloader.Download) apidto.Download {
 		Protocol:        apidto.DownloadProtocolTorrent,
 		ErrorMessage:    d.ErrorMessage,
 		AddedAt:         formatDownloadAddedAt(d.AddedAt),
+		Torrent:         torrentDetailsFromEngine(d),
 	}
 }
 
@@ -262,6 +263,7 @@ func toUsenetDTODownload(d usenet.Download) apidto.Download {
 		PhaseTotal:     d.PhaseTotal,
 		PhaseStartedAt: formatDownloadAddedAt(d.PhaseStartedAt),
 		AddedAt:        formatDownloadAddedAt(d.AddedAt),
+		Usenet:         usenetDetailsFromEngine(d),
 	}
 }
 
@@ -360,6 +362,7 @@ func listDownloadsHandler(dl *downloader.Manager, nzb *usenet.Manager, grabsStor
 		if adultLocked(r.Context()) {
 			rows = filterAdultDownloads(r.Context(), grabsStore, rows)
 		}
+		enrichDownloadDetails(r.Context(), grabsStore, rows)
 		writeJSON(w, rows)
 	}
 }
@@ -418,6 +421,7 @@ func downloadsStreamHandler(dl *downloader.Manager, nzb *usenet.Manager, grabsSt
 			if adultHiddenNow(r) {
 				rows = filterAdultDownloads(ctx, grabsStore, rows)
 			}
+			enrichDownloadDetails(ctx, grabsStore, rows)
 			return rows
 		}
 

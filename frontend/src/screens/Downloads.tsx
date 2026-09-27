@@ -35,6 +35,7 @@ import {
   setPauseState,
 } from "../api/downloads";
 import { Button, ErrorText, Muted } from "../components/ui";
+import { DownloadDetailPopup } from "./DownloadDetailPopup";
 import { useBulkSelection } from "./workflowHooks";
 import { matchesQueueSearch, QueueSearchField } from "./queueSearch";
 import {
@@ -358,6 +359,7 @@ const DownloadRow: Component<{
   onAction: (fn: () => Promise<void>) => void;
   selected: boolean;
   onToggle: () => void;
+  onOpen: () => void;
 }> = (props) => {
   const isPostprocess = () =>
     props.dl.protocol === "usenet" &&
@@ -423,9 +425,14 @@ const DownloadRow: Component<{
           onChange={props.onToggle}
         />
         <div class="min-w-0 flex-1">
-          <div class="truncate text-sm text-fg" title={props.dl.filename}>
+          <button
+            type="button"
+            class="truncate text-left text-sm text-fg hover:underline"
+            title={props.dl.filename}
+            onClick={props.onOpen}
+          >
             {props.dl.filename || props.dl.gid}
-          </div>
+          </button>
           <Show when={props.dl.errorMessage}>
             <div class="truncate text-xs text-danger">{props.dl.errorMessage}</div>
           </Show>
@@ -514,6 +521,7 @@ const DownloadRow: Component<{
           </span>
         </Show>
         <div class="ml-auto flex gap-2">
+          <Button onClick={props.onOpen}>Details</Button>
           <Show when={isActive()}>
             <Button onClick={() => props.onAction(() => pauseDownload(props.dl.gid))}>
               Pause
@@ -547,6 +555,7 @@ export const Downloads: Component = () => {
   const [search, setSearch] = createSignal("");
   const [reconnecting, setReconnecting] = createSignal(false);
   const [actionError, setActionError] = createSignal<string | null>(null);
+  const [detailGid, setDetailGid] = createSignal<string | null>(null);
   // hasData tracks whether at least one stream frame has arrived, so the empty
   // state ("No active downloads") doesn't flash before the first event.
   const [hasData, setHasData] = createSignal(false);
@@ -828,12 +837,29 @@ export const Downloads: Component = () => {
                     onAction={runAction}
                     selected={selection.has(dl.gid)}
                     onToggle={() => selection.toggle(dl.gid)}
+                    onOpen={() => setDetailGid(dl.gid)}
                   />
                 )}
               </For>
             </ul>
           </Show>
         </Show>
+      </Show>
+      <Show when={detailGid()}>
+        {(gid) => {
+          const row = () => downloads().find((d) => d.gid === gid());
+          return (
+            <Show when={row()}>
+              {(dl) => (
+                <DownloadDetailPopup
+                  dl={dl()}
+                  onClose={() => setDetailGid(null)}
+                  onAction={runAction}
+                />
+              )}
+            </Show>
+          );
+        }}
       </Show>
     </div>
   );

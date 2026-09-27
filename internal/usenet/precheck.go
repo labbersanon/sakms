@@ -104,7 +104,8 @@ type sampledSeg struct {
 
 // precheckNZB STATs every payload MsgID (skip meta via payloadFiles; honor skip
 // for resume). Zero pools is a no-op so fixtures without NNTP stay green.
-func (m *Manager) precheckNZB(ctx context.Context, nzb *NZB, skip map[string]bool) (PrecheckResult, error) {
+// progressGID, when non-empty, updates that queue row's PhaseDone/PhaseTotal.
+func (m *Manager) precheckNZB(ctx context.Context, nzb *NZB, skip map[string]bool, progressGID string) (PrecheckResult, error) {
 	var res PrecheckResult
 	if nzb == nil || len(m.currentPools()) == 0 {
 		res.Inconclusive = true
@@ -152,7 +153,7 @@ func (m *Manager) precheckNZB(ctx context.Context, nzb *NZB, skip map[string]boo
 	fullCtx, cancel := context.WithTimeout(ctx, fullPrecheckTimeout(len(all)))
 	defer cancel()
 
-	missing, removed, checked, inconc, err := m.statBatch(fullCtx, all)
+	missing, removed, checked, inconc, err := m.statBatch(fullCtx, all, progressGID)
 	res.Checked = checked
 	res.Inconclusive = inconc
 	if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
@@ -333,7 +334,7 @@ func (m *Manager) precheckConcurrency() int {
 // 	return min(max(n, 1), defaultPrecheckPolicy.MaxWorkers)
 // }
 
-func (m *Manager) statBatch(ctx context.Context, segs []sampledSeg) (missing map[string]bool, removed, checked int, inconclusive bool, err error) {
+func (m *Manager) statBatch(ctx context.Context, segs []sampledSeg, progressGID string) (missing map[string]bool, removed, checked int, inconclusive bool, err error) {
 	missing = make(map[string]bool)
 	if len(segs) == 0 {
 		return missing, 0, 0, false, nil
@@ -386,6 +387,9 @@ func (m *Manager) statBatch(ctx context.Context, segs []sampledSeg) (missing map
 	var firstErr error
 	for o := range out {
 		checked++
+		if progressGID != "" {
+			m.setPhaseProgress(progressGID, int64(checked), int64(len(segs)))
+		}
 		if o.err != nil && firstErr == nil {
 			firstErr = o.err
 		}

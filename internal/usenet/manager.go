@@ -114,6 +114,21 @@ type Download struct {
 	// Reason: List()/SSE used map iteration and reshuffled the Downloads UI every tick.
 	// Review if: durable queue restore should carry the original add time across restart.
 	AddedAt time.Time
+	// Claude 2026-09-26: Downloads popup live Usenet telemetry.
+	// Reason: cards stay compact; the popup needs segment/file/STAT/conn/disk.
+	// Troubleshooting: popup stuck on bytes-only — expect these fields on SSE.
+	// Review if: a dedicated details endpoint replaces list enrichment.
+	SegmentDone     int64
+	SegmentTotal    int64
+	CurrentFile     string
+	CurrentSeg      int
+	CurrentSegTotal int
+	RepairFile      string
+	SidecarAgeSec   *int64
+	ActiveConns     int
+	MaxConns        int
+	WaitReason      string
+	FailingSegment  string
 	// Err is the unflattened retrieval failure, Go-side only — it is never
 	// serialised (the api layer maps this struct field-by-field into
 	// apidto.Download, which carries ErrorMessage for the UI). Callers use
@@ -127,7 +142,7 @@ type Download struct {
 // Reason: Downloads tags distinguish fetch vs PAR2 vs unpack while status=active.
 // Review if: a new postprocess step is added between assembly and complete.
 const (
-	phasePrecheck    = "precheck"
+	phasePrecheck = "precheck"
 	// Claude 2026-09-22: post-STAT wait for a MaxConcurrentDownloads BODY slot.
 	// Reason: precheck uses its own semaphore; when BODY slots are full the row
 	//   must not look like Downloading. UI shows Waiting until acquire succeeds.
@@ -189,6 +204,17 @@ type dlState struct {
 	gate                 *pauseGate // true-pause; never nil after construction
 	// Claude 2026-09-20: set once when the job is inserted into m.downloads.
 	addedAt time.Time
+	// Claude 2026-09-26: popup progress — current NZB file/segment + totals.
+	// Reason: bytes alone hide which RAR/PAR2 article is in flight.
+	// Troubleshooting: popup current file empty during downloading.
+	// Review if: progress switches to segment-count based instead of bytes.
+	segmentDone     int64
+	segmentTotal    int64
+	currentFile     string
+	currentSeg      int
+	currentSegTotal int
+	repairFile      string
+	failingSegment  string
 
 	// Progress fields — updated by download goroutines via Manager.addCompleted
 	// and speed-computed only by pollSnapshot(), all under Manager.mu.
@@ -538,7 +564,9 @@ func (m *Manager) SetOnError(fn func(gid string, failure error)) {
 // resume (GID kept). Other failures during shutdown still skip — those rows
 // stay queued/downloading for ReconcileInFlightDownloads.
 // Reason: ParkWithBackoff on cancel cleared download_gid and orphaned staging;
-//   sync park lets the next drain tick resume into .sakms-resume.json.
+//
+//	sync park lets the next drain tick resume into .sakms-resume.json.
+//
 // Troubleshooting: journal "download interrupted by a restart"; usenet transport park.
 // Review if: onError also covers AddNZB/RelaunchNZB sync failures
 func (m *Manager) fireOnError(ctx context.Context, gid string, failure error) {
@@ -854,7 +882,7 @@ func (m *Manager) AddArticleSet(ctx context.Context, nzb *NZB, name string) (str
 	//   ranked candidate in the same cycle.
 	// Troubleshooting: AddNZB returns ErrArticlesUnavailable; journal "usenet precheck:".
 	// Review if: precheck moves behind a settings toggle (currently always on).
-	if _, err := m.precheckNZB(ctx, nzb, nil); err != nil {
+	if _, err := m.precheckNZB(ctx, nzb, nil, gid); err != nil {
 		m.dropPrecheckFailed(gid, cancel, dlDir)
 		return "", err
 	}
@@ -977,7 +1005,7 @@ func (m *Manager) RelaunchArticleSet(ctx context.Context, gid string, nzb *NZB, 
 	if enabled, forceFull := m.ResumePolicy(); enabled && !forceFull {
 		skip = completedMsgIDsFromDir(dlDir)
 	}
-	if _, err := m.precheckNZB(ctx, nzb, skip); err != nil {
+	if _, err := m.precheckNZB(ctx, nzb, skip, gid); err != nil {
 		cancel()
 		m.mu.Lock()
 		delete(m.downloads, gid)
@@ -1396,6 +1424,7 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 			dl.status = "error"
 			dl.setPhase("")
 			dl.errorMsg = err.Error()
+			dl.failingSegment = failingSegmentFromError(err.Error())
 			// Keep the wrapped error itself, not just its text, so a caller can
 			// errors.Is a permanent ErrArticleRemoved apart from everything
 			// else. Only ErrArticleRemoved is terminal downstream: api's
@@ -1498,6 +1527,8 @@ func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState
 	repairSampled := repairPhaseSampled(files)
 	repaired, repairErr := verifyAndRepair(dl.stagingDir, files, func(done, total int64) {
 		m.setPhaseProgress(gid, done, total)
+	}, func(name string) {
+		m.setRepairFile(gid, name)
 	})
 	m.logPhaseTiming(gid, phaseRepairing, repairBytes, repairStarted, repairSampled)
 	if repairErr != nil {
@@ -1631,6 +1662,7 @@ func (m *Manager) downloadAll(ctx context.Context, gid string, dl *dlState, nzb 
 	// Review if: posters start emitting distinct yEnc names per part again.
 	usedNames := map[string]struct{}{}
 	var paths []string
+	m.setSegmentTotals(gid, nzbSegmentCount(nzb))
 	for _, nzbFile := range nzb.Files {
 		if dl.gate != nil {
 			if err := dl.gate.Wait(ctx); err != nil {
@@ -1753,6 +1785,7 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 	}
 
 	outPath := filepath.Join(dl.stagingDir, filename)
+	m.setCurrentFile(gid, filename, 0, len(segs))
 	flags := os.O_RDWR | os.O_CREATE
 	if priorDone == 0 {
 		flags |= os.O_TRUNC
@@ -1881,6 +1914,7 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 				break
 			}
 			m.addCompleted(gid, int64(n))
+			m.addSegmentDone(gid, 1)
 			if end := off + int64(n); end > maxEnd {
 				maxEnd = end
 			}
@@ -1920,6 +1954,7 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 			break
 		}
 		m.addCompleted(gid, int64(len(item.data)))
+		m.addSegmentDone(gid, 1)
 		if resume != nil {
 			if err := resume.markSegment(filename, msgID, seg.Number, item.offset, len(item.data), item.fileSize); err != nil {
 				log.Printf("usenet: resume persist %s seg %d: %v", gid, seg.Number, err)
@@ -2146,6 +2181,15 @@ func reportPhaseProgress(onProgress func(done, total int64), done, total int64) 
 
 // buildDownload maps dlState to Download. Caller must hold m.mu.
 func (m *Manager) buildDownload(dl *dlState) Download {
+	active, max := m.connectionCountsLocked()
+	wait := ""
+	if dl.phase == phaseWaiting {
+		wait = fmt.Sprintf("Waiting for a download slot (max concurrent = %d)", m.maxConcurrentDownloads)
+	}
+	failing := dl.failingSegment
+	if failing == "" {
+		failing = failingSegmentFromError(dl.errorMsg)
+	}
 	return Download{
 		GID:             dl.gid,
 		Status:          dl.status,
@@ -2163,6 +2207,17 @@ func (m *Manager) buildDownload(dl *dlState) Download {
 		Files:           dl.files,
 		ErrorMessage:    dl.errorMsg,
 		Err:             dl.err,
+		SegmentDone:     dl.segmentDone,
+		SegmentTotal:    dl.segmentTotal,
+		CurrentFile:     dl.currentFile,
+		CurrentSeg:      dl.currentSeg,
+		CurrentSegTotal: dl.currentSegTotal,
+		RepairFile:      dl.repairFile,
+		SidecarAgeSec:   sidecarAgeSec(dl.resume, dl.stagingDir),
+		ActiveConns:     active,
+		MaxConns:        max,
+		WaitReason:      wait,
+		FailingSegment:  failing,
 	}
 }
 
@@ -2235,6 +2290,10 @@ type snapKey struct {
 	phaseDone      int64
 	phaseTotal     int64
 	phaseStartedAt time.Time
+	segmentDone    int64
+	currentFile    string
+	currentSeg     int
+	repairFile     string
 }
 
 func sameDownloads(a, b []Download) bool {
@@ -2243,11 +2302,11 @@ func sameDownloads(a, b []Download) bool {
 	}
 	ka := make(map[string]snapKey, len(a))
 	for _, d := range a {
-		ka[d.GID] = snapKey{d.Status, d.CompletedLength, d.ResumeMode, d.Phase, d.PhaseDone, d.PhaseTotal, d.PhaseStartedAt}
+		ka[d.GID] = snapKey{d.Status, d.CompletedLength, d.ResumeMode, d.Phase, d.PhaseDone, d.PhaseTotal, d.PhaseStartedAt, d.SegmentDone, d.CurrentFile, d.CurrentSeg, d.RepairFile}
 	}
 	kb := make(map[string]snapKey, len(b))
 	for _, d := range b {
-		kb[d.GID] = snapKey{d.Status, d.CompletedLength, d.ResumeMode, d.Phase, d.PhaseDone, d.PhaseTotal, d.PhaseStartedAt}
+		kb[d.GID] = snapKey{d.Status, d.CompletedLength, d.ResumeMode, d.Phase, d.PhaseDone, d.PhaseTotal, d.PhaseStartedAt, d.SegmentDone, d.CurrentFile, d.CurrentSeg, d.RepairFile}
 	}
 	return reflect.DeepEqual(ka, kb)
 }
@@ -2399,7 +2458,7 @@ func uniqueOutputName(base string, used map[string]struct{}) string {
 // caller may still unpack (contiguous assemblies are often short of FileDesc
 // length while the RAR payload is intact).
 // Review if: go-newsgroups/par2 treats FileDesc length mismatch as trim/pad.
-func verifyAndRepair(dir string, files []string, onProgress func(done, total int64)) ([]string, error) {
+func verifyAndRepair(dir string, files []string, onProgress func(done, total int64), onFile func(name string)) ([]string, error) {
 	files = normalizeObfuscatedPar2Names(files)
 
 	var par2Paths, dataPaths []string
@@ -2428,6 +2487,9 @@ func verifyAndRepair(dir string, files []string, onProgress func(done, total int
 
 	blobs := make([][]byte, 0, len(par2Paths))
 	for _, p := range par2Paths {
+		if onFile != nil {
+			onFile(p)
+		}
 		data, err := os.ReadFile(p)
 		if err != nil {
 			return files, fmt.Errorf("par2: reading %s: %w", p, err)

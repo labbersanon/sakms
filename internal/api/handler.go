@@ -611,6 +611,13 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("DELETE /api/downloads/{gid}", cancelDownloadHandler(dl, nzb))
 	mux.HandleFunc("POST /api/downloads/{gid}/pause", pauseDownloadHandler(dl, nzb))
 	mux.HandleFunc("POST /api/downloads/{gid}/resume", resumeDownloadHandler(dl, nzb))
+	// Claude 2026-09-26: torrent-only popup actions (reannounce / recheck / file priority).
+	// Reason: Downloads detail popup; usenet GIDs return 400.
+	// Troubleshooting: 400 on nzb-* — those actions are torrent-only.
+	// Review if: Usenet gains a comparable force-full action in the popup.
+	mux.HandleFunc("POST /api/downloads/{gid}/reannounce", reannounceDownloadHandler(dl))
+	mux.HandleFunc("POST /api/downloads/{gid}/recheck", recheckDownloadHandler(dl))
+	mux.HandleFunc("PUT /api/downloads/{gid}/files", putDownloadFilePriorityHandler(dl))
 	// Bulk cancel: cancel (and delete files for) several downloads in one call,
 	// skip-and-continue per GID. Registered before the {gid} subtree is fine —
 	// "cancel-batch" is a distinct literal segment, not a {gid} value.

@@ -127,6 +127,28 @@ describe("Downloads — search", () => {
   });
 });
 
+describe("Downloads — detail popup", () => {
+  it("opens the popup from Details without cancelling", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/downloads/pause-state"))
+        return jsonResponse({ paused: false });
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => <Downloads />);
+    MockEventSource.last!.emit([
+      dl({
+        gid: "g1",
+        filename: "Movie.1080p.mkv",
+        catalogTitle: "The Movie",
+        torrent: { peerCount: 2, availability: 1, uploaded: 0, ratio: 0 },
+      }),
+    ]);
+    fireEvent.click(await screen.findByText("Details"));
+    expect(screen.getByRole("dialog", { name: "Download details" })).toBeInTheDocument();
+    expect(screen.getByText("The Movie")).toBeInTheDocument();
+  });
+});
+
 describe("Downloads — single cancel (confirm reflects file deletion)", () => {
   it("cancels via DELETE only after a confirm that mentions deleting files", async () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);

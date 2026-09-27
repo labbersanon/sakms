@@ -2814,6 +2814,14 @@ export interface UsenetDownloadDetails {
   bytesOnDisk?: number /* int64 */;
   failingSegment?: string;
   triedReleases?: DownloadTriedRelease[];
+  /**
+   * Claude 2026-09-27: NZB newsgroups + file poster for the Downloads popup.
+   * Reason: Usenet source is the group (news: link), not the indexer name.
+   * Troubleshooting: popup source empty — engine nzbSource at Add/Relaunch.
+   * Review if: indexer GUID is also persisted as a web fallback link.
+   */
+  poster?: string;
+  groups?: string[];
 }
 /**
  * DownloadTriedRelease is one prior Usenet park in the current alternate episode.

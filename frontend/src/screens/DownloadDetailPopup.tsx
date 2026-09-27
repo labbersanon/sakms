@@ -59,6 +59,27 @@ function formatAge(sec: number | undefined): string {
   return `${(sec / 3600).toFixed(1)}h ago`;
 }
 
+// Claude 2026-09-27: NZB file/@poster is From-style; show the name when present.
+// Reason: popup asked for "name of user who posted", not the raw email.
+// Review if: the API starts sending a dedicated display-name field.
+export function posterDisplayName(poster: string): string {
+  const trimmed = poster.trim();
+  const lt = trimmed.indexOf("<");
+  if (lt > 0) {
+    const name = trimmed
+      .slice(0, lt)
+      .replace(/^["']+/, "")
+      .replace(/["']+$/, "")
+      .trim();
+    if (name) return name;
+  }
+  return trimmed;
+}
+
+function newsGroupHref(group: string): string {
+  return `news:${group}`;
+}
+
 function tickMarks(done: number, total: number, buckets = 20): number[] {
   if (total <= 0) return Array.from({ length: buckets }, () => 0);
   const filled = Math.round((done / total) * buckets);
@@ -187,6 +208,35 @@ const UsenetPipeline: Component<{ dl: Download }> = (props) => {
 
   return (
     <div class="flex flex-col gap-4">
+      <Show when={(u()?.groups?.length ?? 0) > 0 || u()?.poster}>
+        <div class="rounded-md border border-border bg-bg px-3 py-2 text-xs">
+          <Show when={(u()?.groups?.length ?? 0) > 0}>
+            <p>
+              <span class="text-muted">Usenet source </span>
+              <For each={u()?.groups}>
+                {(g, i) => (
+                  <>
+                    {i() > 0 ? ", " : null}
+                    <a
+                      href={newsGroupHref(g)}
+                      class="text-accent underline"
+                    >
+                      {g}
+                    </a>
+                  </>
+                )}
+              </For>
+            </p>
+          </Show>
+          <Show when={u()?.poster}>
+            <p class={(u()?.groups?.length ?? 0) > 0 ? "mt-1" : ""}>
+              <span class="text-muted">Posted by </span>
+              <span class="text-fg">{posterDisplayName(u()?.poster ?? "")}</span>
+            </p>
+          </Show>
+        </div>
+      </Show>
+
       <ol
         class="relative flex items-start justify-between gap-1"
         aria-label="Usenet stages"

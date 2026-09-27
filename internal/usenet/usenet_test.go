@@ -131,6 +131,9 @@ func TestParseNZB_ValidSingleFile(t *testing.T) {
 		t.Fatalf("files: got %d, want 1", len(nzb.Files))
 	}
 	f := nzb.Files[0]
+	if f.Poster != "poster@example.com" {
+		t.Errorf("poster: got %q, want poster@example.com", f.Poster)
+	}
 	if len(f.Groups) != 1 || f.Groups[0] != "alt.binaries.movies" {
 		t.Errorf("groups: got %v", f.Groups)
 	}
@@ -142,6 +145,19 @@ func TestParseNZB_ValidSingleFile(t *testing.T) {
 	}
 	if f.Segs[1].Number != 2 || f.Segs[1].Bytes != 50000000 {
 		t.Errorf("seg[1]: got %+v", f.Segs[1])
+	}
+}
+
+func TestNZBSource_FirstPosterUniqueGroups(t *testing.T) {
+	poster, groups := nzbSource(&NZB{Files: []NZBFile{
+		{Poster: "  first@example.com  ", Groups: []string{"alt.binaries.movies", "alt.binaries.movies"}},
+		{Poster: "second@example.com", Groups: []string{"alt.binaries.teevee", "alt.binaries.movies"}},
+	}})
+	if poster != "first@example.com" {
+		t.Fatalf("poster=%q", poster)
+	}
+	if len(groups) != 2 || groups[0] != "alt.binaries.movies" || groups[1] != "alt.binaries.teevee" {
+		t.Fatalf("groups=%v", groups)
 	}
 }
 

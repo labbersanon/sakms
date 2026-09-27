@@ -10,7 +10,12 @@ func ToNZB(c Candidate) (*usenet.NZB, error) {
 		date = 0
 	}
 	for _, f := range c.Files {
+		// Claude 2026-09-27: copy Candidate.Poster onto each synthesized file.
+		// Reason: native NNTP has no NZB XML; nzbSource reads file.Poster.
+		// Troubleshooting: native grab popup Posted by empty — check Candidate.Poster.
+		// Review if: per-file From is stored instead of one release poster.
 		nf := usenet.NZBFile{
+			Poster:  c.Poster,
 			Subject: f.Subject,
 			Date:    date,
 			Groups:  []string{c.Group},

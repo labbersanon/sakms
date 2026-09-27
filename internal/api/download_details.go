@@ -60,6 +60,8 @@ func usenetDetailsFromEngine(d usenet.Download) *apidto.UsenetDownloadDetails {
 		StagingPath:     d.Dir,
 		BytesOnDisk:     dirBytes(d.Dir),
 		FailingSegment:  d.FailingSegment,
+		Poster:          d.Poster,
+		Groups:          append([]string(nil), d.Groups...),
 	}
 	if usenetDetailsEmpty(out) {
 		return nil
@@ -74,7 +76,8 @@ func usenetDetailsEmpty(d *apidto.UsenetDownloadDetails) bool {
 	return d.SegmentTotal == 0 && d.CurrentFile == "" && d.StatTotal == 0 &&
 		d.WaitReason == "" && d.RepairFile == "" && d.SidecarAgeSec == nil &&
 		d.MaxConns == 0 && d.StagingPath == "" && d.BytesOnDisk == 0 &&
-		d.FailingSegment == "" && len(d.TriedReleases) == 0
+		d.FailingSegment == "" && len(d.TriedReleases) == 0 &&
+		d.Poster == "" && len(d.Groups) == 0
 }
 
 func torrentDetailsFromEngine(d downloader.Download) *apidto.TorrentDownloadDetails {

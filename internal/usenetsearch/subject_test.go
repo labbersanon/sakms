@@ -43,8 +43,9 @@ func TestLocatorRoundTrip(t *testing.T) {
 
 func TestToNZB(t *testing.T) {
 	c := Candidate{
-		Name:  "Rel",
-		Group: "alt.binaries.movies",
+		Name:   "Rel",
+		Group:  "alt.binaries.movies",
+		Poster: "Alice <alice@example.com>",
 		Files: []CandidateFile{{
 			Subject:  "Rel.part01.rar",
 			Filename: "Rel.part01.rar",
@@ -54,6 +55,12 @@ func TestToNZB(t *testing.T) {
 	nzb, err := ToNZB(c)
 	if err != nil || len(nzb.Files) != 1 || len(nzb.Files[0].Segs) != 2 {
 		t.Fatalf("nzb=%+v err=%v", nzb, err)
+	}
+	if nzb.Files[0].Poster != "Alice <alice@example.com>" {
+		t.Fatalf("poster=%q", nzb.Files[0].Poster)
+	}
+	if len(nzb.Files[0].Groups) != 1 || nzb.Files[0].Groups[0] != "alt.binaries.movies" {
+		t.Fatalf("groups=%v", nzb.Files[0].Groups)
 	}
 }
 

@@ -129,6 +129,13 @@ type Download struct {
 	MaxConns        int
 	WaitReason      string
 	FailingSegment  string
+	// Claude 2026-09-27: NZB poster + newsgroups for the Downloads popup.
+	// Reason: "Usenet source" is the newsgroup, not the indexer; poster is
+	//   file/@poster (or native header From).
+	// Troubleshooting: popup source empty after grab — nzbSource at Add/Relaunch.
+	// Review if: groups/poster are persisted on the grab row across restart.
+	Poster string
+	Groups []string
 	// Err is the unflattened retrieval failure, Go-side only — it is never
 	// serialised (the api layer maps this struct field-by-field into
 	// apidto.Download, which carries ErrorMessage for the UI). Callers use
@@ -215,6 +222,11 @@ type dlState struct {
 	currentSegTotal int
 	repairFile      string
 	failingSegment  string
+	// Claude 2026-09-27: set once from nzbSource at Add/Relaunch.
+	// Reason: snapshot must keep poster/groups after the NZB is discarded.
+	// Review if: a later NZB park replaces these for the same GID.
+	poster string
+	groups []string
 
 	// Progress fields — updated by download goroutines via Manager.addCompleted
 	// and speed-computed only by pollSnapshot(), all under Manager.mu.
@@ -850,6 +862,7 @@ func (m *Manager) AddArticleSet(ctx context.Context, nzb *NZB, name string) (str
 	base := m.baseContext()
 	dlCtx, cancel := context.WithCancel(base)
 	now := time.Now()
+	poster, groups := nzbSource(nzb)
 	dl := &dlState{
 		gid:        gid,
 		name:       name,
@@ -865,6 +878,8 @@ func (m *Manager) AddArticleSet(ctx context.Context, nzb *NZB, name string) (str
 		cancel:  cancel,
 		gate:    newPauseGate(),
 		addedAt: now,
+		poster:  poster,
+		groups:  groups,
 	}
 
 	m.mu.Lock()
@@ -975,6 +990,7 @@ func (m *Manager) RelaunchArticleSet(ctx context.Context, gid string, nzb *NZB, 
 	base := m.baseContext()
 	dlCtx, cancel := context.WithCancel(base)
 	now := time.Now()
+	poster, groups := nzbSource(nzb)
 	dl := &dlState{
 		gid:        gid,
 		name:       name,
@@ -986,6 +1002,8 @@ func (m *Manager) RelaunchArticleSet(ctx context.Context, gid string, nzb *NZB, 
 		cancel:  cancel,
 		gate:    newPauseGate(),
 		addedAt: now,
+		poster:  poster,
+		groups:  groups,
 	}
 
 	m.mu.Lock()
@@ -2218,6 +2236,8 @@ func (m *Manager) buildDownload(dl *dlState) Download {
 		MaxConns:        max,
 		WaitReason:      wait,
 		FailingSegment:  failing,
+		Poster:          dl.poster,
+		Groups:          append([]string(nil), dl.groups...),
 	}
 }
 

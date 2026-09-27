@@ -9602,3 +9602,20 @@ status stays active.
 | `internal/api/search_catalog.go` | Same fields on Adult inline releases |
 | `frontend/src/screens/discover/shared.tsx` | Filter pills on `ReleasePickDialog` |
 
+## 2026-09-27 — Usenet download popup shows newsgroup source and poster
+
+**Problem:** The Downloads Usenet popup showed the indexer name but not the NZB newsgroup or who posted the files.
+**Fix:** Parse NZB 1.1 `file/@poster` and unique `<group>` values (native NNTP copies Candidate.Poster + Group). Engine snapshot and `UsenetDownloadDetails` carry `poster` and `groups`. The popup links each group with `news:` and shows the From display name.
+**Outcome:** Usenet download details show the Usenet source with a link and the name of the user who posted.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/nzb.go` | `NZBFile.Poster`; `nzbSource` |
+| `internal/usenet/manager.go` | Persist poster/groups on Add/Relaunch snapshot |
+| `internal/usenetsearch/nzbsynth.go` | Copy Candidate.Poster onto synthesized files |
+| `internal/apidto/dto.go` | `UsenetDownloadDetails.poster` / `groups` |
+| `internal/api/download_details.go` | Map poster/groups onto the popup DTO |
+| `frontend/src/screens/DownloadDetailPopup.tsx` | Usenet source `news:` links + Posted by |
+

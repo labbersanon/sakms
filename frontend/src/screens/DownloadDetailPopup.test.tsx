@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
 import type { Download } from "@dto";
 import {
   DownloadDetailPopup,
+  posterDisplayName,
   usenetStageIndex,
 } from "./DownloadDetailPopup";
 import { jsonResponse, noContent } from "../testing/http";
@@ -42,6 +43,8 @@ const usenetDl = (over: Partial<Download> = {}): Download => ({
     bytesOnDisk: 4096,
     failingSegment: "segment 12: 430",
     triedReleases: [{ label: "1 prior NZB(s) excluded this episode", reason: "articles missing" }],
+    poster: "Jane Doe <jane@example.com>",
+    groups: ["alt.binaries.movies"],
   },
   ...over,
 });
@@ -95,6 +98,16 @@ describe("DownloadDetailPopup — usenet", () => {
     expect(screen.getByLabelText("Usenet stages")).toBeInTheDocument();
     expect(screen.getByText("Downloading")).toBeInTheDocument();
     expect(screen.queryByText("Force reannounce")).toBeNull();
+    const source = screen.getByRole("link", { name: "alt.binaries.movies" });
+    expect(source).toHaveAttribute("href", "news:alt.binaries.movies");
+    expect(screen.getByText("Jane Doe")).toBeInTheDocument();
+    expect(screen.getByText(/Posted by/)).toBeInTheDocument();
+  });
+
+  it("uses the From display name when poster is Name <email>", () => {
+    expect(posterDisplayName("Jane Doe <jane@example.com>")).toBe("Jane Doe");
+    expect(posterDisplayName('"Jane Doe" <jane@example.com>')).toBe("Jane Doe");
+    expect(posterDisplayName("poster@example.com")).toBe("poster@example.com");
   });
 
   it("marks Repairing as the current Usenet stage", () => {

@@ -17,6 +17,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 // NZB represents a parsed .nzb file per the NZB 1.1 specification.
@@ -33,6 +34,11 @@ type NZBMeta struct {
 
 // NZBFile is one binary file described in the NZB, broken into NNTP segments.
 type NZBFile struct {
+	// Claude 2026-09-27: poster is NZB 1.1 file/@poster (From-style name/email).
+	// Reason: Downloads popup shows who posted the NZB, not the indexer.
+	// Troubleshooting: popup Posted by empty — expect this attr on <file>.
+	// Review if: poster is taken from a later file when the first is blank.
+	Poster  string       `xml:"poster,attr"`
 	Subject string       `xml:"subject,attr"`
 	Date    int64        `xml:"date,attr"`
 	Groups  []string     `xml:"groups>group"`
@@ -44,6 +50,37 @@ type NZBSegment struct {
 	Bytes  int64  `xml:"bytes,attr"`
 	Number int    `xml:"number,attr"`
 	MsgID  string `xml:",chardata"`
+}
+
+// nzbSource returns the first non-empty file poster and unique newsgroups
+// across the NZB. Groups keep first-seen order.
+//
+// Claude 2026-09-27: Downloads popup Usenet source + poster.
+// Reason: NZB 1.1 carries groups and poster; the engine snapshot did not.
+// Troubleshooting: news: links empty — check <groups><group> in the NZB.
+// Review if: a later file's poster should win over the first.
+func nzbSource(nzb *NZB) (poster string, groups []string) {
+	if nzb == nil {
+		return "", nil
+	}
+	seen := make(map[string]struct{})
+	for _, f := range nzb.Files {
+		if poster == "" {
+			poster = strings.TrimSpace(f.Poster)
+		}
+		for _, g := range f.Groups {
+			g = strings.TrimSpace(g)
+			if g == "" {
+				continue
+			}
+			if _, ok := seen[g]; ok {
+				continue
+			}
+			seen[g] = struct{}{}
+			groups = append(groups, g)
+		}
+	}
+	return poster, groups
 }
 
 // ParseNZB parses an NZB 1.1 document from data.

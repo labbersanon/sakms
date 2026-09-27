@@ -50,6 +50,8 @@ func TestToUsenetDTODownload_MapsPopupDetails(t *testing.T) {
 		CurrentSeg: 59, CurrentSegTotal: 79, WaitReason: "slot full",
 		SidecarAgeSec: &age, ActiveConns: 8, MaxConns: 50,
 		FailingSegment: "segment 12: 430",
+		Poster:         "Jane Doe <jane@example.com>",
+		Groups:         []string{"alt.binaries.movies"},
 	})
 	if got.Usenet == nil {
 		t.Fatal("Usenet details missing")
@@ -62,6 +64,25 @@ func TestToUsenetDTODownload_MapsPopupDetails(t *testing.T) {
 	}
 	if got.Usenet.StagingPath != "/staging/nzb-a" {
 		t.Fatalf("staging = %q", got.Usenet.StagingPath)
+	}
+	if got.Usenet.Poster != "Jane Doe <jane@example.com>" {
+		t.Fatalf("poster = %q", got.Usenet.Poster)
+	}
+	if len(got.Usenet.Groups) != 1 || got.Usenet.Groups[0] != "alt.binaries.movies" {
+		t.Fatalf("groups = %v", got.Usenet.Groups)
+	}
+}
+
+func TestUsenetDetailsEmpty_KeepsPosterOrGroups(t *testing.T) {
+	got := toUsenetDTODownload(usenet.Download{
+		GID: "g", Status: "active", Filename: "x",
+		Poster: "p@example.com", Groups: []string{"alt.binaries.test"},
+	})
+	if got.Usenet == nil {
+		t.Fatal("poster/groups-only row must keep Usenet details")
+	}
+	if got.Usenet.Poster != "p@example.com" || got.Usenet.Groups[0] != "alt.binaries.test" {
+		t.Fatalf("usenet = %#v", got.Usenet)
 	}
 }
 

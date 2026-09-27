@@ -2841,6 +2841,12 @@ type UsenetDownloadDetails struct {
 	BytesOnDisk     int64                  `json:"bytesOnDisk,omitempty"`
 	FailingSegment  string                 `json:"failingSegment,omitempty"`
 	TriedReleases   []DownloadTriedRelease `json:"triedReleases,omitempty"`
+	// Claude 2026-09-27: NZB newsgroups + file poster for the Downloads popup.
+	// Reason: Usenet source is the group (news: link), not the indexer name.
+	// Troubleshooting: popup source empty — engine nzbSource at Add/Relaunch.
+	// Review if: indexer GUID is also persisted as a web fallback link.
+	Poster string   `json:"poster,omitempty"`
+	Groups []string `json:"groups,omitempty"`
 }
 
 // DownloadTriedRelease is one prior Usenet park in the current alternate episode.

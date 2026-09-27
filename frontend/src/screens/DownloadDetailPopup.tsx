@@ -66,11 +66,11 @@ export function posterDisplayName(poster: string): string {
   const trimmed = poster.trim();
   const lt = trimmed.indexOf("<");
   if (lt > 0) {
-    const name = trimmed
-      .slice(0, lt)
-      .replace(/^["']+/, "")
-      .replace(/["']+$/, "")
-      .trim();
+    let name = trimmed.slice(0, lt).trim();
+    const q = name[0];
+    if ((q === '"' || q === "'") && name.endsWith(q) && name.length >= 2) {
+      name = name.slice(1, -1).trim();
+    }
     if (name) return name;
   }
   return trimmed;

@@ -657,7 +657,7 @@ describe("Requests", () => {
     expect(
       await screen.findByRole("dialog", { name: /Releases — Stuck Movie/ }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Stuck.Movie.1080p.WEB")).toBeInTheDocument();
+    expect(await screen.findByText("Stuck.Movie.1080p.WEB")).toBeInTheDocument();
     expect(screen.getByText("Pick a release to grab.")).toBeInTheDocument();
     expect(screen.queryByText("Watch Trailer →")).toBeNull();
     expect(

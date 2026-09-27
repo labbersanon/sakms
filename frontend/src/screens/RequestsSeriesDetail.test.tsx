@@ -59,7 +59,9 @@ describe("RequestsSeriesDetail — Search & pick", () => {
         name: /Releases — Breaking Bad — S01E02/,
       }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Breaking.Bad.S01E02.1080p")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Breaking.Bad.S01E02.1080p"),
+    ).toBeInTheDocument();
     expect(screen.queryByText("Watch Trailer →")).toBeNull();
     expect(
       calls.some((c) =>

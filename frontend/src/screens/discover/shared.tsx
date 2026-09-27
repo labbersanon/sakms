@@ -31,7 +31,7 @@ import {
   libraryRootFolder,
   manualGrab,
 } from "../../api/grab";
-import { Button, ErrorText, Muted } from "../../components/ui";
+import { Button, ErrorText, Muted, PillSelector } from "../../components/ui";
 import { ViewAllLink } from "../../components/ViewAllLink";
 import {
   buildConnectionUpsertBody,
@@ -621,6 +621,64 @@ export function releaseSearchQuery(req: AutoGrabRequest): string {
   return title;
 }
 
+// Claude 2026-09-26: Search & pick filter pills (quality / protocol / resolution).
+// Reason: the raw list mixes NZB and torrent at every tier; operator asked
+//   to filter before picking. Values come from GET /search (InferTier + Parse).
+// Troubleshooting: empty quality/resolution only match All.
+// Review if: filters move server-side as query params.
+export const RELEASE_QUALITY_FILTERS = [
+  "all",
+  "low",
+  "medium",
+  "high",
+  "lossless",
+] as const;
+export const RELEASE_PROTOCOL_FILTERS = ["all", "usenet", "torrent"] as const;
+export const RELEASE_RESOLUTION_FILTERS = [
+  "all",
+  "2160",
+  "1080",
+  "720",
+  "480",
+] as const;
+
+const RELEASE_QUALITY_LABELS: Record<string, string> = {
+  all: "All",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  lossless: "Lossless",
+};
+const RELEASE_PROTOCOL_LABELS: Record<string, string> = {
+  all: "All",
+  usenet: "Usenet",
+  torrent: "Torrent",
+};
+const RELEASE_RESOLUTION_LABELS: Record<string, string> = {
+  all: "All",
+  "2160": "2160p",
+  "1080": "1080p",
+  "720": "720p",
+  "480": "480p",
+};
+
+export type ReleasePickFilters = {
+  quality: string;
+  protocol: string;
+  resolution: string;
+};
+
+export function matchesReleaseFilters(
+  r: SearchReleaseResult,
+  f: ReleasePickFilters,
+): boolean {
+  if (f.protocol !== "all" && (r.protocol ?? "") !== f.protocol) return false;
+  if (f.quality !== "all" && (r.quality ?? "") !== f.quality) return false;
+  if (f.resolution !== "all" && String(r.resolution ?? 0) !== f.resolution)
+    return false;
+  return true;
+}
+
 function searchResultsToPickList(
   results: SearchReleaseResult[],
 ): AutoGrabResponse {
@@ -655,6 +713,25 @@ export const ReleasePickDialog: Component<{
   const [grabbing, setGrabbing] = createSignal("");
   const [manualError, setManualError] = createSignal("");
   const [manualGrabbed, setManualGrabbed] = createSignal<string | null>(null);
+  const [quality, setQuality] = createSignal("all");
+  const [protocol, setProtocol] = createSignal("all");
+  const [resolution, setResolution] = createSignal("all");
+
+  const filters = (): ReleasePickFilters => ({
+    quality: quality(),
+    protocol: protocol(),
+    resolution: resolution(),
+  });
+  const filteredRows = () =>
+    (result() ?? []).filter((r) => matchesReleaseFilters(r, filters()));
+  const filterDisabled = (
+    axis: keyof ReleasePickFilters,
+    value: string,
+  ): boolean => {
+    if (value === "all") return false;
+    const trial = { ...filters(), [axis]: value };
+    return !(result() ?? []).some((r) => matchesReleaseFilters(r, trial));
+  };
 
   const pickManual = async (c: AutoGrabCandidate) => {
     setManualError("");
@@ -702,12 +779,57 @@ export const ReleasePickDialog: Component<{
               <Show
                 when={manualGrabbed()}
                 fallback={
-                  <FallbackPickList
-                    response={searchResultsToPickList(rows())}
-                    onPick={(c) => void pickManual(c)}
-                    grabbing={grabbing()}
-                    error={manualError()}
-                  />
+                  <div>
+                    <Show when={rows().length > 0}>
+                      <PillSelector
+                        label="Quality"
+                        options={[...RELEASE_QUALITY_FILTERS]}
+                        optionLabels={RELEASE_QUALITY_LABELS}
+                        selected={quality()}
+                        onSelect={(v) =>
+                          setQuality(quality() === v ? "all" : v)
+                        }
+                        isDisabled={(v) => filterDisabled("quality", v)}
+                      />
+                      <PillSelector
+                        label="Protocol"
+                        options={[...RELEASE_PROTOCOL_FILTERS]}
+                        optionLabels={RELEASE_PROTOCOL_LABELS}
+                        selected={protocol()}
+                        onSelect={(v) =>
+                          setProtocol(protocol() === v ? "all" : v)
+                        }
+                        isDisabled={(v) => filterDisabled("protocol", v)}
+                      />
+                      <PillSelector
+                        label="Resolution"
+                        options={[...RELEASE_RESOLUTION_FILTERS]}
+                        optionLabels={RELEASE_RESOLUTION_LABELS}
+                        selected={resolution()}
+                        onSelect={(v) =>
+                          setResolution(resolution() === v ? "all" : v)
+                        }
+                        isDisabled={(v) => filterDisabled("resolution", v)}
+                      />
+                    </Show>
+                    <Show
+                      when={filteredRows().length > 0}
+                      fallback={
+                        <Muted>
+                          {rows().length === 0
+                            ? "No releases found for this title."
+                            : "No releases match these filters."}
+                        </Muted>
+                      }
+                    >
+                      <FallbackPickList
+                        response={searchResultsToPickList(filteredRows())}
+                        onPick={(c) => void pickManual(c)}
+                        grabbing={grabbing()}
+                        error={manualError()}
+                      />
+                    </Show>
+                  </div>
                 }
               >
                 <div class="text-sm text-ok">

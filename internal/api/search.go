@@ -127,6 +127,7 @@ func searchHandler(httpClient *http.Client, connStore *connections.Store, scStor
 		out := make([]apidto.SearchReleaseResult, len(releases))
 		for i, rel := range releases {
 			info := release.Parse(rel.Title)
+			res, tier := searchReleaseQuality(info)
 			out[i] = apidto.SearchReleaseResult{
 				GUID: rel.GUID, Title: rel.Title, Indexer: rel.Indexer,
 				Protocol: string(rel.Protocol), Size: rel.Size, Seeders: rel.Seeders,
@@ -135,6 +136,8 @@ func searchHandler(httpClient *http.Client, connStore *connections.Store, scStor
 					Info: info, Protocol: string(rel.Protocol), Seeders: rel.Seeders,
 					PublishDate: rel.PublishDate, IndexerFlags: rel.IndexerFlags,
 				}, prefs, now),
+				Resolution: res,
+				Quality:    tier,
 			}
 		}
 		sort.Slice(out, func(i, j int) bool { return out[i].Score > out[j].Score })
@@ -142,6 +145,17 @@ func searchHandler(httpClient *http.Client, connStore *connections.Store, scStor
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(out)
 	}
+}
+
+// Claude 2026-09-26: expose Parse + InferTier on GET /search rows.
+// Reason: Search & pick filters quality/protocol/resolution client-side.
+// Troubleshooting: title-only list had no structured quality to filter.
+// Review if: the handler starts applying these as query params.
+func searchReleaseQuality(info release.Info) (int, string) {
+	if t, ok := quality.InferTier(info); ok {
+		return info.Resolution, string(t)
+	}
+	return info.Resolution, ""
 }
 
 // searchQualityProfile loads {mode}'s quality-prefs setting (see

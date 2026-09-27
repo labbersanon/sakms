@@ -9587,3 +9587,18 @@ status stays active.
 | `frontend/src/screens/RequestsSeriesDetail.tsx` | Episode-scoped pick list |
 | `docs/requests-grab-promote.md` | Search & pick copy |
 
+## 2026-09-26 — Search & pick filters for quality and protocol
+
+**Problem:** The Releases popup listed every NZB/torrent with no way to narrow quality or protocol.
+**Fix:** GET `/search` now includes parsed `quality` (InferTier) and `resolution`. The popup filters with Quality / Protocol / Resolution pills (All + values). Empty quality/resolution only match All.
+**Outcome:** Search & pick can be filtered before Grab this.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/apidto/dto.go` | `SearchReleaseResult.quality` / `resolution` |
+| `internal/api/search.go` | `searchReleaseQuality` |
+| `internal/api/search_catalog.go` | Same fields on Adult inline releases |
+| `frontend/src/screens/discover/shared.tsx` | Filter pills on `ReleasePickDialog` |
+

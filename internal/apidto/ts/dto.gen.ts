@@ -366,6 +366,14 @@ export interface SearchReleaseResult {
   downloadUrl: string;
   publishDate: string;
   score: number /* int */;
+  /**
+   * Claude 2026-09-26: parsed axes for the Search & pick filter pills.
+   * Reason: the pick list is title-only; operators need quality + protocol
+   *   (and resolution) without re-reading every release name.
+   * Review if: GET /search accepts these as query filters instead.
+   */
+  resolution?: number /* int */;
+  quality?: string;
 }
 /**
  * AdultSearchScene is one identified scene card in the Adult catalog-Search

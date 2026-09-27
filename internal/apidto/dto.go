@@ -354,6 +354,12 @@ type SearchReleaseResult struct {
 	DownloadURL string `json:"downloadUrl"`
 	PublishDate string `json:"publishDate"`
 	Score       int    `json:"score"`
+	// Claude 2026-09-26: parsed axes for the Search & pick filter pills.
+	// Reason: the pick list is title-only; operators need quality + protocol
+	//   (and resolution) without re-reading every release name.
+	// Review if: GET /search accepts these as query filters instead.
+	Resolution int    `json:"resolution,omitempty"`
+	Quality    string `json:"quality,omitempty"`
 }
 
 // AdultSearchScene is one identified scene card in the Adult catalog-Search

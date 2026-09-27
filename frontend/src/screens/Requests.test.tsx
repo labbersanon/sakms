@@ -744,9 +744,8 @@ describe("Requests", () => {
     fireEvent.click(screen.getByRole("button", { name: "Medium" }));
     expect(screen.getByText("Stuck.Movie.1080p.WEB-DL")).toBeInTheDocument();
     expect(screen.queryByText("Stuck.Movie.2160p.REMUX")).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: "Torrent" }));
-    expect(screen.getByText("No releases match these filters.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Torrent" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "2160p" })).toBeDisabled();
   });
 
   it("shows Grab, Search & pick, and Promote on a Pending Retry row", async () => {

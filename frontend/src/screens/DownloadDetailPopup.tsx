@@ -1,7 +1,6 @@
 // Claude 2026-09-26: Downloads detail popup — pipeline layout (mockup B).
 // Reason: the first popup was a label/value list; operator asked for the
-//   stage-rail + current-file stack graphic. Downloads.tsx is intentionally
-//   untouched (cards stay as they are).
+//   stage-rail + current-file stack graphic. Card click lives in Downloads.tsx.
 // Troubleshooting: stage rail stuck on Downloading during PAR2 — read dl.phase.
 // Review if: Usenet engine emits the full RAR/PAR2 file list for the stack.
 

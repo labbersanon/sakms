@@ -9558,3 +9558,16 @@ status stays active.
 | `frontend/src/screens/DownloadDetailPopup.tsx` | Pipeline layout |
 | `frontend/src/screens/DownloadDetailPopup.test.tsx` | Stage-rail + existing content guards |
 
+## 2026-09-26 — Downloads card click opens details
+
+**Problem:** Details only opened from the filename button or the Details button; clicking the rest of the card did nothing.
+**Fix:** The queue card (`<li>`) opens the existing pipeline popup. Checkbox, Pause, Resume, and Cancel stop propagation so they stay independent. Filename is text (not a nested button).
+**Outcome:** Clicking a Downloads card brings up details; row actions do not.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/Downloads.tsx` | Card `onClick` + action `stopPropagation` |
+| `frontend/src/screens/Downloads.test.tsx` | Card-body / Cancel / Pause / checkbox guards |
+

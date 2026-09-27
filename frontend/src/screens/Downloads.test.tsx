@@ -128,13 +128,7 @@ describe("Downloads — search", () => {
 });
 
 describe("Downloads — detail popup", () => {
-  it("opens the popup from Details without cancelling", async () => {
-    stubFetch((url) => {
-      if (url.includes("/api/downloads/pause-state"))
-        return jsonResponse({ paused: false });
-      throw new Error("unexpected fetch: " + url);
-    });
-    render(() => <Downloads />);
+  const emitMovie = (): void => {
     MockEventSource.last!.emit([
       dl({
         gid: "g1",
@@ -143,9 +137,78 @@ describe("Downloads — detail popup", () => {
         torrent: { peerCount: 2, availability: 1, uploaded: 0, ratio: 0 },
       }),
     ]);
+  };
+
+  it("opens the popup from Details without cancelling", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/downloads/pause-state"))
+        return jsonResponse({ paused: false });
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => <Downloads />);
+    emitMovie();
     fireEvent.click(await screen.findByText("Details"));
     expect(screen.getByRole("dialog", { name: "Download details" })).toBeInTheDocument();
     expect(screen.getByText("The Movie")).toBeInTheDocument();
+  });
+
+  it("opens the popup from a card-body click", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/downloads/pause-state"))
+        return jsonResponse({ paused: false });
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => <Downloads />);
+    emitMovie();
+    fireEvent.click(await screen.findByText("Movie.1080p.mkv"));
+    expect(screen.getByRole("dialog", { name: "Download details" })).toBeInTheDocument();
+    expect(screen.getByText("The Movie")).toBeInTheDocument();
+  });
+
+  it("does not open the popup from Cancel", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    stubFetch((url) => {
+      if (url.includes("/api/downloads/pause-state"))
+        return jsonResponse({ paused: false });
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => <Downloads />);
+    emitMovie();
+    fireEvent.click(await screen.findByText("Cancel"));
+    expect(screen.queryByRole("dialog", { name: "Download details" })).toBeNull();
+  });
+
+  it("does not open the popup from Pause", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/api/downloads/pause-state"))
+        return jsonResponse({ paused: false });
+      if (url.includes("/api/downloads/g1/pause")) return noContent();
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => <Downloads />);
+    emitMovie();
+    fireEvent.click(await screen.findByText("Pause"));
+    expect(screen.queryByRole("dialog", { name: "Download details" })).toBeNull();
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) => c.method === "POST" && c.url.includes("/api/downloads/g1/pause"),
+        ),
+      ).toBe(true),
+    );
+  });
+
+  it("does not open the popup from the row checkbox", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/downloads/pause-state"))
+        return jsonResponse({ paused: false });
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => <Downloads />);
+    emitMovie();
+    fireEvent.click(await screen.findByLabelText("Select Movie.1080p.mkv"));
+    expect(screen.queryByRole("dialog", { name: "Download details" })).toBeNull();
+    expect(screen.getByLabelText("Select Movie.1080p.mkv")).toBeChecked();
   });
 });
 

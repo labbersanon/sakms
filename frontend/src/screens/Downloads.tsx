@@ -415,24 +415,33 @@ const DownloadRow: Component<{
     props.onAction(() => cancelDownload(props.dl.gid));
   };
 
+  // Claude 2026-09-26: whole card opens the detail popup.
+  // Reason: filename-only / Details was easy to miss; checkbox + Pause /
+  //   Resume / Cancel must keep working as their own controls.
+  // Troubleshooting: nested <button> inside a clickable <li> is invalid and
+  //   made the filename a second Details control — keep the name as text.
+  // Review if: the compact card grows another action that should not open.
+  const stopCardOpen = (e: MouseEvent): void => {
+    e.stopPropagation();
+  };
+
   return (
-    <li class="flex flex-col gap-2 rounded-md border border-border bg-surface p-3">
+    <li
+      class="flex cursor-pointer flex-col gap-2 rounded-md border border-border bg-surface p-3 hover:border-accent"
+      onClick={props.onOpen}
+    >
       <div class="flex items-center gap-3">
         <input
           type="checkbox"
           aria-label={`Select ${props.dl.filename || props.dl.gid}`}
           checked={props.selected}
+          onClick={stopCardOpen}
           onChange={props.onToggle}
         />
         <div class="min-w-0 flex-1">
-          <button
-            type="button"
-            class="truncate text-left text-sm text-fg hover:underline"
-            title={props.dl.filename}
-            onClick={props.onOpen}
-          >
+          <div class="truncate text-sm text-fg" title={props.dl.filename}>
             {props.dl.filename || props.dl.gid}
-          </button>
+          </div>
           <Show when={props.dl.errorMessage}>
             <div class="truncate text-xs text-danger">{props.dl.errorMessage}</div>
           </Show>
@@ -521,18 +530,40 @@ const DownloadRow: Component<{
           </span>
         </Show>
         <div class="ml-auto flex gap-2">
-          <Button onClick={props.onOpen}>Details</Button>
+          <Button
+            onClick={(e) => {
+              e.stopPropagation();
+              props.onOpen();
+            }}
+          >
+            Details
+          </Button>
           <Show when={isActive()}>
-            <Button onClick={() => props.onAction(() => pauseDownload(props.dl.gid))}>
+            <Button
+              onClick={(e) => {
+                e.stopPropagation();
+                props.onAction(() => pauseDownload(props.dl.gid));
+              }}
+            >
               Pause
             </Button>
           </Show>
           <Show when={isPaused()}>
-            <Button onClick={() => props.onAction(() => resumeDownload(props.dl.gid))}>
+            <Button
+              onClick={(e) => {
+                e.stopPropagation();
+                props.onAction(() => resumeDownload(props.dl.gid));
+              }}
+            >
               Resume
             </Button>
           </Show>
-          <Button onClick={cancelWithConfirm}>
+          <Button
+            onClick={(e) => {
+              e.stopPropagation();
+              cancelWithConfirm();
+            }}
+          >
             {isDone() ? "Remove" : "Cancel"}
           </Button>
         </div>

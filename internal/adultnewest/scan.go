@@ -593,6 +593,11 @@ func matchRelease(ctx context.Context, id *identify.Identifier, prowlarrClient *
 		}
 		if confirmAvailable(ctx, prowlarrClient, r.Title) {
 			out = append(out, toMatchedRelease(rowType, *detail.Scene, r.Title))
+			// Studio/Performer side-entities are appended ONLY here, inside the
+			// branch that actually persisted a scene/movie row — never
+			// unconditionally after the switch (US-1 orphan prevention). A
+			// confirmable studio/performer name whose triggering scene never
+			// became a row must not leave an orphaned card behind.
 			out = append(out, identifyStudioPerformers(ctx, id, *detail)...)
 		}
 	default:
@@ -605,6 +610,8 @@ func matchRelease(ctx context.Context, id *identify.Identifier, prowlarrClient *
 		if movie, err := id.Boxes.SearchTPDBMovies(ctx, r.Title); err == nil && movie != nil {
 			if confirmAvailable(ctx, prowlarrClient, r.Title) {
 				out = append(out, toMatchedRelease(RowMovie, *movie, r.Title))
+				// Same US-1 gate as the scene branch: only append the
+				// studio/performer rows now that a movie row was persisted.
 				out = append(out, identifyStudioPerformers(ctx, id, *detail)...)
 			}
 		}
@@ -683,6 +690,8 @@ func identifyStudioPerformers(ctx context.Context, id *identify.Identifier, deta
 var adultQueryApostrophe = regexp.MustCompile(`['’]`)
 var adultQueryNonAlnum = regexp.MustCompile(`[^a-zA-Z0-9\s]+`)
 
+// NormalizeAdultQuery drops apostrophes and collapses other punctuation to
+// spaces so Prowlarr free-text matches scene-release naming.
 func NormalizeAdultQuery(s string) string {
 	s = adultQueryApostrophe.ReplaceAllString(s, "")
 	s = adultQueryNonAlnum.ReplaceAllString(s, " ")
@@ -703,6 +712,8 @@ func NormalizeAdultQuery(s string) string {
 // should both mean "don't cache this" — see matchRelease's doc comment for
 // why this check exists at all.
 func confirmAvailable(ctx context.Context, prowlarrClient *prowlarr.Client, releaseTitle string) bool {
+	// Clean then NormalizeAdultQuery so this is the same Prowlarr query
+	// autoGrabSearch will run (see identify.CleanReleaseTitleForSearch).
 	query := NormalizeAdultQuery(identify.CleanReleaseTitleForSearch(strings.TrimSpace(releaseTitle)))
 	releases, err := prowlarrClient.Search(ctx, query, []int{adultCategory})
 	if err != nil {
@@ -917,12 +928,17 @@ func processFeedItem(ctx context.Context, id *identify.Identifier, releaseStore 
 			rowType = RowMovie
 		}
 		out = append(out, toFeedMatchedRelease(rowType, *detail.Scene, it.Title, int64(f.ID), downloadURL, string(f.Protocol), key, it.EnclosureLength, nowUnix))
+		// US-1 orphan prevention: studio/performer side-entities are appended
+		// ONLY inside the branch that actually persisted a scene/movie row (the
+		// feed pass has no confirmAvailable gate, so "a scene/movie was found" is
+		// the whole condition here), never unconditionally after the switch.
 		out = append(out, identifyStudioPerformers(ctx, id, *detail)...)
 	default:
 		// No scene match — try TPDB's movie catalog directly, same lighter-weight
 		// fallback the browse pass uses.
 		if movie, err := id.Boxes.SearchTPDBMovies(ctx, it.Title); err == nil && movie != nil {
 			out = append(out, toFeedMatchedRelease(RowMovie, *movie, it.Title, int64(f.ID), downloadURL, string(f.Protocol), key, it.EnclosureLength, nowUnix))
+			// Same US-1 gate as the scene branch above.
 			out = append(out, identifyStudioPerformers(ctx, id, *detail)...)
 		}
 	}

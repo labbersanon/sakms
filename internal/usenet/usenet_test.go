@@ -339,6 +339,8 @@ type fakeNNTP struct {
 
 	bodyCount atomic.Int64
 	statCount atomic.Int64
+	// lieStat: STAT 430 even when the article body is present (provider lie).
+	lieStat map[string]bool
 
 	// gate, when non-nil, blocks every BODY response until it is closed. Each
 	// blocked request first signals on blocked (best-effort, never blocking).
@@ -419,6 +421,17 @@ func (f *fakeNNTP) serveOnly(p testPayload, numbers ...int) {
 	}
 }
 
+func (f *fakeNNTP) lieStatIDs(ids ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.lieStat == nil {
+		f.lieStat = make(map[string]bool)
+	}
+	for _, id := range ids {
+		f.lieStat[id] = true
+	}
+}
+
 func (f *fakeNNTP) serve(c net.Conn) {
 	defer c.Close()
 	r := bufio.NewReader(c)
@@ -467,6 +480,11 @@ func (f *fakeNNTP) serveStat(w *bufio.Writer, id string) {
 	}
 	f.statCount.Add(1)
 	f.mu.Lock()
+	if f.lieStat[id] {
+		f.mu.Unlock()
+		fmt.Fprint(w, "430 no such article\r\n")
+		return
+	}
 	a, ok := f.articles[id]
 	f.mu.Unlock()
 	if !ok {

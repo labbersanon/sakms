@@ -9615,3 +9615,18 @@ status stays active.
 | `frontend/src/screens/Downloads.tsx` | Done-row label Dismiss; confirm copy |
 | `frontend/src/screens/Downloads.test.tsx` | Error-row Dismiss confirm |
 
+## 2026-09-28 — Usenet precheck BODY-confirms every STAT miss
+
+**Problem:** Full-payload STAT still skipped the gate for the rest of the process after one 430-STAT/BODY-ok probe, and `.par2` subjects were treated as meta so obfuscated/recovery articles were not checked. Incomplete NZBs reached BODY download.
+**Fix:** STAT every payload and PAR2 article. BODY-confirm each STAT miss; abort (`ErrArticlesUnavailable`) if any BODY is also missing so auto-grab takes the next alternate. A lying STAT no longer skips later NZBs. Decorative nfo/image meta still skipped.
+**Outcome:** Precheck is a completeness gate again; one STAT lie cannot waive a real hole.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/precheck.go` | Per-miss BODY confirm; include PAR2; drop skip-on-unreliable |
+| `internal/usenet/precheck_test.go` | Unreliable latch, lie+hole, all-lies BODY ok, PAR2 included |
+| `internal/usenet/usenet_test.go` | fakeNNTP `lieStatIDs` |
+| `docs/usenet-precheck.md` | BODY confirm + PAR2 in the STAT set |
+

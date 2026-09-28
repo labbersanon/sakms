@@ -4,7 +4,7 @@
 <!-- Claude 2026-09-22: sample/escalate retired — full payload STAT instead.
 Reason: assembleFile fail-closes on any hole; a 48-segment sample could miss a single 430/451.
 **Escalation scope:** A — only files that missed in the sample (+ small re-sample). -->
-**Check:** STAT **every** payload article (skip `.par2` / `.nfo` / images when identifiable; honor resume skip map).  
+**Check:** STAT **every** payload and PAR2 article (skip decorative `.nfo` / `.sfv` / images; honor resume skip map). Each STAT 430 is BODY-confirmed; one lying STAT does not skip the rest or later NZBs.  
 <!-- Claude 2026-09-22: candidate retries exhaust the full graded list (was max 3).
 Reason: precheck owns source selection; download-time alternate caps retired. -->
 **Candidate retries:** every qualified runner-up in the graded list per `RunAutoGrab` / batch cycle, then park / NoMatch.
@@ -21,12 +21,15 @@ Precheck is also the **source-selection** gate: when one NZB fails STAT (or late
 
 1. After NZB parse, register the Downloads row as `phase=precheck`, then STAT.
 2. Acquire the **precheck job semaphore** (capacity = `MaxConcurrentDownloads`, independent of the download semaphore). Overlapping prechecks wait here; they do not steal BODY download slots.
-3. STAT **all** remaining payload segments (skip meta files; skip MsgIDs already in the resume sidecar).
+3. STAT **all** remaining payload and PAR2 segments (skip decorative nfo/image meta; skip MsgIDs already in the resume sidecar).
 4. Timeout scales with segment count: `15s + 100ms×N`, capped at **12 minutes** (sequential budget; worker fan-out only finishes earlier).
 5. STAT workers = `concurrencyBudget()` (sum of per-server `MaxConns`). Pool sockets are still shared with in-flight BODY fetches; download jobs already hold live tokens. Tradeoff: under `MaxConns=1` plus an active download, STAT waits on `pool.getCtx`.
-6. Abort (`ErrArticlesUnavailable`) if **any** confirmed missing (430) or removed (451) payload article — row cleaned (`dropPrecheckFailed`), no Failed pill.
+6. Abort (`ErrArticlesUnavailable`) if **any** confirmed missing (430 after BODY confirm) or removed (451) article — row cleaned (`dropPrecheckFailed`), no Failed pill. Callers try the next Usenet alternate.
 7. On STAT ok: if a BODY slot is free → `downloading`; if `MaxConcurrentDownloads` is full → `waiting`, then `downloading` when a slot opens.
-8. **BODY trust probe:** if STAT says 430 but BODY works, mark STAT unreliable for the process and proceed (skip the gate for the rest of the process lifetime).
+8. **BODY confirm every STAT miss:** if STAT says 430, BODY that MsgID. BODY ok → STAT lied for that article only (latch `statUnreliable` so logs show it; the rest of this NZB and later NZBs still get a full STAT). BODY also missing → abort this NZB. Never skip the gate for the process lifetime.
+<!-- Claude 2026-09-28: previous item 8 skipped the gate after one BODY-ok STAT miss.
+Reason: that waived real holes and every later NZB. Replaced by per-miss BODY confirm.
+8. BODY trust probe: if STAT says 430 but BODY works, mark STAT unreliable for the process and proceed (skip the gate for the rest of the process lifetime). -->
 9. Zero NNTP pools → no-op (keeps unit fixtures green).
 10. **Drain** gates on **pipeline** free slots (`precheck|waiting < MaxConcurrentDownloads`), not BODY-only — so the next Request can enter Precheck while current NZBs download.
 

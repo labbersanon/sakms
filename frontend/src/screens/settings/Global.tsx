@@ -51,7 +51,6 @@ import { FolderPicker } from "../../components/FolderPicker";
 import { AdultModeContext, Button, Muted, inputClass, labelClass } from "../../components/ui";
 import { Card, SaveStatus, useSaveStatus, useSectionSaveItem } from "./shared";
 import { DurationSetting } from "./Advanced";
-import { APISection } from "./APISection";
 import { SectionLockSection } from "./SectionLock";
 
 // RecheckTriggerButton is the manual "Refresh now" action for the
@@ -653,18 +652,6 @@ const AdultModeSection: Component = () => {
   );
 };
 
-// APISection is composed in here rather than into AdvancedSection because
-// Prowlarr/Stash/media players are global, not per-mode — GlobalSection renders
-// ABOVE the Advanced tab's mode selector, which is the correct semantic for
-// them. It leads the fragment: connection setup is what an operator most often
-// comes to this tab for.
-//
-// SectionLockSection is composed here for the SAME reason and follows the same
-// precedent: a section PIN lock is mode-INDEPENDENT, so it must not sit inside
-// AdvancedSection, which takes a `mode: () => Mode` and is governed by the
-// selector below it. It is placed next to AdultModeSection because the two are
-// adjacent concerns and routinely read together — one is a visibility switch
-// that enforces nothing, the other is the actual enforcement boundary.
 // Claude 2026-09-19: Advanced opt-in Usenet staging outside data volume (A3).
 // Reason: app must stay portable — default keeps Usenet under <dataDir>/downloads;
 //   only operators with remote/fragile data volumes enable this.
@@ -1010,13 +997,10 @@ const GrabPreferredLanguagesSection: Component = () => {
   );
 };
 
-// Claude 2026-09-24: API connections left Global for the Connections screen.
-// Reason: Settings sidebar split Global vs Connections; Prowlarr/Stash/players
-//   are not mode-independent "global knobs" the way Adult mode / watch folders are.
-// Troubleshooting: Connections screen empty → this export, not GlobalSection.
-// Review if: a connection type moves back next to a library mode.
-export const ConnectionsSection: Component = () => <APISection />;
-
+// Claude 2026-09-28: Connections tab renders APISection directly.
+// Reason: ConnectionsSection was a one-line alias; SectionLock stays here
+//   because a PIN lock is mode-independent (not Advanced's per-mode selector).
+// Review if: a connection type moves back onto Global.
 export const GlobalSection: Component = () => (
   <>
     <AdultModeSection />

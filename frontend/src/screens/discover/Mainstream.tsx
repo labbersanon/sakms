@@ -74,7 +74,7 @@ import { Carousel } from "../../components/Carousel";
 import {
   type Slider,
   deleteSlider,
-  fetchDiscoverSliders,
+  fetchSliders,
   fetchSliderItems,
   updateSlider,
 } from "../../api/discoverSliders";
@@ -954,7 +954,7 @@ export const MainstreamDiscover: Component<{
   // --- Discover row order: built-in rows above + custom sliders + RSS feed
   // rows, fully interleavable via Edit mode (RowEditor). ---
   const [slidersData] = createResource(reloadToken, () =>
-    fetchDiscoverSliders().catch(() => [] as Slider[]),
+    fetchSliders().catch(() => [] as Slider[]),
   );
   const allSliders = () => slidersData() ?? [];
   const slidersForTab = () =>

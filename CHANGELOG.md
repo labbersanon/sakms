@@ -9720,4 +9720,25 @@ status stays active.
 | `frontend/src/screens/Discover.tsx` | Stopped re-exporting `LibraryRowView` |
 | `frontend/src/screens/discover/RowView.test.tsx` | Redirect coverage for leftover view-all library URLs |
 
+## 2026-09-28 — Deduplicate shared helpers that had drifted as copies
+
+**Problem:** Adult Prowlarr query punctuation-stripping lived as two documented "keep identical" copies (`internal/api` and `internal/adultnewest`). Several one-line aliases and test helpers duplicated the same fallback.
+**Fix:** One `adultnewest.NormalizeAdultQuery` (api already imported that package). Share `downloadDisplayName` for torrent/Usenet DTOs. Gate `wrapUsenetPrecheckErr` on `usenet.IsPrecheckReject`. Drop `fetchDiscoverSliders` / `ConnectionsSection` / `AISection` aliases. Rename tests use `asPage`. Requests missing-episodes chip uses `FilterChip`.
+**Outcome:** Same search, display-name, precheck, Settings, and filter behavior. Calendar/grid and applyProposal modules left as documented intentional duplicates.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/adultnewest/scan.go` | Exported `NormalizeAdultQuery`; dropped the "mirror autograb.go" copy |
+| `internal/adultnewest/normalize_test.go` | Moved `TestNormalizeAdultQuery` here |
+| `internal/api/autograb.go` | Dropped the duplicate strip + regex vars |
+| `internal/api/search.go` / `search_catalog.go` / `adultreleases.go` / `adultdiscover_newest_scenes.go` | Call `adultnewest.NormalizeAdultQuery` |
+| `internal/api/search.go` | `wrapUsenetPrecheckErr` uses `IsPrecheckReject` |
+| `internal/api/downloads.go` | Shared `downloadDisplayName` |
+| `frontend/src/api/discoverSliders.ts` | Dropped `fetchDiscoverSliders` alias |
+| `frontend/src/screens/settings/{index,Global,AI}.tsx` | Settings tabs import `APISection` / `AIProviderModelCard` |
+| `frontend/src/testing/http.ts` | Generic `asPage`; Rename tests reuse it |
+| `frontend/src/screens/Requests.tsx` | Missing-episodes toggle uses `FilterChip` |
+
 

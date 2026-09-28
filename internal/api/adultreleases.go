@@ -46,7 +46,7 @@ type adultResolution struct {
 // adultSceneKey derives a stable, lookup-safe key for the given scene.
 // Prefers box:sceneId when both are present (catalog-sourced cards); falls
 // back to "title:<normalized>" for Show-More-sourced and legacy items that
-// carry no catalog id, via normalizeAdultQuery so the key tolerates the same
+// carry no catalog id, via adultnewest.NormalizeAdultQuery so the key tolerates the same
 // punctuation variance the Prowlarr query already accepts.
 // Accepted limitation: two genuinely distinct scenes with the same normalized
 // title share a fallback key — the same collision class dedupeAdultShowMoreItems
@@ -55,7 +55,7 @@ func adultSceneKey(box, sceneID, title string) string {
 	if box != "" && sceneID != "" {
 		return box + ":" + sceneID
 	}
-	return "title:" + strings.ToLower(normalizeAdultQuery(title))
+	return "title:" + strings.ToLower(adultnewest.NormalizeAdultQuery(title))
 }
 
 // adultIdentityWeak reports whether a release's identity signals are too thin
@@ -126,7 +126,7 @@ func resolveAdultReleases(ctx context.Context, sess *mode.Session, store *adultn
 	}
 
 	// Cache miss: one live Prowlarr title-only search.
-	query := normalizeAdultQuery(strings.TrimSpace(req.Title))
+	query := adultnewest.NormalizeAdultQuery(strings.TrimSpace(req.Title))
 	releases, err := sess.Prowlarr.Search(ctx, query, []int{adultAutoGrabCategory})
 	if err != nil {
 		return adultResolution{}, err

@@ -32,17 +32,9 @@ import {
 } from "@solidjs/testing-library";
 import type { DiscoverItem, Proposal, SeasonSummary } from "@dto";
 import { Rename } from "./Rename";
-import { jsonResponse, noContent } from "../testing/http";
+import { jsonResponse, noContent, asPage } from "../testing/http";
 
 type RawCall = { url: string; method: string; body?: string };
-
-
-const pageOf = (items: Proposal[]) => ({
-  items,
-  total: items.length,
-  limit: 50,
-  offset: 0,
-});
 
 const seriesProposal: Proposal = {
   id: 12,
@@ -114,9 +106,9 @@ const stubRawFetch = (opts: { series?: Proposal[]; movies?: Proposal[] }) => {
       if (url.includes("/rename/recently-applied")) return jsonResponse([]);
       if (url.includes("/pending-ids")) return jsonResponse({ ids: [] });
       if (url.includes("/api/modes/movies/rename/proposals"))
-        return jsonResponse(pageOf(opts.movies ?? []));
+        return jsonResponse(asPage(opts.movies ?? []));
       if (url.includes("/api/modes/series/rename/proposals"))
-        return jsonResponse(pageOf(opts.series ?? []));
+        return jsonResponse(asPage(opts.series ?? []));
       // A SERIES-mode search now queries BOTH TMDB catalogs — SearchTakeover
       // merges movie results into a Series search, so a short film filed under
       // movies is findable there. That means the movies URL is hit by every

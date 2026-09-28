@@ -131,7 +131,7 @@ func adultSearchHandler(connStore *connections.Store, scStore *serviceconn.Store
 		tctx, cancel := context.WithTimeout(ctx, newestScenesOutboundTimeout)
 		defer cancel()
 
-		releases, err := sess.Prowlarr.Search(tctx, normalizeAdultQuery(query), []int{adultAutoGrabCategory})
+		releases, err := sess.Prowlarr.Search(tctx, adultnewest.NormalizeAdultQuery(query), []int{adultAutoGrabCategory})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
@@ -144,7 +144,7 @@ func adultSearchHandler(connStore *connections.Store, scStore *serviceconn.Store
 		releases = dedupeReleases(releases, func(rel prowlarr.Release) releaseDedupKey {
 			return releaseDedupKey{
 				downloadURL:     rel.DownloadURL,
-				normalizedTitle: normalizeAdultQuery(rel.Title),
+				normalizedTitle: adultnewest.NormalizeAdultQuery(rel.Title),
 				seeders:         rel.Seeders,
 			}
 		})
@@ -252,7 +252,7 @@ func groupAdultSearchScenes(ctx context.Context, id *identify.Identifier, poolSc
 	catalog := make([]*identify.MatchResult, 0, len(scenes))
 	mrToScene := make(map[*identify.MatchResult]int, len(scenes))
 	for i := range scenes {
-		key := normalizeAdultQuery(scenes[i].Scene.Title)
+		key := adultnewest.NormalizeAdultQuery(scenes[i].Scene.Title)
 		if key == "" {
 			continue
 		}
@@ -295,7 +295,7 @@ func groupAdultSearchScenes(ctx context.Context, id *identify.Identifier, poolSc
 		if mr == nil || mr.Title == "" {
 			continue // dropped — no unmatched-card fallback
 		}
-		key := normalizeAdultQuery(mr.Title)
+		key := adultnewest.NormalizeAdultQuery(mr.Title)
 		if key == "" {
 			continue
 		}

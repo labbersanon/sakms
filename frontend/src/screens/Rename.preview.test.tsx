@@ -36,7 +36,7 @@ import {
 } from "@solidjs/testing-library";
 import type { Proposal } from "@dto";
 import { Rename } from "./Rename";
-import { jsonResponse } from "../testing/http";
+import { jsonResponse, asPage } from "../testing/http";
 
 
 const proposal = (over: Partial<Proposal>): Proposal => ({
@@ -53,13 +53,6 @@ const proposal = (over: Partial<Proposal>): Proposal => ({
 
 type Call = { url: string; method: string };
 type Handler = (url: string, init?: RequestInit) => Response | Promise<Response>;
-
-const pageOf = (items: Proposal[]) => ({
-  items,
-  total: items.length,
-  limit: 50,
-  offset: 0,
-});
 
 // Verbatim shape of Rename.test.tsx's / Rename.delete.test.tsx's stubFetch —
 // same boilerplate-route handling (organize/events, pending-ids, the
@@ -90,7 +83,7 @@ const stubFetch = (handler: Handler) => {
       const cloned = res.clone();
       const body = await cloned.json();
       if (Array.isArray(body)) {
-        return jsonResponse(pageOf(body as Proposal[]));
+        return jsonResponse(asPage(body as Proposal[]));
       }
     }
     return res;

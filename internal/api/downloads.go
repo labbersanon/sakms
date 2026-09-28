@@ -202,22 +202,30 @@ const downloadsGlobalPausedKey = "downloads_global_paused"
 // as 423 Locked instead — see dispatchToDownloadClient).
 var errDownloadsPaused = errors.New("downloads are globally paused — resume in the Downloads screen before grabbing new releases")
 
+// Claude 2026-09-28: shared basename/GID display name for torrent and Usenet DTOs.
+// Reason: toDTODownload and toUsenetDTODownload copied the same three-line fallback.
+// Troubleshooting: empty Filename showing a full path — Base was skipped.
+// Review if: either protocol grows a distinct display-name rule.
+func downloadDisplayName(filename, gid string) string {
+	name := filename
+	if name != "" {
+		name = filepath.Base(name)
+	}
+	if name == "" {
+		name = gid
+	}
+	return name
+}
+
 // toDTODownload maps a downloader.Download to the wire DTO, deriving a display
 // filename (basename of the first file, GID fallback). Protocol is a literal
 // "torrent" — this mapper's argument type already tells it that with
 // certainty, so it does not need to re-derive it from the GID (D-2).
 func toDTODownload(d downloader.Download) apidto.Download {
-	name := d.Filename
-	if name != "" {
-		name = filepath.Base(name)
-	}
-	if name == "" {
-		name = d.GID
-	}
 	return apidto.Download{
 		GID:             d.GID,
 		Status:          d.Status,
-		Filename:        name,
+		Filename:        downloadDisplayName(d.Filename, d.GID),
 		TotalLength:     d.TotalLength,
 		CompletedLength: d.CompletedLength,
 		DownloadSpeed:   d.DownloadSpeed,
@@ -237,17 +245,10 @@ func toDTODownload(d downloader.Download) apidto.Download {
 // protocol == "usenet" rather than rendering "0 seeds" / "0 KB/s", so a
 // future reader must not "fix" this by wiring up fake values.
 func toUsenetDTODownload(d usenet.Download) apidto.Download {
-	name := d.Filename
-	if name != "" {
-		name = filepath.Base(name)
-	}
-	if name == "" {
-		name = d.GID
-	}
 	return apidto.Download{
 		GID:             d.GID,
 		Status:          d.Status,
-		Filename:        name,
+		Filename:        downloadDisplayName(d.Filename, d.GID),
 		TotalLength:     d.TotalLength,
 		CompletedLength: d.CompletedLength,
 		DownloadSpeed:   d.DownloadSpeed,

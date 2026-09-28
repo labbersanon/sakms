@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/tpdbrest"
 )
@@ -197,12 +198,12 @@ func TestAdultSearch_BoundedBoxIdentify(t *testing.T) {
 }
 
 // TestAdultSearch_NormalizesProwlarrQuery proves the Prowlarr search query is
-// normalizeAdultQuery(input), not the raw input.
+// adultnewest.NormalizeAdultQuery(input), not the raw input.
 func TestAdultSearch_NormalizesProwlarrQuery(t *testing.T) {
 	const rawInput = "Cory Chase's Big Day!"
-	want := normalizeAdultQuery(rawInput)
+	want := adultnewest.NormalizeAdultQuery(rawInput)
 	if want == rawInput {
-		t.Fatalf("test precondition: normalizeAdultQuery must change %q to be meaningful", rawInput)
+		t.Fatalf("test precondition: adultnewest.NormalizeAdultQuery must change %q to be meaningful", rawInput)
 	}
 
 	var gotQuery string
@@ -221,7 +222,7 @@ func TestAdultSearch_NormalizesProwlarrQuery(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 	if gotQuery != want {
-		t.Errorf("expected Prowlarr query %q (normalizeAdultQuery), got %q", want, gotQuery)
+		t.Errorf("expected Prowlarr query %q (adultnewest.NormalizeAdultQuery), got %q", want, gotQuery)
 	}
 }
 

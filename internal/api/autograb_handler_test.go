@@ -24,8 +24,10 @@ import (
 //
 // Claude 2026-09-16: added /release_dates branch.
 // Reason: gateMovieGrab now runs inside RunAutoGrab before any search; without
-//   a typed US release entry in the fake TMDB, every Movies auto-grab test
-//   blocks at the gate, which would fail all existing tests.
+//
+//	a typed US release entry in the fake TMDB, every Movies auto-grab test
+//	blocks at the gate, which would fail all existing tests.
+//
 // Review if: gateMovieGrab's call site or fakeTMDBMovieRuntime usage changes.
 func fakeTMDBMovieRuntime(t *testing.T, runtimeMinutes int) *httptest.Server {
 	t.Helper()
@@ -586,34 +588,6 @@ func TestAutoGrabHandler_Series_WrongSeasonReleaseNeverWins(t *testing.T) {
 	}
 	if got := len(dl.List()); got != 1 {
 		t.Errorf("expected exactly ONE download-client add (the correct-season release), got %d", got)
-	}
-}
-
-// TestNormalizeAdultQuery is the regression test for a real "Adult downloads
-// never resolve" report: Prowlarr returned 0 raw releases for nearly every
-// scene tried, because the raw studio+title query (colons, commas,
-// asterisks, apostrophes and all) rarely appears verbatim in how trackers
-// actually name Adult releases.
-func TestNormalizeAdultQuery(t *testing.T) {
-	cases := []struct {
-		raw  string
-		want string
-	}{
-		{
-			"Private Classics Franky Knight: Curvy And Horny, Looking For A Stallion",
-			"Private Classics Franky Knight Curvy And Horny Looking For A Stallion",
-		},
-		{"Cruel Handjobs Little Trick.", "Cruel Handjobs Little Trick"},
-		{"CzechAR Stepmommy Finally Admits She Fantasizes About You Too *4k", "CzechAR Stepmommy Finally Admits She Fantasizes About You Too 4k"},
-		{"Gloryhole Secrets Satine Summers' Seventh Interview", "Gloryhole Secrets Satine Summers Seventh Interview"},
-		{"  extra   whitespace   here  ", "extra whitespace here"},
-		{"", ""},
-		{"(parens) [brackets] {braces}", "parens brackets braces"},
-	}
-	for _, tc := range cases {
-		if got := normalizeAdultQuery(tc.raw); got != tc.want {
-			t.Errorf("normalizeAdultQuery(%q) = %q, want %q", tc.raw, got, tc.want)
-		}
 	}
 }
 

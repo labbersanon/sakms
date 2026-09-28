@@ -95,7 +95,7 @@ const (
 // imported here without a cycle.
 //
 // KEEP IN STEP with that constant — the same explicit-replication convention
-// internal/adultnewest's normalizeAdultQuery and optionalConnAPI already use.
+// adultnewest.NormalizeAdultQuery (now shared with api) and optionalConnAPI already use.
 // It exists only to size maxRawPages: the scheduler deliberately does NOT
 // reproduce filterReleasedMovies' retry-page logic (that exists solely to
 // satisfy the frontend's one-click-equals-one-page contract, and reproducing it

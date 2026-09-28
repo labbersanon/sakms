@@ -51,13 +51,10 @@ import {
 //   the reworked screens.
 // Troubleshooting: extra Save buttons on AI → a leftover SectionSave wrapper.
 // Review if: AI form and connection rows need a single commit again.
-export const AISection: Component = () => <AIProviderModelCard />;
-
-// AIProviderModelCard holds the batched AI fallback form and the provider/Brave
-// connection rows. It registers the form with the enclosing SectionSave and the
-// two ConnectionRows register themselves — each keeping its own three-state
-// secret gate; nothing is merged.
-const AIProviderModelCard: Component = () => {
+// Claude 2026-09-28: export the card directly.
+// Reason: AISection was a one-line alias; Settings → AI already imported it.
+// Review if: the AI tab needs a wrapper that composes more than this card.
+export const AIProviderModelCard: Component = () => {
   const [fallbackEnabled, { refetch: refetchFallback }] = createResource(
     fetchAIFallbackEnabled,
   );

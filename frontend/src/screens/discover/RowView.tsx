@@ -25,7 +25,7 @@ import {
   fetchAdultNewestRowItems,
   fetchAdultNewestRows,
 } from "../../api/adultNewestRows";
-import { fetchDiscoverSliders, fetchSliderItems, type Slider } from "../../api/discoverSliders";
+import { fetchSliders, fetchSliderItems, type Slider } from "../../api/discoverSliders";
 import { fetchTraktWatchlist, type TraktWatchlistItem } from "../../api/trakt";
 import { fetchRssFeeds, fetchRssFeedItems, isAdultRssTarget, type RssFeedItem, type RssFeedTarget } from "../../api/rssFeeds";
 import {
@@ -266,7 +266,7 @@ function rssFeedTargetMode(
 export const SliderRowView: Component = () => {
   const params = useParams();
   const sliderId = () => positiveId(params.id);
-  const [sliders] = createResource(fetchDiscoverSliders);
+  const [sliders] = createResource(fetchSliders);
   const slider = () => (sliders() ?? []).find((s) => s.id === sliderId());
   const [detailTarget, setDetailTarget] = createSignal<DetailTarget | null>(
     null,

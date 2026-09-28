@@ -117,7 +117,7 @@ func runEntityPoll(ctx context.Context, sess *mode.Session, releaseStore *Releas
 		}
 	}()
 
-	query := normalizeAdultQuery(entity.EntityName)
+	query := NormalizeAdultQuery(entity.EntityName)
 	releases, err := sess.Prowlarr.Search(ctx, query, []int{adultCategory})
 	if err != nil {
 		log.Printf("adultnewest monitor: searching prowlarr for %q: %v", entity.EntityName, err)

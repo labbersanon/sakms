@@ -14,7 +14,7 @@
 //   - planActionForRow returns null for a "review" selection (Apply-All skips)
 //
 // Harness conventions match Rename.delete.test.tsx: stubFetch + parsed-body
-// Call tracking, pageOf auto-wrap, recently-applied and organize/events routed
+// Call tracking, asPage auto-wrap, recently-applied and organize/events routed
 // to empty defaults so each test only declares what it needs.
 //
 // Claude 2026-08-12: new file.
@@ -30,17 +30,9 @@ import {
 } from "@solidjs/testing-library";
 import type { AdultReviewPreview, Proposal } from "@dto";
 import { Rename, isAdultWebIdentified, planActionForRow } from "./Rename";
-import { jsonResponse, noContent } from "../testing/http";
+import { jsonResponse, noContent, asPage } from "../testing/http";
 
 // ---- Helpers ----------------------------------------------------------------
-
-
-const pageOf = (items: Proposal[]) => ({
-  items,
-  total: items.length,
-  limit: 50,
-  offset: 0,
-});
 
 // Minimal Adult unmatched row with a web-identified title. Override any field.
 const adultProposal = (over: Partial<Proposal> = {}): Proposal => ({
@@ -103,7 +95,7 @@ const stubFetch = (handler: Handler) => {
       const cloned = res.clone();
       const body = await cloned.json();
       if (Array.isArray(body)) {
-        return jsonResponse(pageOf(body as Proposal[]));
+        return jsonResponse(asPage(body as Proposal[]));
       }
     }
     return res;

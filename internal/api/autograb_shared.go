@@ -545,14 +545,14 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 			out.Selection = sel
 			break
 		}
-		if !errors.Is(err, usenet.ErrArticlesUnavailable) {
+		if !usenet.IsPrecheckReject(err) {
 			out.Status, out.Err = status, err
 			return out, err
 		}
 		log.Printf("usenet precheck: candidate %d (%s) unavailable — trying next", idx, picked.Title)
 	}
 	// Claude 2026-09-17: native precheck exhaustion → remaining Prowlarr phases (§7.3).
-	if err != nil && nativePhase && errors.Is(err, usenet.ErrArticlesUnavailable) {
+	if err != nil && nativePhase && usenet.IsPrecheckReject(err) {
 		rest := phasesAfterNative(phases)
 		if len(rest) > 0 && req.Releases == nil {
 			log.Printf("auto-grab: native candidates exhausted for %q — falling back to Prowlarr phases", req.Title)

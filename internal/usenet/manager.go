@@ -1608,7 +1608,7 @@ func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState
 			dl.status = "error"
 			dl.setPhase("")
 			dl.errorMsg = repairErr.Error()
-			dl.err = fmt.Errorf("%w: %w", ErrContentUnusable, repairErr)
+			dl.err = fmt.Errorf("%w: %w", ErrNoVideoUnpacked, repairErr)
 			failed = true
 			log.Printf("usenet: par2 repair %s: %v (no video after unpack — not marking complete)", gid, repairErr)
 		}
@@ -2669,18 +2669,7 @@ func sniffMediaExt(path string) string {
 	if err != nil || n < 4 {
 		return ""
 	}
-	switch {
-	case head[0] == 0x1A && head[1] == 0x45 && head[2] == 0xDF && head[3] == 0xA3:
-		return ".mkv"
-	case n >= 8 && string(head[4:8]) == "ftyp":
-		return ".mp4"
-	case string(head[:4]) == "Rar!":
-		return ".rar"
-	case n >= 2 && string(head[:2]) == "PK":
-		return ".zip"
-	default:
-		return ""
-	}
+	return sniffMediaExtFrom(head[:n])
 }
 
 func countDamaged(r *par2lib.VerifyResult) int {

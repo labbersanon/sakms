@@ -27,6 +27,11 @@ func TestContentClassification(t *testing.T) {
 			wantContent: true,
 		},
 		{
+			name:        "no video unpacked wraps ErrContentUnusable",
+			err:         ErrNoVideoUnpacked,
+			wantContent: true,
+		},
+		{
 			name:        "unpack error wraps ErrContentUnusable",
 			err:         fmt.Errorf("%w: %w", ErrContentUnusable, someUnpackErr),
 			wantContent: true,

@@ -200,8 +200,11 @@ func TestDownloadAll_UniquifiesWhenSubjectAlsoCollides(t *testing.T) {
 		t.Fatalf("AddNZB: %v", err)
 	}
 	final := waitTerminal(t, m, gid)
-	if final.Status != "complete" {
-		t.Fatalf("status=%q err=%q", final.Status, final.ErrorMessage)
+	if final.Status != "error" {
+		t.Fatalf("status=%q err=%q want error (hash.par2 staging is not a video)", final.Status, final.ErrorMessage)
+	}
+	if !strings.Contains(final.ErrorMessage, "unpack produced no video") {
+		t.Fatalf("err=%q want no-video unpack", final.ErrorMessage)
 	}
 	dir := filepath.Join(staging, gid)
 	gotA, err := os.ReadFile(filepath.Join(dir, sharedName))

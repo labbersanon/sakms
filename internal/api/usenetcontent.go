@@ -72,7 +72,7 @@ func contentUnusableFailure(err error) bool {
 // contentFailureReason maps a content-unusable failure to its operator-facing
 // reason string.
 func contentFailureReason(failure error) string {
-	if errors.Is(failure, library.ErrNoVideoFile) {
+	if errors.Is(failure, library.ErrNoVideoFile) || errors.Is(failure, usenet.ErrNoVideoUnpacked) {
 		return contentNoVideoReason
 	}
 	if errors.Is(failure, usenet.ErrPasswordProtected) {

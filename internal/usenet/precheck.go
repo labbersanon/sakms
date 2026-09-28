@@ -102,9 +102,10 @@ type sampledSeg struct {
 	msgID   string
 }
 
-// precheckNZB STATs every payload MsgID (skip meta via payloadFiles; honor skip
-// for resume). Zero pools is a no-op so fixtures without NNTP stay green.
-// progressGID, when non-empty, updates that queue row's PhaseDone/PhaseTotal.
+// precheckNZB STATs every payload and PAR2 MsgID (skip decorative nfo/image meta
+// via payloadFiles; honor skip for resume). Zero pools is a no-op so fixtures
+// without NNTP stay green. progressGID, when non-empty, updates that queue
+// row's PhaseDone/PhaseTotal.
 func (m *Manager) precheckNZB(ctx context.Context, nzb *NZB, skip map[string]bool, progressGID string) (PrecheckResult, error) {
 	var res PrecheckResult
 	if nzb == nil || len(m.currentPools()) == 0 {
@@ -133,13 +134,13 @@ func (m *Manager) precheckNZB(ctx context.Context, nzb *NZB, skip map[string]boo
 		return res, nil
 	}
 
-	// Process-lifetime STAT-unreliable: skip gate and proceed (BODY already proven).
-	if m.isStatUnreliable() {
-		res.StatUnreliable = true
-		res.Inconclusive = true
-		log.Printf("usenet precheck: skipped — STAT marked unreliable this process")
-		return res, nil
-	}
+	// Claude 2026-09-28: never skip the full gate when STAT has lied once.
+	// Reason: markStatUnreliable used to return here for the process lifetime,
+	//   so every later NZB went straight to BODY. One 430-STAT/BODY-ok probe
+	//   waived holes that STAT also reported. Pre-stage means STAT every
+	//   remaining article, then BODY-confirm each STAT miss before AddNZB.
+	// Troubleshooting: journal "usenet precheck: skipped — STAT marked unreliable".
+	// Review if: a Settings toggle restores skip-on-unreliable for tiny MaxConns.
 
 	sem := m.currentPrecheckSemaphore()
 	select {
@@ -175,21 +176,39 @@ func (m *Manager) precheckNZB(ctx context.Context, nzb *NZB, skip map[string]boo
 
 	if len(missIDs) == 0 {
 		log.Printf("usenet precheck: ok full checked=%d payload=%d", res.Checked, res.PayloadSegments)
-		return res, nil
+		return m.finishPrecheck(ctx, payload, skip, progressGID, res)
 	}
 
-	// Mandatory BODY trust probe: some backends 430 STAT but serve BODY.
-	probeID := missIDs[0].msgID
-	if m.trustProbeBody(fullCtx, probeID) {
+	// confirmMissingArticles uses the caller ctx, not the STAT timeout.
+	confirmed := m.confirmMissingArticles(ctx, missIDs, progressGID)
+	if len(confirmed) < len(missIDs) {
 		m.markStatUnreliable()
 		res.StatUnreliable = true
-		log.Printf("usenet precheck: STAT unreliable (BODY ok for %s) — proceeding", probeID)
-		return res, nil
 	}
-
+	if len(confirmed) == 0 {
+		log.Printf("usenet precheck: ok after BODY confirm checked=%d payload=%d stat_misses=%d (STAT unreliable)",
+			res.Checked, res.PayloadSegments, len(missIDs))
+		return m.finishPrecheck(ctx, payload, skip, progressGID, res)
+	}
+	res.Missing = len(confirmed) + removed
+	res.WorstFile = worstFileName(payload, confirmed)
 	log.Printf("usenet precheck: abort — full missing=%d/%d worst=%q",
 		res.Missing, res.Checked, res.WorstFile)
 	return res, ErrArticlesUnavailable
+}
+
+// Claude 2026-09-28: after STAT ok, peek first-segment BODY for usable video.
+// Reason: nfo/audio/image NZBs passed STAT and burned full BODY + staging.
+//
+//	Magic / PAR2 FileDesc / archive member names abort before download.
+//
+// Troubleshooting: journal "usenet precheck: abort — no usable video".
+// Review if: first-volume RAR listing (unrar l) is added for hash-named archives.
+func (m *Manager) finishPrecheck(ctx context.Context, payload []NZBFile, skip map[string]bool, progressGID string, res PrecheckResult) (PrecheckResult, error) {
+	if err := m.precheckVideo(ctx, payload, skip, progressGID); err != nil {
+		return res, err
+	}
+	return res, nil
 }
 
 // Claude 2026-09-22: previous hybrid sample → 25% abort / option-A escalate.
@@ -482,8 +501,28 @@ func (m *Manager) statArticleAny(ctx context.Context, msgID string) (found, remo
 	return false, false, otherErr
 }
 
-// trustProbeBody reports whether any pool serves msgID's BODY, which means a
-// preceding 430 from STAT was a lie and the precheck gate cannot be trusted.
+// confirmMissingArticles BODY-probes each STAT miss. Returns the subset whose
+// BODY is also missing/removed (or whose probe was canceled). Fail-closed: a
+// canceled ctx treats remaining IDs as still missing so AddNZB cannot proceed
+// with unverified holes.
+func (m *Manager) confirmMissingArticles(ctx context.Context, misses []sampledSeg, progressGID string) []sampledSeg {
+	var confirmed []sampledSeg
+	for i, s := range misses {
+		if ctx.Err() != nil {
+			return append(confirmed, misses[i:]...)
+		}
+		if progressGID != "" {
+			m.setPhaseProgress(progressGID, int64(i+1), int64(len(misses)))
+		}
+		if m.trustProbeBody(ctx, s.msgID) {
+			continue
+		}
+		confirmed = append(confirmed, s)
+	}
+	return confirmed
+}
+
+// trustProbeBody reports whether any pool serves msgID's BODY (STAT 430 was a lie).
 func (m *Manager) trustProbeBody(ctx context.Context, msgID string) bool {
 	for _, p := range m.currentPools() {
 		select {
@@ -531,16 +570,20 @@ func ensureAngleMsgID(id string) string {
 	return id
 }
 
+// Claude 2026-09-28: PAR2 is not decorative meta for precheck.
+// Reason: obfuscated NZBs name payload/recovery .par2; skipping them left holes
+//
+//	un-STAT'd. nfo/sfv/images still skip. .vol*.par2 recovery is STATd.
+//
+// Troubleshooting: precheck ok then mid-download 430 on a .par2-named file.
+// Review if: assembleFile starts skipping missing recovery volumes.
 func isMetaSubject(subject string) bool {
 	name := strings.ToLower(filenameFromSubject(subject))
 	if name == "" {
 		name = strings.ToLower(subject)
 	}
 	switch filepath.Ext(name) {
-	case ".par2", ".nfo", ".sfv", ".srr", ".jpg", ".jpeg", ".png", ".gif", ".txt":
-		return true
-	}
-	if strings.Contains(name, ".vol") && strings.Contains(name, ".par2") {
+	case ".nfo", ".sfv", ".srr", ".jpg", ".jpeg", ".png", ".gif", ".txt":
 		return true
 	}
 	return false

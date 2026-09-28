@@ -55,7 +55,7 @@ func TestPrecheck_FullCheck_OkWhenAllPresent(t *testing.T) {
 		t.Fatalf("PayloadSegments=%d want 20", res.PayloadSegments)
 	}
 	if n := srv.statCount.Load(); n != 20 {
-		t.Fatalf("statCount=%d want 20 (full payload STAT)", n)
+		t.Fatalf("statCount=%d want 20", n)
 	}
 }
 
@@ -162,5 +162,109 @@ func TestPrecheck_OverlappingBlockAtCapacity(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("precheck did not proceed after semaphore release")
+	}
+}
+
+func TestPrecheck_StatUnreliable_StillSTATsEveryArticle(t *testing.T) {
+	p := makePayload(t, 8, 512)
+	srv := newFakeNNTP(t)
+	srv.serveAll(p)
+	m := New(Config{Servers: []ServerConfig{srv.cfg()}, StagingDir: t.TempDir()})
+	m.markStatUnreliable()
+	res, err := m.precheckNZB(context.Background(), parsePayloadNZB(t, p), nil, "")
+	if err != nil {
+		t.Fatalf("precheckNZB: %v", err)
+	}
+	if res.Checked != 8 {
+		t.Fatalf("Checked=%d want 8", res.Checked)
+	}
+	if n := srv.statCount.Load(); n != 8 {
+		t.Fatalf("statCount=%d want 8", n)
+	}
+}
+
+func TestPrecheck_LyingStatDoesNotWaiveRealHole(t *testing.T) {
+	p := makePayload(t, 4, 512)
+	srv := newFakeNNTP(t)
+	srv.serveOnly(p, 1, 2, 3)
+	srv.lieStatIDs(p.msgIDs[0])
+	staging := t.TempDir()
+	nzbHTTP := nzbServer(t, p)
+	m := New(Config{Servers: []ServerConfig{srv.cfg()}, StagingDir: staging, HTTPClient: nzbHTTP.Client()})
+	gid, err := m.AddNZB(context.Background(), nzbHTTP.URL, "LiePlusHole")
+	if !errors.Is(err, ErrArticlesUnavailable) {
+		t.Fatalf("err=%v want ErrArticlesUnavailable", err)
+	}
+	if gid != "" {
+		t.Fatalf("gid=%q want empty", gid)
+	}
+	if n := srv.bodyCount.Load(); n < 1 {
+		t.Fatalf("bodyCount=%d want >= 1", n)
+	}
+}
+
+func TestPrecheck_AllStatLiesButBodyPresent(t *testing.T) {
+	p := makePayload(t, 4, 512)
+	srv := newFakeNNTP(t)
+	srv.serveAll(p)
+	srv.lieStatIDs(p.msgIDs...)
+	m := New(Config{Servers: []ServerConfig{srv.cfg()}, StagingDir: t.TempDir()})
+	res, err := m.precheckNZB(context.Background(), parsePayloadNZB(t, p), nil, "")
+	if err != nil {
+		t.Fatalf("precheckNZB: %v", err)
+	}
+	if !res.StatUnreliable {
+		t.Fatal("expected StatUnreliable")
+	}
+	if n := srv.bodyCount.Load(); n < 4 {
+		t.Fatalf("bodyCount=%d want >= 4", n)
+	}
+}
+
+func TestPrecheck_IncludesPar2Articles(t *testing.T) {
+	bin := makePayload(t, 2, 512)
+	par2ID := "par2seg@test"
+	nzbXML := `<?xml version="1.0" encoding="UTF-8"?>
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+  <file poster="p@example.com" date="0" subject="release.bin (1/1)">
+    <groups><group>alt.binaries.test</group></groups>
+    <segments>
+      <segment bytes="512" number="1">seg1@test</segment>
+      <segment bytes="512" number="2">seg2@test</segment>
+    </segments>
+  </file>
+  <file poster="p@example.com" date="0" subject="release.vol001+02.par2 (1/1)">
+    <groups><group>alt.binaries.test</group></groups>
+    <segments>
+      <segment bytes="512" number="1">` + par2ID + `</segment>
+    </segments>
+  </file>
+</nzb>`
+	nzb, err := ParseNZB([]byte(nzbXML))
+	if err != nil {
+		t.Fatalf("ParseNZB: %v", err)
+	}
+	srv := newFakeNNTP(t)
+	srv.add(bin.msgIDs[0], bin.parts[0])
+	srv.add(bin.msgIDs[1], bin.parts[1])
+	m := New(Config{Servers: []ServerConfig{srv.cfg()}, StagingDir: t.TempDir()})
+	_, err = m.precheckNZB(context.Background(), nzb, nil, "")
+	if !errors.Is(err, ErrArticlesUnavailable) {
+		t.Fatalf("err=%v want ErrArticlesUnavailable", err)
+	}
+	if n := srv.statCount.Load(); n != 3 {
+		t.Fatalf("statCount=%d want 3", n)
+	}
+}
+
+func TestIsMetaSubject_Par2IsNotDecorative(t *testing.T) {
+	if isMetaSubject(`"release.vol001+02.par2" yEnc (1/1)`) {
+		t.Fatal("par2 must be included in precheck")
+	}
+	if isMetaSubject(`"316cef87b8ef42dc840681b2b2cf2c37.par2" yEnc`) {
+		t.Fatal("obfuscated par2 subject must be included in precheck")
+	}
+	if !isMetaSubject(`"release.nfo" yEnc (1/1)`) {
+		t.Fatal("nfo should stay decorative")
 	}
 }

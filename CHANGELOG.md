@@ -9615,3 +9615,60 @@ status stays active.
 | `frontend/src/screens/Downloads.tsx` | Done-row label Dismiss; confirm copy |
 | `frontend/src/screens/Downloads.test.tsx` | Error-row Dismiss confirm |
 
+## 2026-09-28 — Usenet precheck BODY-confirms every STAT miss
+
+**Problem:** Full-payload STAT still skipped the gate for the rest of the process after one 430-STAT/BODY-ok probe, and `.par2` subjects were treated as meta so obfuscated/recovery articles were not checked. Incomplete NZBs reached BODY download.
+**Fix:** STAT every payload and PAR2 article. BODY-confirm each STAT miss; abort (`ErrArticlesUnavailable`) if any BODY is also missing so auto-grab takes the next alternate. A lying STAT no longer skips later NZBs. Decorative nfo/image meta still skipped.
+**Outcome:** Precheck is a completeness gate again; one STAT lie cannot waive a real hole.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/precheck.go` | Per-miss BODY confirm; include PAR2; drop skip-on-unreliable |
+| `internal/usenet/precheck_test.go` | Unreliable latch, lie+hole, all-lies BODY ok, PAR2 included |
+| `internal/usenet/usenet_test.go` | fakeNNTP `lieStatIDs` |
+| `docs/usenet-precheck.md` | BODY confirm + PAR2 in the STAT set |
+
+## 2026-09-28 — Unpack with no video fail-closes to the next NZB
+
+**Problem:** When staging had no RAR/zip leaders, unpack returned success. Finalize only fail-closed no-video if PAR2 had already failed, so a hollow download could mark Complete.
+**Fix:** `ErrNoVideoUnpacked` (wraps `ErrContentUnusable`). No-archive staging without a video ext, and unpack that extracts no video, error before Complete. Requests reason is "no usable video — trying a different release".
+**Outcome:** No-video unpack parks the next Usenet alternate instead of completing hollow.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/content.go` | `ErrNoVideoUnpacked` |
+| `internal/usenet/unpack.go` | No-archive/no-video and unpack-no-video wrap the sentinel |
+| `internal/usenet/manager.go` | PAR2-fail + no video wraps `ErrNoVideoUnpacked` |
+| `internal/api/usenetcontent.go` | Reason maps `ErrNoVideoUnpacked` like `ErrNoVideoFile` |
+| `internal/usenet/unpack_test.go` | nfo-only dir errors |
+| `internal/usenet/finalize_assembled_test.go` | no-PAR2 nfo-only fail-closed |
+| `docs/usenet-alternate-release.md` | Trigger row |
+
+## 2026-09-28 — Usenet precheck peeks first segments for usable video
+
+**Problem:** STAT only proved articles existed. NZBs that were nfo/image/audio (or PAR2 listing only those) still downloaded fully, using bandwidth and staging disk, then failed at unpack with `ErrNoVideoUnpacked`.
+**Fix:** After STAT ok, BODY the first segment of each payload leader. Abort with `ErrNoVideoUnpacked` when every peek is junk (JPEG/PNG/MP3 magic, PAR2 FileDesc with no video/archive, ZIP/RAR members with no video). Matroska/MP4 magic under a `.par2` name still proceeds (Ancient Aliens obfuscation). Unknown magic, truncated PAR2, and archives without inner names proceed (fail-open). Resume skip maps skip the video gate. `IsPrecheckReject` lets auto-grab / Search & pick try the next NZB.
+**Outcome:** Decorative dumps never enter BODY download; working obfuscated video still passes.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/precheck.go` | Call video peek after STAT ok |
+| `internal/usenet/precheck_video.go` | First-segment classify + abort |
+| `internal/usenet/sniff.go` | Shared payload magic sniff |
+| `internal/usenet/archive_names.go` | ZIP/RAR4 member names from a prefix |
+| `internal/usenet/content.go` | `IsPrecheckReject` |
+| `internal/usenet/manager.go` | `sniffMediaExt` uses `sniffMediaExtFrom` |
+| `internal/api/search.go` | Wrap no-video sentinel; Search & pick parks it |
+| `internal/api/autograb_shared.go` | Try next candidate on `IsPrecheckReject` |
+| `internal/api/autograb_batch.go` | Same |
+| `internal/api/downloadreconcile.go` | Relaunch park on no-video peek |
+| `internal/api/usenettransport.go` | Resume park on no-video peek |
+| `docs/usenet-precheck.md` | Video peek step |
+| `docs/usenet-alternate-release.md` | Precheck no-video trigger |
+

@@ -99,7 +99,7 @@ func TestArchiveLeaders_RanksCompleteSetOverOrphanPretty(t *testing.T) {
 // while each part's decoded length is shorter, matching stride posters.
 func makeStridedPayload(t *testing.T, decoded []int, stride int, fileSize int64) testPayload {
 	t.Helper()
-	p := testPayload{filename: "release.bin"}
+	p := testPayload{filename: "release.mkv"}
 	p.full = make([]byte, fileSize)
 	var segs strings.Builder
 	for i, n := range decoded {
@@ -116,7 +116,7 @@ func makeStridedPayload(t *testing.T, decoded []int, stride int, fileSize int64)
 	}
 	p.nzbXML = `<?xml version="1.0" encoding="UTF-8"?>
 <nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
-  <file poster="p@example.com" date="0" subject="release.bin (1/1)">
+  <file poster="p@example.com" date="0" subject="release.mkv (1/1)">
     <groups><group>alt.binaries.test</group></groups>
     <segments>
 ` + segs.String() + `    </segments>

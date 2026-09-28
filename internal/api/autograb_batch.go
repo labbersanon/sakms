@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -409,12 +408,11 @@ func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, stor
 			sel.PickIndex = idx
 			break
 		}
-		if !errors.Is(err, usenet.ErrArticlesUnavailable) {
+		if !usenet.IsPrecheckReject(err) {
 			return nil, false, false, nil, "", err
 		}
 		log.Printf("usenet precheck: batch candidate %d (%s) unavailable — trying next", idx, picked.Title)
 	}
-	// Only ErrArticlesUnavailable survives the loop; every other error returned above.
 	if err != nil {
 		return nil, true, false, rankedAutoGrabCandidates(sel, releases), "this release's articles aren't on your subscriptions — pick another", nil
 	}

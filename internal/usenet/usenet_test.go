@@ -339,6 +339,7 @@ type fakeNNTP struct {
 
 	bodyCount atomic.Int64
 	statCount atomic.Int64
+	lieStat   map[string]bool // STAT 430 while BODY is still served
 
 	// gate, when non-nil, blocks every BODY response until it is closed. Each
 	// blocked request first signals on blocked (best-effort, never blocking).
@@ -348,6 +349,8 @@ type fakeNNTP struct {
 	bodyAllow chan struct{}
 	// statAllow, when non-nil, requires one receive per STAT (test-paced).
 	statAllow chan struct{}
+	// ungatedBodies: next N BODY commands skip f.gate (precheck video peek).
+	ungatedBodies atomic.Int64
 }
 
 func newFakeNNTP(t *testing.T) *fakeNNTP {
@@ -419,6 +422,17 @@ func (f *fakeNNTP) serveOnly(p testPayload, numbers ...int) {
 	}
 }
 
+func (f *fakeNNTP) lieStatIDs(ids ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.lieStat == nil {
+		f.lieStat = make(map[string]bool)
+	}
+	for _, id := range ids {
+		f.lieStat[id] = true
+	}
+}
+
 func (f *fakeNNTP) serve(c net.Conn) {
 	defer c.Close()
 	r := bufio.NewReader(c)
@@ -467,6 +481,11 @@ func (f *fakeNNTP) serveStat(w *bufio.Writer, id string) {
 	}
 	f.statCount.Add(1)
 	f.mu.Lock()
+	if f.lieStat[id] {
+		f.mu.Unlock()
+		fmt.Fprint(w, "430 no such article\r\n")
+		return
+	}
 	a, ok := f.articles[id]
 	f.mu.Unlock()
 	if !ok {
@@ -488,7 +507,8 @@ func (f *fakeNNTP) serveBody(w *bufio.Writer, id string) {
 			return
 		}
 	}
-	if f.gate != nil {
+	skipGate := f.ungatedBodies.Add(-1) >= 0
+	if !skipGate && f.gate != nil {
 		select {
 		case f.blocked <- struct{}{}:
 		default:
@@ -556,7 +576,7 @@ type testPayload struct {
 
 func makePayload(t *testing.T, segCount, partSize int) testPayload {
 	t.Helper()
-	p := testPayload{filename: "release.bin"}
+	p := testPayload{filename: "release.mkv"}
 	p.full = make([]byte, segCount*partSize)
 	for i := range p.full {
 		p.full[i] = byte(i % 251)
@@ -571,7 +591,7 @@ func makePayload(t *testing.T, segCount, partSize int) testPayload {
 	}
 	p.nzbXML = `<?xml version="1.0" encoding="UTF-8"?>
 <nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
-  <file poster="p@example.com" date="0" subject="release.bin (1/1)">
+  <file poster="p@example.com" date="0" subject="release.mkv (1/1)">
     <groups><group>alt.binaries.test</group></groups>
     <segments>
 ` + segs.String() + `    </segments>
@@ -770,8 +790,8 @@ func TestFetchSegmentAny_FallsBackAcrossPools(t *testing.T) {
 		t.Errorf("a successful download must carry no Err, got %v", d.Err)
 	}
 	// Segment 2 must have been tried on A (430) before falling through to B.
-	if srvA.bodyCount.Load() != 3 {
-		t.Errorf("server A BODY count: got %d, want 3 (segments 1, 2, 3 all attempted)", srvA.bodyCount.Load())
+	if srvA.bodyCount.Load() != 4 {
+		t.Errorf("server A BODY count: got %d, want 4 (video peek + segments 1, 2, 3 all attempted)", srvA.bodyCount.Load())
 	}
 	if srvB.bodyCount.Load() != 1 {
 		t.Errorf("server B BODY count: got %d, want 1 (only the segment A lacks)", srvB.bodyCount.Load())
@@ -1083,6 +1103,7 @@ func TestSetSubscriptions_SwapDuringActiveDownload(t *testing.T) {
 	p := makePayload(t, 5, 2048)
 	srvA := newFakeNNTP(t)
 	srvA.gateOn()
+	srvA.ungatedBodies.Store(1) // precheck video peek must not deadlock AddNZB
 	srvA.serveAll(p)
 	srvB := newFakeNNTP(t)
 	srvB.serveAll(p)
@@ -1129,11 +1150,11 @@ func TestSetSubscriptions_SwapDuringActiveDownload(t *testing.T) {
 	// Prove the swap actually landed mid-download rather than after it: server A
 	// served only the one gated segment, and every remaining segment came from
 	// the server that replaced it.
-	if got := srvA.bodyCount.Load(); got != 1 {
-		t.Errorf("server A BODY count: got %d, want 1 (only the gated in-flight segment)", got)
+	if got := srvA.bodyCount.Load(); got != 2 {
+		t.Errorf("server A BODY count: got %d, want 2 (video peek + gated in-flight segment)", got)
 	}
 	if got := srvB.bodyCount.Load(); got != int64(len(p.msgIDs)-1) {
-		t.Errorf("server B BODY count: got %d, want %d (every segment after the swap)", got, len(p.msgIDs)-1)
+		t.Errorf("server B BODY count: got %d, want %d (every remaining download segment after the swap)", got, len(p.msgIDs)-1)
 	}
 
 	// The retired pool must not have parked its returned connection in an

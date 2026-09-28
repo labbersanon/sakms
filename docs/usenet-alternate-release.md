@@ -23,6 +23,8 @@ the failed release excluded:
 | PAR2 unrepairable | `usenet.ErrContentUnusable` (wrapped in `manager.go`) |
 | Archive unpack failed | `usenet.ErrContentUnusable` (wrapped in `manager.go`) |
 | No video file found after import | `library.ErrNoVideoFile` (wrapped in `library.go`/`library_series.go`) |
+| Unpack/flat staging produced no video | `usenet.ErrNoVideoUnpacked` (wraps `ErrContentUnusable`; engine fail-closed before Complete) |
+| Precheck first-segment peek found no video | `usenet.ErrNoVideoUnpacked` from `precheckNZB` (same sentinel; no BODY download) |
 
 Not classified as content failures:
 

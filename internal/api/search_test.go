@@ -31,9 +31,22 @@ func TestDispatchArticlesUnavailableWrapPreservesSentinel(t *testing.T) {
 	if !errors.Is(wrapped, usenet.ErrArticlesUnavailable) {
 		t.Fatalf("wrapped err must match ErrArticlesUnavailable for the alternate loop")
 	}
+	if !usenet.IsPrecheckReject(wrapped) {
+		t.Fatal("wrapped 430 must be IsPrecheckReject")
+	}
 	broken := errors.New("this release's articles aren't on your subscriptions — pick another")
 	if errors.Is(broken, usenet.ErrArticlesUnavailable) {
 		t.Fatal("plain errors.New must not match — that was the production bug")
+	}
+}
+
+func TestWrapUsenetPrecheckErr_NoVideoKeepsSentinel(t *testing.T) {
+	_, _, status, err := wrapUsenetPrecheckErr(usenet.ErrNoVideoUnpacked)
+	if status != http.StatusConflict {
+		t.Fatalf("status=%d want 409", status)
+	}
+	if !errors.Is(err, usenet.ErrNoVideoUnpacked) || !usenet.IsPrecheckReject(err) {
+		t.Fatalf("err=%v must wrap ErrNoVideoUnpacked", err)
 	}
 }
 

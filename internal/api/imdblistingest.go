@@ -166,7 +166,6 @@ func ingestIMDbLists(ctx context.Context, deps AutoGrabDeps, build sessionBuilde
 		Origin:    grabOriginIMDbList,
 		Trigger:   TriggerIMDbList,
 		LogPrefix: imdbListIngestLog,
-		OffReason: imdbListIngestOffReason,
 	}, budget)
 }
 

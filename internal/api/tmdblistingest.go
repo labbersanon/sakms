@@ -106,7 +106,6 @@ func ingestTMDBLists(ctx context.Context, deps AutoGrabDeps, build sessionBuilde
 		Origin:    grabOriginTMDBList,
 		Trigger:   TriggerTMDBList,
 		LogPrefix: tmdbListIngestLog,
-		OffReason: tmdbListIngestOffReason,
 	}, budget)
 }
 

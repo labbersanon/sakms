@@ -60,7 +60,6 @@ type listIngestKind struct {
 	Origin    string
 	Trigger   AutoGrabTrigger
 	LogPrefix string
-	OffReason string
 }
 
 // monitorListIngests is the SEVENTH pass of runUsenetRetryCycle. Trakt,

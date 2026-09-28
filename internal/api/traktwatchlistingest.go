@@ -129,7 +129,6 @@ func ingestTraktWatchlist(ctx context.Context, deps AutoGrabDeps, build sessionB
 		Origin:    grabOriginTraktWatchlist,
 		Trigger:   TriggerTraktWatchlist,
 		LogPrefix: "trakt watchlist ingest",
-		OffReason: traktWatchlistIngestOffReason,
 	}, budget)
 }
 

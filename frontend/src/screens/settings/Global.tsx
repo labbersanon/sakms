@@ -997,10 +997,6 @@ const GrabPreferredLanguagesSection: Component = () => {
   );
 };
 
-// Claude 2026-09-28: Connections tab renders APISection directly.
-// Reason: ConnectionsSection was a one-line alias; SectionLock stays here
-//   because a PIN lock is mode-independent (not Advanced's per-mode selector).
-// Review if: a connection type moves back onto Global.
 export const GlobalSection: Component = () => (
   <>
     <AdultModeSection />

@@ -51,9 +51,6 @@ import {
 //   the reworked screens.
 // Troubleshooting: extra Save buttons on AI → a leftover SectionSave wrapper.
 // Review if: AI form and connection rows need a single commit again.
-// Claude 2026-09-28: export the card directly.
-// Reason: AISection was a one-line alias; Settings → AI already imported it.
-// Review if: the AI tab needs a wrapper that composes more than this card.
 export const AIProviderModelCard: Component = () => {
   const [fallbackEnabled, { refetch: refetchFallback }] = createResource(
     fetchAIFallbackEnabled,

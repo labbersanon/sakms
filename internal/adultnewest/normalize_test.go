@@ -2,11 +2,7 @@ package adultnewest
 
 import "testing"
 
-// TestNormalizeAdultQuery is the regression test for a real "Adult downloads
-// never resolve" report: Prowlarr returned 0 raw releases for nearly every
-// scene tried, because the raw studio+title query (colons, commas,
-// asterisks, apostrophes and all) rarely appears verbatim in how trackers
-// actually name Adult releases.
+// Regression: punctuation-heavy Adult titles must normalize before Prowlarr search.
 func TestNormalizeAdultQuery(t *testing.T) {
 	cases := []struct {
 		raw  string

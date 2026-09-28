@@ -162,14 +162,6 @@ func LoadInterval(ctx context.Context, settingsStore *settings.Store) time.Durat
 
 // Run drives the background scan loop until ctx is cancelled — mirrors
 // recheck.Run's shape (ticker, live-retune via settings, context-cancellation
-// shutdown), with one deliberate difference: interval <= 0 stops/skips the
-// loop the same way it does for recheck, but here that only happens when an
-// operator has explicitly saved "0" via Settings — a fresh install's
-// interval defaults to defaultIntervalHours, not off (see
-// IntervalSettingKey's doc comment), so this job runs out of the box unlike
-// every other background job in this codebase.
-// Run drives the background scan loop until ctx is cancelled — mirrors
-// recheck.Run's shape (ticker, live-retune via settings, context-cancellation
 // shutdown). Three independent passes, each with its own ticker:
 //  1. Browse: newest-releases browse (browse/identify pipeline)
 //  2. Feed: RSS feed ingestion
@@ -177,7 +169,8 @@ func LoadInterval(ctx context.Context, settingsStore *settings.Store) time.Durat
 //
 // monitoredStore is nil when the monitor pass is not deployed — the ticker is
 // skipped in that case. Passing nil is the correct call for any instance that
-// hasn't been migrated to 0017 yet.
+// hasn't been migrated to 0017 yet. Browse uses defaultIntervalHours when the
+// interval key is unset (see IntervalSettingKey); explicit 0 turns that pass off.
 func Run(ctx context.Context, interval time.Duration, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, releaseStore *ReleaseStore, entityStore parseentity.EntityStore, rssFeedsStore *rssfeeds.Store, feedHealth *FeedHealth, monitoredStore *MonitoredStore) {
 	feedInterval := LoadFeedInterval(ctx, settingsStore)
 	monitorInterval := LoadMonitorInterval(ctx, settingsStore)
@@ -600,11 +593,6 @@ func matchRelease(ctx context.Context, id *identify.Identifier, prowlarrClient *
 		}
 		if confirmAvailable(ctx, prowlarrClient, r.Title) {
 			out = append(out, toMatchedRelease(rowType, *detail.Scene, r.Title))
-			// Studio/Performer side-entities are appended ONLY here, inside the
-			// branch that actually persisted a scene/movie row — never
-			// unconditionally after the switch (US-1 orphan prevention). A
-			// confirmable studio/performer name whose triggering scene never
-			// became a row must not leave an orphaned card behind.
 			out = append(out, identifyStudioPerformers(ctx, id, *detail)...)
 		}
 	default:
@@ -617,8 +605,6 @@ func matchRelease(ctx context.Context, id *identify.Identifier, prowlarrClient *
 		if movie, err := id.Boxes.SearchTPDBMovies(ctx, r.Title); err == nil && movie != nil {
 			if confirmAvailable(ctx, prowlarrClient, r.Title) {
 				out = append(out, toMatchedRelease(RowMovie, *movie, r.Title))
-				// Same US-1 gate as the scene branch: only append the
-				// studio/performer rows now that a movie row was persisted.
 				out = append(out, identifyStudioPerformers(ctx, id, *detail)...)
 			}
 		}
@@ -697,12 +683,6 @@ func identifyStudioPerformers(ctx context.Context, id *identify.Identifier, deta
 var adultQueryApostrophe = regexp.MustCompile(`['’]`)
 var adultQueryNonAlnum = regexp.MustCompile(`[^a-zA-Z0-9\s]+`)
 
-// NormalizeAdultQuery strips punctuation from a studio+title string before
-// it becomes a Prowlarr free-text query. Apostrophes are dropped entirely
-// (so "Don't" -> "Dont", matching scene-release naming) rather than becoming
-// a space. Every other run of characters that isn't a letter, digit, or
-// whitespace collapses to a single space. Collapses repeated/leading/trailing
-// whitespace too (strings.Fields + Join).
 func NormalizeAdultQuery(s string) string {
 	s = adultQueryApostrophe.ReplaceAllString(s, "")
 	s = adultQueryNonAlnum.ReplaceAllString(s, " ")
@@ -723,12 +703,6 @@ func NormalizeAdultQuery(s string) string {
 // should both mean "don't cache this" — see matchRelease's doc comment for
 // why this check exists at all.
 func confirmAvailable(ctx context.Context, prowlarrClient *prowlarr.Client, releaseTitle string) bool {
-	// Clean the raw scene-release title the same way autoGrabSearch does before
-	// querying Prowlarr, so this really does run the SAME search a later Grab
-	// click would (see identify.CleanReleaseTitleForSearch): a verbatim noisy
-	// release title matches a different, wrong set of releases than its cleaned
-	// form, so confirming availability on the noisy query would confirm a
-	// release the actual grab path can no longer find.
 	query := NormalizeAdultQuery(identify.CleanReleaseTitleForSearch(strings.TrimSpace(releaseTitle)))
 	releases, err := prowlarrClient.Search(ctx, query, []int{adultCategory})
 	if err != nil {
@@ -943,17 +917,12 @@ func processFeedItem(ctx context.Context, id *identify.Identifier, releaseStore 
 			rowType = RowMovie
 		}
 		out = append(out, toFeedMatchedRelease(rowType, *detail.Scene, it.Title, int64(f.ID), downloadURL, string(f.Protocol), key, it.EnclosureLength, nowUnix))
-		// US-1 orphan prevention: studio/performer side-entities are appended
-		// ONLY inside the branch that actually persisted a scene/movie row (the
-		// feed pass has no confirmAvailable gate, so "a scene/movie was found" is
-		// the whole condition here), never unconditionally after the switch.
 		out = append(out, identifyStudioPerformers(ctx, id, *detail)...)
 	default:
 		// No scene match — try TPDB's movie catalog directly, same lighter-weight
 		// fallback the browse pass uses.
 		if movie, err := id.Boxes.SearchTPDBMovies(ctx, it.Title); err == nil && movie != nil {
 			out = append(out, toFeedMatchedRelease(RowMovie, *movie, it.Title, int64(f.ID), downloadURL, string(f.Protocol), key, it.EnclosureLength, nowUnix))
-			// Same US-1 gate as the scene branch above.
 			out = append(out, identifyStudioPerformers(ctx, id, *detail)...)
 		}
 	}

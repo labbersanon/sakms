@@ -348,9 +348,6 @@ export const Requests: Component = () => {
               </SelectField>
             </div>
             <div class="flex flex-wrap gap-1">
-              {/* Claude 2026-09-28: FilterChip is the shared boolean toggle (ui.tsx).
-                  Reason: this was the original inline chip FilterChip was lifted from.
-                  Review if: missing-episodes becomes a status option instead of a toggle. */}
               <FilterChip
                 label="Has Missing Episodes"
                 active={missingOnly}

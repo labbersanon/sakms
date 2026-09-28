@@ -9703,3 +9703,21 @@ status stays active.
 | `frontend/src/api/purge.ts` / `dedup.ts` | Dropped unused `applyBatch`; screens already use streaming |
 | `frontend/src/api/pruningRules.ts` | Dropped unused tier-floor constants |
 
+## 2026-09-28 — Drop unrouted Library shells and grab-shaped LibraryCard
+
+**Problem:** `/library*` and `/discover/row/library*` already redirect to Discover `?view=library`, but `LibraryMainstream` / `LibraryAdult` / `LibraryCard` / `LibraryRowView` still shipped and tests mounted the dead shells.
+**Fix:** Delete those unrouted components. `LibraryView` stays as Discover's owned grid. Tests mount `LibraryView` (or Discover owned URLs for tab shells). Discover keeps the title search box; the hidden per-grid search input is gone.
+**Outcome:** Same owned-catalog behavior on Discover; dead route shells and the unused grab-shaped owned card are gone.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/Library.tsx` | Dropped `LibraryMainstream` / `LibraryAdult` and hidden title search |
+| `frontend/src/screens/Library.test.tsx` | Mount `LibraryView` / Discover `?view=library` |
+| `frontend/src/screens/discover/Mainstream.tsx` | Dropped unused `LibraryCard` |
+| `frontend/src/screens/discover/RowView.tsx` | Dropped unused `LibraryRowView` |
+| `frontend/src/screens/Discover.tsx` | Stopped re-exporting `LibraryRowView` |
+| `frontend/src/screens/discover/RowView.test.tsx` | Redirect coverage for leftover view-all library URLs |
+
+

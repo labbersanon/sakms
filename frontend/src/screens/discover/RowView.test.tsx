@@ -5,7 +5,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@solidjs/testing-library";
 import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
-import { AdultNewestRowView, LibraryRowView, SliderRowView, TmdbRowView } from "./RowView";
+import { AdultNewestRowView, SliderRowView, TmdbRowView } from "./RowView";
+import { DiscoverLibraryRowRedirect } from "../LibraryRedirect";
 import {
   AdultModeContext,
   SectionLockContext,
@@ -251,28 +252,22 @@ describe("SliderRowView", () => {
   });
 });
 
-describe("LibraryRowView", () => {
-  it("loads tracked movies into the poster grid", async () => {
-    stubFetch((url) => {
-      if (url.includes("/api/modes/movies/tracked"))
-        return jsonResponse([
-          { id: 1, title: "Owned Movie", tmdbId: 50, year: 2020 },
-        ]);
-      if (url.includes("/api/modes/movies/poster"))
-        return jsonResponse({ posterPath: "/lib.jpg" });
-      throw new Error("unexpected fetch: " + url);
-    });
+describe("DiscoverLibraryRowRedirect", () => {
+  it("sends leftover view-all library URLs to Discover owned view", async () => {
     const history = createMemoryHistory();
     history.set({ value: "/discover/row/library/movies", replace: true });
     render(() => (
       <MemoryRouter history={history}>
-        <Route path="/discover/row/library/:mode" component={LibraryRowView} />
+        <Route
+          path="/discover/row/library/:mode"
+          component={DiscoverLibraryRowRedirect}
+        />
+        <Route
+          path="/discover/mainstream"
+          component={() => <div>owned-view</div>}
+        />
       </MemoryRouter>
     ));
-    expect(await screen.findByText("Owned Movie")).toBeInTheDocument();
-    expect(screen.getByText("In your library")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Owned Movie" }).className,
-    ).toContain("w-full");
+    expect(await screen.findByText("owned-view")).toBeInTheDocument();
   });
 });

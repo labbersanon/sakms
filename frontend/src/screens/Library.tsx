@@ -1,30 +1,15 @@
-// Library — browse the tracked Movies/Series/Adult catalog. This is the one poster-grid
-// browser in the app: it took over the grid half that used to live in Tag.tsx
-// (PosterCard, DetailPanel, the client-side title search and the selection/detail
-// wiring all moved here verbatim). Tag CRUD now lives here too — in the detail
-// panel — not on a separate sidebar tab.
+// LibraryView is Discover's owned-catalog grid (?view=library). Card click opens
+// DetailPopup (allowGrab=false) with DetailPanel (tags/files/seasons) in the
+// same Modal. Tag mutations still go through addTag/removeTag + act().
 //
-// Layout, top to bottom: a Movies/Series/Adult tab bar over a filter row (title search
-// | genre | quality tier | sort) and a poster grid.
-// Claude 2026-08-14: card click opens DetailPopup (allowGrab=false) with
-// DetailPanel (tags/files/seasons) as children of the same Modal. Tag
-// mutations still go through addTag/removeTag + act().
-// Reason: Library enrichment matches Discover minus grab.
-// Review if: Library grows a grab path or a side panel returns.
-// selecting a card slides a
-// DetailPanel in at w-72 showing genres/cast/tags — plus, for Series only, the
-// per-season monitoring panel (SeasonsPanel). Tag mutations in the panel go
-// through addTag/removeTag + act().
+// Claude 2026-09-28: dedicated /library* shells are gone.
+// Reason: AppShell redirects those bookmarks to Discover; this file is the grid.
+// Troubleshooting: a leftover /library href must still hit LibraryRedirect.
+// Review if: owned browse leaves Discover for a third nav root.
 //
-// The mode and tier are ALSO seedable from the URL (/library?mode=…&tier=…),
-// which is what the Dashboard's storage-allocation cells link into. That is a
-// one-shot seed at mount, not a two-way binding — see the Library shell below.
-//
-// Filter and sort are CLIENT-SIDE by design (spec Non-Goal 4), over the already
-// fetched GET /api/modes/{mode}/tracked payload — matching the precedent Tag's
-// title search already set. The backend gains no query parameters. Added-date
-// sort leans on createdAt being a fixed-width ISO-8601 UTC string, so a plain
-// lexicographic compare is a correct chronological one (no Date parsing).
+// Filter and sort are CLIENT-SIDE (spec Non-Goal 4) over GET /api/modes/{mode}/tracked.
+// Discover owns the title search box. Added-date sort uses createdAt as
+// fixed-width ISO-8601 UTC, so lexicographic compare is chronological.
 
 import {
   type Component,
@@ -37,7 +22,6 @@ import {
   onMount,
   Show,
 } from "solid-js";
-import { useSearchParams } from "@solidjs/router";
 import type { AdultDiscoverItem, DiscoverItem, Mode } from "../api/discover";
 import { fetchTitleCard, fetchTitlePoster, proxyImage, cardPosterSrc } from "../api/discover";
 import { SeasonsPanel } from "../components/SeasonsPanel";
@@ -53,15 +37,9 @@ import { setItemRating } from "../api/rating";
 import { fetchLibraryScanStatus } from "../api/settings";
 import {
   Button,
-  // Card, // Claude 2026-08-13: only the commented-out AdultMoviesPlaceholder used this.
   ErrorText,
   FilterChip,
-  // ModeTabs, // Claude 2026-08-13: only the commented-out legacy Library shell used this.
   Muted,
-  ScreenTabs,
-  SectionLockOverlay,
-  useAdultEnabled,
-  useSectionLock,
   inputClass,
   labelClass,
   FILTER_BAR_FIELDS_CLASS,
@@ -77,13 +55,6 @@ import {
   MEDIA_POSTER_GRID_CLASS,
 } from "../components/media";
 import { StarRating } from "../components/StarRating";
-import { ADULT_CONTENT_SECTION, sectionLabel } from "../api/sectionLock";
-import {
-  ADULT_MEDIA_TABS,
-  MAINSTREAM_MEDIA_TABS,
-  type AdultMediaTab,
-  type MainstreamMediaTab,
-} from "./mediaNav";
 import { Modal } from "./discover/shared";
 import { DetailPopup, type DetailTarget } from "./discover/DetailPopup";
 import { OwnedRematch } from "./OwnedRematch";
@@ -119,8 +90,8 @@ const selectClass =
 // preload="metadata" <video> stays blank until playback begins.
 const firstFrameSrc = (videoUrl: string) => `${videoUrl}#t=0.1`;
 
-// trackedToDiscoverItem is the same synthetic DiscoverItem Discover's
-// LibraryCard builds so DetailPopup can resolve trailer/title-detail by tmdbId.
+// trackedToDiscoverItem is the synthetic DiscoverItem DetailPopup needs so it
+// can resolve trailer/title-detail by tmdbId.
 // overview/voteAverage stay empty on purpose: GET /tracked still does not carry
 // them, and this mapper must not fetch TMDB per card. Hover prose comes from
 // PosterCard's own fetchTitleCard resource, the header synopsis from
@@ -708,10 +679,6 @@ export const LibraryView: Component<{
   initialTier?: string;
   aspect?: "vertical" | "horizontal";
   posterAspect?: string;
-  // Claude 2026-09-24: Discover owns the page search box (owned+catalog).
-  // Reason: one box searches both; this grid keeps genre/tier/sort only.
-  // Review if: owned browse needs its own title filter again.
-  hideTitleSearch?: boolean;
 }> = (props) => {
   const [vocab, { refetch: refetchVocab }] = createResource(
     () => ({ mode: props.mode, aspect: props.aspect ?? "" }),
@@ -738,14 +705,16 @@ export const LibraryView: Component<{
     season: number;
     episode: number;
   } | null>(null);
-  // search filters the grid by title (client-side).
-  const [search, setSearch] = createSignal("");
   // genre filters the grid to one genre; "" means all genres.
   const [genre, setGenre] = createSignal("");
   // tier filters the grid to one quality tier; "" means all tiers. Seeded from
-  // the shell's ?tier= deep link (a Dashboard storage cell), then plain local
-  // state like every other filter here.
-  const [tier, setTier] = createSignal(props.initialTier ?? "");
+  // Discover's ?tier= (Dashboard storage cell). An unrecognized value folds to
+  // "" so the <select> cannot display All tiers while the grid filters to nothing.
+  const [tier, setTier] = createSignal(
+    props.initialTier && TIER_VALUES.includes(props.initialTier)
+      ? props.initialTier
+      : "",
+  );
   // sort orders the grid; "title" keeps the server's order.
   const [sort, setSort] = createSignal<SortKey>("title");
   // Claude 2026-09-15: monitoredOnly restricts the grid to items where monitored===true.
@@ -768,11 +737,10 @@ export const LibraryView: Component<{
   };
 
   // Library has no scan button — omit scanFn. The mode-change reset clears the
-  // selection, the search, the detail draft, the genre (a genre that exists
-  // for Movies may not exist for Series, which would silently empty the grid)
-  // AND the tier — including one that arrived as a ?tier= deep link, which is
-  // scoped to the mode it was linked for. Sort is mode-independent, so it
-  // survives a tab switch.
+  // selection, the detail draft, the genre (a genre that exists for Movies may
+  // not exist for Series, which would silently empty the grid) AND the tier —
+  // including one that arrived as a ?tier= deep link, which is scoped to the
+  // mode it was linked for. Sort is mode-independent, so it survives a tab switch.
   const { actionError, act } = useWorkflowActions(
     () => props.mode,
     {
@@ -782,7 +750,6 @@ export const LibraryView: Component<{
         setRematchItem(null);
         setRematchPick(null);
         setReplaceSlot(null);
-        setSearch("");
         setDetailDraft("");
         setGenre("");
         setTier("");
@@ -816,10 +783,9 @@ export const LibraryView: Component<{
     return Array.from(seen).sort((a, b) => a.localeCompare(b));
   };
 
-  // visibleItems is the whole client-side pipeline: title search → genre filter
-  // → tier filter → sort. Items with no genres survive whenever no genre is
-  // selected (the early return) — genre enrichment postdates some tracked rows,
-  // and those must not vanish from an unfiltered grid.
+  // visibleItems is the client-side pipeline: genre → tier → monitored → sort.
+  // Items with no genres survive whenever no genre is selected — enrichment
+  // postdates some tracked rows, and those must not vanish from an unfiltered grid.
   //
   // The tier predicate is plain string matching with no "unknown" special case:
   // the backend already folds an uncaptured quality_tier ('') to a literal
@@ -828,11 +794,9 @@ export const LibraryView: Component<{
   // DISTINCT set of its episodes' tiers, so includes() is also what makes it
   // match if ANY episode qualifies.
   const visibleItems = () => {
-    const q = search().trim().toLowerCase();
     const g = genre();
     const t = tier();
     let items = tracked() ?? [];
-    if (q) items = items.filter((item) => item.title.toLowerCase().includes(q));
     if (g) items = items.filter((item) => (item.genres ?? []).includes(g));
     if (t) items = items.filter((item) => (item.qualityTiers ?? []).includes(t));
     // monitored filter: compare explicitly with === true (field is omitempty, absent means false).
@@ -1001,25 +965,6 @@ export const LibraryView: Component<{
               Review if: FilterSortBar's frame class changes. */}
           <div class="mb-4 rounded-xl border border-border bg-surface p-4">
           <div class={FILTER_BAR_FIELDS_CLASS}>
-            <Show when={!props.hideTitleSearch}>
-            <div class="w-full min-w-0 sm:min-w-[12rem] sm:flex-1">
-              <label class={labelClass} for="library-search">
-                Search
-              </label>
-              <input
-                id="library-search"
-                type="text"
-                class={`${inputClass} mt-1`}
-                placeholder="Search titles…"
-                value={search()}
-                onInput={(e) => {
-                  setSearch(e.currentTarget.value);
-                  setSelectedId(null);
-                  setDetailTarget(null);
-                }}
-              />
-            </div>
-            </Show>
             <div class="flex w-full flex-col sm:w-auto">
               <label class={labelClass} for="library-genre">
                 Genre
@@ -1243,109 +1188,3 @@ export const LibraryView: Component<{
     </div>
   );
 };
-
-// LibraryMainstream is the Mainstream child under the Library sidebar group.
-// It owns only the Series/Movies top tabs; the Mainstream-vs-Adult split now
-// belongs to AppShell navigation.
-export const LibraryMainstream: Component = () => {
-  const [params] = useSearchParams();
-  const initialTab: MainstreamMediaTab =
-    params.tab === "series" || params.mode === "series" ? "series" : "movies";
-  // An unrecognized tier folds to "" so the <select> can never display a value
-  // it isn't actually filtering by.
-  const initialTier =
-    typeof params.tier === "string" && TIER_VALUES.includes(params.tier)
-      ? params.tier
-      : "";
-  const [tab, setTab] = createSignal<MainstreamMediaTab>(initialTab);
-  return (
-    <div>
-      <ScreenTabs
-        tabs={MAINSTREAM_MEDIA_TABS}
-        current={tab}
-        onSelect={(id) => setTab(id as MainstreamMediaTab)}
-      />
-      <LibraryView mode={tab()} initialTier={initialTier} />
-    </div>
-  );
-};
-
-export const LibraryAdult: Component = () => {
-  const [params] = useSearchParams();
-  const adultEnabled = useAdultEnabled();
-  const lock = useSectionLock();
-  const initialTab: AdultMediaTab = params.tab === "movies" ? "movies" : "scenes";
-  const [tab, setTab] = createSignal<AdultMediaTab>(initialTab);
-
-  return (
-    <Show
-      when={adultEnabled()}
-      fallback={<Muted class="mt-4">Adult mode is disabled in Settings.</Muted>}
-    >
-      <ScreenTabs
-        tabs={ADULT_MEDIA_TABS}
-        current={tab}
-        onSelect={(id) => setTab(id as AdultMediaTab)}
-      />
-      <Show
-        when={!lock.isLocked(ADULT_CONTENT_SECTION)}
-        fallback={<SectionLockOverlay label={sectionLabel(ADULT_CONTENT_SECTION)} />}
-      >
-        {/* Claude 2026-08-13: keyed remount per Adult tab.
-            Reason: both tabs are mode=adult so useWorkflowActions will not
-            reset search/genre/tier/selectedId; a Show swap without keyed
-            leaked state and a stale selectedId closed the modal.
-            aspect omitted is never passed here — Scenes always sends
-            horizontal, Movies vertical — Mainstream still omits it.
-            Review if: useWorkflowActions grows a composite reset key. */}
-        <Show when={tab()} keyed>
-          {(t) => (
-            <LibraryView
-              mode="adult"
-              aspect={t === "movies" ? "vertical" : "horizontal"}
-              posterAspect={t === "movies" ? "2 / 3" : "16 / 9"}
-            />
-          )}
-        </Show>
-      </Show>
-    </Show>
-  );
-};
-
-// Claude 2026-08-13: AdultMoviesPlaceholder retired — LibraryAdult now mounts
-// LibraryView for both Scenes and Movies. Left commented so the empty-state
-// copy is recoverable if the Movies tab is reverted to a scaffold.
-// Reason: Slice 3 replaces the placeholder with ?aspect=vertical.
-// Review if: production still has zero vertical rows and the empty copy
-// ("No vertical-classified titles yet.") needs to change.
-// const AdultMoviesPlaceholder: Component = () => (
-//   <Card title="Adult Movies">
-//     <Muted>
-//       Adult Movies will use TPDB/catalog adult movie entities. The navigation
-//       surface is in place; the async catalog enrichment/data surface will land in
-//       a follow-up slice.
-//     </Muted>
-//   </Card>
-// );
-
-// Claude 2026-08-13: unrouted legacy Library shell. Tests mount
-// LibraryMainstream / LibraryAdult. AppShell never imported this.
-// Reason: Slice 1.5 — ModeTabs Movies/Series/Adult is not a production
-// route; keeping it exported let 20 tests cover the wrong shell.
-// Review if: a fallback deep-link to /library?mode= is restored.
-// export const Library: Component = () => {
-//   const [params] = useSearchParams();
-//   const initialMode: Mode =
-//     params.mode === "series" || params.mode === "adult" ? params.mode : "movies";
-//   const initialTier =
-//     typeof params.tier === "string" && TIER_VALUES.includes(params.tier)
-//       ? params.tier
-//       : "";
-//   const [mode, setMode] = createSignal<Mode>(initialMode);
-//   return (
-//     <div>
-//       <ModeTabs current={mode} onSelect={setMode} />
-//       <LibraryView mode={mode()} initialTier={initialTier} />
-//     </div>
-//   );
-// };

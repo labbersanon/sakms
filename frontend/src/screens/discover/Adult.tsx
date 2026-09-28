@@ -1004,7 +1004,6 @@ export const AdultDiscover: Component<{
       <Show when={ownedOnly() && !searching()}>
         <LibraryView
           mode="adult"
-          hideTitleSearch
           initialTier={props.initialTier}
           aspect={kind() === "movie" ? "vertical" : "horizontal"}
           posterAspect={kind() === "movie" ? "2 / 3" : "16 / 9"}

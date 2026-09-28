@@ -9,7 +9,7 @@
 // History view, which tracks the grab records SAK created. A completed download
 // here auto-imports server-side (the downloader's onComplete callback). Complete
 // rows dismiss after a short glance window (~30s): Usenet on success, torrents
-// when seeding is off or after the seed window ends. Error rows stay until Cancel.
+// when seeding is off or after the seed window ends. Error rows stay until Dismiss.
 
 import {
   type Component,
@@ -405,13 +405,17 @@ const DownloadRow: Component<{
     return v.kind === "hidden" ? "" : formatElapsed(v.elapsedMs);
   };
 
-  // Cancelling now also deletes the download's files server-side (the backend
-  // DELETE changed), so the confirm makes that explicit before firing.
+  // Claude 2026-09-27: done-row action is Dismiss, not Remove.
+  // Reason: Remove was read as "drop this title from Requests"; DELETE only
+  //   forgets the engine row and deletes staging files. The grab stays.
+  // Troubleshooting: operator dismissed a failed NZB and expected Requests gone.
+  // Review if: Cancel/Dismiss grows an "also exclude from Requests" option.
   const cancelWithConfirm = (): void => {
     const name = props.dl.filename || props.dl.gid;
-    const verb = isDone() ? "Remove" : "Cancel";
-    if (!confirm(`${verb} “${name}” and delete its downloaded files from disk?`))
-      return;
+    const message = isDone()
+      ? `Dismiss “${name}” from Downloads and delete its files? The request stays in the queue.`
+      : `Cancel “${name}” and delete its downloaded files from disk?`;
+    if (!confirm(message)) return;
     props.onAction(() => cancelDownload(props.dl.gid));
   };
 
@@ -564,7 +568,7 @@ const DownloadRow: Component<{
               cancelWithConfirm();
             }}
           >
-            {isDone() ? "Remove" : "Cancel"}
+            {isDone() ? "Dismiss" : "Cancel"}
           </Button>
         </div>
       </div>

@@ -254,6 +254,35 @@ describe("Downloads — single cancel (confirm reflects file deletion)", () => {
 
     expect(calls.some((c) => c.method === "DELETE")).toBe(false);
   });
+
+  it("labels a finished row Dismiss and confirms it only leaves Downloads", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const calls = stubFetch((url) => {
+      if (url.includes("/api/downloads/pause-state"))
+        return jsonResponse({ paused: false });
+      if (url.includes("/api/downloads/g-err")) return noContent();
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Downloads />);
+    MockEventSource.last!.emit([
+      dl({ gid: "g-err", filename: "Failed.mkv", status: "error" }),
+    ]);
+
+    fireEvent.click(await screen.findByText("Dismiss"));
+    expect(screen.queryByText("Remove")).toBeNull();
+    expect(confirmSpy).toHaveBeenCalledWith(
+      "Dismiss “Failed.mkv” from Downloads and delete its files? The request stays in the queue.",
+    );
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.method === "DELETE" && c.url.includes("/api/downloads/g-err"),
+        ),
+      ).toBe(true),
+    );
+  });
 });
 
 describe("Downloads — bulk cancel (cancel-batch)", () => {

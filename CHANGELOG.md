@@ -9602,3 +9602,16 @@ status stays active.
 | `internal/api/search_catalog.go` | Same fields on Adult inline releases |
 | `frontend/src/screens/discover/shared.tsx` | Filter pills on `ReleasePickDialog` |
 
+## 2026-09-27 — Downloads finished-row action is Dismiss, not Remove
+
+**Problem:** The done/error Downloads card said Remove, which read as dropping the title from Requests. DELETE only forgets the engine row and deletes staging files; the grab stays.
+**Fix:** Finished rows now say Dismiss. The confirm says the item leaves Downloads, files are deleted, and the request stays in the queue. In-progress Cancel is unchanged.
+**Outcome:** Dismiss matches the action: list + files only.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/Downloads.tsx` | Done-row label Dismiss; confirm copy |
+| `frontend/src/screens/Downloads.test.tsx` | Error-row Dismiss confirm |
+

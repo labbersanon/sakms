@@ -9672,3 +9672,73 @@ status stays active.
 | `docs/usenet-precheck.md` | Video peek step |
 | `docs/usenet-alternate-release.md` | Precheck no-video trigger |
 
+## 2026-09-28 — Dead-code cleanup (unused helpers and client wrappers)
+
+**Problem:** Staticcheck U1000 and the frontend import graph still carried helpers whose last callers were removed in earlier workflows (node folder picker, one-shot download list, unused applyBatch JSON wrappers, unused identity/resolution helpers).
+**Fix:** Delete proven-unreferenced Go symbols and frontend wrappers. Production routes, batch apply streaming, and library/Discover screens that tests still mount were left in place.
+**Outcome:** Same behavior; less unused surface. LibraryMainstream / LibraryCard / LibraryRowView kept because their tests still lock those UIs.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/db/opentest.go` | Deleted unused `openTestDB` |
+| `internal/api/autograb_shared.go` | Dropped unused `defaultUsenetRetryIntervalSeconds` |
+| `internal/api/discover_availability.go` | Dropped unused `discoverAvailabilityTiers` |
+| `internal/api/titlequality.go` | Dropped unused `resolveMaxResolution` |
+| `internal/dedup/dedup_phash_primary.go` | Dropped unused identity helpers |
+| `internal/usenet/details.go` | Dropped unused `setFailingSegment` |
+| `internal/webhooks/webhooks.go` | Dropped unused `toSummary` |
+| `internal/usenetsearch/group.go` | Dropped unused `fileKey` type |
+| `internal/discoverrefresh/consts.go` | Dropped unused `stripCachedPages` |
+| `internal/proposals/applygate.go` | Dropped unused test-only `Gate.reset` |
+| `internal/api/calendar_prerelease_test.go` | Dropped unused `preReleaseMuxWith` |
+| `internal/discoverrefresh/sliders_test.go` | Dropped unused `tvPages` fixture field |
+| `frontend/src/components/NodeFolderPicker.tsx` | Deleted unused picker |
+| `frontend/src/api/settings.ts` | Dropped `fetchNodeBrowse` |
+| `frontend/src/api/downloads.ts` | Dropped unused `fetchDownloads` |
+| `frontend/src/api/discover.ts` | Dropped unused TPDB-only studio/performer fetchers |
+| `frontend/src/api/organize.ts` | Dropped unused `fetchPendingIDs` |
+| `frontend/src/api/rename.ts` | Dropped unused `applyBatch` / `submitDraft` |
+| `frontend/src/api/purge.ts` / `dedup.ts` | Dropped unused `applyBatch`; screens already use streaming |
+| `frontend/src/api/pruningRules.ts` | Dropped unused tier-floor constants |
+
+## 2026-09-28 — Drop unrouted Library shells and grab-shaped LibraryCard
+
+**Problem:** `/library*` and `/discover/row/library*` already redirect to Discover `?view=library`, but `LibraryMainstream` / `LibraryAdult` / `LibraryCard` / `LibraryRowView` still shipped and tests mounted the dead shells.
+**Fix:** Delete those unrouted components. `LibraryView` stays as Discover's owned grid. Tests mount `LibraryView` (or Discover owned URLs for tab shells). Discover keeps the title search box; the hidden per-grid search input is gone.
+**Outcome:** Same owned-catalog behavior on Discover; dead route shells and the unused grab-shaped owned card are gone.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/Library.tsx` | Dropped `LibraryMainstream` / `LibraryAdult` and hidden title search |
+| `frontend/src/screens/Library.test.tsx` | Mount `LibraryView` / Discover `?view=library` |
+| `frontend/src/screens/discover/Mainstream.tsx` | Dropped unused `LibraryCard` |
+| `frontend/src/screens/discover/RowView.tsx` | Dropped unused `LibraryRowView` |
+| `frontend/src/screens/Discover.tsx` | Stopped re-exporting `LibraryRowView` |
+| `frontend/src/screens/discover/RowView.test.tsx` | Redirect coverage for leftover view-all library URLs |
+
+## 2026-09-28 — Deduplicate shared helpers that had drifted as copies
+
+**Problem:** Adult Prowlarr query punctuation-stripping lived as two documented "keep identical" copies (`internal/api` and `internal/adultnewest`). Several one-line aliases and test helpers duplicated the same fallback.
+**Fix:** One `adultnewest.NormalizeAdultQuery` (api already imported that package). Share `downloadDisplayName` for torrent/Usenet DTOs. Gate `wrapUsenetPrecheckErr` on `usenet.IsPrecheckReject`. Drop `fetchDiscoverSliders` / `ConnectionsSection` / `AISection` aliases. Rename tests use `asPage`. Requests missing-episodes chip uses `FilterChip`.
+**Outcome:** Same search, display-name, precheck, Settings, and filter behavior. Calendar/grid and applyProposal modules left as documented intentional duplicates.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/adultnewest/scan.go` | Exported `NormalizeAdultQuery`; dropped the "mirror autograb.go" copy |
+| `internal/adultnewest/normalize_test.go` | Moved `TestNormalizeAdultQuery` here |
+| `internal/api/autograb.go` | Dropped the duplicate strip + regex vars |
+| `internal/api/search.go` / `search_catalog.go` / `adultreleases.go` / `adultdiscover_newest_scenes.go` | Call `adultnewest.NormalizeAdultQuery` |
+| `internal/api/search.go` | `wrapUsenetPrecheckErr` uses `IsPrecheckReject` |
+| `internal/api/downloads.go` | Shared `downloadDisplayName` |
+| `frontend/src/api/discoverSliders.ts` | Dropped `fetchDiscoverSliders` alias |
+| `frontend/src/screens/settings/{index,Global,AI}.tsx` | Settings tabs import `APISection` / `AIProviderModelCard` |
+| `frontend/src/testing/http.ts` | Generic `asPage`; Rename tests reuse it |
+| `frontend/src/screens/Requests.tsx` | Missing-episodes toggle uses `FilterChip` |
+
+

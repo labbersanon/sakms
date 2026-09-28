@@ -32,8 +32,9 @@ import {
   ScreenTabsContext,
   useAdultEnabled,
 } from "../../components/ui";
-import { AISection } from "./AI";
+import { AIProviderModelCard } from "./AI";
 import { APIAccessSection, AuthModeSection } from "./Auth";
+import { APISection } from "./APISection";
 import {
   KidsRootPathSection,
   LibraryConnectionsSection,
@@ -45,7 +46,7 @@ import {
 } from "./Library";
 import { DownloadSection } from "./Download";
 import { AdvancedSection } from "./Advanced";
-import { ConnectionsSection, GlobalSection } from "./Global";
+import { GlobalSection } from "./Global";
 import { UISection } from "./UI";
 import { WebhooksSection } from "./Webhooks";
 import { NodesSection } from "./Nodes";
@@ -177,7 +178,7 @@ export const Settings: Component<{ onReboot: () => void }> = (props) => {
         </Show>
 
         <Show when={tab() === "ai"}>
-          <AISection />
+          <AIProviderModelCard />
         </Show>
 
         <Show when={tab() === "auth"}>
@@ -194,7 +195,7 @@ export const Settings: Component<{ onReboot: () => void }> = (props) => {
         </Show>
 
         <Show when={tab() === "connections"}>
-          <ConnectionsSection />
+          <APISection />
         </Show>
 
         <Show when={tab() === "global"}>

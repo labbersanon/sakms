@@ -5,7 +5,7 @@
 //   /discover/row/tmdb/:key
 //   /discover/row/adult-newest/:rowId — scene/movie newest rows only
 //   /discover/row/slider/:id
-//   /discover/row/library and /discover/row/library/:mode
+//   /discover/row/library and /discover/row/library/:mode (redirects in AppShell)
 //   /discover/row/trakt-watchlist and /discover/row/trakt-watchlist/:type
 //   /discover/row/rssfeed/:id
 // Still skipped: calendar (month grid), search/filter (already full-page grids),
@@ -25,8 +25,7 @@ import {
   fetchAdultNewestRowItems,
   fetchAdultNewestRows,
 } from "../../api/adultNewestRows";
-import { fetchDiscoverSliders, fetchSliderItems, type Slider } from "../../api/discoverSliders";
-import { fetchTrackedItems, type TrackedItem } from "../../api/tag";
+import { fetchSliders, fetchSliderItems, type Slider } from "../../api/discoverSliders";
 import { fetchTraktWatchlist, type TraktWatchlistItem } from "../../api/trakt";
 import { fetchRssFeeds, fetchRssFeedItems, isAdultRssTarget, type RssFeedItem, type RssFeedTarget } from "../../api/rssFeeds";
 import {
@@ -40,7 +39,6 @@ import { DISCOVER_NAV_LINK_CLASS } from "../../components/ViewAllLink";
 import { MEDIA_POSTER_GRID_CLASS } from "../../components/media";
 import { ADULT_CONTENT_SECTION, sectionLabel } from "../../api/sectionLock";
 import { MAINSTREAM_ROWS, PosterCard } from "./Mainstream";
-import { LibraryPosterCard, trackedToDetailTarget } from "../Library";
 import { AdultCard, toAdultDiscoverItem } from "./Adult";
 import { RssFeedCard } from "./RssFeedCard";
 import { WatchlistCard } from "../../components/TraktWatchlistRow";
@@ -268,7 +266,7 @@ function rssFeedTargetMode(
 export const SliderRowView: Component = () => {
   const params = useParams();
   const sliderId = () => positiveId(params.id);
-  const [sliders] = createResource(fetchDiscoverSliders);
+  const [sliders] = createResource(fetchSliders);
   const slider = () => (sliders() ?? []).find((s) => s.id === sliderId());
   const [detailTarget, setDetailTarget] = createSignal<DetailTarget | null>(
     null,
@@ -326,69 +324,6 @@ export const SliderRowView: Component = () => {
             />
           )}
         </Show>
-      </Show>
-      <Show when={detailTarget()}>
-        {(t) => (
-          <DetailPopup target={t()} onClose={() => setDetailTarget(null)} />
-        )}
-      </Show>
-    </div>
-  );
-};
-
-type LibraryEntry = { mode: "movies" | "series"; item: TrackedItem };
-
-async function loadLibraryEntries(
-  mode: string | undefined,
-): Promise<LibraryEntry[]> {
-  if (mode === "movies" || mode === "series") {
-    const items = await fetchTrackedItems(mode).catch(() => [] as TrackedItem[]);
-    return items.map((item) => ({ mode, item }));
-  }
-  const [movies, series] = await Promise.all([
-    fetchTrackedItems("movies").catch(() => [] as TrackedItem[]),
-    fetchTrackedItems("series").catch(() => [] as TrackedItem[]),
-  ]);
-  return [
-    ...movies.map((item) => ({ mode: "movies" as const, item })),
-    ...series.map((item) => ({ mode: "series" as const, item })),
-  ];
-}
-
-export const LibraryRowView: Component = () => {
-  const params = useParams();
-  const mode = () => params.mode;
-  const [detailTarget, setDetailTarget] = createSignal<DetailTarget | null>(
-    null,
-  );
-  const [setupError, setSetupError] = createSignal<unknown>(null);
-
-  return (
-    <div>
-      <BackLink href="/discover/mainstream" />
-      <PaginatedStrip<LibraryEntry>
-        title="In your library"
-        reloadToken={() => 0}
-        load={oncePage(() => loadLibraryEntries(mode()))}
-        onError={setSetupError}
-        containerClass={WRAP}
-        singlePage
-      >
-        {(entry) => (
-          <LibraryPosterCard
-            mode={entry.mode}
-            item={entry.item}
-            selected={false}
-            onClick={() => {
-              const t = trackedToDetailTarget(entry.mode, entry.item);
-              if (t) setDetailTarget(t);
-            }}
-            onRate={() => {}}
-          />
-        )}
-      </PaginatedStrip>
-      <Show when={setupError()}>
-        <ErrorText>{(setupError() as Error)?.message}</ErrorText>
       </Show>
       <Show when={detailTarget()}>
         {(t) => (

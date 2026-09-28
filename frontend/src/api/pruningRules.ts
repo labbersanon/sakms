@@ -23,20 +23,6 @@ export type {
   PruningRuleUpsertRequest,
 };
 
-// PRUNING_TIER_FLOORS mirrors internal/pruning's tierRank ladder (low ->
-// lossless) — the only four values the backend's ErrInvalidTierFloor accepts
-// as a non-empty QualityTierFloor. "unknown" (the backfill sentinel) is
-// deliberately absent: it is never a valid floor.
-export const PRUNING_TIER_FLOORS = ["low", "medium", "high", "lossless"] as const;
-export type PruningTierFloor = (typeof PRUNING_TIER_FLOORS)[number];
-
-export const PRUNING_TIER_FLOOR_LABELS: Record<PruningTierFloor, string> = {
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  lossless: "Lossless",
-};
-
 // GB_BYTES is the 1024-based conversion the size condition's GB input uses,
 // matching internal/pruning's humanBytes convention (1024 == 1KB, not 1000).
 export const GB_BYTES = 1024 ** 3;

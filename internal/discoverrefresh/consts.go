@@ -74,17 +74,6 @@ const (
 	// cards of deliberate horizontal scrolling and is cheap at a 24h cadence,
 	// so the window is widened rather than argued about.
 	carouselCachedPages = 3
-
-	// stripCachedPages covers the CLICK-driven rows: the five stash-box
-	// catalog rows, rendered by PaginatedStrip, whose page 2 needs an explicit
-	// "Show more" click. That is exactly the trigger shape CLAUDE.md's
-	// 2026-07-30 correction already blessed for the Prowlarr carve-out, so
-	// matching it costs nothing and inherits its reasoning.
-	//
-	// Review if: any stash-box row gains PaginatedStrip's infiniteScroll prop
-	// (none passes it today) — it then becomes scroll-driven and should take
-	// carouselCachedPages instead.
-	stripCachedPages = 1
 )
 
 // Upstream page widths. Both are the fixed 20 their callers already hardcode:
@@ -106,7 +95,7 @@ const (
 // imported here without a cycle.
 //
 // KEEP IN STEP with that constant — the same explicit-replication convention
-// internal/adultnewest's normalizeAdultQuery and optionalConnAPI already use.
+// adultnewest.NormalizeAdultQuery (now shared with api) and optionalConnAPI already use.
 // It exists only to size maxRawPages: the scheduler deliberately does NOT
 // reproduce filterReleasedMovies' retry-page logic (that exists solely to
 // satisfy the frontend's one-click-equals-one-page contract, and reproducing it

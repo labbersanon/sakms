@@ -28,6 +28,7 @@ import {
   Button,
   ErrorText,
   FILTER_BAR_FIELDS_CLASS,
+  FilterChip,
   MODES,
   Muted,
   SelectField,
@@ -347,17 +348,11 @@ export const Requests: Component = () => {
               </SelectField>
             </div>
             <div class="flex flex-wrap gap-1">
-              <button
-                type="button"
-                class="rounded-md px-3 py-1 text-xs font-medium transition"
-                classList={{
-                  "bg-accent text-accent-fg": missingOnly(),
-                  "bg-surface-2 text-muted hover:text-fg": !missingOnly(),
-                }}
-                onClick={() => setMissingOnly((v) => !v)}
-              >
-                Has Missing Episodes
-              </button>
+              <FilterChip
+                label="Has Missing Episodes"
+                active={missingOnly}
+                onToggle={() => setMissingOnly((v) => !v)}
+              />
             </div>
           </div>
 

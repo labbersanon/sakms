@@ -12,11 +12,12 @@
 // is configured entirely through src/api/pruningRules.ts.
 // Review if: Clean-up ever gains a matching mechanism of its own again.
 //
-// One bounded bulk affordance exists on the PROPOSALS queue only: applyBatch
-// backs the opt-in "Apply Selected" multi-select of already-reviewed Pending
-// delete proposals, applied sequentially server-side with skip-and-continue
-// (behind the same window.confirm guard the single delete has). It is NOT a
-// queue-wide delete-all and does not change how any single row deletes.
+// One bounded bulk affordance exists on the PROPOSALS queue only:
+// applyBatchStreaming (from organize.ts) backs the opt-in "Apply Selected"
+// multi-select of already-reviewed Pending delete proposals, applied
+// sequentially server-side with skip-and-continue (behind the same
+// window.confirm guard the single delete has). It is NOT a queue-wide
+// delete-all and does not change how any single row deletes.
 //
 // Unlike Rename, Clean-up has NO re-pick / give-back / draft: a proposal is
 // only ever Applied (delete the file + drop the record) or Dismissed. Its
@@ -28,8 +29,6 @@
 
 import { api } from "./client";
 import type {
-  ApplyBatchItem,
-  ApplyBatchResponse,
   Proposal,
   ProposalPage,
 } from "@dto";
@@ -83,20 +82,5 @@ export function applyProposal(id: number): Promise<unknown> {
 // dismissProposal drops one proposal from the queue without deleting anything.
 export function dismissProposal(id: number): Promise<unknown> {
   return api(`/api/proposals/${id}/dismiss`, { method: "POST" });
-}
-
-// applyBatch deletes several already-reviewed Pending purge proposals in one
-// request (the "Apply Selected" affordance, gated behind a count-worded
-// window.confirm at the call site). The backend applies them sequentially and
-// skips-and-continues on a per-item failure, returning one result per requested
-// id. Clean-up items carry only an id (no Dedup keepIndex/keepAll). Applies only
-// to the proposals queue — the Rules card has no batch path.
-export function applyBatch(
-  items: ApplyBatchItem[],
-): Promise<ApplyBatchResponse> {
-  return api<ApplyBatchResponse>(`/api/proposals/apply-batch`, {
-    method: "POST",
-    body: JSON.stringify({ items }),
-  });
 }
 

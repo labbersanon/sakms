@@ -34,32 +34,6 @@ import (
 // hand-rolling its own 6000.
 const adultAutoGrabCategory = 6000
 
-// adultQueryApostrophe/adultQueryNonAlnum back normalizeAdultQuery.
-// Apostrophes are dropped entirely (so "Don't" -> "Dont", matching how
-// scene-release naming conventions usually handle contractions) rather than
-// becoming a space, which would split one word into two ("Don t"). Every
-// other run of characters that isn't a letter, digit, or whitespace
-// (colons, commas, periods, asterisks, parens...) collapses to a single
-// space instead.
-var (
-	adultQueryApostrophe = regexp.MustCompile(`['’]`)
-	adultQueryNonAlnum   = regexp.MustCompile(`[^a-zA-Z0-9\s]+`)
-)
-
-// normalizeAdultQuery strips punctuation from a studio+title string before
-// it becomes a Prowlarr free-text query — see autoGrabSearch's Adult case
-// for why: a real production report found the raw, unnormalized text
-// (colons, commas, asterisks, apostrophes and all) almost never appears
-// verbatim in how trackers actually name Adult releases, so nearly every
-// search was returning 0 raw releases. Collapses repeated/leading/trailing
-// whitespace too (strings.Fields + Join), so an empty Studio or Title still
-// produces a clean single-spaced result.
-func normalizeAdultQuery(s string) string {
-	s = adultQueryApostrophe.ReplaceAllString(s, "")
-	s = adultQueryNonAlnum.ReplaceAllString(s, " ")
-	return strings.Join(strings.Fields(s), " ")
-}
-
 // adultMinSeeders is Adult's own minimum-seeder auto-grab floor — lower than
 // Movies/Series' shared autograb.DefaultMinSeeders (5). Found via a real
 // report: a genuine, otherwise-qualifying Adult torrent release (correct
@@ -395,11 +369,15 @@ func activeGrabForGID(ctx context.Context, grabsStore *grabs.Store, m mode.Mode,
 //
 // Claude 2026-09-16: scope parameter added for two-phase Usenet-first search.
 // Reason: RunAutoGrab loops over SearchPhases; each phase calls autoGrabSearch
-//   with its own scope sentinel (ScopeUsenet=-1, ScopeTorrent=-2, ScopeAll=0).
+//
+//	with its own scope sentinel (ScopeUsenet=-1, ScopeTorrent=-2, ScopeAll=0).
+//
 // Adult ignores scope entirely: resolveAdultReleases is cache-first and
-//   free-text — it does not call SearchByID and cannot honore indexerIds.
-//   This is documented rather than silently accepted so a caller knows the
-//   field has no effect for Adult.
+//
+//	free-text — it does not call SearchByID and cannot honore indexerIds.
+//	This is documented rather than silently accepted so a caller knows the
+//	field has no effect for Adult.
+//
 // Review if: Adult gains structured id-based Prowlarr search.
 func autoGrabSearch(ctx context.Context, sess *mode.Session, m mode.Mode, store *adultnewest.ReleaseStore, scope prowlarr.Scope, req apidto.AutoGrabRequest) ([]prowlarr.Release, float64, error) {
 	switch m {

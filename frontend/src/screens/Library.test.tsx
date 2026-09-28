@@ -1,41 +1,21 @@
-// Library UI tests — the poster-grid catalog browser that took over Tag's grid
-// half. Five of these cases were migrated from Tag.test.tsx's now-deleted
-// "Tag — grid view" describe (poster render + detail open, add tag, remove tag,
-// title search, mode-switch clears selection); a sixth case from that describe,
-// the Grid/Table toggle, did NOT migrate — it went away with the toggle itself.
-// Four groups are new: the genre filter, the added-date sort, Adult Library
-// visibility, and the quality-tier deep link + filter.
-//
-// EVERY case here mounts through renderLibrary, not a bare <Library />: the
-// shell reads its ?mode=/?tier= deep link with useSearchParams, which throws
-// outside a <Router>. The wrapper was added and proven green against the
-// pre-existing cases BEFORE useSearchParams existed in Library.tsx, so the
-// harness change is isolated from the feature change — no pre-existing
-// assertion changed meaning, it just runs inside a router now.
-//
-// The two load-bearing assertions here:
-//   1. Tag-editing mechanics are IDENTICAL to Tag's — the detail panel's add and
-//      remove still hit the GENERIC /api/modes/{mode}/items/{id}/tags routes with
-//      the same shapes. Only the entry point moved.
-//   2. Adult uses the same tracked-list entry point but must still route tag
-//      mutations through the dedicated scene-tag endpoints.
-//
-// The fetch/stub helpers below are duplicated from Tag.test.tsx rather than
-// shared: they are module-local there, and exporting them would mean editing
-// Tag.test.tsx's untouched Adult regression describes.
+// Library UI tests — Discover's owned grid (LibraryView). Tag mutations still
+// hit the generic /items/{id}/tags routes; Adult still uses scene-tag endpoints.
+// Tests mount LibraryView (the live grid) or Discover ?view=library for tab shells.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
 import { type Component, createSignal, Show } from "solid-js";
 import type { SeasonState, TagEntry, TitleDetail, TrackedItem } from "@dto";
+import type { Mode } from "../api/discover";
 import {
   AdultModeContext,
   ScreenTabBar,
   ScreenTabsContext,
   type ScreenTabsRegistration,
 } from "../components/ui";
-import { LibraryAdult, LibraryMainstream } from "./Library";
+import { LibraryView } from "./Library";
+import { DiscoverAdult, DiscoverMainstream } from "./Discover";
 import { jsonResponse, noContent } from "../testing/http";
 
 
@@ -116,34 +96,86 @@ const item = (over: Partial<TrackedItem>): TrackedItem => ({
   ...over,
 });
 
-// renderLibrary mounts Library inside a router at `url`. EVERY case here needs
-// the wrapper, not just the deep-link ones: Library's shell reads its mode/tier
-// deep link with useSearchParams, which THROWS outside a <Router>. A fresh
-// createMemoryHistory per render is deliberate over history.pushState — jsdom's
-// window.location is shared for the whole file, so a pushed query string would
-// leak into whatever case ran next.
-const renderLibrary = (url = "/library/mainstream") => {
+type OwnedOpts = {
+  mode?: Mode;
+  initialTier?: string;
+  aspect?: "vertical" | "horizontal";
+  posterAspect?: string;
+};
+
+const renderOwned = (opts: OwnedOpts = {}) => {
   const history = createMemoryHistory();
-  const isAdult =
-    url.includes("mode=adult") || url.startsWith("/library/adult");
-  const path = isAdult ? "/library/adult" : "/library/mainstream";
-  const q = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-  history.set({ value: path + q, replace: true });
+  history.set({ value: "/discover/owned", replace: true });
+  const mode = opts.mode ?? "movies";
+  const aspect =
+    opts.aspect ?? (mode === "adult" ? "horizontal" : undefined);
+  const posterAspect =
+    opts.posterAspect ??
+    (mode === "adult" && aspect !== "vertical" ? "16 / 9" : undefined);
   return render(() => (
     <MemoryRouter history={history}>
-      <Route path="/library/mainstream" component={LibraryMainstream} />
-      <Route path="/library/adult" component={LibraryAdult} />
+      <Route
+        path="/discover/owned"
+        component={() => (
+          <LibraryView
+            mode={mode}
+            initialTier={opts.initialTier}
+            aspect={aspect}
+            posterAspect={posterAspect}
+          />
+        )}
+      />
     </MemoryRouter>
   ));
 };
 
-const renderLibraryRoute = (url: string, component: Component) => {
+const OwnedTabHarness: Component<{
+  initialMode?: "movies" | "series";
+  initialTier?: string;
+}> = (props) => {
+  const [mode, setMode] = createSignal<"movies" | "series">(
+    props.initialMode ?? "movies",
+  );
+  return (
+    <div>
+      <button type="button" onClick={() => setMode("movies")}>
+        Movies
+      </button>
+      <button type="button" onClick={() => setMode("series")}>
+        Series
+      </button>
+      <LibraryView mode={mode()} initialTier={props.initialTier} />
+    </div>
+  );
+};
+
+const renderOwnedTabs = (
+  opts: { initialMode?: "movies" | "series"; initialTier?: string } = {},
+) => {
+  const history = createMemoryHistory();
+  history.set({ value: "/discover/owned", replace: true });
+  return render(() => (
+    <MemoryRouter history={history}>
+      <Route
+        path="/discover/owned"
+        component={() => (
+          <OwnedTabHarness
+            initialMode={opts.initialMode}
+            initialTier={opts.initialTier}
+          />
+        )}
+      />
+    </MemoryRouter>
+  ));
+};
+
+const renderDiscoverOwned = (url: string) => {
   const history = createMemoryHistory();
   history.set({ value: url, replace: true });
   return render(() => (
     <MemoryRouter history={history}>
-      <Route path="/library/mainstream" component={component} />
-      <Route path="/library/adult" component={component} />
+      <Route path="/discover/mainstream" component={DiscoverMainstream} />
+      <Route path="/discover/adult" component={DiscoverAdult} />
     </MemoryRouter>
   ));
 };
@@ -198,6 +230,13 @@ const makeHandler = (
   return (url: string, init?: RequestInit): Response => {
     const method = (init?.method ?? "GET").toUpperCase();
     if (url.includes("/api/library/scan-status")) return jsonResponse({});
+    if (url.includes("/api/discover/sliders")) return jsonResponse([]);
+    if (url.includes("/api/discover/rss-feeds")) return jsonResponse([]);
+    if (url.includes("/api/connections")) return jsonResponse([]);
+    if (url.includes("/api/trakt/status"))
+      return jsonResponse({ configured: false, linked: false });
+    if (url.includes("/newest-rows")) return jsonResponse([]);
+    if (url.includes("/discover/genres")) return jsonResponse([]);
     if (url.includes("/api/modes/movies/tags")) return jsonResponse(vocab(["hd"]));
     if (url.includes("/api/modes/movies/tracked")) return jsonResponse(movies);
     if (url.includes("/api/modes/series/tags")) return jsonResponse(vocab([]));
@@ -228,6 +267,7 @@ const makeHandler = (
     if (method === "PUT" && overrides.onPut) return overrides.onPut(url);
     if (method === "PUT" && url.includes("/rating")) return noContent();
     if (method === "DELETE" && overrides.onDelete) return overrides.onDelete(url);
+    if (url.includes("/discover") && !url.includes("/library/")) return jsonResponse([]);
     throw new Error("unexpected fetch: " + url);
   };
 };
@@ -247,7 +287,7 @@ const inception = (over: Partial<TrackedItem> = {}): TrackedItem =>
 describe("Library — grid and detail panel (migrated from Tag)", () => {
   it("renders poster cards and opens the detail panel on click", async () => {
     const calls = stubFetch(makeHandler([inception()]));
-    renderLibrary();
+    renderOwned();
 
     // Card is a button with aria-label = title.
     const card = await screen.findByRole("button", { name: "Inception" });
@@ -311,7 +351,7 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
       if (extra) return extra;
       return makeHandler([inception()])(url, init);
     });
-    renderLibrary();
+    renderOwned();
     fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
     const dialog = await screen.findByRole("dialog", { name: "Inception" });
     const overview = await screen.findByText(
@@ -362,7 +402,7 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
       if (extra) return extra;
       return makeHandler([inception()])(url, init);
     });
-    renderLibrary();
+    renderOwned();
     fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
     const row = await screen.findByTestId("official-ratings");
     expect(row).toHaveTextContent("8.2");
@@ -392,7 +432,7 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
       if (extra) return extra;
       return makeHandler([inception()])(url, init);
     });
-    renderLibrary();
+    renderOwned();
     fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
     const dialog = await screen.findByRole("dialog", { name: "Inception" });
     const img = await screen.findByAltText("Inception");
@@ -426,7 +466,7 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    renderLibrary();
+    renderOwned();
     fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
 
     const addInput = await screen.findByLabelText("Add tag to Inception");
@@ -450,7 +490,7 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
       }),
     );
 
-    renderLibrary();
+    renderOwned();
     await screen.findByRole("button", { name: "Inception" });
     fireEvent.click(screen.getByLabelText("Rate 4 stars"));
 
@@ -472,7 +512,7 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
       }),
     );
 
-    renderLibrary();
+    renderOwned();
     fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument(),
@@ -485,35 +525,6 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
     expect(del.url).not.toContain("/scenes/");
   });
 
-  it("search input filters visible cards by title", async () => {
-    stubFetch(
-      makeHandler([
-        item({ id: 1, title: "Inception", tmdbId: 1 }),
-        item({ id: 2, title: "Interstellar", tmdbId: 2 }),
-        item({ id: 3, title: "The Matrix", tmdbId: 3 }),
-      ]),
-    );
-
-    renderLibrary();
-    expect(await screen.findByRole("button", { name: "Inception" })).toBeInTheDocument();
-    expect(screen.queryByText("View all")).toBeNull();
-    const search = screen.getByPlaceholderText("Search titles…");
-    expect(search.parentElement?.className).toContain("w-full");
-    expect(search.parentElement?.parentElement?.className).toContain("flex-col");
-    expect(screen.getByRole("button", { name: "Interstellar" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "The Matrix" })).toBeInTheDocument();
-
-    fireEvent.input(screen.getByPlaceholderText("Search titles…"), {
-      target: { value: "inter" },
-    });
-
-    await waitFor(() => {
-      expect(screen.queryByRole("button", { name: "Inception" })).toBeNull();
-      expect(screen.getByRole("button", { name: "Interstellar" })).toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: "The Matrix" })).toBeNull();
-    });
-  });
-
   it("mode switch (Movies → Series) clears the detail panel selection", async () => {
     stubFetch(
       makeHandler([inception()], {
@@ -521,7 +532,7 @@ describe("Library — grid and detail panel (migrated from Tag)", () => {
       }),
     );
 
-    renderLibrary();
+    renderOwnedTabs();
     fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument(),
@@ -546,7 +557,7 @@ describe("Library — genre filter (new capability)", () => {
 
   it("narrows the grid to one genre and All genres restores it", async () => {
     stubFetch(makeHandler(catalog));
-    renderLibrary();
+    renderOwned();
     await screen.findByRole("button", { name: "Inception" });
 
     // Unfiltered: every item renders, including the one with no genres.
@@ -578,11 +589,11 @@ describe("Library — genre filter (new capability)", () => {
 
   it("shows a no-matches message distinct from the nothing-tracked one", async () => {
     stubFetch(makeHandler(catalog));
-    renderLibrary();
+    renderOwned();
     await screen.findByRole("button", { name: "Inception" });
 
-    fireEvent.input(screen.getByPlaceholderText("Search titles…"), {
-      target: { value: "zzzz-no-such-title" },
+    fireEvent.change(screen.getByLabelText("Quality tier"), {
+      target: { value: "lossless" },
     });
     await waitFor(() =>
       expect(screen.getByText("No items match these filters.")).toBeInTheDocument(),
@@ -613,7 +624,7 @@ describe("Library — added-date sort (new capability)", () => {
 
   it("defaults to the server's title order and reorders on Newest first", async () => {
     stubFetch(makeHandler(byDate));
-    renderLibrary();
+    renderOwned();
     await screen.findByRole("button", { name: "Alpha" });
 
     // Guards titlesInOrder() against a selector regression that silently
@@ -654,7 +665,7 @@ describe("Library — quality-tier deep link and filter", () => {
 
   it("seeds mode and tier from the query params", async () => {
     stubFetch(makeHandler(tieredMovies, { series: tieredSeries }));
-    renderLibrary("/library?mode=series&tier=lossless");
+    renderOwned({ mode: "series", initialTier: "lossless" });
 
     // The load-bearing proof that mode was seeded is the rendered PAYLOAD — a
     // Series item is present and no Movies item is. The tab bar marks its
@@ -662,7 +673,6 @@ describe("Library — quality-tier deep link and filter", () => {
     // check below is corroboration, not the primary assertion.
     expect(await screen.findByRole("button", { name: "Mixed Show" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Lossless Movie" })).toBeNull();
-    expect(screen.getByText("Series").className).toContain("bg-accent");
 
     // ...and only the linked tier is listed.
     expect(screen.queryByRole("button", { name: "Medium Show" })).toBeNull();
@@ -670,7 +680,7 @@ describe("Library — quality-tier deep link and filter", () => {
 
   it("shows the incoming tier in a visible, clearable select", async () => {
     stubFetch(makeHandler(tieredMovies));
-    renderLibrary("/library?mode=movies&tier=lossless");
+    renderOwned({ mode: "movies", initialTier: "lossless" });
 
     await screen.findByRole("button", { name: "Lossless Movie" });
     expect(tierSelect().value).toBe("lossless");
@@ -688,7 +698,7 @@ describe("Library — quality-tier deep link and filter", () => {
 
   it("matches a series if ANY of its episode tiers matches", async () => {
     stubFetch(makeHandler(tieredMovies, { series: tieredSeries }));
-    renderLibrary("/library?mode=series&tier=high");
+    renderOwned({ mode: "series", initialTier: "high" });
 
     // Mixed Show's episodes span high AND lossless, so it belongs to both
     // drill-downs — includes() over the whole set, never a single-value compare.
@@ -709,32 +719,19 @@ describe("Library — quality-tier deep link and filter", () => {
         adult: [item({ id: 30, title: "Adult Scene", qualityTiers: ["high"] })],
       }),
     );
-    renderLibrary(`/library/adult`);
+    renderOwned({ mode: "adult" });
 
     expect(
       await screen.findByRole("button", { name: "Adult Scene" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Scenes").className).toContain("bg-accent");
     expect(calls.some((c) => c.url.includes("/api/modes/adult/tracked"))).toBe(
       true,
     );
   });
 
-  it("falls back to Movies for an unrecognized mode", async () => {
-    const calls = stubFetch(makeHandler(tieredMovies, { series: tieredSeries }));
-    renderLibrary(`/library?mode=not-a-mode`);
-
-    expect(
-      await screen.findByRole("button", { name: "Lossless Movie" }),
-    ).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Mixed Show" })).toBeNull();
-    expect(screen.getByText("Movies").className).toContain("bg-accent");
-    expect(calls.some((c) => c.url.includes("/api/modes/adult"))).toBe(false);
-  });
-
   it("clears the incoming tier filter when the tab changes", async () => {
     stubFetch(makeHandler(tieredMovies, { series: tieredSeries }));
-    renderLibrary("/library?mode=movies&tier=lossless");
+    renderOwnedTabs({ initialMode: "movies", initialTier: "lossless" });
 
     // resetOnModeChange is a { defer: true } effect, so it must NOT fire on
     // mount — if it did, the deep-linked tier would be gone before the grid
@@ -762,7 +759,7 @@ describe("Library — quality-tier deep link and filter", () => {
   // filtering by, which is exactly what "visible and clearable" rules out.
   it("folds an unrecognized tier param to no filter at all", async () => {
     stubFetch(makeHandler(tieredMovies));
-    renderLibrary("/library?mode=movies&tier=bogus");
+    renderOwned({ mode: "movies", initialTier: "bogus" });
 
     expect(await screen.findByRole("button", { name: "Lossless Movie" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "High Movie" })).toBeInTheDocument();
@@ -774,7 +771,7 @@ describe("Library — quality-tier deep link and filter", () => {
 
   it("shows unbackfilled items when filtering by the Unknown tier", async () => {
     stubFetch(makeHandler(tieredMovies));
-    renderLibrary("/library?mode=movies&tier=unknown");
+    renderOwned({ mode: "movies", initialTier: "unknown" });
 
     // The Dashboard's Unknown cell is clickable and can be nonzero, so its
     // drill-down must not land on a silently empty grid.
@@ -787,26 +784,26 @@ describe("Library — quality-tier deep link and filter", () => {
 });
 
 describe("Library — route-specific media tabs", () => {
-  it("renders Series and Movies tabs on the Mainstream library route", async () => {
+  it("renders Series and Movies tabs on Discover owned view", async () => {
     stubFetch(
       makeHandler([item({ id: 1, title: "Movie Row", tmdbId: 1 })], {
         series: [item({ id: 2, title: "Series Row", tmdbId: 2 })],
       }),
     );
-    renderLibraryRoute("/library/mainstream", LibraryMainstream);
+    renderDiscoverOwned("/discover/mainstream?view=library&tab=movies");
 
     expect(await screen.findByRole("button", { name: "Movie Row" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Series" }));
     expect(await screen.findByRole("button", { name: "Series Row" })).toBeInTheDocument();
   });
 
-  it("renders Scenes and Movies tabs on the Adult library route", async () => {
+  it("renders Scenes and Movies tabs on Discover adult owned view", async () => {
     stubFetch(
       makeHandler([], {
         adult: [item({ id: 3, title: "Scene Row", qualityTiers: ["high"] })],
       }),
     );
-    renderLibraryRoute("/library/adult", LibraryAdult);
+    renderDiscoverOwned("/discover/adult?view=library");
 
     expect(await screen.findByRole("button", { name: "Scene Row" })).toBeInTheDocument();
     expect(screen.queryByText("View all")).toBeNull();
@@ -845,7 +842,7 @@ describe("Library — per-season monitoring (Series only)", () => {
   ];
 
   const openSeriesDetail = async () => {
-    renderLibrary("/library?mode=series");
+    renderOwned({ mode: "series" });
     fireEvent.click(await screen.findByRole("button", { name: "Breaking Bad" }));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument(),
@@ -967,7 +964,7 @@ describe("Library — per-season monitoring (Series only)", () => {
 
   it("renders nothing season-related for a MOVIES item, and never calls /seasons", async () => {
     const calls = stubFetch(makeHandler([inception()], { seasons }));
-    renderLibrary();
+    renderOwned();
     fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument(),
@@ -1226,7 +1223,7 @@ describe("Library — Adult catalog", () => {
         },
       }),
     );
-    renderLibrary("/library/adult");
+    renderOwned({ mode: "adult" });
 
     const card = await screen.findByRole("button", { name: "Adult Scene" });
     expect(card).toBeInTheDocument();
@@ -1278,7 +1275,7 @@ describe("Library — Adult catalog", () => {
         ],
       }),
     );
-    renderLibrary("/library/adult");
+    renderOwned({ mode: "adult" });
     const card = await screen.findByRole("button", { name: "Adult Scene" });
     expect(card.className).toContain("group");
     const overlay = screen.getByText("Studio A · 2024");
@@ -1295,7 +1292,7 @@ describe("Library — Adult catalog", () => {
           }),
       }),
     );
-    renderLibrary();
+    renderOwned();
     const card = await screen.findByRole("button", { name: /Inception/i });
     expect(card.className).toContain("group");
     const overlay = await screen.findByText(
@@ -1311,7 +1308,7 @@ describe("Library — Adult catalog", () => {
           jsonResponse({ posterPath: "/inception.jpg", overview: "" }),
       }),
     );
-    renderLibrary();
+    renderOwned();
     await screen.findByRole("button", { name: /Inception/i });
     expect(
       document.querySelector(".group-hover\\:opacity-100"),
@@ -1338,7 +1335,7 @@ describe("Library — Adult catalog", () => {
       }),
     );
     // Series lives under /library/mainstream?mode=series (not a separate route).
-    renderLibrary("/library?mode=series");
+    renderOwned({ mode: "series" });
     const card = await screen.findByRole("button", { name: /Hero Show/i });
     expect(card.className).toContain("group");
     const overlay = await screen.findByText(
@@ -1362,7 +1359,7 @@ describe("Library — Adult catalog", () => {
         ],
       }),
     );
-    renderLibrary("/library/adult");
+    renderOwned({ mode: "adult" });
     const card = await screen.findByRole("button", { name: "Catalog Art Scene" });
     const img = card.querySelector("img") as HTMLImageElement;
     expect(img.getAttribute("src")).toBe(
@@ -1383,7 +1380,7 @@ describe("Library — Adult catalog", () => {
         ],
       }),
     );
-    renderLibrary("/library/adult");
+    renderOwned({ mode: "adult" });
 
     const card = await screen.findByRole("button", { name: "Unplayable Scene" });
     const video = card.querySelector("video") as HTMLVideoElement;
@@ -1399,7 +1396,7 @@ describe("Library — Adult catalog", () => {
       adult: [item({ id: 3, title: "Scene Row", qualityTiers: ["high"] })],
     }));
     const history = createMemoryHistory();
-    history.set({ value: "/library/adult", replace: true });
+    history.set({ value: "/discover/adult", replace: true });
     const Harness = () => {
       const [adultEnabled, setAdultEnabled] = createSignal(false);
       const [reg, setReg] = createSignal<ScreenTabsRegistration | null>(null);
@@ -1424,7 +1421,7 @@ describe("Library — Adult catalog", () => {
               Enable adult in harness
             </button>
             <MemoryRouter history={history}>
-              <Route path="/library/adult" component={LibraryAdult} />
+              <Route path="/discover/adult" component={DiscoverAdult} />
             </MemoryRouter>
           </ScreenTabsContext.Provider>
         </AdultModeContext.Provider>
@@ -1454,8 +1451,7 @@ describe("Library — Adult catalog", () => {
         adultVertical: [item({ id: 80, title: "Vertical Title", qualityTiers: ["high"] })],
       }),
     );
-    renderLibrary("/library/adult");
-
+    renderDiscoverOwned("/discover/adult?view=library");
     const sceneCard = await screen.findByRole("button", { name: "Horizontal Scene" });
     const sceneFrame = sceneCard.querySelector("div.relative.w-full") as HTMLElement;
     expect(sceneFrame.style.aspectRatio).toBe("16 / 9");
@@ -1486,7 +1482,7 @@ describe("Library — Adult catalog", () => {
       if (extra) return extra;
       throw new Error("unexpected fetch: " + url);
     });
-    renderLibrary("/library/adult");
+    renderOwned({ mode: "adult" });
 
     const skeleton = await screen.findByRole("status", { name: "Loading media" });
     const pulse = skeleton.querySelector(".animate-pulse") as HTMLElement;
@@ -1512,7 +1508,7 @@ describe("Library — in-app movie playback", () => {
 
   it("shows Play and Fullscreen in the detail panel for a browser-playable file", async () => {
     stubFetch(makeHandler([playable()]));
-    renderLibrary();
+    renderOwned();
     fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
     const dialog = await screen.findByRole("dialog", { name: "Inception" });
     expect(within(dialog).getByText("Files")).toBeInTheDocument();
@@ -1527,7 +1523,7 @@ describe("Library — in-app movie playback", () => {
 
   it("Play mounts the video inside the existing dialog, not a nested modal", async () => {
     stubFetch(makeHandler([playable()]));
-    renderLibrary();
+    renderOwned();
     fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
     const dialog = await screen.findByRole("dialog", { name: "Inception" });
     fireEvent.click(within(dialog).getByRole("button", { name: "Play Inception" }));
@@ -1554,7 +1550,7 @@ describe("Library — in-app movie playback", () => {
         }),
       ]),
     );
-    renderLibrary();
+    renderOwned();
     fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
     const dialog = await screen.findByRole("dialog", { name: "Inception" });
     expect(
@@ -1574,7 +1570,7 @@ describe("Library — in-app movie playback", () => {
       if (extra && !url.includes("/discover/trailer")) return extra;
       return makeHandler([playable()])(url, init);
     });
-    renderLibrary();
+    renderOwned();
     fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
     const dialog = await screen.findByRole("dialog", { name: "Inception" });
     const trailer = await within(dialog).findByText("Watch Trailer →");
@@ -1638,7 +1634,7 @@ describe("Library — detail section order", () => {
         }),
       ])(url, init);
     });
-    renderLibrary();
+    renderOwned();
     fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
     const dialog = await screen.findByRole("dialog", { name: "Inception" });
     const rating = await within(dialog).findByText("Rating");
@@ -1665,12 +1661,10 @@ describe("Library — detail section order", () => {
 describe("Library — Monitored chip", () => {
   it("uses the same text-sm pill size as Movies/Series", async () => {
     stubFetch(makeHandler([inception({ id: 11, title: "Monitored Movie", monitored: true })]));
-    renderLibrary();
+    renderOwned();
     await screen.findByRole("button", { name: "Monitored Movie" });
-    const movies = screen.getByRole("button", { name: "Movies" });
     const monitored = screen.getByRole("button", { name: "Monitored" });
     expect(monitored.className).toContain("text-sm");
-    expect(movies.className).toContain("text-sm");
     expect(monitored.className).not.toContain("text-xs");
   });
 
@@ -1678,7 +1672,7 @@ describe("Library — Monitored chip", () => {
     const monitoredItem = inception({ id: 11, title: "Monitored Movie", monitored: true });
     const unmonitored = inception({ id: 12, title: "Unmonitored Movie", monitored: undefined });
     stubFetch(makeHandler([monitoredItem, unmonitored]));
-    renderLibrary();
+    renderOwned();
 
     await screen.findByRole("button", { name: "Monitored Movie" });
     await screen.findByRole("button", { name: "Unmonitored Movie" });
@@ -1706,7 +1700,7 @@ describe("Library — Monitored chip", () => {
       id: 22, title: "Sci-Fi Unmonitored", monitored: undefined, genres: ["Sci-Fi"],
     });
     stubFetch(makeHandler([monitoredScifi, monitoredAction, unmonitored]));
-    renderLibrary();
+    renderOwned();
     await screen.findByRole("button", { name: "Sci-Fi Monitored" });
 
     // Enable chip then pick genre — should show only monitored+Sci-Fi.
@@ -1723,25 +1717,31 @@ describe("Library — Monitored chip", () => {
   it("Movies→Series tab switch resets the chip", async () => {
     const monitoredItem = inception({ id: 30, monitored: true });
     stubFetch(makeHandler([monitoredItem]));
-    renderLibrary();
+    renderOwnedTabs();
     await screen.findByRole("button", { name: "Inception" });
 
-    // Enable chip.
     fireEvent.click(screen.getByRole("button", { name: "Monitored" }));
-    // Switch to Series tab (ScreenTabBar is outside LibraryMainstream;
-    // use the mode switch via route-level navigation isn't easily testable here,
-    // so check that the chip button itself is present for Movies and absent for Adult).
-    // Just verify chip renders for Movies (non-adult).
-    expect(screen.getByRole("button", { name: "Monitored" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Monitored" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    fireEvent.click(screen.getByText("Series"));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Monitored" })).toHaveAttribute(
+        "aria-pressed",
+        "false",
+      ),
+    );
   });
 
   it("LibraryAdult renders no Monitored chip", async () => {
     stubFetch((url) => {
+      if (url.includes("/api/library/scan-status")) return jsonResponse({});
       if (url.includes("/api/modes/adult/scenes/tags")) return jsonResponse([]);
       if (url.includes("/api/modes/adult/tracked")) return jsonResponse([]);
       throw new Error("unexpected fetch: " + url);
     });
-    renderLibrary("/library/adult");
+    renderOwned({ mode: "adult" });
     // Adult library with no items shows "Nothing tracked yet." (not "No items match…").
     await screen.findByText("Nothing tracked yet.");
     expect(screen.queryByRole("button", { name: "Monitored" })).toBeNull();

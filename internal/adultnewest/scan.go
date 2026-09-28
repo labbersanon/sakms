@@ -83,7 +83,7 @@ const maxNewPerCycle = 25
 // cycle rather than grinding through the whole NULL queue against boxes that
 // are clearly down. Every remaining row stays NULL (safe/resumable — retried
 // next boot poll), so a boot-time box outage becomes "do nothing this cycle,"
-// not "burn the whole queue to ''." A single success anywhere resets the count.
+// not "burn the whole queue to ”." A single success anywhere resets the count.
 const genderBackfillFailureThreshold = 20
 
 // tagBackfillFailureThreshold mirrors genderBackfillFailureThreshold — abort
@@ -162,22 +162,15 @@ func LoadInterval(ctx context.Context, settingsStore *settings.Store) time.Durat
 
 // Run drives the background scan loop until ctx is cancelled — mirrors
 // recheck.Run's shape (ticker, live-retune via settings, context-cancellation
-// shutdown), with one deliberate difference: interval <= 0 stops/skips the
-// loop the same way it does for recheck, but here that only happens when an
-// operator has explicitly saved "0" via Settings — a fresh install's
-// interval defaults to defaultIntervalHours, not off (see
-// IntervalSettingKey's doc comment), so this job runs out of the box unlike
-// every other background job in this codebase.
-// Run drives the background scan loop until ctx is cancelled — mirrors
-// recheck.Run's shape (ticker, live-retune via settings, context-cancellation
 // shutdown). Three independent passes, each with its own ticker:
-//   1. Browse: newest-releases browse (browse/identify pipeline)
-//   2. Feed: RSS feed ingestion
-//   3. Monitor: monitored performer/studio polling (monitor.go)
+//  1. Browse: newest-releases browse (browse/identify pipeline)
+//  2. Feed: RSS feed ingestion
+//  3. Monitor: monitored performer/studio polling (monitor.go)
 //
 // monitoredStore is nil when the monitor pass is not deployed — the ticker is
 // skipped in that case. Passing nil is the correct call for any instance that
-// hasn't been migrated to 0017 yet.
+// hasn't been migrated to 0017 yet. Browse uses defaultIntervalHours when the
+// interval key is unset (see IntervalSettingKey); explicit 0 turns that pass off.
 func Run(ctx context.Context, interval time.Duration, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, releaseStore *ReleaseStore, entityStore parseentity.EntityStore, rssFeedsStore *rssfeeds.Store, feedHealth *FeedHealth, monitoredStore *MonitoredStore) {
 	feedInterval := LoadFeedInterval(ctx, settingsStore)
 	monitorInterval := LoadMonitorInterval(ctx, settingsStore)
@@ -403,10 +396,10 @@ func runCycle(ctx context.Context, httpClient *http.Client, connStore *connectio
 // the error-vs-no-match distinction PerformerImage cannot make:
 //
 //   - err != nil  → the boxes could not answer (throttle-abort/box error/all
-//     unreachable). LEAVE THE ROW NULL (never write '') so it retries next
+//     unreachable). LEAVE THE ROW NULL (never write ”) so it retries next
 //     cycle, and bump the consecutive-failure counter.
 //   - err == nil  → a box was reached. Reset the counter and UpdateGender with
-//     g, which MAY be '' — a genuine "reached, no gender on file" negative that
+//     g, which MAY be ” — a genuine "reached, no gender on file" negative that
 //     is safe to persist (such a performer is simply excluded from every
 //     gender-split view, matching the legacy merged-card behavior).
 //
@@ -684,20 +677,22 @@ func identifyStudioPerformers(ctx context.Context, id *identify.Identifier, deta
 	return out
 }
 
-// adultQueryApostrophe/adultQueryNonAlnum/normalizeAdultQuery are an
-// independent local copy of internal/api/autograb.go's identically-named
-// normalizeAdultQuery — same convention as adultCategory's copies across
-// this package/internal/api/internal/availability (each package's own
-// comment explains why: avoiding an import coupling for one small shared
-// constant/function). Kept byte-for-byte identical on purpose: this
-// package's confirmAvailable search MUST normalize the same way
-// autoGrabSearch does, or the two searches aren't really asking the same
-// question (see confirmAvailable's doc comment) — if autograb.go's version
-// ever changes, mirror the change here too.
+// Claude 2026-09-28: NormalizeAdultQuery is the shared Adult Prowlarr query strip.
+// Reason: api/autograb.go kept a byte-identical copy to avoid an import; api
+//
+//	already imports this package, so the pair was a drift hazard (confirmAvailable
+//	and autoGrabSearch must ask the same question).
+//
+// Troubleshooting: Adult searches returning 0 releases on punctuation-heavy titles.
+// Review if: Movies/Series search dedup (api/search.go) needs a different strip —
+//
+//	it reuses this on purpose; a tweak here also changes mainstream title-dedup.
 var adultQueryApostrophe = regexp.MustCompile(`['’]`)
 var adultQueryNonAlnum = regexp.MustCompile(`[^a-zA-Z0-9\s]+`)
 
-func normalizeAdultQuery(s string) string {
+// NormalizeAdultQuery drops apostrophes and collapses other punctuation to
+// spaces so Prowlarr free-text matches scene-release naming.
+func NormalizeAdultQuery(s string) string {
 	s = adultQueryApostrophe.ReplaceAllString(s, "")
 	s = adultQueryNonAlnum.ReplaceAllString(s, " ")
 	return strings.Join(strings.Fields(s), " ")
@@ -717,13 +712,9 @@ func normalizeAdultQuery(s string) string {
 // should both mean "don't cache this" — see matchRelease's doc comment for
 // why this check exists at all.
 func confirmAvailable(ctx context.Context, prowlarrClient *prowlarr.Client, releaseTitle string) bool {
-	// Clean the raw scene-release title the same way autoGrabSearch does before
-	// querying Prowlarr, so this really does run the SAME search a later Grab
-	// click would (see identify.CleanReleaseTitleForSearch): a verbatim noisy
-	// release title matches a different, wrong set of releases than its cleaned
-	// form, so confirming availability on the noisy query would confirm a
-	// release the actual grab path can no longer find.
-	query := normalizeAdultQuery(identify.CleanReleaseTitleForSearch(strings.TrimSpace(releaseTitle)))
+	// Clean then NormalizeAdultQuery so this is the same Prowlarr query
+	// autoGrabSearch will run (see identify.CleanReleaseTitleForSearch).
+	query := NormalizeAdultQuery(identify.CleanReleaseTitleForSearch(strings.TrimSpace(releaseTitle)))
 	releases, err := prowlarrClient.Search(ctx, query, []int{adultCategory})
 	if err != nil {
 		return false

@@ -26,7 +26,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import type { DiscoverItem, Proposal } from "@dto";
 import { Rename } from "./Rename";
-import { jsonResponse, noContent } from "../testing/http";
+import { jsonResponse, noContent, asPage } from "../testing/http";
 
 const runRowAction = async (
   sourceName: string,
@@ -81,13 +81,6 @@ const tmdbItem = (over: Partial<DiscoverItem>): DiscoverItem => ({
 type Call = { url: string; method: string; body: unknown };
 type Handler = (url: string, init?: RequestInit) => Response | Promise<Response>;
 
-const pageOf = (items: Proposal[]) => ({
-  items,
-  total: items.length,
-  limit: 50,
-  offset: 0,
-});
-
 const stubFetch = (handler: Handler) => {
   const calls: Call[] = [];
   const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -126,7 +119,7 @@ const stubFetch = (handler: Handler) => {
       const cloned = res.clone();
       const body = await cloned.json();
       if (Array.isArray(body)) {
-        return jsonResponse(pageOf(body as Proposal[]));
+        return jsonResponse(asPage(body as Proposal[]));
       }
     }
     return res;

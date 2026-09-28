@@ -33,7 +33,6 @@ import {
   type DiscoverFilterParams,
   fetchDiscover,
   fetchDiscoverFiltered,
-  fetchTitlePoster,
   fetchTmdbSearch,
   tmdbPoster,
 } from "../../api/discover";
@@ -75,7 +74,7 @@ import { Carousel } from "../../components/Carousel";
 import {
   type Slider,
   deleteSlider,
-  fetchDiscoverSliders,
+  fetchSliders,
   fetchSliderItems,
   updateSlider,
 } from "../../api/discoverSliders";
@@ -547,102 +546,6 @@ const PaginatedRow: Component<{
   );
 };
 
-// Claude 2026-09-24: LibraryCard is not mounted in production. Discover
-//   preview/search/monitored use LibraryPosterCard; /discover/row/library
-//   redirects to ?view=library. Kept so a restore does not rewrite the grab
-//   card. Do not re-wire this into LibraryRow.
-// Reason: merge deletes the third owned-card path (this grab-shaped card).
-// Review if: a grab-shaped owned card is restored.
-// LibraryCard is one owned-library title on the existing-library row. Its mode
-// is per-item (the row mixes movies+series), which drives both the lazy poster
-// fetch and which mode DetailPopup opens in. The library caches no poster art, so the
-// poster is resolved on demand by tmdbId (fetchTitlePoster) — one bounded call
-// per rendered card, then routed through the image proxy exactly like every
-// other card. A synthetic DiscoverItem (id = tmdbId) feeds DetailPopup so a
-// library card grabs through the identical popup path a Discover card does —
-// Series still gets its season/episode picker, now as the popup's inline
-// gating step rather than a modal off an inline Grab button (removed
-// 2026-08-02). The card is click-inert when tmdbId is 0 — see openDetail.
-export const LibraryCard: Component<{
-  mode: "movies" | "series";
-  item: TrackedItem;
-  // onGrab is no longer read by this card (its inline Grab button was removed
-  // 2026-08-02) but stays on the prop contract — see PosterCard's identical
-  // note and .omc/plans/autopilot-impl-discover-card-cleanup.md §0.5. Made
-  // optional (2026-08-02) so callers no longer have to invent a no-op for a
-  // prop nothing reads.
-  onGrab?: (t: GrabTarget) => void;
-  onDetail: (t: DetailTarget) => void;
-  // Claude 2026-08-14: "grid" fills View All cells; default keeps the carousel.
-  layout?: "row" | "grid";
-}> = (props) => {
-  const selection = useSelection();
-  const inSelect = () => selection?.selectMode() ?? false;
-  const tmdbId = () => props.item.tmdbId ?? 0;
-  const [poster] = createResource(tmdbId, (id) =>
-    id ? fetchTitlePoster(props.mode, id).catch(() => "") : Promise.resolve(""),
-  );
-  // Claude 2026-09-22: fetchTitlePoster already returns a proxied src.
-  // Reason: TVDB/AI absolute URLs cannot go through tmdbPoster().
-  // Troubleshooting: double-encoded /api/images/proxy?url=…image.tmdb…proxy…
-  // Review if: fetchTitlePoster reverts to raw path/url and callers wrap again.
-  const src = () => poster() ?? "";
-  const grabItem = (): DiscoverItem => ({
-    id: tmdbId(),
-    title: props.item.title,
-    posterPath: "",
-    overview: "",
-    releaseDate: props.item.year ? String(props.item.year) : "",
-    voteAverage: 0,
-    mediaType: props.mode === "series" ? "tv" : "movie",
-  });
-
-  // A tracked item with no TMDB id (tmdbId() === 0) has nothing DetailPopup can
-  // resolve — opening it would fire fetchTitleDetail/fetchTrailer/
-  // fetchAvailabilityPreview against id 0, three requests that cannot succeed
-  // and that the popup itself does not guard (it reads item.id unconditionally).
-  // Such a card stays click-inert, exactly as every LibraryCard was before
-  // 2026-08-02. The select-mode half mirrors PosterCard/AdultCard: this card is
-  // not selectable (it registers no key and shows no checkbox), so while
-  // select-mode is on its body does nothing at all rather than opening a
-  // grab-capable popup mid-bulk-select — which is also what keeps DetailPopup's
-  // recommendation rail free of a nested picker Modal.
-  const clickable = () => tmdbId() > 0 && !inSelect();
-  const openDetail = () => {
-    if (!clickable()) return;
-    props.onDetail({ mode: props.mode, item: grabItem() });
-  };
-
-  return (
-    <MediaCardShell
-      class={
-        props.layout === "grid" ? "min-w-0 w-full" : MEDIA_CAROUSEL_POSTER_CLASS
-      }
-      label={props.item.title}
-      title={props.item.title}
-      disabled={!clickable()}
-      onClick={openDetail}
-    >
-      <div class="aspect-[2/3] overflow-hidden rounded-lg border border-border bg-surface">
-        <Show when={src()} fallback={<MediaFallbackTile title={props.item.title} />}>
-          <img
-            src={src()}
-            alt={props.item.title}
-            loading="lazy"
-            class="h-full w-full object-cover"
-          />
-        </Show>
-      </div>
-      <div class="mt-1.5 truncate text-sm text-fg" title={props.item.title}>
-        {props.item.title}
-      </div>
-      <div class="flex items-center gap-2 text-xs text-muted">
-        <span>{props.item.year || "—"}</span>
-      </div>
-    </MediaCardShell>
-  );
-};
-
 // LIBRARY_PAGE_SIZE bounds how many library cards render (and therefore how many
 // per-card poster fetches fire) at once, mirroring the category rows' "Show
 // more" paging. Without this the whole tracked set mounts in one shot, firing a
@@ -1051,7 +954,7 @@ export const MainstreamDiscover: Component<{
   // --- Discover row order: built-in rows above + custom sliders + RSS feed
   // rows, fully interleavable via Edit mode (RowEditor). ---
   const [slidersData] = createResource(reloadToken, () =>
-    fetchDiscoverSliders().catch(() => [] as Slider[]),
+    fetchSliders().catch(() => [] as Slider[]),
   );
   const allSliders = () => slidersData() ?? [];
   const slidersForTab = () =>
@@ -1400,9 +1303,6 @@ export const MainstreamDiscover: Component<{
 
       {/* Claude 2026-09-15: Monitored grid — replaces carousels when chip is on.
           No TMDB calls while chip is on (plan §4.1 guardrail).
-          LibraryCard lazy-fetches posters via tmdbId and opens DetailPopup.
-          Movies with no TMDB id stay click-inert; series still open
-          (ownedCardOpenable), including anthology synthetics.
           Direct Show/For rather than PaginatedStrip: monitoredItems is a
           resource keyed on monitoredOnly(); rendering directly from the resource
           correctly handles the async timing (PaginatedStrip's load callback
@@ -1413,7 +1313,6 @@ export const MainstreamDiscover: Component<{
       <Show when={ownedOnly() && !searching()}>
         <LibraryView
           mode={props.contentType === "series" ? "series" : "movies"}
-          hideTitleSearch
           initialTier={props.initialTier}
         />
       </Show>

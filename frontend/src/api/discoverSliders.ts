@@ -80,12 +80,6 @@ export function fetchSliders(): Promise<Slider[]> {
   return api<Slider[]>("/api/discover/sliders");
 }
 
-// fetchDiscoverSliders is fetchSliders under the name the Discover screen
-// itself uses (read-only consumption of the slider list, vs. the admin
-// editor's full CRUD below) — same call, same endpoint, kept as a distinct
-// export so each consumer's intent stays readable at the import site.
-export const fetchDiscoverSliders = fetchSliders;
-
 export function createSlider(body: SliderUpsertRequest): Promise<Slider> {
   return api<Slider>("/api/discover/sliders", {
     method: "POST",

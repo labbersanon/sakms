@@ -29,11 +29,6 @@ import (
 // resolution.
 var discoverAvailabilityResolutions = []int{2160, 1080, 720, 480}
 
-// discoverAvailabilityTiers is the fixed tier axis: every quality.Tier the
-// popup's 4-way tier selector offers, each graded independently (never
-// derived from another tier — see internal/autograb's package doc).
-var discoverAvailabilityTiers = []quality.Tier{quality.Low, quality.Medium, quality.High, quality.Lossless}
-
 // discoverAvailabilityHandler backs GET /api/modes/{mode}/discover/availability
 // — the Discover detail popup's one upfront preview fetch. It runs a single,
 // user-click-triggered Prowlarr search (the same trigger shape and cost as

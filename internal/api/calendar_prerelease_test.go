@@ -25,8 +25,8 @@ import (
 // for any TMDB id, so tests that use releaseDay as req.ReleaseDate get back a
 // TMDB-derived hold_until of releaseDay+24h = 2099-06-16, matching the
 // client-date+1d that the handler used to compute directly. Tests that need a
-// different TMDB response (theatrical-only, error, nil client) must wire their
-// own mux with preReleaseMuxWith.
+// different TMDB response (theatrical-only, error, nil client) must wire the
+// handler themselves rather than using this helper.
 func preReleaseMux(t *testing.T) (*http.ServeMux, *grabs.Store, *library.Store) {
 	t.Helper()
 	connStore, _, _, grabsStore, libStore, _, _, _, _, _ := testStores(t)
@@ -41,24 +41,6 @@ func preReleaseMux(t *testing.T) (*http.ServeMux, *grabs.Store, *library.Store) 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/calendar/prerelease-request", preReleaseRequestHandler(grabsStore, libStore, connStore, testHTTPClient()))
 	return mux, grabsStore, libStore
-}
-
-// preReleaseMuxWith wires the handler with caller-supplied grab and library
-// stores and an optional TMDB URL. Pass tmdbURL="" to simulate nil TMDB
-// (sentinel hold for every request).
-func preReleaseMuxWith(t *testing.T, grabsStore *grabs.Store, libStore *library.Store, tmdbURL string) *http.ServeMux {
-	t.Helper()
-	ctx := context.Background()
-	connStore, _, _, _, _, _, _, _, _, _ := testStores(t)
-	if tmdbURL != "" {
-		overrideFixedURL(t, "tmdb", tmdbURL)
-		if err := connStore.Upsert(ctx, "tmdb", tmdbURL, "key"); err != nil {
-			t.Fatalf("upserting fake TMDB: %v", err)
-		}
-	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/calendar/prerelease-request", preReleaseRequestHandler(grabsStore, libStore, connStore, testHTTPClient()))
-	return mux
 }
 
 func postPreRelease(t *testing.T, srvURL string, body apidto.PreReleaseRequestRequest) (int, apidto.PreReleaseRequestResponse) {

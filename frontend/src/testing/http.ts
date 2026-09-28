@@ -51,7 +51,7 @@ export function seriesMonitorDefaults(
   return null;
 }
 
-export function asPage(items: unknown[]) {
+export function asPage<T>(items: T[]) {
   return {
     items,
     total: items.length,

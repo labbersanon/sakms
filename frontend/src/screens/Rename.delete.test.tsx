@@ -30,7 +30,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import type { Proposal } from "@dto";
 import { Rename, planActionForRow } from "./Rename";
-import { jsonResponse, noContent } from "../testing/http";
+import { jsonResponse, noContent, asPage } from "../testing/http";
 
 
 // sourcePath is set by default (unlike Rename.test.tsx's builder) — the
@@ -51,13 +51,6 @@ const proposal = (over: Partial<Proposal>): Proposal => ({
 
 type Call = { url: string; method: string; body: unknown };
 type Handler = (url: string, init?: RequestInit) => Response | Promise<Response>;
-
-const pageOf = (items: Proposal[]) => ({
-  items,
-  total: items.length,
-  limit: 50,
-  offset: 0,
-});
 
 // Verbatim copy of Rename.test.tsx's stubFetch — same harness, same
 // boilerplate-route handling (organize/events, pending-ids, the
@@ -92,7 +85,7 @@ const stubFetch = (handler: Handler) => {
       const cloned = res.clone();
       const body = await cloned.json();
       if (Array.isArray(body)) {
-        return jsonResponse(pageOf(body as Proposal[]));
+        return jsonResponse(asPage(body as Proposal[]));
       }
     }
     return res;

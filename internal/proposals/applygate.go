@@ -117,12 +117,3 @@ func (g *Gate) RegisterApplyIdle(m mode.Mode, wf Workflow, fn func()) {
 	k := gateKey{m, wf}
 	g.hooks[k] = append(g.hooks[k], fn)
 }
-
-// reset clears all gate state. For tests only — do not call in production.
-func (g *Gate) reset() {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.counts = make(map[gateKey]int)
-	g.deferred = make(map[gateKey]bool)
-	g.hooks = make(map[gateKey][]func())
-}

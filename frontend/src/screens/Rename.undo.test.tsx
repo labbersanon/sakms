@@ -20,7 +20,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import type { Proposal, RecentlyAppliedEntry } from "@dto";
 import { Rename, formatAppliedAt } from "./Rename";
-import { jsonResponse } from "../testing/http";
+import { jsonResponse, asPage } from "../testing/http";
 
 
 // textError mirrors the backend exactly: internal/api/rename_undo.go refuses
@@ -57,13 +57,6 @@ const entry = (over: Partial<RecentlyAppliedEntry>): RecentlyAppliedEntry => ({
 type Call = { url: string; method: string; body: unknown };
 type Handler = (url: string, init?: RequestInit) => Response | Promise<Response>;
 
-const pageOf = (items: Proposal[]) => ({
-  items,
-  total: items.length,
-  limit: 50,
-  offset: 0,
-});
-
 // Same shape as Rename.test.tsx's stubFetch (organize/events + pending-ids
 // boilerplate, array -> ProposalPage auto-wrap). recently-applied is NOT
 // short-circuited here — every test in this file is about that route.
@@ -94,7 +87,7 @@ const stubFetch = (handler: Handler) => {
       const cloned = res.clone();
       const body = await cloned.json();
       if (Array.isArray(body)) {
-        return jsonResponse(pageOf(body as Proposal[]));
+        return jsonResponse(asPage(body as Proposal[]));
       }
     }
     return res;

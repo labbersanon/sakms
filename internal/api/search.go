@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/labbersanon/sakms/internal/adultnewest"
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/autograb"
 	"github.com/labbersanon/sakms/internal/connections"
@@ -105,15 +106,15 @@ func searchHandler(httpClient *http.Client, connStore *connections.Store, scStor
 		// is the raw pre-scoring release string, so it carries resolution/source/
 		// codec tokens and normalizes safely without collapsing quality variants.
 		//
-		// normalizeAdultQuery's name is a holdover from its original Adult-only
-		// use (internal/api/autograb.go) — reused here deliberately, not by
-		// accident, since it already does exactly what dedup needs (strip
-		// punctuation, preserve alphanumeric tokens). A future Adult-motivated
-		// tweak to it would also change dedup behavior here for Movies/Series.
+		// adultnewest.NormalizeAdultQuery's name is a holdover from its original
+		// Adult-only use — reused here deliberately, not by accident, since it
+		// already does exactly what dedup needs (strip punctuation, preserve
+		// alphanumeric tokens). A future Adult-motivated tweak would also change
+		// dedup behavior here for Movies/Series.
 		releases = dedupeReleases(releases, func(rel prowlarr.Release) releaseDedupKey {
 			return releaseDedupKey{
 				downloadURL:     rel.DownloadURL,
-				normalizedTitle: normalizeAdultQuery(rel.Title),
+				normalizedTitle: adultnewest.NormalizeAdultQuery(rel.Title),
 				seeders:         rel.Seeders,
 			}
 		})
@@ -511,14 +512,16 @@ func dispatchToDownloadClient(ctx context.Context, settingsStore *settings.Store
 
 // wrapUsenetPrecheckErr keeps precheck sentinels on the error chain so
 // RunAutoGrab can try the next NZB. A plain errors.New used to break that.
+// IsPrecheckReject is the same gate the rest of the grab path uses; the two
+// messages stay distinct so Search & pick copy still names the failure.
 func wrapUsenetPrecheckErr(err error) (string, string, int, error) {
+	if !usenet.IsPrecheckReject(err) {
+		return "", "", http.StatusBadGateway, err
+	}
 	if errors.Is(err, usenet.ErrNoVideoUnpacked) {
 		return "", "", http.StatusConflict, fmt.Errorf("this release has no usable video — pick another: %w", usenet.ErrNoVideoUnpacked)
 	}
-	if errors.Is(err, usenet.ErrArticlesUnavailable) {
-		return "", "", http.StatusConflict, fmt.Errorf("this release's articles aren't on your subscriptions — pick another: %w", usenet.ErrArticlesUnavailable)
-	}
-	return "", "", http.StatusBadGateway, err
+	return "", "", http.StatusConflict, fmt.Errorf("this release's articles aren't on your subscriptions — pick another: %w", usenet.ErrArticlesUnavailable)
 }
 
 func precheckParkReason(err error) string {

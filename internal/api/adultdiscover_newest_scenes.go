@@ -154,7 +154,7 @@ func adultNewestEntityScenesHandler(connStore *connections.Store, scStore *servi
 			return
 		}
 
-		query := normalizeAdultQuery(name)
+		query := adultnewest.NormalizeAdultQuery(name)
 
 		tctx, cancel := context.WithTimeout(ctx, newestScenesOutboundTimeout)
 		defer cancel()
@@ -500,7 +500,7 @@ func dedupeAdultShowMoreItems(items []apidto.AdultDiscoverItem) []apidto.AdultDi
 	return dedupeReleases(items, func(it apidto.AdultDiscoverItem) releaseDedupKey {
 		return releaseDedupKey{
 			downloadURL:     it.DownloadURL,
-			normalizedTitle: normalizeAdultQuery(it.Title),
+			normalizedTitle: adultnewest.NormalizeAdultQuery(it.Title),
 			seeders:         it.Seeders,
 		}
 	})

@@ -256,9 +256,9 @@ func TestDiscoverAvailabilityHandler_Adult_StudioTitleDuration_NoTMDBCall(t *tes
 }
 
 // TestDiscoverAvailabilityHandler_Adult_QueryIsPunctuationNormalized proves
-// the punctuation-stripping fix (normalizeAdultQuery) reaches the actual
+// the punctuation-stripping fix (adultnewest.NormalizeAdultQuery) reaches the actual
 // Prowlarr request end-to-end through this handler, not just the unit-level
-// TestNormalizeAdultQuery — a real "Adult downloads never resolve" report
+// adultnewest.TestNormalizeAdultQuery — a real "Adult downloads never resolve" report
 // found the raw, unnormalized text almost never matching how trackers name
 // Adult releases. Also proves exactly ONE Prowlarr search fires (via
 // fakeProwlarrPerQuery's ordered-query list, not fakeProwlarrRecording,

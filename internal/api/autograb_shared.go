@@ -66,6 +66,15 @@ const (
 	// SIXTH pass of runUsenetRetryCycle. Gated like every non-TriggerOperator
 	// trigger, by construction.
 	TriggerQualityWatch AutoGrabTrigger = "qualitywatch"
+	// TriggerTraktWatchlist is unattended ingest of the linked Trakt
+	// watchlist, dispatched by monitorTraktWatchlist
+	// (internal/api/traktwatchlistingest.go), the SEVENTH pass of
+	// runUsenetRetryCycle. Movies go through RunAutoGrab (or a Calendar-style
+	// hold). Series are added and monitored; they never call RunAutoGrab
+	// here. Gated like every non-TriggerOperator trigger, by construction,
+	// for the movie half; the series half reads usenet_autograb_enabled
+	// itself so a toggle-off cycle does not mint library_series rows.
+	TriggerTraktWatchlist AutoGrabTrigger = "traktwatchlist"
 )
 
 const (
@@ -151,6 +160,12 @@ type AutoGrabDeps struct {
 	// UsenetSearch is the optional native NNTP discovery backend. Nil = inert
 	// (flag-off / not wired). Never errors a grab when unset or not ready.
 	UsenetSearch *usenetsearch.Service
+	// Claude 2026-09-28: seventh retry-cycle pass (Trakt watchlist ingest).
+	// Reason: RunUsenetRetry is the only production constructor that has a
+	//   trakt.Store; tests leave this nil so the pass is a no-op.
+	// Troubleshooting: monitorTraktWatchlist; trakt_watchlist_ingest_enabled.
+	// Review if: ingest moves off the daily cycle or gains its own deps type.
+	TraktIngest *traktWatchlistIngest
 }
 
 // AutoGrabRequest is the mode-agnostic description of what to auto-grab.

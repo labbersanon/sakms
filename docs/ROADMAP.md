@@ -445,6 +445,19 @@ Turning the flag off cancels never-dispatched watch-originated retries.
 The Library/Discover "Monitored" chip now also lights when this flag is on.
 See CHANGELOG 2026-09-28.
 
+### Trakt watchlist ingest — shipped 2026-09-28
+The existing Trakt watchlist (Discover browse row) now has an opt-in ingest
+layer, default off (`trakt_watchlist_ingest_enabled`). The seventh pass of
+`runUsenetRetryCycle` fetches the live list once per daily auto-grab cycle
+(not the Discover cache). Movies that are not owned, excluded, or already
+grabbing become Requests via `RunAutoGrab`, or a Calendar-style hold when
+`gateMovieGrab` says the title is unreleased. Series that are not already in
+`library_series` are added with every season monitored; an existing show is
+left alone so operator monitor choices are not overwritten. Turning the
+switch off cancels never-dispatched `grabs.origin=trakt-watchlist` parks; it
+does not un-monitor series. Auto-grab remains the dispatch gate. No other
+list types (TMDB/IMDb/RSS-as-titles) are added. See CHANGELOG 2026-09-28.
+
 ### Adult release persistence — shipped 2026-08-11
 Plan: `.omc/plans/autopilot-impl-adult-release-persistence.md` (Wave 5 / T1–T8).
 "Search once, persist, reuse" cache for Adult Discover and auto-grab:

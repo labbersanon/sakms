@@ -9760,4 +9760,22 @@ status stays active.
 | `frontend/src/components/TitleQualityPrefs.tsx` | Watch switch for owned movies |
 | `docs/ROADMAP.md` | Deferred item marked shipped |
 
+## 2026-09-28 — Trakt watchlist ingest
+
+**Problem:** Discover already showed the linked Trakt watchlist, but titles sat there until a one-click Grab. That is the *arr import-list gap: same source, no unattended ingest.
+**Fix:** Opt-in `trakt_watchlist_ingest_enabled` (default off) on the Trakt Settings card. The daily retry cycle's seventh pass (`monitorTraktWatchlist`) live-fetches GET /sync/watchlist once (not the Discover cache). Movies that are not owned, excluded, or already grabbing go through `RunAutoGrab` (`TriggerTraktWatchlist`) or a Calendar-style hold when `gateMovieGrab` blocks. Series not already in `library_series` are added with every season monitored; an existing show is skipped so operator monitor choices stay put. Turning the switch off cancels never-dispatched `grabs.origin=trakt-watchlist` parks; it does not un-monitor series. Auto-grab remains the gate. No other list types.
+**Outcome:** A linked Trakt watchlist can fill Requests and series monitors on the auto-grab cycle. Not merged/deployed with this change.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/traktwatchlistingest.go` | Seventh retry-cycle pass + GET/PUT ingest toggle |
+| `internal/api/usenetretry.go` / `cmd/sakms/main.go` | Threads traktStore; calls the pass before park hygiene |
+| `internal/api/autograb_shared.go` | `TriggerTraktWatchlist`; `AutoGrabDeps.TraktIngest` |
+| `internal/api/handler.go` | GET/PUT `/api/trakt/watchlist-ingest` |
+| `internal/grabs/grabs.go` | Origin comment includes `trakt-watchlist` |
+| `frontend/src/screens/settings/Trakt.tsx` | Ingest switch when Trakt is linked |
+| `docs/ROADMAP.md` | Recently-shipped ingest note |
+
 

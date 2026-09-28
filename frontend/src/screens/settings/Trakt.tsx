@@ -26,12 +26,14 @@ import {
   buildTraktCredentialsBody,
   disconnectTrakt,
   fetchTraktStatus,
+  fetchTraktWatchlistIngest,
   pollTraktDevice,
+  putTraktWatchlistIngest,
   saveTraktCredentials,
   startTraktDeviceFlow,
   type TraktDeviceStartResponse,
 } from "../../api/trakt";
-import { Button, ErrorText, inputClass, labelClass, Muted } from "../../components/ui";
+import { Button, ErrorText, inputClass, labelClass, Muted, Switch } from "../../components/ui";
 import { Card, SaveStatus, useSaveStatus, useSectionSaveItem } from "./shared";
 
 export const TraktConnectionSection: Component = () => {
@@ -293,7 +295,55 @@ export const TraktConnectionSection: Component = () => {
             Disconnect
           </Button>
         </div>
+        {/* Claude 2026-09-28: ingest switch next to Connect, not in Auto-grab.
+            Reason: this is a Trakt-list source, gated by auto-grab on the cycle.
+            Troubleshooting: PUT /api/trakt/watchlist-ingest.
+            Review if: other list types join this card. */}
+        <WatchlistIngestSwitch />
       </Show>
     </Card>
+  );
+};
+
+const WatchlistIngestSwitch: Component = () => {
+  const [enabled, { mutate }] = createResource(fetchTraktWatchlistIngest);
+  const [busy, setBusy] = createSignal(false);
+  const [writeError, setWriteError] = createSignal("");
+
+  const toggle = async (next: boolean) => {
+    setBusy(true);
+    setWriteError("");
+    try {
+      await putTraktWatchlistIngest(next);
+      mutate(next);
+    } catch (e) {
+      setWriteError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div class="mt-3 flex items-start justify-between gap-3">
+      <div>
+        <p class="text-xs font-medium text-fg">Add watchlist titles automatically</p>
+        <Muted class="mt-0.5">
+          Each auto-grab cycle turns movies into Requests (or holds them until
+          a US digital release) and adds new series with every season monitored.
+          Titles already in the library are left alone. Auto-grab must be on.
+          Turning this off cancels never-dispatched watchlist Requests; it does
+          not un-monitor series.
+        </Muted>
+        <Show when={writeError()}>
+          <ErrorText>{writeError()}</ErrorText>
+        </Show>
+      </div>
+      <Switch
+        checked={enabled() === true}
+        disabled={busy() || enabled.loading}
+        ariaLabel="Add watchlist titles automatically"
+        onChange={(next) => void toggle(next)}
+      />
+    </div>
   );
 };

@@ -116,6 +116,7 @@ import (
 	"github.com/labbersanon/sakms/internal/rename"
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/trakt"
 	"github.com/labbersanon/sakms/internal/usenet"
 	"github.com/labbersanon/sakms/internal/webhooks"
 )
@@ -211,13 +212,29 @@ func RunUsenetRetry(ctx context.Context, interval time.Duration, httpClient *htt
 	grabsStore *grabs.Store, excludesStore *excludes.Store, whStore *webhooks.Store,
 	libStore *library.Store, dl *downloader.Manager, nzb *usenet.Manager,
 	monitoredStore *adultnewest.MonitoredStore, releaseStore *adultnewest.ReleaseStore,
-	prober dedup.Prober, videoHasher rename.PHasher) {
+	prober dedup.Prober, videoHasher rename.PHasher, traktStore *trakt.Store) {
 
 	if interval <= 0 {
 		return // opt-in gate: off by default, honoring "manual first"
 	}
 
 	deps := AutoGrabDeps{SettingsStore: settingsStore, NZB: nzb, GrabsStore: grabsStore, Webhooks: whStore, LibStore: libStore}
+	// Claude 2026-09-28: seventh pass needs the Trakt store + season catalog.
+	// Reason: live GET /sync/watchlist once per daily cycle; series ingest
+	//   reuses ensureSeriesByTMDB + monitor-all. Nil traktStore skips the pass.
+	// Troubleshooting: monitorTraktWatchlist; trakt_watchlist_ingest_enabled.
+	// Review if: ingest is deleted — drop traktStore from this signature too.
+	deps.TraktIngest = &traktWatchlistIngest{
+		Store:      traktStore,
+		HTTPClient: httpClient,
+		BaseURL:    trakt.DefaultBaseURL,
+		Catalog: seasonCatalog{
+			httpClient: httpClient, connStore: connStore, scStore: scStore,
+			settings: settingsStore, lib: libStore,
+			backfill: newSeriesBackfill(httpClient, connStore, scStore, settingsStore,
+				grabsStore, whStore, nzb, releaseStore, dl, libStore),
+		},
+	}
 	// dl, not nil: a retry re-runs the whole pipeline from the search, so its
 	// winner may well be a torrent, and dispatchToDownloadClient rejects a
 	// torrent dispatch on a nil Session.Downloader.
@@ -328,6 +345,12 @@ func runUsenetRetryCycle(ctx context.Context, deps AutoGrabDeps, build sessionBu
 	// Troubleshooting: library_items.upgrade_watch; TriggerQualityWatch.
 	// Review if: this hunt should share the drain tick with air-date.
 	monitorMovieUpgradeWatch(ctx, deps, build, libStore, excluded)
+	// Claude 2026-09-28: seventh pass — Trakt watchlist ingest.
+	// Reason: Discover already fetches the list; this pass mints Requests /
+	//   series monitors. Live fetch, not the Discover cache. Daily cycle only.
+	// Troubleshooting: trakt_watchlist_ingest_enabled; grabs.origin=trakt-watchlist.
+	// Review if: other list types join this pass.
+	monitorTraktWatchlist(ctx, deps, build, libStore, excluded)
 
 	// Claude 2026-09-17: park hygiene at end of every retry cycle.
 	// Reason: stranded-recovery and malformed-schedule repair run on the same

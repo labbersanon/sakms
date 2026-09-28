@@ -481,6 +481,11 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("POST /api/trakt/device/poll", traktDevicePollHandler(traktStore, traktFlow, httpClient, trakt.DefaultBaseURL, discoverRefreshDeps))
 	mux.HandleFunc("POST /api/trakt/disconnect", traktDisconnectHandler(traktStore, discoverCache))
 	mux.HandleFunc("GET /api/trakt/watchlist", traktWatchlistHandler(traktStore, httpClient, trakt.DefaultBaseURL, discoverCache))
+	// Claude 2026-09-28: opt-in Trakt watchlist ingest (unattended Requests).
+	// Reason: Discover already shows the list; this toggle is the ingest gate.
+	// Troubleshooting: trakt_watchlist_ingest_enabled; seventh retry-cycle pass.
+	mux.HandleFunc("GET /api/trakt/watchlist-ingest", getTraktWatchlistIngestHandler(settingsStore))
+	mux.HandleFunc("PUT /api/trakt/watchlist-ingest", putTraktWatchlistIngestHandler(settingsStore, grabsStore))
 	// Adult Discover's row-based surface (parallel to Mainstream's rows): a
 	// Studios row and a Performers row (plain TPDB browse), each with a
 	// drill-down showing just that studio's/performer's scenes. All TPDB-backed

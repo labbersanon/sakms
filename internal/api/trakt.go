@@ -39,6 +39,8 @@ import (
 //	POST /api/trakt/device/poll     -> traktDevicePollHandler
 //	POST /api/trakt/disconnect      -> traktDisconnectHandler
 //	GET  /api/trakt/watchlist       -> traktWatchlistHandler
+//	GET  /api/trakt/watchlist-ingest -> getTraktWatchlistIngestHandler
+//	PUT  /api/trakt/watchlist-ingest -> putTraktWatchlistIngestHandler
 //
 // plus TestConnection's "trakt" case (testTrakt), unrelated to this route
 // table since it's dispatched from the existing /api/connections/test route.

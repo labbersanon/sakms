@@ -41,6 +41,10 @@ import (
 //	GET  /api/trakt/watchlist       -> traktWatchlistHandler
 //	GET  /api/trakt/watchlist-ingest -> getTraktWatchlistIngestHandler
 //	PUT  /api/trakt/watchlist-ingest -> putTraktWatchlistIngestHandler
+//	GET  /api/tmdb/list-ingest       -> getTMDBListIngestHandler
+//	PUT  /api/tmdb/list-ingest       -> putTMDBListIngestHandler
+//	GET  /api/imdb/list-ingest       -> getIMDbListIngestHandler
+//	PUT  /api/imdb/list-ingest       -> putIMDbListIngestHandler
 //
 // plus TestConnection's "trakt" case (testTrakt), unrelated to this route
 // table since it's dispatched from the existing /api/connections/test route.

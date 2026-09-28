@@ -20,6 +20,13 @@ const (
 	traktIngestStaticMainFile   = "main.go"
 )
 
+var listIngestStaticFiles = []string{
+	"traktwatchlistingest.go",
+	"listingest.go",
+	"tmdblistingest.go",
+	"imdblistingest.go",
+}
+
 var traktIngestBannedTimeFuncs = map[string]bool{
 	"NewTicker": true,
 	"Tick":      true,
@@ -31,60 +38,63 @@ var traktIngestBannedTimeFuncs = map[string]bool{
 
 func TestTraktWatchlistIngestHasNoSchedulerOfItsOwn(t *testing.T) {
 	apiPkg, _ := traktIngestStaticLoad(t)
-	file := traktIngestStaticFindFile(t, apiPkg, traktIngestStaticFile)
+	for _, name := range listIngestStaticFiles {
+		file := traktIngestStaticFindFile(t, apiPkg, name)
+		ast.Inspect(file, func(n ast.Node) bool {
+			if goStmt, ok := n.(*ast.GoStmt); ok {
+				pos := apiPkg.Fset.Position(goStmt.Pos())
+				t.Errorf("%s:%d launches a goroutine — this pass is a plain function called as the seventh step of runUsenetRetryCycle.",
+					name, pos.Line)
+			}
+			return true
+		})
 
-	ast.Inspect(file, func(n ast.Node) bool {
-		if goStmt, ok := n.(*ast.GoStmt); ok {
-			pos := apiPkg.Fset.Position(goStmt.Pos())
-			t.Errorf("%s:%d launches a goroutine — this pass is a plain function called as the seventh step of runUsenetRetryCycle.",
-				traktIngestStaticFile, pos.Line)
-		}
-		return true
-	})
-
-	ast.Inspect(file, func(n ast.Node) bool {
-		ident, ok := n.(*ast.Ident)
-		if !ok {
+		ast.Inspect(file, func(n ast.Node) bool {
+			ident, ok := n.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			obj := apiPkg.TypesInfo.Uses[ident]
+			if obj == nil {
+				return true
+			}
+			fn, isFunc := obj.(*types.Func)
+			if !isFunc || fn.Pkg() == nil || fn.Pkg().Path() != "time" {
+				return true
+			}
+			if sig, ok := fn.Type().(*types.Signature); !ok || sig.Recv() != nil {
+				return true
+			}
+			if traktIngestBannedTimeFuncs[fn.Name()] {
+				pos := apiPkg.Fset.Position(ident.Pos())
+				t.Errorf("%s:%d references time.%s — this pass runs inside runUsenetRetryCycle, not on its own cadence.",
+					name, pos.Line, fn.Name())
+			}
 			return true
-		}
-		obj := apiPkg.TypesInfo.Uses[ident]
-		if obj == nil {
-			return true
-		}
-		fn, isFunc := obj.(*types.Func)
-		if !isFunc || fn.Pkg() == nil || fn.Pkg().Path() != "time" {
-			return true
-		}
-		if sig, ok := fn.Type().(*types.Signature); !ok || sig.Recv() != nil {
-			return true
-		}
-		if traktIngestBannedTimeFuncs[fn.Name()] {
-			pos := apiPkg.Fset.Position(ident.Pos())
-			t.Errorf("%s:%d references time.%s — this pass runs inside runUsenetRetryCycle, not on its own cadence.",
-				traktIngestStaticFile, pos.Line, fn.Name())
-		}
-		return true
-	})
+		})
+	}
 }
 
 func TestMainDoesNotReferenceTraktWatchlistIngest(t *testing.T) {
 	apiPkg, cmdPkg := traktIngestStaticLoad(t)
-	monitorFile := traktIngestStaticFindFile(t, apiPkg, traktIngestStaticFile)
 	mainFile := traktIngestStaticFindFile(t, cmdPkg, traktIngestStaticMainFile)
 
 	declared := map[types.Object]bool{}
-	monitorPath := apiPkg.Fset.Position(monitorFile.Pos()).Filename
-	for ident, obj := range apiPkg.TypesInfo.Defs {
-		if obj == nil || obj.Pkg() == nil {
-			continue
+	for _, name := range listIngestStaticFiles {
+		monitorFile := traktIngestStaticFindFile(t, apiPkg, name)
+		monitorPath := apiPkg.Fset.Position(monitorFile.Pos()).Filename
+		for ident, obj := range apiPkg.TypesInfo.Defs {
+			if obj == nil || obj.Pkg() == nil {
+				continue
+			}
+			if apiPkg.Fset.Position(ident.Pos()).Filename != monitorPath {
+				continue
+			}
+			declared[obj] = true
 		}
-		if apiPkg.Fset.Position(ident.Pos()).Filename != monitorPath {
-			continue
-		}
-		declared[obj] = true
 	}
 	if len(declared) == 0 {
-		t.Fatalf("no declarations collected from %s — type info is empty, assertion would pass vacuously", traktIngestStaticFile)
+		t.Fatalf("no declarations collected from list ingest files — type info is empty, assertion would pass vacuously")
 	}
 
 	ast.Inspect(mainFile, func(n ast.Node) bool {

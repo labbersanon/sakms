@@ -455,8 +455,19 @@ grabbing become Requests via `RunAutoGrab`, or a Calendar-style hold when
 `library_series` are added with every season monitored; an existing show is
 left alone so operator monitor choices are not overwritten. Turning the
 switch off cancels never-dispatched `grabs.origin=trakt-watchlist` parks; it
-does not un-monitor series. Auto-grab remains the dispatch gate. No other
-list types (TMDB/IMDb/RSS-as-titles) are added. See CHANGELOG 2026-09-28.
+does not un-monitor series. Auto-grab remains the dispatch gate. TMDB
+public lists + account watchlist and IMDb ls/ur RSS lists share the same
+seventh-pass dispatch and cycle budget (see CHANGELOG 2026-09-28).
+
+### TMDB and IMDb list ingest — shipped 2026-09-28
+Opt-in, default off (`tmdb_list_ingest_enabled`, `imdb_list_ingest_enabled`).
+TMDB uses public v3 list IDs plus the give-back account watchlist when a
+session is stored. IMDb takes `ls…` / `ur…` IDs (or URLs), fetches
+`rss.imdb.com`, and resolves `tt…` via TMDB `/find`. Movies become Requests
+or a Calendar-style hold; new series are added with every season monitored;
+existing library titles are left alone. Toggle-off cancels never-dispatched
+parks of that origin only. Auto-grab remains the gate. See CHANGELOG
+2026-09-28.
 
 ### Adult release persistence — shipped 2026-08-11
 Plan: `.omc/plans/autopilot-impl-adult-release-persistence.md` (Wave 5 / T1–T8).

@@ -486,6 +486,13 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// Troubleshooting: trakt_watchlist_ingest_enabled; seventh retry-cycle pass.
 	mux.HandleFunc("GET /api/trakt/watchlist-ingest", getTraktWatchlistIngestHandler(settingsStore))
 	mux.HandleFunc("PUT /api/trakt/watchlist-ingest", putTraktWatchlistIngestHandler(settingsStore, grabsStore))
+	// Claude 2026-09-28: TMDB / IMDb list ingest (same seventh-pass dispatch).
+	// Reason: fill the remaining import-list sources next to Trakt.
+	// Troubleshooting: GET/PUT /api/tmdb/list-ingest, /api/imdb/list-ingest.
+	mux.HandleFunc("GET /api/tmdb/list-ingest", getTMDBListIngestHandler(settingsStore))
+	mux.HandleFunc("PUT /api/tmdb/list-ingest", putTMDBListIngestHandler(settingsStore, grabsStore))
+	mux.HandleFunc("GET /api/imdb/list-ingest", getIMDbListIngestHandler(settingsStore))
+	mux.HandleFunc("PUT /api/imdb/list-ingest", putIMDbListIngestHandler(settingsStore, grabsStore))
 	// Adult Discover's row-based surface (parallel to Mainstream's rows): a
 	// Studios row and a Performers row (plain TPDB browse), each with a
 	// drill-down showing just that studio's/performer's scenes. All TPDB-backed

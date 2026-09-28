@@ -197,8 +197,8 @@ type Grab struct {
 	TransportRetryCount int `json:"transportRetryCount,omitempty"`
 	// Origin is a provenance marker for grabs created outside the normal dispatch
 	// path. Production values: "" (ordinary grabs), "upgrade-watch" (minted
-	// by monitorMovieUpgradeWatch), and "trakt-watchlist" (minted by
-	// monitorTraktWatchlist). "e2e" is test/verification debris for park
+	// by monitorMovieUpgradeWatch), "trakt-watchlist" (minted by
+	// monitorTraktWatchlist), "tmdb-list", and "imdb-list". "e2e" is test/verification debris for park
 	// hygiene. The hygiene TAG API still allowlists only empty and "e2e";
 	// those passes write origin themselves. Never infer origin from retry_reason.
 	// Migration: 0024_grabs_origin.sql.

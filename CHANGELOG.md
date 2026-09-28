@@ -9778,4 +9778,23 @@ status stays active.
 | `frontend/src/screens/settings/Trakt.tsx` | Ingest switch when Trakt is linked |
 | `docs/ROADMAP.md` | Recently-shipped ingest note |
 
+## 2026-09-28 — TMDB and IMDb list ingest
+
+**Problem:** Trakt watchlist ingest filled one import-list source. TMDB lists / account watchlist and IMDb ls/ur lists were still browse-or-manual only.
+**Fix:** Opt-in `tmdb_list_ingest_enabled` / `imdb_list_ingest_enabled` (default off) with newline-separated ID settings. The seventh retry-cycle pass is now `monitorListIngests`: Trakt, TMDB, and IMDb share skip/hold/`RunAutoGrab`/monitor-all dispatch and one cycle slot budget. TMDB live-fetches the give-back account watchlist (when `tmdb_session_id` is set) plus public v3 list IDs. IMDb fetches `rss.imdb.com` for `ls…`/`ur…` (URLs accepted) and resolves `tt…` via TMDB `/find`. Movies mint Requests or a Calendar-style hold; new series are added with every season monitored; existing library titles are left alone. Toggle-off cancels never-dispatched parks of that origin (`tmdb-list` / `imdb-list`) only. Auto-grab remains the gate.
+**Outcome:** TMDB and IMDb lists can fill Requests and series monitors on the auto-grab cycle. Not merged/deployed with this change.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/tmdb/lists.go` | Account, watchlist, v3 list, `FindByIMDBID` / `FindTVByIMDBID` |
+| `internal/api/listingest.go` | Shared item + budget + dispatch |
+| `internal/api/tmdblistingest.go` / `imdblistingest.go` | Source fetch + GET/PUT settings |
+| `internal/api/traktwatchlistingest.go` | Uses shared dispatch |
+| `internal/api/usenetretry.go` | Seventh pass calls `monitorListIngests` |
+| `internal/api/handler.go` | GET/PUT `/api/tmdb/list-ingest`, `/api/imdb/list-ingest` |
+| `frontend/src/screens/settings/ListIngest.tsx` | Settings cards next to Trakt |
+| `docs/ROADMAP.md` | Recently-shipped TMDB/IMDb ingest note |
+
 

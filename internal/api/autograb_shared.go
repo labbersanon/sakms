@@ -75,6 +75,14 @@ const (
 	// for the movie half; the series half reads usenet_autograb_enabled
 	// itself so a toggle-off cycle does not mint library_series rows.
 	TriggerTraktWatchlist AutoGrabTrigger = "traktwatchlist"
+	// TriggerTMDBList is unattended ingest of TMDB account watchlist and
+	// operator-configured v3 list IDs, dispatched by ingestTMDBLists
+	// (internal/api/tmdblistingest.go) as part of the SEVENTH pass.
+	TriggerTMDBList AutoGrabTrigger = "tmdblist"
+	// TriggerIMDbList is unattended ingest of IMDb ls… / ur… RSS lists,
+	// dispatched by ingestIMDbLists (internal/api/imdblistingest.go) as
+	// part of the SEVENTH pass.
+	TriggerIMDbList AutoGrabTrigger = "imdblist"
 )
 
 const (
@@ -160,10 +168,10 @@ type AutoGrabDeps struct {
 	// UsenetSearch is the optional native NNTP discovery backend. Nil = inert
 	// (flag-off / not wired). Never errors a grab when unset or not ready.
 	UsenetSearch *usenetsearch.Service
-	// Claude 2026-09-28: seventh retry-cycle pass (Trakt watchlist ingest).
+	// Claude 2026-09-28: seventh retry-cycle pass (list ingest).
 	// Reason: RunUsenetRetry is the only production constructor that has a
-	//   trakt.Store; tests leave this nil so the pass is a no-op.
-	// Troubleshooting: monitorTraktWatchlist; trakt_watchlist_ingest_enabled.
+	//   trakt.Store + season catalog; TMDB/IMDb reuse Catalog + HTTPClient.
+	// Troubleshooting: monitorListIngests; *_list_ingest_enabled.
 	// Review if: ingest moves off the daily cycle or gains its own deps type.
 	TraktIngest *traktWatchlistIngest
 }

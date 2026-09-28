@@ -22,9 +22,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"time"
 
-	"github.com/labbersanon/sakms/internal/excludes"
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
@@ -98,81 +96,41 @@ func putTraktWatchlistIngestHandler(settingsStore *settings.Store, grabsStore *g
 // are not overwritten. Turning ingest off cancels never-dispatched movie
 // parks; it does not un-monitor series.
 func monitorTraktWatchlist(ctx context.Context, deps AutoGrabDeps, build sessionBuilderFunc, libStore *library.Store, excluded map[string]bool) {
+	ingestTraktWatchlist(ctx, deps, build, libStore, excluded, nil)
+}
+
+func ingestTraktWatchlist(ctx context.Context, deps AutoGrabDeps, build sessionBuilderFunc, libStore *library.Store, excluded map[string]bool, budget *listIngestBudget) bool {
 	ing := deps.TraktIngest
 	if ing == nil || ing.Store == nil || deps.SettingsStore == nil {
-		return
+		return false
 	}
 	enabled, err := deps.SettingsStore.GetBool(ctx, traktWatchlistIngestEnabledKey, false)
 	if err != nil {
 		log.Printf("trakt watchlist ingest: reading ingest toggle: %v", err)
-		return
+		return false
 	}
 	if !enabled {
-		return
+		return false
 	}
-	auto, err := deps.SettingsStore.GetBool(ctx, usenetAutoGrabEnabledKey, false)
-	if err != nil {
-		log.Printf("trakt watchlist ingest: reading auto-grab toggle: %v", err)
-		return
-	}
-	if !auto {
-		return
+	if !listIngestAutoGrabOn(ctx, deps, "trakt watchlist ingest") {
+		return false
 	}
 
 	items, err := fetchTraktWatchlistLive(ctx, ing)
 	if err != nil {
 		log.Printf("trakt watchlist ingest: fetching watchlist: %v", err)
-		return
+		return false
 	}
-	if len(items) == 0 {
-		return
-	}
-
-	activeMovies := activeMovieGrabKeys(ctx, deps)
-	var movieSess *mode.Session
-	skipMovies := false
-	attempts := 0
-	cycleCap := loadUsenetCycleSlots(ctx, deps.SettingsStore)
+	mapped := make([]listIngestItem, 0, len(items))
 	for _, item := range items {
-		if attempts >= cycleCap {
-			break
-		}
-		if item.TMDBID <= 0 {
-			continue
-		}
-		switch item.Type {
-		case "movie":
-			if skipMovies || !shouldIngestWatchlistMovie(ctx, libStore, excluded, activeMovies, item) {
-				continue
-			}
-			if movieSess == nil {
-				sess, sessErr := build(ctx, mode.Movies)
-				if sessErr != nil {
-					log.Printf("trakt watchlist ingest: building the movies session failed (%T) — skipping remaining movies", rootCause(sessErr))
-					skipMovies = true
-					continue
-				}
-				movieSess = sess
-			}
-			attempts++
-			stop, skipRest := ingestWatchlistMovie(ctx, deps, movieSess, item)
-			if stop {
-				return
-			}
-			if skipRest {
-				skipMovies = true
-			}
-		case "show":
-			if ing.Catalog.lib == nil {
-				continue
-			}
-			if !shouldIngestWatchlistShow(ctx, ing.Catalog.lib, excluded, item) {
-				continue
-			}
-			attempts++
-			ingestWatchlistShow(ctx, ing.Catalog, item)
-		}
+		mapped = append(mapped, listIngestItem{Type: item.Type, TMDBID: item.TMDBID, Title: item.Title})
 	}
+	return ingestListItems(ctx, deps, build, libStore, excluded, mapped, listIngestKind{
+		Origin:    grabOriginTraktWatchlist,
+		Trigger:   TriggerTraktWatchlist,
+		LogPrefix: "trakt watchlist ingest",
+		OffReason: traktWatchlistIngestOffReason,
+	}, budget)
 }
 
 func fetchTraktWatchlistLive(ctx context.Context, ing *traktWatchlistIngest) ([]trakt.WatchlistItem, error) {
@@ -195,129 +153,6 @@ func fetchTraktWatchlistLive(ctx context.Context, ing *traktWatchlistIngest) ([]
 		return nil, nil
 	}
 	return items, err
-}
-
-func shouldIngestWatchlistMovie(ctx context.Context, libStore *library.Store, excluded map[string]bool, active map[int]bool, item trakt.WatchlistItem) bool {
-	if excluded[excludes.Key(string(mode.Movies), item.TMDBID, item.Title)] {
-		return false
-	}
-	if active[item.TMDBID] {
-		return false
-	}
-	if libStore == nil {
-		return true
-	}
-	_, err := libStore.GetByTMDBID(ctx, mode.Movies, item.TMDBID)
-	if err == nil {
-		return false
-	}
-	if !errors.Is(err, library.ErrNotFound) {
-		log.Printf("trakt watchlist ingest: looking up movie %q: %v", item.Title, err)
-		return false
-	}
-	return true
-}
-
-func shouldIngestWatchlistShow(ctx context.Context, libStore *library.Store, excluded map[string]bool, item trakt.WatchlistItem) bool {
-	if excluded[excludes.Key(string(mode.Series), item.TMDBID, item.Title)] {
-		return false
-	}
-	_, err := libStore.GetSeriesByTMDBID(ctx, item.TMDBID)
-	if err == nil {
-		return false
-	}
-	if !errors.Is(err, library.ErrNotFound) {
-		log.Printf("trakt watchlist ingest: looking up series %q: %v", item.Title, err)
-		return false
-	}
-	return true
-}
-
-// ingestWatchlistMovie parks or auto-grabs one watchlist movie.
-// stopCycle: auto-grab gated off mid-pass — abandon the rest of ingest.
-// skipRestMovies: remaining movies cannot dispatch (Prowlarr missing).
-func ingestWatchlistMovie(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, item trakt.WatchlistItem) (stopCycle, skipRestMovies bool) {
-	rel, blocked, reason := gateMovieGrab(ctx, sess.TMDB, mode.Movies, item.TMDBID)
-	if blocked {
-		held, err := parkPreReleaseRequest(ctx, deps.GrabsStore, mode.Movies, item.Title, item.TMDBID, rel.HoldUntil)
-		switch {
-		case errors.Is(err, grabs.ErrHeldRequestExists):
-			return false, false
-		case err != nil:
-			log.Printf("trakt watchlist ingest: holding %q (%s): %v", item.Title, reason, err)
-			return false, false
-		}
-		tagTraktWatchlistOrigin(ctx, deps.GrabsStore, held.ID)
-		return false, false
-	}
-	if sess.Prowlarr == nil {
-		log.Printf("trakt watchlist ingest: Prowlarr isn't configured — skipping remaining movies")
-		return false, true
-	}
-	out, err := RunAutoGrab(ctx, deps, sess, AutoGrabRequest{
-		Mode:    mode.Movies,
-		Title:   item.Title,
-		TMDBID:  item.TMDBID,
-		Trigger: TriggerTraktWatchlist,
-	})
-	switch {
-	case err != nil:
-		log.Printf("trakt watchlist ingest: %q — auto-grab failed (%T)", item.Title, rootCause(err))
-	case out.Gated:
-		log.Printf("trakt watchlist ingest: usenet auto-grab is switched off — abandoning this cycle")
-		return true, false
-	case out.MovieBlocked:
-		held, parkErr := parkPreReleaseRequest(ctx, deps.GrabsStore, mode.Movies, item.Title, item.TMDBID, rel.HoldUntil)
-		if parkErr != nil && !errors.Is(parkErr, grabs.ErrHeldRequestExists) {
-			log.Printf("trakt watchlist ingest: holding blocked %q: %v", item.Title, parkErr)
-			return false, false
-		}
-		if parkErr == nil {
-			tagTraktWatchlistOrigin(ctx, deps.GrabsStore, held.ID)
-		}
-	case out.AlreadyGrabbing:
-		log.Printf("trakt watchlist ingest: %q is already being downloaded", item.Title)
-	case out.Grabbed:
-		log.Printf("trakt watchlist ingest: %q dispatched", item.Title)
-		tagTraktWatchlistOrigin(ctx, deps.GrabsStore, out.GrabID)
-	default:
-		log.Printf("trakt watchlist ingest: %q has no qualifying candidate yet — parked for re-search", item.Title)
-		tagTraktWatchlistOrigin(ctx, deps.GrabsStore, out.GrabID)
-	}
-	return false, false
-}
-
-func ingestWatchlistShow(ctx context.Context, catalog seasonCatalog, item trakt.WatchlistItem) {
-	series, err := catalog.ensureSeriesByTMDB(ctx, item.TMDBID)
-	if err != nil {
-		log.Printf("trakt watchlist ingest: adding series %q: %v", item.Title, err)
-		return
-	}
-	states, err := catalog.statesByTMDB(ctx, item.TMDBID)
-	if err != nil {
-		log.Printf("trakt watchlist ingest: listing seasons for %q: %v", item.Title, err)
-		return
-	}
-	touched := map[int]bool{}
-	for _, st := range states {
-		if err := catalog.lib.SetSeasonMonitored(ctx, series.ID, st.SeasonNumber, true); err != nil {
-			log.Printf("trakt watchlist ingest: monitoring season %d of %q: %v", st.SeasonNumber, item.Title, err)
-			break
-		}
-		touched[st.SeasonNumber] = true
-	}
-	if len(touched) > 0 {
-		catalog.backfill.kick(series.ID, touched)
-	}
-}
-
-func tagTraktWatchlistOrigin(ctx context.Context, grabsStore *grabs.Store, grabID int64) {
-	if grabsStore == nil || grabID == 0 {
-		return
-	}
-	if err := grabsStore.SetOrigin(ctx, grabID, grabOriginTraktWatchlist); err != nil {
-		log.Printf("trakt watchlist ingest: tagging grab %d origin: %v", grabID, err)
-	}
 }
 
 func activeMovieGrabKeys(ctx context.Context, deps AutoGrabDeps) map[int]bool {
@@ -343,33 +178,9 @@ func activeMovieGrabKeys(ctx context.Context, deps AutoGrabDeps) map[int]bool {
 }
 
 func traktWatchlistOriginated(g grabs.Grab) bool {
-	return g.Mode == mode.Movies &&
-		g.Origin == grabOriginTraktWatchlist &&
-		g.Status == grabs.PendingRetry &&
-		g.Indexer == "" &&
-		g.DownloadURL == ""
+	return listOriginated(g, grabOriginTraktWatchlist)
 }
 
 func cancelTraktWatchlistRetries(ctx context.Context, grabsStore *grabs.Store) {
-	if grabsStore == nil {
-		return
-	}
-	list, err := grabsStore.List(ctx, mode.Movies)
-	if err != nil {
-		log.Printf("trakt watchlist ingest: listing movie grabs for ingest-off cleanup: %v", err)
-		return
-	}
-	now := time.Now()
-	for _, g := range list {
-		if !traktWatchlistOriginated(g) {
-			continue
-		}
-		if err := grabsStore.SetRetryAfter(ctx, g.ID, now, traktWatchlistIngestOffReason); err != nil {
-			log.Printf("trakt watchlist ingest: recording ingest-off reason on grab %d: %v", g.ID, err)
-			continue
-		}
-		if err := grabsStore.UpdateStatus(ctx, g.ID, grabs.Failed); err != nil {
-			log.Printf("trakt watchlist ingest: cancelling grab %d after ingest was turned off: %v", g.ID, err)
-		}
-	}
+	cancelListOriginRetries(ctx, grabsStore, grabOriginTraktWatchlist, traktWatchlistIngestOffReason, "trakt watchlist ingest")
 }

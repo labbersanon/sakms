@@ -345,12 +345,11 @@ func runUsenetRetryCycle(ctx context.Context, deps AutoGrabDeps, build sessionBu
 	// Troubleshooting: library_items.upgrade_watch; TriggerQualityWatch.
 	// Review if: this hunt should share the drain tick with air-date.
 	monitorMovieUpgradeWatch(ctx, deps, build, libStore, excluded)
-	// Claude 2026-09-28: seventh pass — Trakt watchlist ingest.
-	// Reason: Discover already fetches the list; this pass mints Requests /
-	//   series monitors. Live fetch, not the Discover cache. Daily cycle only.
-	// Troubleshooting: trakt_watchlist_ingest_enabled; grabs.origin=trakt-watchlist.
-	// Review if: other list types join this pass.
-	monitorTraktWatchlist(ctx, deps, build, libStore, excluded)
+	// Claude 2026-09-28: seventh pass — Trakt / TMDB / IMDb list ingest.
+	// Reason: Discover already fetches Trakt; TMDB/IMDb share the same
+	//   movie-Request / series-monitor-all dispatch and one cycle budget.
+	// Troubleshooting: *_list_ingest_enabled / trakt_watchlist_ingest_enabled.
+	monitorListIngests(ctx, deps, build, libStore, excluded)
 
 	// Claude 2026-09-17: park hygiene at end of every retry cycle.
 	// Reason: stranded-recovery and malformed-schedule repair run on the same

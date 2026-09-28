@@ -114,11 +114,16 @@ const renderOwned = (opts: OwnedOpts = {}) => {
     (mode === "adult" && aspect !== "vertical" ? "16 / 9" : undefined);
   return render(() => (
     <MemoryRouter history={history}>
-      <LibraryView
-        mode={mode}
-        initialTier={opts.initialTier}
-        aspect={aspect}
-        posterAspect={posterAspect}
+      <Route
+        path="/discover/owned"
+        component={() => (
+          <LibraryView
+            mode={mode}
+            initialTier={opts.initialTier}
+            aspect={aspect}
+            posterAspect={posterAspect}
+          />
+        )}
       />
     </MemoryRouter>
   ));
@@ -151,9 +156,14 @@ const renderOwnedTabs = (
   history.set({ value: "/discover/owned", replace: true });
   return render(() => (
     <MemoryRouter history={history}>
-      <OwnedTabHarness
-        initialMode={opts.initialMode}
-        initialTier={opts.initialTier}
+      <Route
+        path="/discover/owned"
+        component={() => (
+          <OwnedTabHarness
+            initialMode={opts.initialMode}
+            initialTier={opts.initialTier}
+          />
+        )}
       />
     </MemoryRouter>
   ));

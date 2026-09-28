@@ -55,7 +55,7 @@ func TestPrecheck_FullCheck_OkWhenAllPresent(t *testing.T) {
 		t.Fatalf("PayloadSegments=%d want 20", res.PayloadSegments)
 	}
 	if n := srv.statCount.Load(); n != 20 {
-		t.Fatalf("statCount=%d want 20 (full payload STAT)", n)
+		t.Fatalf("statCount=%d want 20", n)
 	}
 }
 
@@ -176,7 +176,7 @@ func TestPrecheck_StatUnreliable_StillSTATsEveryArticle(t *testing.T) {
 		t.Fatalf("precheckNZB: %v", err)
 	}
 	if res.Checked != 8 {
-		t.Fatalf("Checked=%d want 8 (gate must still STAT after unreliable latch)", res.Checked)
+		t.Fatalf("Checked=%d want 8", res.Checked)
 	}
 	if n := srv.statCount.Load(); n != 8 {
 		t.Fatalf("statCount=%d want 8", n)
@@ -193,13 +193,13 @@ func TestPrecheck_LyingStatDoesNotWaiveRealHole(t *testing.T) {
 	m := New(Config{Servers: []ServerConfig{srv.cfg()}, StagingDir: staging, HTTPClient: nzbHTTP.Client()})
 	gid, err := m.AddNZB(context.Background(), nzbHTTP.URL, "LiePlusHole")
 	if !errors.Is(err, ErrArticlesUnavailable) {
-		t.Fatalf("err=%v want ErrArticlesUnavailable (seg4 is a real hole)", err)
+		t.Fatalf("err=%v want ErrArticlesUnavailable", err)
 	}
 	if gid != "" {
 		t.Fatalf("gid=%q want empty", gid)
 	}
 	if n := srv.bodyCount.Load(); n < 1 {
-		t.Fatalf("bodyCount=%d want BODY confirm of STAT misses", n)
+		t.Fatalf("bodyCount=%d want >= 1", n)
 	}
 }
 
@@ -214,10 +214,10 @@ func TestPrecheck_AllStatLiesButBodyPresent(t *testing.T) {
 		t.Fatalf("precheckNZB: %v", err)
 	}
 	if !res.StatUnreliable {
-		t.Fatal("expected StatUnreliable after BODY confirmed every STAT miss")
+		t.Fatal("expected StatUnreliable")
 	}
 	if n := srv.bodyCount.Load(); n != 4 {
-		t.Fatalf("bodyCount=%d want 4 (every STAT miss BODY-confirmed)", n)
+		t.Fatalf("bodyCount=%d want 4", n)
 	}
 }
 
@@ -250,10 +250,10 @@ func TestPrecheck_IncludesPar2Articles(t *testing.T) {
 	m := New(Config{Servers: []ServerConfig{srv.cfg()}, StagingDir: t.TempDir()})
 	_, err = m.precheckNZB(context.Background(), nzb, nil, "")
 	if !errors.Is(err, ErrArticlesUnavailable) {
-		t.Fatalf("err=%v want ErrArticlesUnavailable (missing par2 article)", err)
+		t.Fatalf("err=%v want ErrArticlesUnavailable", err)
 	}
 	if n := srv.statCount.Load(); n != 3 {
-		t.Fatalf("statCount=%d want 3 (bin + par2)", n)
+		t.Fatalf("statCount=%d want 3", n)
 	}
 }
 

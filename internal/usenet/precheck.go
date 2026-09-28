@@ -179,16 +179,13 @@ func (m *Manager) precheckNZB(ctx context.Context, nzb *NZB, skip map[string]boo
 		return res, nil
 	}
 
-	// BODY-confirm every STAT miss on the caller ctx (not the STAT timeout).
-	// One lying STAT must not waive the rest; a real 430 still aborts the NZB
-	// so RunAutoGrab can take the next alternate. Bytes are discarded — this
-	// is existence, not the download pipeline.
+	// confirmMissingArticles uses the caller ctx, not the STAT timeout.
 	confirmed := m.confirmMissingArticles(ctx, missIDs, progressGID)
 	if len(confirmed) < len(missIDs) {
 		m.markStatUnreliable()
 		res.StatUnreliable = true
 	}
-	if len(confirmed) == 0 && removed == 0 {
+	if len(confirmed) == 0 {
 		log.Printf("usenet precheck: ok after BODY confirm checked=%d payload=%d stat_misses=%d (STAT unreliable)",
 			res.Checked, res.PayloadSegments, len(missIDs))
 		return res, nil
@@ -511,8 +508,7 @@ func (m *Manager) confirmMissingArticles(ctx context.Context, misses []sampledSe
 	return confirmed
 }
 
-// trustProbeBody reports whether any pool serves msgID's BODY, which means a
-// preceding 430 from STAT was a lie and the precheck gate cannot be trusted.
+// trustProbeBody reports whether any pool serves msgID's BODY (STAT 430 was a lie).
 func (m *Manager) trustProbeBody(ctx context.Context, msgID string) bool {
 	for _, p := range m.currentPools() {
 		select {

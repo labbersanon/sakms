@@ -339,8 +339,7 @@ type fakeNNTP struct {
 
 	bodyCount atomic.Int64
 	statCount atomic.Int64
-	// lieStat: STAT 430 even when the article body is present (provider lie).
-	lieStat map[string]bool
+	lieStat   map[string]bool // STAT 430 while BODY is still served
 
 	// gate, when non-nil, blocks every BODY response until it is closed. Each
 	// blocked request first signals on blocked (best-effort, never blocking).

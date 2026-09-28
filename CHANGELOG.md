@@ -9630,3 +9630,21 @@ status stays active.
 | `internal/usenet/usenet_test.go` | fakeNNTP `lieStatIDs` |
 | `docs/usenet-precheck.md` | BODY confirm + PAR2 in the STAT set |
 
+## 2026-09-28 — Unpack with no video fail-closes to the next NZB
+
+**Problem:** When staging had no RAR/zip leaders, unpack returned success. Finalize only fail-closed no-video if PAR2 had already failed, so a hollow download could mark Complete.
+**Fix:** `ErrNoVideoUnpacked` (wraps `ErrContentUnusable`). No-archive staging without a video ext, and unpack that extracts no video, error before Complete. Requests reason is "no usable video — trying a different release".
+**Outcome:** No-video unpack parks the next Usenet alternate instead of completing hollow.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/content.go` | `ErrNoVideoUnpacked` |
+| `internal/usenet/unpack.go` | No-archive/no-video and unpack-no-video wrap the sentinel |
+| `internal/usenet/manager.go` | PAR2-fail + no video wraps `ErrNoVideoUnpacked` |
+| `internal/api/usenetcontent.go` | Reason maps `ErrNoVideoUnpacked` like `ErrNoVideoFile` |
+| `internal/usenet/unpack_test.go` | nfo-only dir errors |
+| `internal/usenet/finalize_assembled_test.go` | no-PAR2 nfo-only fail-closed |
+| `docs/usenet-alternate-release.md` | Trigger row |
+

@@ -575,6 +575,9 @@ func TestContentNoVideoReason(t *testing.T) {
 	if got := contentFailureReason(err); got != contentNoVideoReason {
 		t.Errorf("contentFailureReason(ErrNoVideoFile) = %q, want %q", got, contentNoVideoReason)
 	}
+	if got := contentFailureReason(usenet.ErrNoVideoUnpacked); got != contentNoVideoReason {
+		t.Errorf("contentFailureReason(ErrNoVideoUnpacked) = %q, want %q", got, contentNoVideoReason)
+	}
 	err2 := fmt.Errorf("%w: par2", usenet.ErrContentUnusable)
 	if got := contentFailureReason(err2); got != contentUnpackFailedReason {
 		t.Errorf("contentFailureReason(ErrContentUnusable) = %q, want %q", got, contentUnpackFailedReason)

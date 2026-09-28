@@ -324,3 +324,50 @@ func TestFinalizeAssembled_NoPar2_Unchanged(t *testing.T) {
 		t.Fatalf("completeGID=%q errorFired=%v", completeGID, errorFired)
 	}
 }
+
+func TestFinalizeAssembled_NoPar2NoVideo_FailClosed(t *testing.T) {
+	m := New(Config{StagingDir: t.TempDir(), MaxConcurrentDownloads: 1})
+	dl := registerFinalizeDL(t, m, "nzb-finalize-nfo-only")
+	nfo := filepath.Join(dl.stagingDir, "readme.nfo")
+	if err := os.WriteFile(nfo, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var (
+		mu       sync.Mutex
+		gotErr   error
+		complete bool
+		fired    = make(chan struct{})
+		once     sync.Once
+	)
+	m.SetOnComplete(func(string, []string) {
+		mu.Lock()
+		complete = true
+		mu.Unlock()
+	})
+	m.SetOnError(func(_ string, failure error) {
+		mu.Lock()
+		gotErr = failure
+		mu.Unlock()
+		once.Do(func() { close(fired) })
+	})
+
+	m.finalizeAssembled(context.Background(), dl.gid, dl, []string{nfo})
+
+	select {
+	case <-fired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("onError did not fire")
+	}
+	if dl.status != "error" {
+		t.Fatalf("status=%q want error", dl.status)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if complete {
+		t.Fatal("onComplete must not fire when unpack produced no video")
+	}
+	if !errors.Is(gotErr, ErrNoVideoUnpacked) {
+		t.Fatalf("want ErrNoVideoUnpacked, got %v", gotErr)
+	}
+}

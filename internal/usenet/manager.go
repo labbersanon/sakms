@@ -1608,7 +1608,7 @@ func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState
 			dl.status = "error"
 			dl.setPhase("")
 			dl.errorMsg = repairErr.Error()
-			dl.err = fmt.Errorf("%w: %w", ErrContentUnusable, repairErr)
+			dl.err = fmt.Errorf("%w: %w", ErrNoVideoUnpacked, repairErr)
 			failed = true
 			log.Printf("usenet: par2 repair %s: %v (no video after unpack — not marking complete)", gid, repairErr)
 		}

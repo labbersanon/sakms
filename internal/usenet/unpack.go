@@ -41,8 +41,8 @@ var (
 // (flat), then deletes the archive members on success. Failure is returned for
 // the caller to log; the original files slice is still usable.
 //
-// If no archives are present, or no unpacker is on PATH, files is returned
-// unchanged with a nil error.
+// If no archives are present, a video already in dir is a no-op success.
+// No archives and no video is ErrNoVideoUnpacked (try a different NZB).
 func unpackArchives(dir string, files []string, onProgress func(done, total int64)) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -60,7 +60,16 @@ func unpackArchives(dir string, files []string, onProgress func(done, total int6
 	}
 	leaders := archiveLeaders(names)
 	if len(leaders) == 0 {
-		return listStagingFiles(dir, files), nil
+		listed := listStagingFiles(dir, files)
+		// Claude 2026-09-28: no-archive staging must still deliver a video.
+		// Reason: unpack used to return nil here; finalize then marked complete
+		//   whenever PAR2 did not fail. Hollow Complete never unpacked a video.
+		// Troubleshooting: Downloads Complete, import "no video file found".
+		// Review if: disc images (.iso) should pass this gate.
+		if len(videoNamesInDir(dir)) == 0 {
+			return listed, fmt.Errorf("%w in %s", ErrNoVideoUnpacked, dir)
+		}
+		return listed, nil
 	}
 
 	unrarPath, unrarErr := lookPath("unrar")
@@ -150,9 +159,9 @@ func unpackArchives(dir string, files []string, onProgress func(done, total int6
 	afterVideos := videoNamesInDir(dir)
 	if !gainedVideo(beforeVideos, afterVideos) {
 		if firstErr != nil {
-			return files, fmt.Errorf("unpack: no video produced in %s (last leader error: %w)", dir, firstErr)
+			return files, fmt.Errorf("%w in %s (last leader error: %w)", ErrNoVideoUnpacked, dir, firstErr)
 		}
-		return files, fmt.Errorf("unpack: completed without producing a video file in %s", dir)
+		return files, fmt.Errorf("%w in %s", ErrNoVideoUnpacked, dir)
 	}
 
 	if err := deleteArchiveMembers(dir); err != nil {

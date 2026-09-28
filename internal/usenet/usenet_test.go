@@ -573,7 +573,7 @@ type testPayload struct {
 
 func makePayload(t *testing.T, segCount, partSize int) testPayload {
 	t.Helper()
-	p := testPayload{filename: "release.bin"}
+	p := testPayload{filename: "release.mkv"}
 	p.full = make([]byte, segCount*partSize)
 	for i := range p.full {
 		p.full[i] = byte(i % 251)
@@ -588,7 +588,7 @@ func makePayload(t *testing.T, segCount, partSize int) testPayload {
 	}
 	p.nzbXML = `<?xml version="1.0" encoding="UTF-8"?>
 <nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
-  <file poster="p@example.com" date="0" subject="release.bin (1/1)">
+  <file poster="p@example.com" date="0" subject="release.mkv (1/1)">
     <groups><group>alt.binaries.test</group></groups>
     <segments>
 ` + segs.String() + `    </segments>

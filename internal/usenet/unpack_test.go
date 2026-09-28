@@ -3,6 +3,7 @@ package usenet
 import (
 	"archive/zip"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -45,6 +46,18 @@ func TestUnpackArchives_NoArchives_NoOp(t *testing.T) {
 	}
 	if len(got) != 1 || got[0] != mkv {
 		t.Fatalf("got %v, want [%s]", got, mkv)
+	}
+}
+
+func TestUnpackArchives_NoArchivesNoVideo_Errors(t *testing.T) {
+	dir := t.TempDir()
+	nfo := filepath.Join(dir, "readme.nfo")
+	if err := os.WriteFile(nfo, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := unpackArchives(dir, []string{nfo}, nil)
+	if !errors.Is(err, ErrNoVideoUnpacked) {
+		t.Fatalf("err=%v want ErrNoVideoUnpacked", err)
 	}
 }
 

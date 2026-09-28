@@ -20,6 +20,15 @@ import (
 // repair a non-archive staging dir, or the assembly produced no usable video.
 var ErrContentUnusable = errors.New("usenet: the downloaded release is unusable")
 
+// Claude 2026-09-28: unpack/flat staging with no playable video is its own sentinel.
+// Reason: no-archive + no video used to return nil from unpackArchives, then
+//   finalize marked complete (PAR2-ok path). Import sometimes never parked.
+//   Operators saw "Complete" then "no video unpacked". Fail-closed here so
+//   applyUsenetFailure parks the next Usenet alternate like a 430.
+// Troubleshooting: journal "unpack produced no video"; Requests no-usable-video reason.
+// Review if: ISO/IMG disc images should count as delivery without a video ext.
+var ErrNoVideoUnpacked = fmt.Errorf("%w: unpack produced no video", ErrContentUnusable)
+
 // Claude 2026-09-19: typed password-archive sentinel (wraps ErrContentUnusable).
 // Reason: operators need a distinct reason + fail-fast path; routing stays on
 //   the alternate-release park via errors.Is(..., ErrContentUnusable).

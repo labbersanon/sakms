@@ -322,6 +322,12 @@ func runUsenetRetryCycle(ctx context.Context, deps AutoGrabDeps, build sessionBu
 	// Claude 2026-08-24: fifth pass — Adult monitored-entity dispatch.
 	// Reads pool for scenes added since monitored_since, dispatches auto-grabs.
 	monitorAdultEntities(ctx, deps, build, libStore, monitoredStore, releaseStore, excluded, now)
+	// Claude 2026-09-28: sixth pass — movie upgrade-watch.
+	// Reason: ROADMAP owned-movie hunt; opt-in flag + prefs-floor cutoff;
+	//   same RunAutoGrab gate as air-date. Daily cycle only, not the 60s drain.
+	// Troubleshooting: library_items.upgrade_watch; TriggerQualityWatch.
+	// Review if: this hunt should share the drain tick with air-date.
+	monitorMovieUpgradeWatch(ctx, deps, build, libStore, excluded)
 
 	// Claude 2026-09-17: park hygiene at end of every retry cycle.
 	// Reason: stranded-recovery and malformed-schedule repair run on the same
@@ -407,9 +413,11 @@ func sweepUsenetFailures(ctx context.Context, deps AutoGrabDeps, lookup usenetDo
 //
 // Claude 2026-09-19: ErrArticleNotFound (430) parks for a DIFFERENT Usenet release.
 // Reason: missing message-IDs are a property of this NZB; another release (often
-//   another group) has different articles. Immediate Usenet re-search of the SAME
-//   NZB is futile — alternate-release park is not. Torrent escalation was the
-//   prior behaviour and skipped working Usenet alternates (e.g. EDITH after RiPER 430).
+//
+//	another group) has different articles. Immediate Usenet re-search of the SAME
+//	NZB is futile — alternate-release park is not. Torrent escalation was the
+//	prior behaviour and skipped working Usenet alternates (e.g. EDITH after RiPER 430).
+//
 // Review if: after alternate-cap, torrent escalation should return as a second stage.
 func applyUsenetFailure(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, failure error, park grabParker) (grabs.Status, error) {
 	status := classifyDownloadState("error", failure)

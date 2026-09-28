@@ -49,9 +49,11 @@ var ErrIdentityConflict = errors.New("library: catalog identity already belongs 
 
 // Claude 2026-09-17: content-unusable sentinel for the library layer.
 // Reason: ResolveVideoFile/ResolveEpisodeVideoFiles return a bare fmt.Errorf today.
-//   The api layer needs errors.Is to distinguish "no usable video in staging" (try
-//   a different release) from every other import error (log-and-return unchanged).
-//   ErrNoVideoFile is %w-wrapped at both sites so errors.Is works through the chain.
+//
+//	The api layer needs errors.Is to distinguish "no usable video in staging" (try
+//	a different release) from every other import error (log-and-return unchanged).
+//	ErrNoVideoFile is %w-wrapped at both sites so errors.Is works through the chain.
+//
 // Troubleshooting: "no video file found under …" / "no video files found under …".
 // Review if: a third resolve site is added (wrap it the same way).
 // Related files: internal/api/usenetcontent.go (routing predicate).
@@ -84,6 +86,14 @@ type Item struct {
 	//   must not be copied here on GET /tracked.
 	// Review if: half-stars or a 10-point scale land.
 	Rating int `json:"rating,omitempty"`
+	// Claude 2026-09-28: opt-in hunt for a release that meets this title's
+	//   quality prefs. Default false. Upsert must not write this column.
+	// Reason: ROADMAP movie upgrade-watch; distinct from the derived
+	//   Monitored chip (active grab). The daily retry cycle skips when the
+	//   on-disk file already meets prefs.
+	// Troubleshooting: library_items.upgrade_watch; monitorMovieUpgradeWatch.
+	// Review if: Series gains a matching per-episode flag.
+	UpgradeWatch bool `json:"upgradeWatch,omitempty"`
 	// PHash is the SAK-computed perceptual hash of this item's video file,
 	// cached so Dedup decodes each tracked file once rather than every Scan.
 	// PHashFileSize/PHashFileMTime are the file-identity key it's valid for:
@@ -189,7 +199,7 @@ func (s *Store) List(ctx context.Context, m mode.Mode) ([]Item, error) {
 		       li.phash, li.phash_file_size, li.phash_file_mtime, li.created_at, li.updated_at,
 		       COALESCE(c.tmdb_collection_id, 0), COALESCE(c.name, ''),
 		       COALESCE(li.genres, '[]'), COALESCE(li."cast", '[]'),
-		       li.size, li.quality_tier, li.rating
+		       li.size, li.quality_tier, li.rating, li.upgrade_watch
 		FROM library_items li
 		LEFT JOIN library_collections c ON c.id = li.collection_id
 		WHERE li.mode = ? ORDER BY li.title
@@ -217,7 +227,7 @@ func (s *Store) Get(ctx context.Context, id int64) (*Item, error) {
 		       li.phash, li.phash_file_size, li.phash_file_mtime, li.created_at, li.updated_at,
 		       COALESCE(c.tmdb_collection_id, 0), COALESCE(c.name, ''),
 		       COALESCE(li.genres, '[]'), COALESCE(li."cast", '[]'),
-		       li.size, li.quality_tier, li.rating
+		       li.size, li.quality_tier, li.rating, li.upgrade_watch
 		FROM library_items li
 		LEFT JOIN library_collections c ON c.id = li.collection_id
 		WHERE li.id = ?
@@ -241,7 +251,7 @@ func (s *Store) GetByTMDBID(ctx context.Context, m mode.Mode, tmdbID int) (*Item
 		       li.phash, li.phash_file_size, li.phash_file_mtime, li.created_at, li.updated_at,
 		       COALESCE(c.tmdb_collection_id, 0), COALESCE(c.name, ''),
 		       COALESCE(li.genres, '[]'), COALESCE(li."cast", '[]'),
-		       li.size, li.quality_tier, li.rating
+		       li.size, li.quality_tier, li.rating, li.upgrade_watch
 		FROM library_items li
 		LEFT JOIN library_collections c ON c.id = li.collection_id
 		WHERE li.mode = ? AND li.tmdb_id = ?
@@ -444,7 +454,7 @@ func scanItem(row rowScanner) (Item, error) {
 		&item.CreatedAt, &item.UpdatedAt,
 		&item.TMDBCollectionID, &item.CollectionName,
 		&genresJSON, &castJSON,
-		&item.Size, &item.QualityTier, &item.Rating); err != nil {
+		&item.Size, &item.QualityTier, &item.Rating, &item.UpgradeWatch); err != nil {
 		return Item{}, err
 	}
 	item.Mode = mode.Mode(m)

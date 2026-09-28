@@ -255,6 +255,10 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("PUT /api/modes/series/library/tmdb/{tmdbId}/quality-prefs", putSeriesQualityPrefsByTMDBHandler(tq))
 	mux.HandleFunc("GET /api/modes/movies/library/tmdb/{tmdbId}/quality-prefs", getMovieQualityPrefsByTMDBHandler(tq))
 	mux.HandleFunc("PUT /api/modes/movies/library/tmdb/{tmdbId}/quality-prefs", putMovieQualityPrefsByTMDBHandler(tq))
+	// Claude 2026-09-28: opt-in movie upgrade-watch (ROADMAP owned-movie hunt).
+	// Reason: quality-prefs GET carries the flag; this PUT is the write + cancel.
+	// Troubleshooting: TitleQualityPrefs "Watch for better release" switch.
+	mux.HandleFunc("PUT /api/modes/movies/library/tmdb/{tmdbId}/upgrade-watch", putMovieUpgradeWatchHandler(libStore, grabsStore))
 
 	// Server-side directory browser for the Settings root-folder pickers +
 	// their as-you-type autocomplete — restricted to the mounted roots (see

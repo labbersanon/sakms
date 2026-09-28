@@ -9741,4 +9741,23 @@ status stays active.
 | `frontend/src/testing/http.ts` | Generic `asPage`; Rename tests reuse it |
 | `frontend/src/screens/Requests.tsx` | Missing-episodes toggle uses `FilterChip` |
 
+## 2026-09-28 — Watch an owned movie for a better release
+
+**Problem:** Once a movie was on disk, SAK stopped looking. Raising per-title quality prefs could park a one-shot upgrade search, but there was no way to leave an owned title watching for a release that meets the current floor.
+**Fix:** Opt-in `library_items.upgrade_watch` (default off; Upsert does not touch it). The daily retry cycle's sixth pass (`monitorMovieUpgradeWatch`) runs `RunAutoGrab` with `TriggerQualityWatch` while the flag is on and the on-disk file is still below that title's quality prefs. The file is a cutoff, not a ranking target. Turning the flag off cancels never-dispatched watch-originated retries (`grabs.origin=upgrade-watch`). The Library/Discover Monitored chip also lights when the flag is on. UI: "Watch for better release" on the movie quality card.
+**Outcome:** An owned movie hunts on the auto-grab cycle until a qualifying release is found or the operator turns the flag off. Auto-grab remains the gate. Not merged/deployed with this change.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/db/migrations/0033_library_items_upgrade_watch.sql` | `upgrade_watch` boolean, default false |
+| `internal/library/library.go` / `library_upgrade_watch.go` | Field, Set, List; Upsert leaves the column alone |
+| `internal/api/movieupgradewatch.go` | Sixth retry-cycle pass + PUT handler |
+| `internal/api/usenetretry.go` | Calls the pass before park hygiene |
+| `internal/api/titlequality.go` | Movie quality-prefs GET/PUT carry the flag |
+| `internal/api/tracked.go` | Monitored ORs `upgrade_watch` |
+| `frontend/src/components/TitleQualityPrefs.tsx` | Watch switch for owned movies |
+| `docs/ROADMAP.md` | Deferred item marked shipped |
+
 

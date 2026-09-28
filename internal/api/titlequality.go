@@ -94,7 +94,8 @@ func getMovieQualityPrefsByTMDBHandler(deps titleQualityDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		writeJSON(w, effectiveTitleQualityPrefs(r.Context(), deps, mode.Movies, tmdbID))
+		out := effectiveTitleQualityPrefs(r.Context(), deps, mode.Movies, tmdbID)
+		writeJSON(w, attachMovieUpgradeWatch(r.Context(), deps.lib, tmdbID, out))
 	}
 }
 
@@ -122,7 +123,7 @@ func putTitleQualityPrefs(w http.ResponseWriter, r *http.Request, deps titleQual
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, effectiveTitleQualityPrefs(ctx, deps, m, tmdbID))
+		writeTitleQualityPrefs(w, ctx, deps, m, tmdbID, effectiveTitleQualityPrefs(ctx, deps, m, tmdbID))
 		return
 	}
 
@@ -146,6 +147,13 @@ func putTitleQualityPrefs(w http.ResponseWriter, r *http.Request, deps titleQual
 	out := effectiveTitleQualityPrefs(ctx, deps, m, tmdbID)
 	if qualityPrefsRaised(prev, out) {
 		out.UpgradeQueued = queueQualityUpgrades(ctx, deps, m, tmdbID, series, out)
+	}
+	writeTitleQualityPrefs(w, ctx, deps, m, tmdbID, out)
+}
+
+func writeTitleQualityPrefs(w http.ResponseWriter, ctx context.Context, deps titleQualityDeps, m mode.Mode, tmdbID int, out apidto.TitleQualityPrefsResponse) {
+	if m == mode.Movies {
+		out = attachMovieUpgradeWatch(ctx, deps.lib, tmdbID, out)
 	}
 	writeJSON(w, out)
 }

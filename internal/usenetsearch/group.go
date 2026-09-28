@@ -9,9 +9,6 @@ import (
 // assembleFromRows builds one Candidate from ordered header rows for a release.
 func assembleFromRows(group, release string, rows *sql.Rows) (Candidate, error) {
 	c := Candidate{Name: release, Group: group}
-	type fileKey struct {
-		fn string
-	}
 	files := map[string]*CandidateFile{}
 	var order []string
 	var maxM int

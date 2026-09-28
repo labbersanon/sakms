@@ -2,9 +2,9 @@
 // queue: Scan enqueues proposals server-side, the operator reviews each row, and
 // each single-item mutating action (Apply / Give back / Re-pick / Dismiss) still
 // acts on EXACTLY ONE already-listed proposal via its own button. On top of that
-// there is now one bounded bulk affordance — applyBatch, backing the opt-in
-// "Apply Selected" multi-select of already-reviewed Pending rows — which the
-// backend applies sequentially with skip-and-continue (not a queue-wide
+// there is now one bounded bulk affordance — applyBatchStreaming, backing the
+// opt-in "Apply Selected" multi-select of already-reviewed Pending rows — which
+// the backend applies sequentially with skip-and-continue (not a queue-wide
 // apply-all, and it does not change how any single row applies). Every call goes
 // through api() (src/api/client.ts) so it inherits the session cookie and the
 // global 401 → re-boot session-expiry fallback. Response shapes are the
@@ -21,8 +21,6 @@ import type {
   AdultReviewPreview,
   AdultSceneSearchResponse,
   AdultSceneResolveResponse,
-  ApplyBatchItem,
-  ApplyBatchResponse,
   DeleteBatchRequest,
   DeleteBatchResponse,
   DiscoverItem,
@@ -82,15 +80,6 @@ export function dismissProposal(id: number): Promise<unknown> {
   return api(`/api/proposals/${id}/dismiss`, { method: "POST" });
 }
 
-export function applyBatch(
-  items: ApplyBatchItem[],
-): Promise<ApplyBatchResponse> {
-  return api<ApplyBatchResponse>(`/api/proposals/apply-batch`, {
-    method: "POST",
-    body: JSON.stringify({ items }),
-  });
-}
-
 /** Rename's Delete action — see .omc/plans/autopilot-impl.md §1. */
 export function deleteBatch(
   items: DeleteBatchRequest["items"],
@@ -102,10 +91,6 @@ export function deleteBatch(
 }
 
 export { applyBatchStreaming };
-
-export function submitDraft(id: number): Promise<unknown> {
-  return api(`/api/proposals/${id}/submit-draft`, { method: "POST" });
-}
 
 export function tmdbSearch(mode: Mode, query: string): Promise<DiscoverItem[]> {
   return api<DiscoverItem[]>(

@@ -205,14 +205,6 @@ func (s *Store) SubscriberCount() int {
 	return s.broadcaster.count()
 }
 
-func (s *Store) toSummary(w Webhook) Summary {
-	return Summary{
-		ID: w.ID, URL: w.URL, SecretSet: w.Secret != "",
-		Events: w.Events, Enabled: w.Enabled,
-		CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt,
-	}
-}
-
 func eventsToJSON(events []string) string {
 	b, _ := json.Marshal(events)
 	return string(b)

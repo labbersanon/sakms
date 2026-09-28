@@ -77,12 +77,6 @@ export function fetchOrganizeEvents(
   return api<OrganizeEvent[]>(`/api/organize/events?${q}`, { signal });
 }
 
-export function fetchPendingIDs(mode: string): Promise<number[]> {
-  return api<{ ids: number[] }>(
-    `/api/modes/${mode}/rename/proposals/pending-ids`,
-  ).then((r) => r.ids ?? []);
-}
-
 // proposalVideoUrl builds the src for a <video> preview: the workflow-generic,
 // provenance-only streaming endpoint that resolves {mode, proposalId} — plus an
 // optional candidateIndex for a candidate-carrying (Dedup) proposal — to a file

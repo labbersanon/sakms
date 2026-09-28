@@ -9,13 +9,6 @@ import type { BulkCancelResponse, Download, DownloadPauseState } from "@dto";
 
 export type { BulkCancelResponse, Download, DownloadPauseState };
 
-// fetchDownloads lists the current merged queue (active + waiting + recent
-// stopped). The Downloads screen uses the SSE stream for live updates; this is
-// the one-shot fallback / initial paint helper.
-export function fetchDownloads(): Promise<Download[]> {
-  return api<Download[]>("/api/downloads");
-}
-
 // cancelDownload removes a download and clears its stopped-list result — a true
 // "remove it entirely" for the queue UI.
 export function cancelDownload(gid: string): Promise<void> {

@@ -49,7 +49,6 @@ import type {
   NetscanHostRequest,
   NetscanProwlarrKeyRequest,
   NetscanProwlarrKeyResponse,
-  NodeBrowseResponse,
   NodePathMappingsResponse,
   NodePauseRequest,
   NodeSettingsRequest,
@@ -970,14 +969,4 @@ export function updateNodePause(id: string, paused: boolean): Promise<void> {
 // come from Library settings, not from node approval/connection state.
 export function fetchNodePathMappings(id: string): Promise<NodePathMappingsResponse> {
   return api<NodePathMappingsResponse>(`/api/nodes/${id}/path-mappings`);
-}
-
-// fetchNodeBrowse lists the subdirectories of a path on a specific connected
-// node's own filesystem (not the server's) — only usable for an already-
-// approved, currently-connected node. Throws with a clear message (surfaced
-// by the caller) when the node isn't connected or doesn't answer in time.
-export function fetchNodeBrowse(id: string, path: string): Promise<NodeBrowseResponse> {
-  return api<NodeBrowseResponse>(
-    `/api/nodes/${id}/browse?path=${encodeURIComponent(path)}`,
-  );
 }

@@ -64,22 +64,6 @@ func (uf *pHashUnionFind) union(x, y int) {
 	uf.parent[uf.find(x)] = uf.find(y)
 }
 
-func sameMovieIdentity(a, b pHashFileItem) bool {
-	return a.tmdbID != 0 && a.tmdbID == b.tmdbID
-}
-
-// sameEpisodeIdentity requires a real episode slot, not a failed filename
-// parse (0, 0). Series TMDB id alone would merge every episode of a show.
-func sameEpisodeIdentity(a, b pHashFileItem) bool {
-	if a.tmdbID == 0 || a.tmdbID != b.tmdbID {
-		return false
-	}
-	if a.season == 0 && a.episode == 0 {
-		return false
-	}
-	return a.season == b.season && a.episode == b.episode
-}
-
 // phashWithin reports whether a and b both hashed successfully and are within
 // perFrameThreshold of each other. A missing hash never groups.
 func phashWithin(a, b pHashFileItem, perFrameThreshold int) bool {

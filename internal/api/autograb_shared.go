@@ -73,10 +73,6 @@ const (
 	// the retry scheduler, the same convention every other interval-backed job
 	// in this package follows (see interval.go).
 	usenetRetryIntervalSecondsKey = "usenet_retry_interval_seconds"
-	// defaultUsenetRetryIntervalSeconds is the spec's 24-hour fallback for an
-	// unset or switched-off retry interval. It no longer backs retry_after —
-	// parks moved to grabs.RetryBackoff (see the note above parkGrabForRetry).
-	defaultUsenetRetryIntervalSeconds = 86400
 
 	// autoGrabDrainIntervalKey is the drain worker's cadence setting.
 	// 0 = off (default), written to 60 by putUsenetAutoGrabEnabledHandler
@@ -765,16 +761,6 @@ func parkPreReleaseRequest(ctx context.Context, grabsStore *grabs.Store, m mode.
 		RetryReason: heldRequestReason,
 	})
 }
-
-// Claude 2026-09-13: usenetRetryInterval is gone — parks take their delay from
-//   grabs.RetryBackoff via ParkWithBackoff.
-// Reason: the progressive ladder must not share usenet_retry_interval_seconds
-//   with the scheduler tick and opt-in gate, which LoadUsenetRetryInterval
-//   still owns.
-// Troubleshooting: a park that always lands 24h out means a caller is still
-//   computing its own retry_after from an interval setting.
-// Review if: defaultUsenetRetryIntervalSeconds is dropped — it lost its last
-//   reader with this change, and this block goes with it.
 
 // parkGrabForRetry moves an existing grab into pending_retry after an
 // ASYNCHRONOUS retrieval failure (as opposed to parkPendingRetry, which covers

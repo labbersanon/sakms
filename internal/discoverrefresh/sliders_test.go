@@ -21,12 +21,9 @@ import (
 // the cached slice and the live call meaningful rather than a length check.
 //
 // pageItems is how many results each page carries (20, TMDB's real width) or 0
-// to serve an empty catalog. tvPages, when positive, caps how deep the TV
-// catalog goes — that is how a mixed slider whose two catalogs have UNEQUAL
-// depth is simulated.
+// to serve an empty catalog.
 type tmdbFixture struct {
 	pageItems int
-	tvPages   int
 }
 
 func (f tmdbFixture) results(base, page int) string {

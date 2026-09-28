@@ -6,10 +6,10 @@
 // the group's candidate files with the quality winner pre-flagged. The operator
 // reviews each group and resolves it with that group's OWN Apply/Keep All — one
 // group per click. On top of that there is now one bounded bulk affordance —
-// applyBatch, backing the opt-in "Apply Selected" multi-select of already-
-// reviewed Pending groups — applied sequentially server-side with skip-and-
-// continue. It is NOT a queue-wide resolve-all and does not change how any
-// single group resolves. Each batched group keeps the auto-winner unless the
+// applyBatchStreaming, backing the opt-in "Apply Selected" multi-select of
+// already-reviewed Pending groups — applied sequentially server-side with
+// skip-and-continue. It is NOT a queue-wide resolve-all and does not change how
+// any single group resolves. Each batched group keeps the auto-winner unless the
 // operator changed that group's Keep radio first, in which case that chosen
 // index rides along as the item's keepIndex.
 //
@@ -30,8 +30,6 @@
 
 import { api } from "./client";
 import type {
-  ApplyBatchItem,
-  ApplyBatchResponse,
   Candidate,
   DedupApplyRequest,
   Proposal,
@@ -42,7 +40,7 @@ import { fetchProposalPage, adultAspectQuery, type ProposalListView } from "./or
 // Dedup is structurally different from Rename (see the header comment above)
 // and the two API surfaces must not be aligned into a shared module for just
 // two callers — so this is a plain re-export, not a new abstraction.
-export { moveProposalMode, adultSceneSearch } from "./rename";
+export { moveProposalMode } from "./rename";
 
 export type { Candidate, Proposal };
 // ProposalStatus is the single shared narrowing (see discover.ts); re-exported
@@ -176,21 +174,4 @@ export function applyKeepAll(id: number): Promise<unknown> {
 // anything (leaves both copies on disk, unresolved).
 export function dismissProposal(id: number): Promise<unknown> {
   return api(`/api/proposals/${id}/dismiss`, { method: "POST" });
-}
-
-// applyBatch resolves several already-reviewed Pending duplicate groups in one
-// request (the "Apply Selected" affordance). The backend resolves them
-// sequentially and skips-and-continues on a per-item failure, returning one
-// result per requested id. Per group the caller sends keepIndex ONLY when the
-// operator overrode that group's Keep radio before selecting it — an item with
-// keepIndex omitted lets the backend fall back to its own auto-winner (the same
-// nil-vs-0 semantics as applyKeep/applyKeepAll: a real chosen index, including
-// 0, must be sent, never dropped). No keepAll is sent from the batch path.
-export function applyBatch(
-  items: ApplyBatchItem[],
-): Promise<ApplyBatchResponse> {
-  return api<ApplyBatchResponse>(`/api/proposals/apply-batch`, {
-    method: "POST",
-    body: JSON.stringify({ items }),
-  });
 }

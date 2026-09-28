@@ -72,16 +72,6 @@ func (m *Manager) setRepairFile(gid, name string) {
 	dl.repairFile = filepath.Base(name)
 }
 
-func (m *Manager) setFailingSegment(gid, msg string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	dl, ok := m.downloads[gid]
-	if !ok {
-		return
-	}
-	dl.failingSegment = msg
-}
-
 // connectionCountsLocked sums live NNTP sockets vs max across pools.
 // Caller must hold m.mu.
 func (m *Manager) connectionCountsLocked() (active, max int) {

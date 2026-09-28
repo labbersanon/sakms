@@ -15,9 +15,7 @@ import type {
   AdultSearchScenesPage,
   AvailabilityPreview,
   DiscoverItem,
-  PerformerSummary,
   PosterResponse,
-  StudioSummary,
   TitleDetail,
   TrailerResponse,
 } from "@dto";
@@ -29,8 +27,6 @@ export type {
   AdultSearchScenesPage,
   AvailabilityPreview,
   DiscoverItem,
-  PerformerSummary,
-  StudioSummary,
   TitleDetail,
 };
 
@@ -355,41 +351,6 @@ export function fetchAdultDiscoverMergedRecent(
 // down or search that needs a stash box's own scene/studio/performer catalog
 // over HTTP) — then this tombstone has served its purpose and should be removed
 // along with whatever replaces it.
-
-// fetchAdultStudios/fetchAdultPerformers/fetchAdultStudioScenes/
-// fetchAdultPerformerScenes: TPDB-only, no longer wired into the Studios/
-// Performers browse rows or their drill-down — those now use
-// fetchMergedStudios/fetchMergedPerformers/fetchMergedStudioScenes/
-// fetchMergedPerformerScenes below (TPDB+StashDB merged). The backend routes
-// these call still exist and still work; kept here pending a separate Task 8
-// dead-code decision (needs sign-off before deletion — see
-// .omc/plans/ralplan-merge-tpdb-stashbox-performers-studios.md's OQ3), not
-// currently called anywhere in this codebase.
-export function fetchAdultStudios(page = 1): Promise<StudioSummary[]> {
-  return api<StudioSummary[]>(`/api/modes/adult/studios?page=${page}`);
-}
-
-export function fetchAdultPerformers(page = 1): Promise<PerformerSummary[]> {
-  return api<PerformerSummary[]>(`/api/modes/adult/performers?page=${page}`);
-}
-
-export function fetchAdultStudioScenes(
-  id: string,
-  page = 1,
-): Promise<AdultDiscoverItem[]> {
-  return api<AdultDiscoverItem[]>(
-    `/api/modes/adult/studios/${encodeURIComponent(id)}/scenes?page=${page}`,
-  );
-}
-
-export function fetchAdultPerformerScenes(
-  id: string,
-  page = 1,
-): Promise<AdultDiscoverItem[]> {
-  return api<AdultDiscoverItem[]>(
-    `/api/modes/adult/performers/${encodeURIComponent(id)}/scenes?page=${page}`,
-  );
-}
 
 // fetchNewestEntityScenes is the RSS-derived Performers/Studios drill-down —
 // GET /api/modes/adult/discover/newest/entity-scenes?kind=&name=&page=. page=1

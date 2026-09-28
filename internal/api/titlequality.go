@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	"github.com/labbersanon/sakms/internal/apidto"
@@ -192,18 +191,6 @@ func titlePrefsResponse(tiers []quality.Tier, minRes int, inherited bool) apidto
 		Tiers: qualityTiersToStrings(tiers), Floor: string(floor),
 		MinResolution: minRes, Inherited: inherited,
 	}
-}
-
-func resolveMaxResolution(ctx context.Context, settingsStore *settings.Store, m mode.Mode) int {
-	raw, err := settingsStore.Get(ctx, maxResolutionKey(m))
-	if err != nil || raw == "" {
-		return 0
-	}
-	n, convErr := strconv.Atoi(raw)
-	if convErr != nil || n < 0 {
-		return 0
-	}
-	return n
 }
 
 // resolveAutoGrabTiersForTitle returns title override tiers when present,

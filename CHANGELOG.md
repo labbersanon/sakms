@@ -9672,3 +9672,34 @@ status stays active.
 | `docs/usenet-precheck.md` | Video peek step |
 | `docs/usenet-alternate-release.md` | Precheck no-video trigger |
 
+## 2026-09-28 — Dead-code cleanup (unused helpers and client wrappers)
+
+**Problem:** Staticcheck U1000 and the frontend import graph still carried helpers whose last callers were removed in earlier workflows (node folder picker, one-shot download list, unused applyBatch JSON wrappers, unused identity/resolution helpers).
+**Fix:** Delete proven-unreferenced Go symbols and frontend wrappers. Production routes, batch apply streaming, and library/Discover screens that tests still mount were left in place.
+**Outcome:** Same behavior; less unused surface. LibraryMainstream / LibraryCard / LibraryRowView kept because their tests still lock those UIs.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/db/opentest.go` | Deleted unused `openTestDB` |
+| `internal/api/autograb_shared.go` | Dropped unused `defaultUsenetRetryIntervalSeconds` |
+| `internal/api/discover_availability.go` | Dropped unused `discoverAvailabilityTiers` |
+| `internal/api/titlequality.go` | Dropped unused `resolveMaxResolution` |
+| `internal/dedup/dedup_phash_primary.go` | Dropped unused identity helpers |
+| `internal/usenet/details.go` | Dropped unused `setFailingSegment` |
+| `internal/webhooks/webhooks.go` | Dropped unused `toSummary` |
+| `internal/usenetsearch/group.go` | Dropped unused `fileKey` type |
+| `internal/discoverrefresh/consts.go` | Dropped unused `stripCachedPages` |
+| `internal/proposals/applygate.go` | Dropped unused test-only `Gate.reset` |
+| `internal/api/calendar_prerelease_test.go` | Dropped unused `preReleaseMuxWith` |
+| `internal/discoverrefresh/sliders_test.go` | Dropped unused `tvPages` fixture field |
+| `frontend/src/components/NodeFolderPicker.tsx` | Deleted unused picker |
+| `frontend/src/api/settings.ts` | Dropped `fetchNodeBrowse` |
+| `frontend/src/api/downloads.ts` | Dropped unused `fetchDownloads` |
+| `frontend/src/api/discover.ts` | Dropped unused TPDB-only studio/performer fetchers |
+| `frontend/src/api/organize.ts` | Dropped unused `fetchPendingIDs` |
+| `frontend/src/api/rename.ts` | Dropped unused `applyBatch` / `submitDraft` |
+| `frontend/src/api/purge.ts` / `dedup.ts` | Dropped unused `applyBatch`; screens already use streaming |
+| `frontend/src/api/pruningRules.ts` | Dropped unused tier-floor constants |
+

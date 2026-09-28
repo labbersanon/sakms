@@ -37,13 +37,18 @@ const shutdownResumeReason = "download interrupted by a restart — resuming sho
 //
 // Claude 2026-09-17: transport park keeps download_gid (see plan §4.1).
 // Reason: RelaunchNZB resumes into the SAME staging dir named by the GID; a
-//   park that cleared the GID would orphan the sidecar on the 7-day timer.
+//
+//	park that cleared the GID would orphan the sidecar on the 7-day timer.
+//
 // Review if: a resume_gid column is added (currently unnecessary; existing
-//   column semantics already cover the requirement).
+//
+//	column semantics already cover the requirement).
 //
 // Claude 2026-09-22: context.Canceled also qualifies (restart / deploy kill).
 // Reason: days-ladder ParkWithBackoff clears download_gid and orphans staging;
-//   shutdown cancel must keep the GID like a dropped socket.
+//
+//	shutdown cancel must keep the GID like a dropped socket.
+//
 // Troubleshooting: after sakms recreate, remux resumes from .sakms-resume.json.
 // Review if: fireOnError sync-parks cancel — see usenet.Manager.fireOnError.
 func parkUsenetTransportFailure(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, failure error, now time.Time) (bool, error) {
@@ -99,7 +104,7 @@ type usenetResumeEngine interface {
 //  3. Inspect the live engine state via FindByGID:
 //     - terminal (error/complete/removed) → Forget(gid) so RelaunchNZB can accept it.
 //     - non-terminal → the engine is already running it; re-arm the row via
-//       Relaunch (marks queued, clears retry fields) and continue.
+//     Relaunch (marks queued, clears retry fields) and continue.
 //  4. RelaunchNZB outcomes:
 //     - nil → success; Relaunch the row (queued, retry fields cleared).
 //     - ErrArticlesUnavailable → articles gone; clear GID, join days-ladder re-search.
@@ -157,10 +162,9 @@ func resumeDueTransportRetries(ctx context.Context, deps AutoGrabDeps, engine us
 		}
 
 		if err := engine.RelaunchNZB(ctx, g.DownloadGID, g.DownloadURL, g.Title); err != nil {
-			if errors.Is(err, usenet.ErrArticlesUnavailable) {
-				// Articles are gone; clear the GID and join the days-ladder re-search.
-				log.Printf("usenet transport: grab %d (%s) articles unavailable on resume — escalating to re-search", g.ID, g.Title)
-				if parkErr := parkGrabForRetry(ctx, deps, g.ID, articlesUnavailableReason); parkErr != nil {
+			if usenet.IsPrecheckReject(err) {
+				log.Printf("usenet transport: grab %d (%s) precheck reject on resume — escalating to re-search", g.ID, g.Title)
+				if parkErr := parkGrabForRetry(ctx, deps, g.ID, precheckParkReason(err)); parkErr != nil {
 					log.Printf("usenet transport: parking grab %d after unavailable resume: %v", g.ID, parkErr)
 				}
 				continue

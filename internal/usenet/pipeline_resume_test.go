@@ -34,9 +34,21 @@ func TestPipeline_WritesAndMarksIncrementally(t *testing.T) {
 		SegmentResume: true,
 	})
 
+	// Claude 2026-09-28: precheck video peek BODYs the first segment before
+	// AddNZB returns. Pace that token concurrently or AddNZB hangs on bodyAllow.
+	peekDone := make(chan struct{})
+	go func() {
+		srv.bodyAllow <- struct{}{}
+		close(peekDone)
+	}()
 	gid, err := m.AddNZB(context.Background(), nzbHTTP.URL, "Pipeline Incremental")
 	if err != nil {
 		t.Fatalf("AddNZB: %v", err)
+	}
+	select {
+	case <-peekDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("precheck video peek never took a BODY token")
 	}
 	dir := filepath.Join(staging, gid)
 	out := filepath.Join(dir, p.filename)

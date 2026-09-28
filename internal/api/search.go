@@ -366,7 +366,7 @@ func grabHandler(httpClient *http.Client, connStore *connections.Store, scStore 
 			// Troubleshooting: Grab returns pending_retry grab JSON; drainAlternateReleaseRetries
 			//   RunAutoGrab-searches with this URL fingerprinted out.
 			// Review if: UI should still show a toast to pick manually while retry runs.
-			if errors.Is(err, usenet.ErrArticlesUnavailable) {
+			if usenet.IsPrecheckReject(err) {
 				created, cerr := grabsStore.Create(ctx, grabs.Grab{
 					Mode: m, Title: req.Title, TMDBID: req.TMDBID, TVDBID: req.TVDBID,
 					SeasonNumber: req.SeasonNumber, EpisodeNumber: req.EpisodeNumber, SeasonSpecified: req.SeasonSpecified,
@@ -378,7 +378,7 @@ func grabHandler(httpClient *http.Client, connStore *connections.Store, scStore 
 					return
 				}
 				keys := grabs.ReleaseKeys(req.DownloadURL, req.Title)
-				if perr := grabsStore.ParkForAlternateRelease(ctx, created.ID, time.Now(), articlesUnavailableReason, keys); perr != nil {
+				if perr := grabsStore.ParkForAlternateRelease(ctx, created.ID, time.Now(), precheckParkReason(err), keys); perr != nil {
 					http.Error(w, perr.Error(), http.StatusInternalServerError)
 					return
 				}
@@ -495,38 +495,37 @@ func dispatchToDownloadClient(ctx context.Context, settingsStore *settings.Store
 			}
 			gid, err := nzb.AddArticleSet(ctx, article, title)
 			if err != nil {
-				// Claude 2026-09-22: wrap ErrArticlesUnavailable — never replace it.
-				// Reason: RunAutoGrab's alternate loop uses errors.Is on this sentinel;
-				//   a plain errors.New broke the chain so the first dead NZB aborted
-				//   the whole grab and parked, instead of trying ranked runners-up.
-				// Troubleshooting: precheck abort then park with no "trying next" log.
-				// Review if: HTTP clients need a stable message without the wrap suffix.
-				if errors.Is(err, usenet.ErrArticlesUnavailable) {
-					return "", "", http.StatusConflict, fmt.Errorf("this release's articles aren't on your subscriptions — pick another: %w", usenet.ErrArticlesUnavailable)
-				}
-				return "", "", http.StatusBadGateway, err
+				return wrapUsenetPrecheckErr(err)
 			}
 			return "nntp", gid, http.StatusOK, nil
 		}
 		gid, err := nzb.AddNZB(ctx, downloadURL, title)
 		if err != nil {
-			// Claude 2026-09-15: precheck rejection used to be a bare 409 for Search & pick.
-			// Claude 2026-09-22: ErrArticlesUnavailable is handled in grabHandler (requeue);
-			//   other callers (RunAutoGrab) still branch on this sentinel.
-			// Reason: Search & pick now parks pending_retry with tried keys so drain
-			//   can precheck alternate NZBs — same role download fallbacks used to own.
-			// Troubleshooting: Grab returns pending_retry JSON, not 409, on dead NZB.
-			// Review if: torrent path ever needs a parallel "source unavailable" park.
-			// Claude 2026-09-22: MUST wrap the sentinel (see AddArticleSet branch above).
-			if errors.Is(err, usenet.ErrArticlesUnavailable) {
-				return "", "", http.StatusConflict, fmt.Errorf("this release's articles aren't on your subscriptions — pick another: %w", usenet.ErrArticlesUnavailable)
-			}
-			return "", "", http.StatusBadGateway, err
+			return wrapUsenetPrecheckErr(err)
 		}
 		return "nntp", gid, http.StatusOK, nil
 	default:
 		return "", "", http.StatusBadRequest, fmt.Errorf("unrecognized protocol %q", protocol)
 	}
+}
+
+// wrapUsenetPrecheckErr keeps precheck sentinels on the error chain so
+// RunAutoGrab can try the next NZB. A plain errors.New used to break that.
+func wrapUsenetPrecheckErr(err error) (string, string, int, error) {
+	if errors.Is(err, usenet.ErrNoVideoUnpacked) {
+		return "", "", http.StatusConflict, fmt.Errorf("this release has no usable video — pick another: %w", usenet.ErrNoVideoUnpacked)
+	}
+	if errors.Is(err, usenet.ErrArticlesUnavailable) {
+		return "", "", http.StatusConflict, fmt.Errorf("this release's articles aren't on your subscriptions — pick another: %w", usenet.ErrArticlesUnavailable)
+	}
+	return "", "", http.StatusBadGateway, err
+}
+
+func precheckParkReason(err error) string {
+	if errors.Is(err, usenet.ErrNoVideoUnpacked) {
+		return contentNoVideoReason
+	}
+	return articlesUnavailableReason
 }
 
 func listGrabsHandler(grabsStore *grabs.Store) http.HandlerFunc {
@@ -736,7 +735,6 @@ func checkImportHandler(httpClient *http.Client, connStore *connections.Store, s
 		json.NewEncoder(w).Encode(updated)
 	}
 }
-
 
 // importUsenetFromDisk runs the shared grab-import path for a usenet staging
 // directory that already contains a video (Manager still tracking it, or the

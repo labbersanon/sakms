@@ -9648,3 +9648,27 @@ status stays active.
 | `internal/usenet/finalize_assembled_test.go` | no-PAR2 nfo-only fail-closed |
 | `docs/usenet-alternate-release.md` | Trigger row |
 
+## 2026-09-28 — Usenet precheck peeks first segments for usable video
+
+**Problem:** STAT only proved articles existed. NZBs that were nfo/image/audio (or PAR2 listing only those) still downloaded fully, using bandwidth and staging disk, then failed at unpack with `ErrNoVideoUnpacked`.
+**Fix:** After STAT ok, BODY the first segment of each payload leader. Abort with `ErrNoVideoUnpacked` when every peek is junk (JPEG/PNG/MP3 magic, PAR2 FileDesc with no video/archive, ZIP/RAR members with no video). Matroska/MP4 magic under a `.par2` name still proceeds (Ancient Aliens obfuscation). Unknown magic, truncated PAR2, and archives without inner names proceed (fail-open). Resume skip maps skip the video gate. `IsPrecheckReject` lets auto-grab / Search & pick try the next NZB.
+**Outcome:** Decorative dumps never enter BODY download; working obfuscated video still passes.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/precheck.go` | Call video peek after STAT ok |
+| `internal/usenet/precheck_video.go` | First-segment classify + abort |
+| `internal/usenet/sniff.go` | Shared payload magic sniff |
+| `internal/usenet/archive_names.go` | ZIP/RAR4 member names from a prefix |
+| `internal/usenet/content.go` | `IsPrecheckReject` |
+| `internal/usenet/manager.go` | `sniffMediaExt` uses `sniffMediaExtFrom` |
+| `internal/api/search.go` | Wrap no-video sentinel; Search & pick parks it |
+| `internal/api/autograb_shared.go` | Try next candidate on `IsPrecheckReject` |
+| `internal/api/autograb_batch.go` | Same |
+| `internal/api/downloadreconcile.go` | Relaunch park on no-video peek |
+| `internal/api/usenettransport.go` | Resume park on no-video peek |
+| `docs/usenet-precheck.md` | Video peek step |
+| `docs/usenet-alternate-release.md` | Precheck no-video trigger |
+

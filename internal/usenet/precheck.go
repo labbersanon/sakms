@@ -176,7 +176,7 @@ func (m *Manager) precheckNZB(ctx context.Context, nzb *NZB, skip map[string]boo
 
 	if len(missIDs) == 0 {
 		log.Printf("usenet precheck: ok full checked=%d payload=%d", res.Checked, res.PayloadSegments)
-		return res, nil
+		return m.finishPrecheck(ctx, payload, skip, progressGID, res)
 	}
 
 	// confirmMissingArticles uses the caller ctx, not the STAT timeout.
@@ -188,13 +188,27 @@ func (m *Manager) precheckNZB(ctx context.Context, nzb *NZB, skip map[string]boo
 	if len(confirmed) == 0 {
 		log.Printf("usenet precheck: ok after BODY confirm checked=%d payload=%d stat_misses=%d (STAT unreliable)",
 			res.Checked, res.PayloadSegments, len(missIDs))
-		return res, nil
+		return m.finishPrecheck(ctx, payload, skip, progressGID, res)
 	}
 	res.Missing = len(confirmed) + removed
 	res.WorstFile = worstFileName(payload, confirmed)
 	log.Printf("usenet precheck: abort — full missing=%d/%d worst=%q",
 		res.Missing, res.Checked, res.WorstFile)
 	return res, ErrArticlesUnavailable
+}
+
+// Claude 2026-09-28: after STAT ok, peek first-segment BODY for usable video.
+// Reason: nfo/audio/image NZBs passed STAT and burned full BODY + staging.
+//
+//	Magic / PAR2 FileDesc / archive member names abort before download.
+//
+// Troubleshooting: journal "usenet precheck: abort — no usable video".
+// Review if: first-volume RAR listing (unrar l) is added for hash-named archives.
+func (m *Manager) finishPrecheck(ctx context.Context, payload []NZBFile, skip map[string]bool, progressGID string, res PrecheckResult) (PrecheckResult, error) {
+	if err := m.precheckVideo(ctx, payload, skip, progressGID); err != nil {
+		return res, err
+	}
+	return res, nil
 }
 
 // Claude 2026-09-22: previous hybrid sample → 25% abort / option-A escalate.
@@ -558,7 +572,9 @@ func ensureAngleMsgID(id string) string {
 
 // Claude 2026-09-28: PAR2 is not decorative meta for precheck.
 // Reason: obfuscated NZBs name payload/recovery .par2; skipping them left holes
-//   un-STAT'd. nfo/sfv/images still skip. .vol*.par2 recovery is STATd.
+//
+//	un-STAT'd. nfo/sfv/images still skip. .vol*.par2 recovery is STATd.
+//
 // Troubleshooting: precheck ok then mid-download 430 on a .par2-named file.
 // Review if: assembleFile starts skipping missing recovery volumes.
 func isMetaSubject(subject string) bool {

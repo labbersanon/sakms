@@ -469,6 +469,13 @@ existing library titles are left alone. Toggle-off cancels never-dispatched
 parks of that origin only. Auto-grab remains the gate. See CHANGELOG
 2026-09-28.
 
+### Daily and anime episode identify — shipped 2026-09-28
+Rename, Organize Import, and grab-complete import now resolve date-named
+dailies (`Show.2024.03.15`) and absolute-numbered anime (`Show - 1089`,
+`Show.1089.1080p`) onto a TMDB season/episode. `ParseEpisodeNumbers`
+(SxxExx) is unchanged. Destination names stay the existing SxxExx preset.
+See CHANGELOG 2026-09-28.
+
 ### Manual import — shipped 2026-09-28
 Organize → Import identifies videos in a browsable dump folder (same
 Rename matchers) and **moves** them into the mode library root (Kids

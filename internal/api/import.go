@@ -19,6 +19,7 @@ import (
 	"github.com/labbersanon/sakms/internal/rename"
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/tmdb"
 	"github.com/labbersanon/sakms/internal/usenet"
 )
 
@@ -239,7 +240,9 @@ func clearOwnedUsenetStaging(nzb *usenet.Manager, gid string) {
 //
 // Claude 2026-08-11: auto rename+move on grab import (all modes).
 // Reason: finished grabs were left as raw torrent/NZB basenames until a
-//   manual Rename Apply; operator expects download → library name in one step.
+//
+//	manual Rename Apply; operator expects download → library name in one step.
+//
 // Troubleshooting: Adult Step Sis landed as "[Familylust.com] …mp4" on Adult-NAS.
 // Review if: import gains a settings toggle to keep proposal-gated Apply only.
 //
@@ -303,6 +306,36 @@ func importGrabMovies(ctx context.Context, libStore *library.Store, g *grabs.Gra
 	return changes, nil
 }
 
+func resolveImportEpisodeSlot(ctx context.Context, sess *mode.Session, tmdbID int, videoPath string) (season int, episodes []int, ok bool) {
+	if sess == nil || sess.TMDB == nil || tmdbID == 0 {
+		return 0, nil, false
+	}
+	base := filepath.Base(videoPath)
+	parent := filepath.Dir(videoPath)
+	date, hasDate := library.ParseEpisodeAirDateLoose(base, parent)
+	abs, hasAbs := 0, false
+	if !hasDate {
+		abs, hasAbs = library.ParseAbsoluteEpisodeLoose(base, parent)
+	}
+	if !hasDate && !hasAbs {
+		return 0, nil, false
+	}
+	slots, err := sess.TMDB.EpisodeSlots(ctx, tmdbID)
+	if err != nil || len(slots) == 0 {
+		return 0, nil, false
+	}
+	var ep int
+	if hasDate {
+		season, ep, ok = tmdb.SlotByAirDate(slots, date)
+	} else {
+		season, ep, ok = tmdb.SlotByAbsolute(slots, abs)
+	}
+	if !ok {
+		return 0, nil, false
+	}
+	return season, []int{ep}, true
+}
+
 func importGrabSeries(ctx context.Context, libStore *library.Store, g *grabs.Grab, contentPath, tier string, settingsStore *settings.Store, sess *mode.Session, prober dedup.Prober) ([]mode.PathChange, error) {
 	_ = prober
 	preset, err := resolveNamingPreset(ctx, settingsStore, mode.Series)
@@ -323,6 +356,9 @@ func importGrabSeries(ctx context.Context, libStore *library.Store, g *grabs.Gra
 	var changes []mode.PathChange
 	for _, videoPath := range videoPaths {
 		season, episodes, ok := library.ParseEpisodeNumbers(filepath.Base(videoPath))
+		if !ok {
+			season, episodes, ok = resolveImportEpisodeSlot(ctx, sess, g.TMDBID, videoPath)
+		}
 		if !ok {
 			if len(videoPaths) != 1 || !g.SeasonSpecified {
 				continue

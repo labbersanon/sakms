@@ -9814,5 +9814,22 @@ status stays active.
 | `frontend/src/screens/organizeTabs.ts` | `import` workflow |
 | `docs/ROADMAP.md` | Shipped note; dropped qBit RSS rules and NZBGet PP |
 
+## 2026-09-28 — Daily and anime episode identify
+
+**Problem:** Series identify required SxxExx. Daily releases named by air date and anime releases named by absolute episode stayed unmatched, so Rename/Import/grab-complete could not place them.
+**Fix:** After SxxExx and compact-code fail, parse a calendar date or an absolute number (dash/`ep`/`e`/`#` marker, or a 3–4 digit dotted token that is not a year or resolution). Map the token onto TMDB episodes: unique air date, or 1-based absolute count skipping season 0. Ambiguous dates and past-the-end absolutes stay Unmatched. Grab import uses the same resolve when the completed file has no SxxExx. `ParseEpisodeNumbers` is unchanged.
+**Outcome:** A pinned (or uniquely title-matched) daily/anime file becomes a normal Pending proposal and relocates via RelocateEpisode. Not merged/deployed with this change.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/library/episode_altparse.go` | Air-date and absolute parsers |
+| `internal/tmdb/episodeslots.go` | Catalog flatten + slot resolve |
+| `internal/rename/series_daily_absolute.go` | Rename identify hook |
+| `internal/api/import.go` | Grab-complete fallback |
+| `docs/ROADMAP.md` | Shipped note |
+
+
 
 

@@ -38,6 +38,9 @@ type MatchConfig struct {
 	// ProposeNestedMoves, when true, lets ScanLibrarySeries stage a Pending
 	// move for a short that catalog already nested in place. Off by default.
 	ProposeNestedMoves bool
+	// slots caches TMDB episode lists for daily/absolute resolve within one
+	// Scan. Pointer so Normalize copies share the same map.
+	slots *showEpisodeCache
 	// OnProgress is not a stored setting — scan callers attach it per run.
 	OnProgress ProgressFunc
 }

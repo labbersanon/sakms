@@ -195,6 +195,12 @@ ceiling regardless of this gap), but it is not a substitute for fixing
 limits on the same node. Fixing `MaxJobs` enforcement is its own,
 not-yet-scheduled follow-up — out of scope for the CPU governor work.
 
+**SHIPPED 2026-09-29 — `MaxJobs` is now enforced on hash dispatch.**
+`cmd/sakms-node` acquires a `jobSem` inside each hash goroutine (not the
+SSE select). 0 remains unlimited. Browse requests stay unbounded. Raising
+MaxJobs via server settings notifies waiters. Adult-scan worker count and
+per-job ffmpeg frame fan-out are still independent of this cap.
+
 ### phash-based Dedup — refinement + phash-primary grouping shipped; PDQ migration open
 <!-- Claude 2026-08-04: heading corrected. Reason: this heading said
      phash-primary grouping was "still open," but its own section body
@@ -2602,3 +2608,13 @@ as monitored from a hand-maintained duplicate of the grabs table. It now ORs
 in `upgrade_watch` because that flag is the genuine "keep watching this owned
 movie" signal the 2026-09-15 plan deferred. See
 `.omc/plans/monitored-only-chip-discover-library.md` §0.
+
+## Shipped: series upgrade-watch — owned-episode hunt on the same daily pass
+
+Shipped 2026-09-29. Series analog of movie upgrade-watch: `library_series.upgrade_watch`
+(default off; `UpsertSeries` does not write it). Hunting walks owned episodes
+whose on-disk file is below the title's quality prefs and dispatches
+`RunAutoGrab` with `SeasonSpecified` + `TriggerQualityWatch`. Missing episodes
+stay air-date's job. Movies run first in the sixth retry-cycle pass; series
+uses leftover `loadUsenetCycleSlots`. TitleQualityPrefs shows the same switch
+when a `library_series` row exists. Tracked `Monitored` ORs the flag.

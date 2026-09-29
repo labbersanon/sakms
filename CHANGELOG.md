@@ -9830,6 +9830,28 @@ status stays active.
 | `internal/api/import.go` | Grab-complete fallback |
 | `docs/ROADMAP.md` | Shipped note |
 
+## 2026-09-29 — Node MaxJobs + series upgrade-watch
+
+**Problem:** `sakms-node` stored MaxJobs and logged it but never bounded hash dispatch. Series had no analog of movie upgrade-watch, so owned episodes below prefs were never hunted unless the operator clicked Grab.
+**Fix:** Node hash jobs acquire a `jobSem` (0 = unlimited); browse stays unbounded; raising MaxJobs notifies waiters. Series get `library_series.upgrade_watch` (default off; UpsertSeries does not write it). The sixth retry-cycle pass runs movies first then series on leftover Usenet cycle slots. Owned episodes below the title floor go through `RunAutoGrab` (`TriggerQualityWatch`, `SeasonSpecified`). Missing episodes stay air-date. TitleQualityPrefs shows the watch switch when a library_series row exists. Tracked `Monitored` ORs the flag. Turning the switch off cancels never-dispatched `origin=upgrade-watch` parks for that TMDB id.
+**Outcome:** Hash concurrency honors MaxJobs. An opted-in series hunts better owned-episode releases on the daily auto-grab cycle.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `cmd/sakms-node/jobsem.go` | Semaphore for hash dispatch |
+| `cmd/sakms-node/main.go` | Acquire inside hash goroutine; notify on MaxJobs save |
+| `internal/db/migrations/0034_library_series_upgrade_watch.sql` | `library_series.upgrade_watch` |
+| `internal/library/library_series.go` | Flag + Set/List; UpsertSeries does not write it |
+| `internal/api/seriesupgradewatch.go` | PUT handlers + sixth-pass series hunt |
+| `internal/api/movieupgradewatch.go` | Shared budget return count |
+| `internal/api/usenetretry.go` | Movies then leftover series slots |
+| `internal/api/titlequality.go` | Series quality-prefs carry the flag |
+| `internal/api/tracked.go` | Series Monitored ORs upgrade_watch |
+| `frontend/src/components/TitleQualityPrefs.tsx` | Watch switch for owned series |
+| `docs/ROADMAP.md` | MaxJobs + series watch marked shipped |
+
 
 
 

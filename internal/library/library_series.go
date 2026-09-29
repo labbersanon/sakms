@@ -37,6 +37,11 @@ type Series struct {
 	//   UpsertSeries must not write this column.
 	// Review if: per-episode ratings are added.
 	Rating int `json:"rating,omitempty"`
+	// Claude 2026-09-29: opt-in "watch for a better release" for owned episodes.
+	// Reason: movie upgrade-watch analog; UpsertSeries must not write this column.
+	// Troubleshooting: PUT .../series/library/.../upgrade-watch; sixth retry-cycle pass.
+	// Review if: per-episode watch flags replace the series-level switch.
+	UpgradeWatch bool `json:"upgradeWatch,omitempty"`
 }
 
 // Episode is one canonical episode of a Series, whether or not it's
@@ -117,7 +122,7 @@ func (s *Store) GetSeriesByTMDBID(ctx context.Context, tmdbID int) (*Series, err
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, tmdb_id, tvdb_id, title, year, root_folder_path,
 		       COALESCE(genres, '[]'), COALESCE("cast", '[]'),
-		       created_at, updated_at, rating
+		       created_at, updated_at, rating, COALESCE(upgrade_watch, false)
 		FROM library_series WHERE tmdb_id = ?
 	`, tmdbID)
 	series, err := scanSeries(row)
@@ -139,7 +144,7 @@ func (s *Store) GetSeries(ctx context.Context, seriesID int64) (*Series, error) 
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, tmdb_id, tvdb_id, title, year, root_folder_path,
 		       COALESCE(genres, '[]'), COALESCE("cast", '[]'),
-		       created_at, updated_at, rating
+		       created_at, updated_at, rating, COALESCE(upgrade_watch, false)
 		FROM library_series WHERE id = ?
 	`, seriesID)
 	series, err := scanSeries(row)
@@ -157,7 +162,7 @@ func (s *Store) ListSeries(ctx context.Context) ([]Series, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, tmdb_id, tvdb_id, title, year, root_folder_path,
 		       COALESCE(genres, '[]'), COALESCE("cast", '[]'),
-		       created_at, updated_at, rating
+		       created_at, updated_at, rating, COALESCE(upgrade_watch, false)
 		FROM library_series ORDER BY title
 	`)
 	if err != nil {
@@ -170,6 +175,53 @@ func (s *Store) ListSeries(ctx context.Context) ([]Series, error) {
 		series, err := scanSeries(rows)
 		if err != nil {
 			return nil, fmt.Errorf("scanning series: %w", err)
+		}
+		out = append(out, series)
+	}
+	return out, rows.Err()
+}
+
+// SetSeriesUpgradeWatch writes the opt-in better-release hunt flag on one
+// library_series row. UpsertSeries does not touch this column.
+func (s *Store) SetSeriesUpgradeWatch(ctx context.Context, id int64, watch bool) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE library_series
+		SET upgrade_watch = ?, updated_at = sakms_now()
+		WHERE id = ?
+	`, watch, id)
+	if err != nil {
+		return fmt.Errorf("setting upgrade watch on series %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("setting upgrade watch on series %d: %w", id, err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ListUpgradeWatchSeries returns every series whose upgrade_watch flag is on.
+func (s *Store) ListUpgradeWatchSeries(ctx context.Context) ([]Series, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, tmdb_id, tvdb_id, title, year, root_folder_path,
+		       COALESCE(genres, '[]'), COALESCE("cast", '[]'),
+		       created_at, updated_at, rating, COALESCE(upgrade_watch, false)
+		FROM library_series
+		WHERE upgrade_watch = true
+		ORDER BY title
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("listing upgrade-watch series: %w", err)
+	}
+	defer rows.Close()
+
+	out := []Series{}
+	for rows.Next() {
+		series, err := scanSeries(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning upgrade-watch series: %w", err)
 		}
 		out = append(out, series)
 	}
@@ -419,7 +471,9 @@ func (s *Store) GetEpisode(ctx context.Context, seriesID int64, seasonNumber, ep
 
 // Claude 2026-09-24: EpisodeOwningFile finds the episode that already claims path.
 // Reason: Organize's optional nested-short move proposal needs the parent
-//   slot after catalog nest, without a second title-key search.
+//
+//	slot after catalog nest, without a second title-key search.
+//
 // Troubleshooting: ProposeNestedMoves emits a proposal for the wrong show.
 // Review if: library_episode_files is the only owner of paths.
 func (s *Store) EpisodeOwningFile(ctx context.Context, filePath string) (*Episode, *Series, error) {
@@ -904,7 +958,7 @@ func scanSeries(row rowScanner) (Series, error) {
 	var genresJSON, castJSON string
 	if err := row.Scan(&series.ID, &series.TMDBID, &series.TVDBID, &series.Title, &series.Year,
 		&series.RootFolderPath, &genresJSON, &castJSON,
-		&series.CreatedAt, &series.UpdatedAt, &series.Rating); err != nil {
+		&series.CreatedAt, &series.UpdatedAt, &series.Rating, &series.UpgradeWatch); err != nil {
 		return Series{}, err
 	}
 	if err := json.Unmarshal([]byte(genresJSON), &series.Genres); err != nil {

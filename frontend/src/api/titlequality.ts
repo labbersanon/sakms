@@ -65,3 +65,17 @@ export function putMovieUpgradeWatch(
     },
   );
 }
+
+export function putSeriesUpgradeWatch(
+  key: TitleQualityKey,
+  upgradeWatch: boolean,
+): Promise<{ upgradeWatch: boolean }> {
+  const path =
+    key.seriesID != null
+      ? `/api/modes/series/library/${key.seriesID}/upgrade-watch`
+      : `/api/modes/series/library/tmdb/${key.tmdbId}/upgrade-watch`;
+  return api<{ upgradeWatch: boolean }>(path, {
+    method: "PUT",
+    body: JSON.stringify({ upgradeWatch }),
+  });
+}

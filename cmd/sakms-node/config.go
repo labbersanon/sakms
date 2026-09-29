@@ -193,6 +193,12 @@ func (cfg *NodeConfig) cpuCapSnapshot() int {
 	return cfg.CPUCapPercent
 }
 
+func (cfg *NodeConfig) maxJobsSnapshot() int {
+	cfg.mu.RLock()
+	defer cfg.mu.RUnlock()
+	return cfg.MaxJobs
+}
+
 // transport returns the node's current server URL + bearer key under the read
 // lock. APIKey is mutated (cleared on 401 re-pair, set on pairing) under the
 // same lock, so a pause push must read it fresh rather than capture it once.

@@ -1,7 +1,9 @@
-// This file is the Movies upgrade-watch DISPATCH pass — the SIXTH pass inside
-// runUsenetRetryCycle. It hunts for a release that meets the title's current
-// quality prefs while library_items.upgrade_watch is on and the on-disk file
-// is still below that floor. It does not rank against the owned file.
+// This file is the Movies half of the upgrade-watch DISPATCH pass — the
+// SIXTH pass inside runUsenetRetryCycle. Series runs after it and shares
+// leftover cycle slots (see seriesupgradewatch.go). It hunts for a release
+// that meets the title's current quality prefs while library_items.upgrade_watch
+// is on and the on-disk file is still below that floor. It does not rank
+// against the owned file.
 //
 // NO GOROUTINE, NO TICKER, NO INTERVAL KEY lives in this file. It is a plain
 // function called as the SIXTH step of runUsenetRetryCycle, after adult
@@ -9,9 +11,9 @@
 // (movieupgradewatch_static_test.go) proves this. It is not on the 60s drain:
 // hunting an owned file is not air-date urgent.
 //
-// Independently deletable: delete this file, its one call in runUsenetRetryCycle,
-// the two route registrations in handler.go, attachMovieUpgradeWatch in
-// titlequality.go, the migration, and the library store methods.
+// Independently deletable: delete this file, its call in runUsenetRetryCycle,
+// the movie route registration in handler.go, attachMovieUpgradeWatch in
+// titlequality.go, the movie migration, and the library store methods.
 package api
 
 import (
@@ -77,7 +79,7 @@ func putMovieUpgradeWatchHandler(libStore *library.Store, grabsStore *grabs.Stor
 			return
 		}
 		if !req.UpgradeWatch {
-			cancelQualityWatchRetries(ctx, grabsStore, tmdbID)
+			cancelQualityWatchRetries(ctx, grabsStore, mode.Movies, tmdbID)
 		}
 		writeJSON(w, apidto.MovieUpgradeWatchResponse{UpgradeWatch: req.UpgradeWatch})
 	}
@@ -88,17 +90,21 @@ func putMovieUpgradeWatchHandler(libStore *library.Store, grabsStore *grabs.Stor
 // it dispatches through RunAutoGrab. libStore may be nil — tests that predate
 // this pass skip immediately.
 func monitorMovieUpgradeWatch(ctx context.Context, deps AutoGrabDeps, build sessionBuilderFunc, libStore *library.Store, excluded map[string]bool) {
-	if libStore == nil {
-		return
+	_ = runMovieUpgradeWatch(ctx, deps, build, libStore, excluded, loadUsenetCycleSlots(ctx, deps.SettingsStore))
+}
+
+func runMovieUpgradeWatch(ctx context.Context, deps AutoGrabDeps, build sessionBuilderFunc, libStore *library.Store, excluded map[string]bool, budget int) int {
+	if libStore == nil || budget <= 0 {
+		return 0
 	}
 
 	items, err := libStore.ListUpgradeWatchMovies(ctx)
 	if err != nil {
 		log.Printf("movie upgrade-watch: listing watched movies: %v", err)
-		return
+		return 0
 	}
 	if len(items) == 0 {
-		return
+		return 0
 	}
 
 	active := activeMovieUpgradeWatchKeys(ctx, deps)
@@ -124,21 +130,21 @@ func monitorMovieUpgradeWatch(ctx context.Context, deps AutoGrabDeps, build sess
 		due = append(due, item)
 	}
 	if len(due) == 0 {
-		return
+		return 0
 	}
 
 	sess, err := build(ctx, mode.Movies)
 	if err != nil {
 		log.Printf("movie upgrade-watch: building the movies session failed (%T) — skipping this cycle", rootCause(err))
-		return
+		return 0
 	}
 	if sess.Prowlarr == nil {
 		log.Printf("movie upgrade-watch: Prowlarr isn't configured — skipping this cycle")
-		return
+		return 0
 	}
 
 	attempts := 0
-	cycleCap := loadUsenetCycleSlots(ctx, deps.SettingsStore)
+	cycleCap := budget
 	for _, item := range due {
 		if attempts >= cycleCap {
 			break
@@ -156,7 +162,7 @@ func monitorMovieUpgradeWatch(ctx context.Context, deps AutoGrabDeps, build sess
 			log.Printf("movie upgrade-watch: %q — auto-grab failed (%T)", item.Title, rootCause(err))
 		case out.Gated:
 			log.Printf("movie upgrade-watch: usenet auto-grab is switched off — abandoning this cycle")
-			return
+			return attempts
 		case out.AlreadyGrabbing:
 			log.Printf("movie upgrade-watch: %q is already being downloaded", item.Title)
 		case out.Grabbed:
@@ -167,6 +173,7 @@ func monitorMovieUpgradeWatch(ctx context.Context, deps AutoGrabDeps, build sess
 			tagQualityWatchOrigin(ctx, deps.GrabsStore, out.GrabID)
 		}
 	}
+	return attempts
 }
 
 func tagQualityWatchOrigin(ctx context.Context, grabsStore *grabs.Store, grabID int64) {
@@ -200,8 +207,8 @@ func activeMovieUpgradeWatchKeys(ctx context.Context, deps AutoGrabDeps) map[int
 	return active
 }
 
-func qualityWatchOriginated(g grabs.Grab, tmdbID int) bool {
-	return g.Mode == mode.Movies &&
+func qualityWatchOriginated(g grabs.Grab, m mode.Mode, tmdbID int) bool {
+	return g.Mode == m &&
 		g.Origin == grabOriginUpgradeWatch &&
 		g.Status == grabs.PendingRetry &&
 		g.Indexer == "" &&
@@ -209,18 +216,18 @@ func qualityWatchOriginated(g grabs.Grab, tmdbID int) bool {
 		g.TMDBID == tmdbID
 }
 
-func cancelQualityWatchRetries(ctx context.Context, grabsStore *grabs.Store, tmdbID int) {
+func cancelQualityWatchRetries(ctx context.Context, grabsStore *grabs.Store, m mode.Mode, tmdbID int) {
 	if grabsStore == nil || tmdbID <= 0 {
 		return
 	}
-	list, err := grabsStore.List(ctx, mode.Movies)
+	list, err := grabsStore.List(ctx, m)
 	if err != nil {
-		log.Printf("movie upgrade-watch: listing movie grabs for un-watch cleanup: %v", err)
+		log.Printf("movie upgrade-watch: listing %s grabs for un-watch cleanup: %v", m, err)
 		return
 	}
 	now := time.Now()
 	for _, g := range list {
-		if !qualityWatchOriginated(g, tmdbID) {
+		if !qualityWatchOriginated(g, m, tmdbID) {
 			continue
 		}
 		if err := grabsStore.SetRetryAfter(ctx, g.ID, now, qualityWatchUnwatchedReason); err != nil {

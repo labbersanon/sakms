@@ -58,3 +58,16 @@ func TestArticleWireReader_YEncLeadingDotRoundTrip(t *testing.T) {
 		t.Errorf("decoded mismatch: got %d bytes, want %d", len(resp.Data), n)
 	}
 }
+
+func TestDecodeYEncBody_SpacePrefixedJunkDoesNotPanic(t *testing.T) {
+	// rapidyenc detectFormat panics on space-prefixed non-yEnc lines when
+	// WithStatusLineAlreadyRead is set (UU length 0 → line[1:0]).
+	body := " hello world this is not yenc\n.\n"
+	res, err := decodeYEncBody(strings.NewReader(body), "panic-probe@news")
+	if err == nil {
+		t.Fatalf("expected decode error, got data=%d name=%q", len(res.data), res.filename)
+	}
+	if !strings.Contains(err.Error(), "decoder panic") {
+		t.Fatalf("want decoder panic wrapped as error, got %v", err)
+	}
+}

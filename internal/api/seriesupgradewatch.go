@@ -101,6 +101,9 @@ func putSeriesUpgradeWatch(w http.ResponseWriter, r *http.Request, libStore *lib
 }
 
 func monitorSeriesUpgradeWatch(ctx context.Context, deps AutoGrabDeps, build sessionBuilderFunc, libStore *library.Store, excluded map[string]bool) {
+	if libStore == nil {
+		return
+	}
 	_ = runSeriesUpgradeWatch(ctx, deps, build, libStore, excluded, loadUsenetCycleSlots(ctx, deps.SettingsStore))
 }
 

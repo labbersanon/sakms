@@ -90,6 +90,9 @@ func putMovieUpgradeWatchHandler(libStore *library.Store, grabsStore *grabs.Stor
 // it dispatches through RunAutoGrab. libStore may be nil — tests that predate
 // this pass skip immediately.
 func monitorMovieUpgradeWatch(ctx context.Context, deps AutoGrabDeps, build sessionBuilderFunc, libStore *library.Store, excluded map[string]bool) {
+	if libStore == nil {
+		return
+	}
 	_ = runMovieUpgradeWatch(ctx, deps, build, libStore, excluded, loadUsenetCycleSlots(ctx, deps.SettingsStore))
 }
 

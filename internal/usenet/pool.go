@@ -336,13 +336,33 @@ func fetchSegment(c *nntp.Conn, msgID string) (segmentResult, error) {
 	if err != nil {
 		return segmentResult{}, mapNNTPError(err)
 	}
-	// WithStatusLineAlreadyRead: nntp.Conn.Body() already consumed the
-	// "222 Body follows" status line before returning the io.Reader, so the
-	// decoder starts reading at the first line of the yEnc body.
-	dec := rapidyenc.NewDecoder(newArticleWireReader(body), rapidyenc.WithStatusLineAlreadyRead())
-	resp, err := dec.Next()
-	if err != nil {
-		return segmentResult{}, fmt.Errorf("usenet: yEnc decode %s: %w", msgID, err)
+	return decodeYEncBody(body, msgID)
+}
+
+// decodeYEncBody yEnc-decodes one NNTP article body. nntp.Conn.Body() has
+// already consumed the "222 Body follows" status line, so the decoder starts
+// at the first line of the article.
+//
+// Claude 2026-09-29: recover rapidyenc panics into an error.
+// Reason: detectFormat does line[1:length] when a UU length of 0 meets a
+//   line longer than 1 byte (space-prefixed junk BODY). That panic ran on
+//   the boot reconcile goroutine and crash-looped sakms after the #98 deploy
+//   (grab 1926 precheckVideo peek).
+// Troubleshooting: "slice bounds out of range [1:0]" in rapidyenc.Response.detectFormat.
+// Review if: rapidyenc rejects length==0 before that slice.
+func decodeYEncBody(r io.Reader, msgID string) (res segmentResult, err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = fmt.Errorf("usenet: yEnc decode %s: decoder panic: %v", msgID, rec)
+		}
+	}()
+	dec := rapidyenc.NewDecoder(newArticleWireReader(r), rapidyenc.WithStatusLineAlreadyRead())
+	resp, nextErr := dec.Next()
+	if nextErr != nil {
+		return segmentResult{}, fmt.Errorf("usenet: yEnc decode %s: %w", msgID, nextErr)
+	}
+	if resp == nil {
+		return segmentResult{}, fmt.Errorf("usenet: yEnc decode %s: empty response", msgID)
 	}
 	return segmentResult{
 		data:     resp.Data,

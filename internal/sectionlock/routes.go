@@ -101,6 +101,14 @@ func Classify(rawPath string) Set {
 		out.Add(SectionDiscover)
 	case "trakt":
 		classifyTrakt(segs[2:], out)
+	// Claude 2026-09-28: GET/PUT /api/tmdb/list-ingest and /api/imdb/list-ingest.
+	// Reason: Settings → List ingest switches; same attribution as
+	//   /api/trakt/watchlist-ingest (classifyTrakt default → settings).
+	// Troubleshooting: SL-9 failed on main after #97 — these prefixes had
+	//   no Classify case, so the toggles were reachable while Settings was locked.
+	// Review if: TMDB/IMDb grow Discover-facing list-read routes under these prefixes.
+	case "tmdb", "imdb":
+		out.Add(SectionSettings)
 	case "admin":
 		classifyAdmin(segs[2:], out)
 	case "connections", "service-connections", "webhooks", "nodes",
@@ -276,7 +284,7 @@ func classifyTrakt(rest []string, out Set) {
 	switch rest[0] {
 	case "status", "watchlist":
 		out.Add(SectionDiscover)
-	default: // credentials, device/*, disconnect
+	default: // credentials, device/*, disconnect, watchlist-ingest
 		out.Add(SectionSettings)
 	}
 }

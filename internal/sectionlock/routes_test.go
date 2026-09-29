@@ -73,6 +73,10 @@ func TestClassify(t *testing.T) {
 		{"/api/autograb-batch", []string{SectionDiscover}},
 		{"/api/trakt/watchlist", []string{SectionDiscover}},
 		{"/api/trakt/credentials", []string{SectionSettings}},
+		// Claude 2026-09-28: list-ingest toggles live on Settings.
+		{"/api/trakt/watchlist-ingest", []string{SectionSettings}},
+		{"/api/tmdb/list-ingest", []string{SectionSettings}},
+		{"/api/imdb/list-ingest", []string{SectionSettings}},
 
 		// Queue.
 		{"/api/downloads", []string{SectionQueue}},

@@ -23,7 +23,7 @@ const NAV_LABELS = [
   "Settings",
 ];
 
-const ORGANIZE_CHILDREN = ["Rename", "Clean-up", "Dedup", "Browse"];
+const ORGANIZE_CHILDREN = ["Rename", "Clean-up", "Dedup", "Browse", "Import"];
 const QUEUE_CHILDREN = ["Downloads", "Requests", "Calendar"];
 const SETTINGS_CHILDREN = [
   "Roots",

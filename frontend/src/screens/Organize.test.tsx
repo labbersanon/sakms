@@ -110,6 +110,16 @@ describe("Organize — query tab", () => {
     expect(screen.queryByText("No proposals yet — click Scan.")).toBeNull();
   });
 
+  it("?tab=import shows the library import screen", async () => {
+    stubFetch();
+    renderOrganize("/organize?tab=import");
+    expect(await screen.findByText("Import")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Identify videos in a dump folder and move them/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("No proposals yet — click Scan.")).toBeNull();
+  });
+
   it("opens the persisted tab when ?tab= missing", async () => {
     localStorage.setItem(ORGANIZE_TAB_KEY, "dedup");
     stubFetch();

@@ -9797,4 +9797,22 @@ status stays active.
 | `frontend/src/screens/settings/ListIngest.tsx` | Settings cards next to Trakt |
 | `docs/ROADMAP.md` | Recently-shipped TMDB/IMDb ingest note |
 
+## 2026-09-28 — Manual import moves files into the library
+
+**Problem:** Files that arrived outside a SAK grab had no identify-then-library path. Browse can move raw names; Rename organizes files already under the library root. Neither imports a dump folder into the catalog.
+**Fix:** Organize → Import scans a browsable source with Rename's movie/episode matchers and Apply **moves** each identified file into the mode library root (Kids when classify says so) via RelocateMovie / RelocateEpisode, then upserts the library row. Confirm is the approval. Movies and Series only. Not a proposals.Workflow — scan is in-memory; apply reconstructs a Pending proposal. qBittorrent RSS download rules and NZBGet post-process scripts marked out of scope (SAK already owns grab completion + this import).
+**Outcome:** An operator can pick `/downloads` (or another mounted root), review identified titles, and move them into the library. Unmatched rows stay listed and cannot be imported. Not merged/deployed with this change.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/rename/import.go` | `ScanImportMovies` / `ScanImportSeries` / `ImportDestPath` |
+| `internal/api/manualimport.go` | POST `/api/organize/import/scan` and `/apply` |
+| `internal/api/handler.go` | Routes under `/api/organize/` |
+| `frontend/src/screens/Import.tsx` | Organize Import tab |
+| `frontend/src/screens/organizeTabs.ts` | `import` workflow |
+| `docs/ROADMAP.md` | Shipped note; dropped qBit RSS rules and NZBGet PP |
+
+
 

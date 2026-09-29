@@ -469,6 +469,13 @@ existing library titles are left alone. Toggle-off cancels never-dispatched
 parks of that origin only. Auto-grab remains the gate. See CHANGELOG
 2026-09-28.
 
+### Manual import — shipped 2026-09-28
+Organize → Import identifies videos in a browsable dump folder (same
+Rename matchers) and **moves** them into the mode library root (Kids
+when classify says so). Confirm is the approval. Movies and Series only.
+Not a proposals queue — scan is in-memory; apply reconstructs a Pending
+row and calls RelocateMovie / RelocateEpisode. See CHANGELOG 2026-09-28.
+
 ### Adult release persistence — shipped 2026-08-11
 Plan: `.omc/plans/autopilot-impl-adult-release-persistence.md` (Wave 5 / T1–T8).
 "Search once, persist, reuse" cache for Adult Discover and auto-grab:
@@ -2514,6 +2521,13 @@ are manual browser checks.
   surface decision, restated multiple times in that file. Not planned; see
   "Discovery & requests UX" above for the single-operator-scoped version of
   what's actually worth building from that comparison.
+- **qBittorrent RSS download rules** — dropped 2026-09-28. SAK already
+  owns torrent search, grab, and completion import. RSS-as-title-lists
+  is a Discover ingest problem, not a download-client rule engine.
+- **NZBGet post-process scripts** — dropped 2026-09-28. Grab completion
+  already relocates into the library; Organize → Import covers files
+  that arrived outside a SAK grab. A NZBGet PP hook would duplicate
+  that move.
 
 ---
 

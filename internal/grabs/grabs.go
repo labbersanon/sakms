@@ -196,10 +196,11 @@ type Grab struct {
 	// Migration: 0023_grabs_transport_retry.sql.
 	TransportRetryCount int `json:"transportRetryCount,omitempty"`
 	// Origin is a provenance marker for grabs created outside the normal dispatch
-	// path. Allowed values: '' (production) and 'e2e' (test/verification debris).
-	// It is a column, not inferred from retry_reason, because a destructive reap
-	// must never key off operator-facing copy strings — that is the HIGH-severity
-	// misclassification pattern documented in migration 0022.
+	// path. Production values: "" (ordinary grabs), "upgrade-watch" (minted
+	// by monitorMovieUpgradeWatch), "trakt-watchlist" (minted by
+	// monitorTraktWatchlist), "tmdb-list", and "imdb-list". "e2e" is test/verification debris for park
+	// hygiene. The hygiene TAG API still allowlists only empty and "e2e";
+	// those passes write origin themselves. Never infer origin from retry_reason.
 	// Migration: 0024_grabs_origin.sql.
 	Origin string `json:"origin,omitempty"`
 	// TriedReleaseKeys is the newline-separated set of hashed URL+title keys for

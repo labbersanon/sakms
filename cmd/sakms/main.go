@@ -719,7 +719,7 @@ func run() error {
 	// and this line.
 	go api.RunUsenetRetry(ctx, api.LoadUsenetRetryInterval(ctx, settingsStore), &http.Client{Timeout: outboundTimeout},
 		connStore, serviceConnStore, settingsStore, grabsStore, excludesStore, webhookStore, libStore, dlManager, nzbManager,
-		adultMonitoredStore, adultNewestReleaseStore, prober, videoHasher)
+		adultMonitoredStore, adultNewestReleaseStore, prober, videoHasher, traktStore)
 
 	// Auto-grab drain worker — the eighth deliberate, opt-in exception to
 	// "manual by default", and the second with dispatch authority (alongside

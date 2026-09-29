@@ -255,6 +255,10 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("PUT /api/modes/series/library/tmdb/{tmdbId}/quality-prefs", putSeriesQualityPrefsByTMDBHandler(tq))
 	mux.HandleFunc("GET /api/modes/movies/library/tmdb/{tmdbId}/quality-prefs", getMovieQualityPrefsByTMDBHandler(tq))
 	mux.HandleFunc("PUT /api/modes/movies/library/tmdb/{tmdbId}/quality-prefs", putMovieQualityPrefsByTMDBHandler(tq))
+	// Claude 2026-09-28: opt-in movie upgrade-watch (ROADMAP owned-movie hunt).
+	// Reason: quality-prefs GET carries the flag; this PUT is the write + cancel.
+	// Troubleshooting: TitleQualityPrefs "Watch for better release" switch.
+	mux.HandleFunc("PUT /api/modes/movies/library/tmdb/{tmdbId}/upgrade-watch", putMovieUpgradeWatchHandler(libStore, grabsStore))
 
 	// Server-side directory browser for the Settings root-folder pickers +
 	// their as-you-type autocomplete — restricted to the mounted roots (see
@@ -277,6 +281,12 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("POST /api/organize/browse/delete", organizeBrowseDeleteHandler(libStore))
 	mux.HandleFunc("GET /api/organize/browse/stat", organizeBrowseStatHandler(libStore, prober))
 	mux.HandleFunc("GET /api/organize/browse/video", organizeBrowseVideoHandler())
+	// Claude 2026-09-28: Organize Import — identify then MOVE into the library.
+	// Reason: prefix /api/organize/ stays {organize}; confirm-then-mutate like Browse.
+	// Troubleshooting: SL-9 — these literals must stay under /api/organize/.
+	// Review if: Adult import is added.
+	mux.HandleFunc("POST /api/organize/import/scan", manualImportScanHandler(httpClient, connStore, scStore, settingsStore, libStore, prober))
+	mux.HandleFunc("POST /api/organize/import/apply", manualImportApplyHandler(httpClient, connStore, scStore, settingsStore, libStore, prober))
 	mux.HandleFunc("GET /api/modes/{mode}/quality-prefs", getQualityPrefsHandler(settingsStore))
 	mux.HandleFunc("PUT /api/modes/{mode}/quality-prefs", putQualityPrefsHandler(settingsStore))
 	mux.HandleFunc("GET /api/modes/{mode}/naming-preset", getNamingPresetHandler(settingsStore))
@@ -477,6 +487,18 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("POST /api/trakt/device/poll", traktDevicePollHandler(traktStore, traktFlow, httpClient, trakt.DefaultBaseURL, discoverRefreshDeps))
 	mux.HandleFunc("POST /api/trakt/disconnect", traktDisconnectHandler(traktStore, discoverCache))
 	mux.HandleFunc("GET /api/trakt/watchlist", traktWatchlistHandler(traktStore, httpClient, trakt.DefaultBaseURL, discoverCache))
+	// Claude 2026-09-28: opt-in Trakt watchlist ingest (unattended Requests).
+	// Reason: Discover already shows the list; this toggle is the ingest gate.
+	// Troubleshooting: trakt_watchlist_ingest_enabled; seventh retry-cycle pass.
+	mux.HandleFunc("GET /api/trakt/watchlist-ingest", getTraktWatchlistIngestHandler(settingsStore))
+	mux.HandleFunc("PUT /api/trakt/watchlist-ingest", putTraktWatchlistIngestHandler(settingsStore, grabsStore))
+	// Claude 2026-09-28: TMDB / IMDb list ingest (same seventh-pass dispatch).
+	// Reason: fill the remaining import-list sources next to Trakt.
+	// Troubleshooting: GET/PUT /api/tmdb/list-ingest, /api/imdb/list-ingest.
+	mux.HandleFunc("GET /api/tmdb/list-ingest", getTMDBListIngestHandler(settingsStore))
+	mux.HandleFunc("PUT /api/tmdb/list-ingest", putTMDBListIngestHandler(settingsStore, grabsStore))
+	mux.HandleFunc("GET /api/imdb/list-ingest", getIMDbListIngestHandler(settingsStore))
+	mux.HandleFunc("PUT /api/imdb/list-ingest", putIMDbListIngestHandler(settingsStore, grabsStore))
 	// Adult Discover's row-based surface (parallel to Mainstream's rows): a
 	// Studios row and a Performers row (plain TPDB browse), each with a
 	// drill-down showing just that studio's/performer's scenes. All TPDB-backed

@@ -9741,4 +9741,95 @@ status stays active.
 | `frontend/src/testing/http.ts` | Generic `asPage`; Rename tests reuse it |
 | `frontend/src/screens/Requests.tsx` | Missing-episodes toggle uses `FilterChip` |
 
+## 2026-09-28 — Watch an owned movie for a better release
+
+**Problem:** Once a movie was on disk, SAK stopped looking. Raising per-title quality prefs could park a one-shot upgrade search, but there was no way to leave an owned title watching for a release that meets the current floor.
+**Fix:** Opt-in `library_items.upgrade_watch` (default off; Upsert does not touch it). The daily retry cycle's sixth pass (`monitorMovieUpgradeWatch`) runs `RunAutoGrab` with `TriggerQualityWatch` while the flag is on and the on-disk file is still below that title's quality prefs. The file is a cutoff, not a ranking target. Turning the flag off cancels never-dispatched watch-originated retries (`grabs.origin=upgrade-watch`). The Library/Discover Monitored chip also lights when the flag is on. UI: "Watch for better release" on the movie quality card.
+**Outcome:** An owned movie hunts on the auto-grab cycle until a qualifying release is found or the operator turns the flag off. Auto-grab remains the gate. Not merged/deployed with this change.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/db/migrations/0033_library_items_upgrade_watch.sql` | `upgrade_watch` boolean, default false |
+| `internal/library/library.go` / `library_upgrade_watch.go` | Field, Set, List; Upsert leaves the column alone |
+| `internal/api/movieupgradewatch.go` | Sixth retry-cycle pass + PUT handler |
+| `internal/api/usenetretry.go` | Calls the pass before park hygiene |
+| `internal/api/titlequality.go` | Movie quality-prefs GET/PUT carry the flag |
+| `internal/api/tracked.go` | Monitored ORs `upgrade_watch` |
+| `frontend/src/components/TitleQualityPrefs.tsx` | Watch switch for owned movies |
+| `docs/ROADMAP.md` | Deferred item marked shipped |
+
+## 2026-09-28 — Trakt watchlist ingest
+
+**Problem:** Discover already showed the linked Trakt watchlist, but titles sat there until a one-click Grab. That is the *arr import-list gap: same source, no unattended ingest.
+**Fix:** Opt-in `trakt_watchlist_ingest_enabled` (default off) on the Trakt Settings card. The daily retry cycle's seventh pass (`monitorTraktWatchlist`) live-fetches GET /sync/watchlist once (not the Discover cache). Movies that are not owned, excluded, or already grabbing go through `RunAutoGrab` (`TriggerTraktWatchlist`) or a Calendar-style hold when `gateMovieGrab` blocks. Series not already in `library_series` are added with every season monitored; an existing show is skipped so operator monitor choices stay put. Turning the switch off cancels never-dispatched `grabs.origin=trakt-watchlist` parks; it does not un-monitor series. Auto-grab remains the gate. No other list types.
+**Outcome:** A linked Trakt watchlist can fill Requests and series monitors on the auto-grab cycle. Not merged/deployed with this change.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/traktwatchlistingest.go` | Seventh retry-cycle pass + GET/PUT ingest toggle |
+| `internal/api/usenetretry.go` / `cmd/sakms/main.go` | Threads traktStore; calls the pass before park hygiene |
+| `internal/api/autograb_shared.go` | `TriggerTraktWatchlist`; `AutoGrabDeps.TraktIngest` |
+| `internal/api/handler.go` | GET/PUT `/api/trakt/watchlist-ingest` |
+| `internal/grabs/grabs.go` | Origin comment includes `trakt-watchlist` |
+| `frontend/src/screens/settings/Trakt.tsx` | Ingest switch when Trakt is linked |
+| `docs/ROADMAP.md` | Recently-shipped ingest note |
+
+## 2026-09-28 — TMDB and IMDb list ingest
+
+**Problem:** Trakt watchlist ingest filled one import-list source. TMDB lists / account watchlist and IMDb ls/ur lists were still browse-or-manual only.
+**Fix:** Opt-in `tmdb_list_ingest_enabled` / `imdb_list_ingest_enabled` (default off) with newline-separated ID settings. The seventh retry-cycle pass is now `monitorListIngests`: Trakt, TMDB, and IMDb share skip/hold/`RunAutoGrab`/monitor-all dispatch and one cycle slot budget. TMDB live-fetches the give-back account watchlist (when `tmdb_session_id` is set) plus public v3 list IDs. IMDb fetches `rss.imdb.com` for `ls…`/`ur…` (URLs accepted) and resolves `tt…` via TMDB `/find`. Movies mint Requests or a Calendar-style hold; new series are added with every season monitored; existing library titles are left alone. Toggle-off cancels never-dispatched parks of that origin (`tmdb-list` / `imdb-list`) only. Auto-grab remains the gate.
+**Outcome:** TMDB and IMDb lists can fill Requests and series monitors on the auto-grab cycle. Not merged/deployed with this change.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/tmdb/lists.go` | Account, watchlist, v3 list, `FindByIMDBID` / `FindTVByIMDBID` |
+| `internal/api/listingest.go` | Shared item + budget + dispatch |
+| `internal/api/tmdblistingest.go` / `imdblistingest.go` | Source fetch + GET/PUT settings |
+| `internal/api/traktwatchlistingest.go` | Uses shared dispatch |
+| `internal/api/usenetretry.go` | Seventh pass calls `monitorListIngests` |
+| `internal/api/handler.go` | GET/PUT `/api/tmdb/list-ingest`, `/api/imdb/list-ingest` |
+| `frontend/src/screens/settings/ListIngest.tsx` | Settings cards next to Trakt |
+| `docs/ROADMAP.md` | Recently-shipped TMDB/IMDb ingest note |
+
+## 2026-09-28 — Manual import moves files into the library
+
+**Problem:** Files that arrived outside a SAK grab had no identify-then-library path. Browse can move raw names; Rename organizes files already under the library root. Neither imports a dump folder into the catalog.
+**Fix:** Organize → Import scans a browsable source with Rename's movie/episode matchers and Apply **moves** each identified file into the mode library root (Kids when classify says so) via RelocateMovie / RelocateEpisode, then upserts the library row. Confirm is the approval. Movies and Series only. Not a proposals.Workflow — scan is in-memory; apply reconstructs a Pending proposal. qBittorrent RSS download rules and NZBGet post-process scripts marked out of scope (SAK already owns grab completion + this import).
+**Outcome:** An operator can pick `/downloads` (or another mounted root), review identified titles, and move them into the library. Unmatched rows stay listed and cannot be imported. Not merged/deployed with this change.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/rename/import.go` | `ScanImportMovies` / `ScanImportSeries` / `ImportDestPath` |
+| `internal/api/manualimport.go` | POST `/api/organize/import/scan` and `/apply` |
+| `internal/api/handler.go` | Routes under `/api/organize/` |
+| `frontend/src/screens/Import.tsx` | Organize Import tab |
+| `frontend/src/screens/organizeTabs.ts` | `import` workflow |
+| `docs/ROADMAP.md` | Shipped note; dropped qBit RSS rules and NZBGet PP |
+
+## 2026-09-28 — Daily and anime episode identify
+
+**Problem:** Series identify required SxxExx. Daily releases named by air date and anime releases named by absolute episode stayed unmatched, so Rename/Import/grab-complete could not place them.
+**Fix:** After SxxExx and compact-code fail, parse a calendar date or an absolute number (dash/`ep`/`e`/`#` marker, or a 3–4 digit dotted token that is not a year or resolution). Map the token onto TMDB episodes: unique air date, or 1-based absolute count skipping season 0. Ambiguous dates and past-the-end absolutes stay Unmatched. Grab import uses the same resolve when the completed file has no SxxExx. `ParseEpisodeNumbers` is unchanged.
+**Outcome:** A pinned (or uniquely title-matched) daily/anime file becomes a normal Pending proposal and relocates via RelocateEpisode. Not merged/deployed with this change.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/library/episode_altparse.go` | Air-date and absolute parsers |
+| `internal/tmdb/episodeslots.go` | Catalog flatten + slot resolve |
+| `internal/rename/series_daily_absolute.go` | Rename identify hook |
+| `internal/api/import.go` | Grab-complete fallback |
+| `docs/ROADMAP.md` | Shipped note |
+
+
+
 

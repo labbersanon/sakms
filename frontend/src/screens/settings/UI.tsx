@@ -15,6 +15,7 @@ import { ScreenTabBar, useAdultEnabled, type TabDef } from "../../components/ui"
 import { SliderAdminSection } from "../SliderAdmin";
 import { AdultRowAdminSection } from "../AdultRowAdmin";
 import { RssFeedAdminSection } from "./RssFeedAdmin";
+import { IMDbListIngestCard, TMDBListIngestCard } from "./ListIngest";
 import { TraktConnectionSection } from "./Trakt";
 
 const DISCOVER_TABS: TabDef[] = [
@@ -61,6 +62,11 @@ export const UISection: Component = () => {
           Mainstream-and-Adult-independent. Unbatched: Trakt renders its own
           Save credentials button. */}
       <TraktConnectionSection />
+      {/* Claude 2026-09-28: TMDB / IMDb list ingest next to Trakt.
+          Reason: same Discover-source gap as the Trakt watchlist switch.
+          Troubleshooting: GET/PUT /api/tmdb/list-ingest, /api/imdb/list-ingest. */}
+      <TMDBListIngestCard />
+      <IMDbListIngestCard />
     </div>
   );
 };

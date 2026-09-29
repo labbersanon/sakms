@@ -207,6 +207,8 @@ func TestClassifyOrganizeBrowse(t *testing.T) {
 		"/api/organize/browse/delete",
 		"/api/organize/browse/stat",
 		"/api/organize/browse/video",
+		"/api/organize/import/scan",
+		"/api/organize/import/apply",
 	} {
 		got := Classify(path).Sorted()
 		want := []string{SectionOrganize}

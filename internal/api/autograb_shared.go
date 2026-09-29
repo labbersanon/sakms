@@ -60,6 +60,29 @@ const (
 	// makes this a genuinely new category ("deferred operator approval", §6.1) and
 	// not a member of TriggerOperator's immediate-click exemption.
 	TriggerPreRelease AutoGrabTrigger = "prerelease"
+	// TriggerQualityWatch is Movies upgrade-watch: an owned title whose
+	// operator flipped library_items.upgrade_watch on, dispatched by
+	// monitorMovieUpgradeWatch (internal/api/movieupgradewatch.go), the
+	// SIXTH pass of runUsenetRetryCycle. Gated like every non-TriggerOperator
+	// trigger, by construction.
+	TriggerQualityWatch AutoGrabTrigger = "qualitywatch"
+	// TriggerTraktWatchlist is unattended ingest of the linked Trakt
+	// watchlist, dispatched by monitorTraktWatchlist
+	// (internal/api/traktwatchlistingest.go), the SEVENTH pass of
+	// runUsenetRetryCycle. Movies go through RunAutoGrab (or a Calendar-style
+	// hold). Series are added and monitored; they never call RunAutoGrab
+	// here. Gated like every non-TriggerOperator trigger, by construction,
+	// for the movie half; the series half reads usenet_autograb_enabled
+	// itself so a toggle-off cycle does not mint library_series rows.
+	TriggerTraktWatchlist AutoGrabTrigger = "traktwatchlist"
+	// TriggerTMDBList is unattended ingest of TMDB account watchlist and
+	// operator-configured v3 list IDs, dispatched by ingestTMDBLists
+	// (internal/api/tmdblistingest.go) as part of the SEVENTH pass.
+	TriggerTMDBList AutoGrabTrigger = "tmdblist"
+	// TriggerIMDbList is unattended ingest of IMDb ls… / ur… RSS lists,
+	// dispatched by ingestIMDbLists (internal/api/imdblistingest.go) as
+	// part of the SEVENTH pass.
+	TriggerIMDbList AutoGrabTrigger = "imdblist"
 )
 
 const (
@@ -145,6 +168,12 @@ type AutoGrabDeps struct {
 	// UsenetSearch is the optional native NNTP discovery backend. Nil = inert
 	// (flag-off / not wired). Never errors a grab when unset or not ready.
 	UsenetSearch *usenetsearch.Service
+	// Claude 2026-09-28: seventh retry-cycle pass (list ingest).
+	// Reason: RunUsenetRetry is the only production constructor that has a
+	//   trakt.Store + season catalog; TMDB/IMDb reuse Catalog + HTTPClient.
+	// Troubleshooting: monitorListIngests; *_list_ingest_enabled.
+	// Review if: ingest moves off the daily cycle or gains its own deps type.
+	TraktIngest *traktWatchlistIngest
 }
 
 // AutoGrabRequest is the mode-agnostic description of what to auto-grab.

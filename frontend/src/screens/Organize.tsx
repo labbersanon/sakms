@@ -1,6 +1,7 @@
-// Organize groups Rename / Clean-up / Dedup / Browse under a single sidebar
-// entry. Rename/Clean-up/Dedup are staged review queues; Browse is a
-// confirm-then-mutate file manager. Workflow switching lives in the sidebar
+// Organize groups Rename / Clean-up / Dedup / Browse / Import under a single
+// sidebar entry. Rename/Clean-up/Dedup are staged review queues; Browse is a
+// confirm-then-mutate file manager; Import identifies videos and MOVES them
+// into the library root. Workflow switching lives in the sidebar
 // (collapsible group / flyout); this screen reads `?tab=` and renders the
 // matching embedded component. The active tab is also mirrored to
 // localStorage (`sakms.organize.tab`).
@@ -25,6 +26,7 @@ import { Rename } from "./Rename";
 import { Purge } from "./Purge";
 import { Dedup } from "./Dedup";
 import { Browse } from "./Browse";
+import { Import } from "./Import";
 import {
   type OrganizeTabId,
   isOrganizeTabId,
@@ -67,6 +69,9 @@ export const Organize: Component = () => {
         </Show>
         <Show when={tab() === "browse"}>
           <Browse />
+        </Show>
+        <Show when={tab() === "import"}>
+          <Import />
         </Show>
       </ScreenTabsContext.Provider>
     </div>

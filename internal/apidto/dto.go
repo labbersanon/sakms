@@ -1773,8 +1773,9 @@ type TrackedItem struct {
 	// Review if: Discover's existing-library row starts showing stars.
 	Rating int `json:"rating,omitempty"`
 	// Claude 2026-09-15: derived monitored flag — true when the item has an
-	// active grab (any mode) OR any monitored season (Series only). Absent
-	// (omitempty) means false. Derived at list time; never stored. See plan §1.2.
+	// active grab (any mode) OR any monitored season (Series only) OR
+	// upgrade_watch (Movies only, shipped 2026-09-28). Absent (omitempty)
+	// means false. Derived at list time. See plan §1.2.
 	// Reason: client-side filter chip on Library and Discover Mainstream.
 	// Review if: GET /tracked gains server-side filter params.
 	Monitored bool `json:"monitored,omitempty"`
@@ -3328,6 +3329,23 @@ type TitleQualityPrefsResponse struct {
 	MinResolution int      `json:"minResolution"`
 	Inherited     bool     `json:"inherited"`
 	UpgradeQueued int      `json:"upgradeQueued,omitempty"`
+	// Claude 2026-09-28: movie upgrade-watch, present only when a library_items
+	//   row exists for this TMDB id. Series always omits both fields.
+	// Reason: TitleQualityPrefs is the toggle home; one GET carries prefs + flag.
+	// Troubleshooting: PUT .../upgrade-watch is the write; these fields are read-only here.
+	UpgradeWatch          bool `json:"upgradeWatch,omitempty"`
+	UpgradeWatchAvailable bool `json:"upgradeWatchAvailable,omitempty"`
+}
+
+// MovieUpgradeWatchRequest is PUT /api/modes/movies/library/tmdb/{tmdbId}/upgrade-watch.
+// Setting false also cancels never-dispatched upgrade-watch retries for that title.
+type MovieUpgradeWatchRequest struct {
+	UpgradeWatch bool `json:"upgradeWatch"`
+}
+
+// MovieUpgradeWatchResponse is the PUT result.
+type MovieUpgradeWatchResponse struct {
+	UpgradeWatch bool `json:"upgradeWatch"`
 }
 
 // TitleQualityPrefsRequest is PUT body. Clear=true deletes the override

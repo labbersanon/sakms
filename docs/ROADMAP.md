@@ -436,6 +436,53 @@ unchanged — unit tests are unaffected. Commit `29a56f3`.
 
 ## Recently shipped (outside this backlog)
 
+### Watch an owned movie for a better release — shipped 2026-09-28
+Opt-in `library_items.upgrade_watch` (default off). The sixth pass of
+`runUsenetRetryCycle` searches through `RunAutoGrab` (`TriggerQualityWatch`)
+until a candidate meets the title's current quality prefs. The on-disk file is
+only a cutoff (skip while it already meets that floor), not a ranking target.
+Turning the flag off cancels never-dispatched watch-originated retries.
+The Library/Discover "Monitored" chip now also lights when this flag is on.
+See CHANGELOG 2026-09-28.
+
+### Trakt watchlist ingest — shipped 2026-09-28
+The existing Trakt watchlist (Discover browse row) now has an opt-in ingest
+layer, default off (`trakt_watchlist_ingest_enabled`). The seventh pass of
+`runUsenetRetryCycle` fetches the live list once per daily auto-grab cycle
+(not the Discover cache). Movies that are not owned, excluded, or already
+grabbing become Requests via `RunAutoGrab`, or a Calendar-style hold when
+`gateMovieGrab` says the title is unreleased. Series that are not already in
+`library_series` are added with every season monitored; an existing show is
+left alone so operator monitor choices are not overwritten. Turning the
+switch off cancels never-dispatched `grabs.origin=trakt-watchlist` parks; it
+does not un-monitor series. Auto-grab remains the dispatch gate. TMDB
+public lists + account watchlist and IMDb ls/ur RSS lists share the same
+seventh-pass dispatch and cycle budget (see CHANGELOG 2026-09-28).
+
+### TMDB and IMDb list ingest — shipped 2026-09-28
+Opt-in, default off (`tmdb_list_ingest_enabled`, `imdb_list_ingest_enabled`).
+TMDB uses public v3 list IDs plus the give-back account watchlist when a
+session is stored. IMDb takes `ls…` / `ur…` IDs (or URLs), fetches
+`rss.imdb.com`, and resolves `tt…` via TMDB `/find`. Movies become Requests
+or a Calendar-style hold; new series are added with every season monitored;
+existing library titles are left alone. Toggle-off cancels never-dispatched
+parks of that origin only. Auto-grab remains the gate. See CHANGELOG
+2026-09-28.
+
+### Daily and anime episode identify — shipped 2026-09-28
+Rename, Organize Import, and grab-complete import now resolve date-named
+dailies (`Show.2024.03.15`) and absolute-numbered anime (`Show - 1089`,
+`Show.1089.1080p`) onto a TMDB season/episode. `ParseEpisodeNumbers`
+(SxxExx) is unchanged. Destination names stay the existing SxxExx preset.
+See CHANGELOG 2026-09-28.
+
+### Manual import — shipped 2026-09-28
+Organize → Import identifies videos in a browsable dump folder (same
+Rename matchers) and **moves** them into the mode library root (Kids
+when classify says so). Confirm is the approval. Movies and Series only.
+Not a proposals queue — scan is in-memory; apply reconstructs a Pending
+row and calls RelocateMovie / RelocateEpisode. See CHANGELOG 2026-09-28.
+
 ### Adult release persistence — shipped 2026-08-11
 Plan: `.omc/plans/autopilot-impl-adult-release-persistence.md` (Wave 5 / T1–T8).
 "Search once, persist, reuse" cache for Adult Discover and auto-grab:
@@ -2481,6 +2528,13 @@ are manual browser checks.
   surface decision, restated multiple times in that file. Not planned; see
   "Discovery & requests UX" above for the single-operator-scoped version of
   what's actually worth building from that comparison.
+- **qBittorrent RSS download rules** — dropped 2026-09-28. SAK already
+  owns torrent search, grab, and completion import. RSS-as-title-lists
+  is a Discover ingest problem, not a download-client rule engine.
+- **NZBGet post-process scripts** — dropped 2026-09-28. Grab completion
+  already relocates into the library; Organize → Import covers files
+  that arrived outside a SAK grab. A NZBGet PP hook would duplicate
+  that move.
 
 ---
 
@@ -2534,18 +2588,17 @@ Tagging, Import), Movies, Series, Papeles [sic], Compines [sic], Settings.
    item above — note the Network & Disk Usage piece specifically has no
    existing data source in SAK today.
 
-## Deferred: "watch an owned movie for a better release" — movie-level monitored flag
+## Shipped: "watch an owned movie for a better release" — movie-level upgrade-watch flag
 
-The monitored-only chip (shipped 2026-09-15) deliberately does **not** add a
-new `library_items.monitored` column for Movies. The three tracking signals it
-exposes (active grab, held pre-release request, series season monitored) are
-already persisted; a new column would be a second hand-maintained source of
-truth for something the grabs table already knows — the exact drift this
-codebase avoids.
+Shipped 2026-09-28. This is **not** a `library_items.monitored` column — the
+monitored chip stays derived. The new column is `upgrade_watch`, default off,
+opt-in per owned movie. Hunting uses the title's quality prefs as the qualify
+bar and skips while the on-disk file already meets that floor. Dispatch is
+`RunAutoGrab` with `TriggerQualityWatch`, gated by `usenet_autograb_enabled`,
+as a sixth pass of `runUsenetRetryCycle` (daily cycle, not the 60s drain).
 
-If a genuine "keep watching this owned movie for a better quality release"
-feature lands in the future, it earns a movie-level flag (or a real
-`availability_watch` writer — `internal/recheck`, currently has no production
-writer) at that time. Until then, a movie is "monitored" if and only if it has
-an active or scheduled grab. See `.omc/plans/monitored-only-chip-discover-library.md`
-§0 for the full derivation rationale.
+The monitored-only chip (shipped 2026-09-15) still does **not** treat a movie
+as monitored from a hand-maintained duplicate of the grabs table. It now ORs
+in `upgrade_watch` because that flag is the genuine "keep watching this owned
+movie" signal the 2026-09-15 plan deferred. See
+`.omc/plans/monitored-only-chip-discover-library.md` §0.

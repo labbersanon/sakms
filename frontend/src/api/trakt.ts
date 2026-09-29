@@ -81,3 +81,19 @@ export function disconnectTrakt(): Promise<void> {
 export function fetchTraktWatchlist(): Promise<TraktWatchlistItem[]> {
   return api<TraktWatchlistItem[]>("/api/trakt/watchlist");
 }
+
+// Claude 2026-09-28: opt-in unattended ingest of the linked Trakt watchlist.
+// Reason: Discover already shows the row; this toggle is the ingest gate.
+// Troubleshooting: GET/PUT /api/trakt/watchlist-ingest; seventh retry-cycle pass.
+export function fetchTraktWatchlistIngest(): Promise<boolean> {
+  return api<{ enabled: boolean }>("/api/trakt/watchlist-ingest").then(
+    (r) => r.enabled,
+  );
+}
+
+export function putTraktWatchlistIngest(enabled: boolean): Promise<void> {
+  return api<void>("/api/trakt/watchlist-ingest", {
+    method: "PUT",
+    body: JSON.stringify({ enabled }),
+  });
+}

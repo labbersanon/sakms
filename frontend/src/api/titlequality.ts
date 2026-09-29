@@ -10,6 +10,8 @@ export type TitleQualityPrefsResponse = {
   minResolution: number;
   inherited: boolean;
   upgradeQueued?: number;
+  upgradeWatch?: boolean;
+  upgradeWatchAvailable?: boolean;
 };
 
 export type TitleQualityPrefsRequest = {
@@ -49,4 +51,17 @@ export function putTitleQualityPrefs(
     method: "PUT",
     body: JSON.stringify(body),
   });
+}
+
+export function putMovieUpgradeWatch(
+  tmdbId: number,
+  upgradeWatch: boolean,
+): Promise<{ upgradeWatch: boolean }> {
+  return api<{ upgradeWatch: boolean }>(
+    `/api/modes/movies/library/tmdb/${tmdbId}/upgrade-watch`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ upgradeWatch }),
+    },
+  );
 }

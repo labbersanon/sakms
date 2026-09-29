@@ -14,11 +14,12 @@ import {
 import type { Mode } from "../api/discover";
 import {
   fetchTitleQualityPrefs,
+  putMovieUpgradeWatch,
   putTitleQualityPrefs,
   type TitleQualityKey,
 } from "../api/titlequality";
 import { MAX_RESOLUTIONS, QUALITY_TIERS } from "../api/settings";
-import { ErrorText, Muted, PillSelector } from "./ui";
+import { ErrorText, Muted, PillSelector, Switch } from "./ui";
 
 const TIER_LABELS: Record<string, string> = {
   low: "Low",
@@ -101,6 +102,21 @@ export const TitleQualityPrefs: Component<{
     }
   };
 
+  const setWatch = async (next: boolean) => {
+    const tmdbId = props.titleKey.tmdbId;
+    if (tmdbId == null) return;
+    setBusy(true);
+    setWriteError("");
+    try {
+      await putMovieUpgradeWatch(tmdbId, next);
+      await refetch();
+    } catch (e) {
+      setWriteError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div class="mb-3 border-t border-border pt-3">
       <p class="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted">
@@ -154,6 +170,29 @@ export const TitleQualityPrefs: Component<{
         </Show>
         <Show when={upgradeNote()}>
           <Muted class="mt-1">{upgradeNote()}</Muted>
+        </Show>
+        {/* Claude 2026-09-28: opt-in movie upgrade-watch on the quality card.
+            Reason: ROADMAP owned-movie hunt; GET quality-prefs carries
+              upgradeWatchAvailable so unowned Discover titles hide the switch.
+            Troubleshooting: PUT .../upgrade-watch; sixth retry-cycle pass.
+            Review if: Series gets a matching per-title watch control. */}
+        <Show when={prefs()!.upgradeWatchAvailable}>
+          <div class="mt-3 flex items-start justify-between gap-3">
+            <div>
+              <p class="text-xs font-medium text-fg">Watch for better release</p>
+              <Muted class="mt-0.5">
+                Search each auto-grab cycle until a release meets this title's
+                quality minimum. Stops while the file on disk already meets that
+                floor.
+              </Muted>
+            </div>
+            <Switch
+              checked={prefs()!.upgradeWatch === true}
+              disabled={busy()}
+              ariaLabel="Watch for better release"
+              onChange={(next) => void setWatch(next)}
+            />
+          </div>
         </Show>
       </Show>
     </div>

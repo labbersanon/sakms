@@ -1134,6 +1134,15 @@ func proposeOneEpisodeLibrary(
 		}
 	}
 	if !ok {
+		// Claude 2026-09-28: daily air-date / anime absolute before title match.
+		// Reason: deterministic date and absolute tokens beat episode-title
+		//   heuristics. Returns a full proposal (Pending or distinctly Unmatched).
+		// Review if: ParseEpisodeNumbers learns these shapes.
+		if got := tryDailyOrAbsoluteSeries(ctx, sess, tracked, pin, generalRoot, foundRoot, videoPath, cfg, p); got != nil {
+			return *got, false
+		}
+	}
+	if !ok {
 		// Claude 2026-08-06: episode-title matching for files with no season/episode marker
 		// Reason: autopilot-impl-episode-title-matching §2 — a file whose show is
 		//   ALREADY pinned by the folder guard can still be placed by matching its

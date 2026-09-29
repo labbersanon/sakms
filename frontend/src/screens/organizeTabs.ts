@@ -19,6 +19,11 @@ export const ORGANIZE_WORKFLOWS = [
   // Troubleshooting: invalid tab still falls back to rename.
   // Review if: nested paths replace query params.
   { id: "browse", label: "Browse" },
+  // Claude 2026-09-28: Import tab — identify then MOVE into the library.
+  // Reason: SAK is the file manager; dump-folder files must leave the source.
+  // Troubleshooting: invalid tab still falls back to rename.
+  // Review if: nested paths replace query params.
+  { id: "import", label: "Import" },
 ] as const;
 
 export type OrganizeTabId = (typeof ORGANIZE_WORKFLOWS)[number]["id"];

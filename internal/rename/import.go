@@ -183,7 +183,13 @@ func ImportDestPath(p proposals.Proposal, preset naming.Preset) string {
 		folder := filepath.Join(p.RootFolderPath, naming.MovieFolderName(preset, p.Title, p.Year, p.TMDBID))
 		return filepath.Join(folder, naming.MovieFileName(preset, p.Title, p.Year, p.TMDBID, filepath.Ext(p.SourcePath)))
 	case mode.Series:
-		return naming.EpisodeFilePath(preset, p.RootFolderPath, p.Title, p.Year, p.TMDBID, p.SeasonNumber, p.EpisodeNumber, "", filepath.Ext(p.SourcePath))
+		eps := []int{p.EpisodeNumber}
+		if len(p.ExtraEpisodeNumbers) > 0 {
+			eps = append(eps, p.ExtraEpisodeNumbers...)
+		}
+		seriesFolder := naming.SeriesFolderName(preset, p.Title, p.Year, p.TMDBID)
+		seasonDir := filepath.Join(p.RootFolderPath, seriesFolder, naming.SeasonDirName(p.SeasonNumber))
+		return filepath.Join(seasonDir, naming.EpisodeRangeFileName(preset, p.Title, p.SeasonNumber, eps, "", filepath.Ext(p.SourcePath)))
 	default:
 		return ""
 	}

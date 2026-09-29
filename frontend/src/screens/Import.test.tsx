@@ -65,7 +65,7 @@ describe("Import", () => {
       target: { value: "/downloads" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Scan" }));
-    expect(await screen.findByText("The Matrix")).toBeInTheDocument();
+    expect(await screen.findByText("The Matrix (1999)")).toBeInTheDocument();
     expect(screen.getByText(/Library: \/media\/movies/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Import selected" }));
@@ -84,7 +84,6 @@ describe("Import", () => {
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
-        const method = (init?.method ?? "GET").toUpperCase();
         if (url.includes("/api/browse")) {
           return jsonResponse({ path: "", entries: [] });
         }

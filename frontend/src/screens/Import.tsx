@@ -66,7 +66,7 @@ export const Import: Component = () => {
   const toggleAllPending = () => {
     const all = pending();
     if (selectedPending().length === all.length) {
-      setSelected(new Set());
+      setSelected(new Set<string>());
       return;
     }
     setSelected(new Set(all.map((i) => i.sourcePath)));
@@ -94,7 +94,7 @@ export const Import: Component = () => {
     } catch (e) {
       setError((e as Error).message);
       setItems([]);
-      setSelected(new Set());
+      setSelected(new Set<string>());
     } finally {
       setBusy(false);
     }
@@ -230,14 +230,11 @@ export const Import: Component = () => {
                         </div>
                       </td>
                       <td class="px-2 py-1.5 text-fg">
-                        <Show when={item.title} fallback="—">
-                          {item.title}
-                          <Show when={item.year}> ({item.year})</Show>
-                          <Show when={episodeLabel(item)}>
-                            {" "}
-                            {episodeLabel(item)}
-                          </Show>
-                        </Show>
+                        {item.title
+                          ? `${item.title}${item.year ? ` (${item.year})` : ""}${
+                              episodeLabel(item) ? ` ${episodeLabel(item)}` : ""
+                            }`
+                          : "—"}
                       </td>
                       <td class="px-2 py-1.5 font-mono text-xs text-muted">
                         {item.destPath || "—"}

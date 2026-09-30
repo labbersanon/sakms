@@ -163,11 +163,8 @@ export const AIProviderModelCard: Component = () => {
   // No source (undefined) when the provider isn't ollama, or no URL is saved
   // yet, so the resource simply doesn't fetch in either case.
   const [ollamaModels] = createResource(
-    () =>
-      prov() === "ollama"
-        ? byService()["ollama"]?.url || undefined
-        : undefined,
-    (url) => fetchOllamaModels(url),
+    () => (prov() === "ollama" && byService()["ollama"]?.url ? true : undefined),
+    () => fetchOllamaModels(),
   );
   // ollamaOptions appends the stored model as a selectable option, labeled
   // "(not currently installed)", when it's reachable but no longer in the

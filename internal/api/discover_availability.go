@@ -104,21 +104,25 @@ func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections
 			req.Box = q.Get("box")
 			req.SceneID = q.Get("sceneId")
 			req.DurationSeconds = queryInt(q, "durationSeconds", 0)
-			req.DownloadURL = q.Get("downloadUrl")
-			req.DownloadProtocol = strings.ToLower(q.Get("protocol"))
+			req.GUID = q.Get("guid")
 			sizeBytes, _ := strconv.ParseInt(q.Get("sizeBytes"), 10, 64)
-			if req.DownloadURL != "" {
+			if handle, ok := grabReleaseCache.lookup(req.GUID); ok {
 				hasKnownAdultEnclosure = true
 				releaseTitle := req.ReleaseTitle
 				if releaseTitle == "" {
 					releaseTitle = title
 				}
+				proto := handle.Protocol
+				if proto == "" {
+					proto = strings.ToLower(q.Get("protocol"))
+				}
 				knownAdultEnclosure = prowlarr.Release{
+					GUID:        req.GUID,
 					Title:       releaseTitle,
 					Indexer:     "feed",
-					Protocol:    prowlarr.Protocol(req.DownloadProtocol),
+					Protocol:    prowlarr.Protocol(proto),
 					Size:        sizeBytes,
-					DownloadURL: req.DownloadURL,
+					DownloadURL: handle.DownloadURL,
 				}
 			}
 		case mode.Series:
@@ -299,6 +303,7 @@ func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections
 				DownloadURL: knownAdultEnclosure.DownloadURL, PublishDate: knownAdultEnclosure.PublishDate,
 				Score: grade.Score,
 			}
+			rememberAvailabilityCandidate(candidate)
 			var cell *apidto.TierAvailability
 			switch resolution {
 			case 2160:
@@ -551,11 +556,13 @@ func selectAvailabilityCandidate(candidates []autograb.Candidate, releases []pro
 
 	rel := subReleases[sel.PickIndex]
 	grade := sel.Grades[sel.PickIndex]
-	return &apidto.AvailabilityCandidate{
+	c := &apidto.AvailabilityCandidate{
 		GUID: rel.GUID, Title: rel.Title, Indexer: rel.Indexer, Protocol: string(rel.Protocol),
 		Size: rel.Size, Seeders: rel.Seeders, DownloadURL: rel.DownloadURL, PublishDate: rel.PublishDate,
 		Score: grade.Score,
 	}
+	rememberAvailabilityCandidate(c)
+	return c
 }
 
 // logAvailabilityRejections explains why a (tier, protocol) cell had

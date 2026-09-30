@@ -36,7 +36,6 @@ const candidate = (over: Partial<AvailabilityCandidate> = {}): AvailabilityCandi
   protocol: "torrent",
   size: 1000,
   seeders: 10,
-  downloadUrl: "magnet:?xt=urn:btih:abc",
   publishDate: "2024-01-01",
   score: 5,
   ...over,
@@ -782,7 +781,7 @@ describe("DetailPopup — ExpandableClampedText More/Less", () => {
     const target: DetailTarget = {
       mode: "adult",
       item: adultScene({
-        downloadUrl: "magnet:?xt=urn:btih:KNOWN",
+        guid: "g-known",
         protocol: "torrent",
         sizeBytes: 900_000_000,
       }),
@@ -797,9 +796,7 @@ describe("DetailPopup — ExpandableClampedText More/Less", () => {
     const availCall = calls.find((c) => c.url.includes("/discover/availability"));
     expect(availCall?.url).toContain("studio=Vixen");
     expect(availCall?.url).toContain("durationSeconds=1800");
-    expect(availCall?.url).toContain(
-      "downloadUrl=magnet%3A%3Fxt%3Durn%3Abtih%3AKNOWN",
-    );
+    expect(availCall?.url).toContain("guid=g-known");
     expect(availCall?.url).toContain("protocol=torrent");
     expect(availCall?.url).toContain("sizeBytes=900000000");
     expect(availCall?.url).not.toContain("tmdbId");
@@ -1280,7 +1277,6 @@ describe("DetailPopup — Grab wiring (mirrors GrabDialog.pickManual's call shap
       title: "Hero.Movie.1080p",
       indexer: "IndexerA",
       protocol: "torrent",
-      downloadUrl: "magnet:?xt=urn:btih:abc",
     });
 
     const calls = stubFetch((url) => {
@@ -1319,7 +1315,7 @@ describe("DetailPopup — Grab wiring (mirrors GrabDialog.pickManual's call shap
   // Review if: availability response decoding rejects malformed candidates.
   it("names missing candidate fields before resolving the root folder or calling manualGrab", async () => {
     const preview = emptyPreview();
-    preview.res1080.low.torrent = candidate({ downloadUrl: "", protocol: "" });
+    preview.res1080.low.torrent = candidate({ guid: "", protocol: "" });
 
     const calls = stubFetch((url) => {
       if (url.includes("/discover/availability")) return jsonResponse(preview);
@@ -1336,7 +1332,7 @@ describe("DetailPopup — Grab wiring (mirrors GrabDialog.pickManual's call shap
 
     expect(
       await screen.findByText(
-        "selected release is missing required field(s): downloadUrl, protocol",
+        "selected release is missing required field(s): guid, protocol",
       ),
     ).toBeInTheDocument();
     expect(calls.some((c) => c.url.includes("/library/root-folder"))).toBe(false);

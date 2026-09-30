@@ -105,6 +105,10 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, scSt
 			http.Error(w, "title is required", http.StatusBadRequest)
 			return
 		}
+		if err := resolveClientEnclosure(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		// Claude 2026-09-23: movies/series Grab must carry the catalog id.
 		// Reason: title-only Search parked pending_retry rows with tmdb_id=0.
 		// Troubleshooting: Barnaby Jones / Waltons / Magnum / Rockford letter tiles.
@@ -519,7 +523,8 @@ func rankedAutoGrabCandidates(sel autograb.Selection, releases []prowlarr.Releas
 	for _, idx := range sel.Ranked {
 		g := sel.Grades[idx]
 		rel := releases[idx]
-		out = append(out, apidto.AutoGrabCandidate{
+		c := apidto.AutoGrabCandidate{
+			GUID:        rel.GUID,
 			Title:       rel.Title,
 			Indexer:     rel.Indexer,
 			Protocol:    string(rel.Protocol),
@@ -531,7 +536,9 @@ func rankedAutoGrabCandidates(sel autograb.Selection, releases []prowlarr.Releas
 			ImpliedMbps: g.ImpliedMbps,
 			FloorMbps:   g.FloorMbps,
 			Qualified:   g.Qualified,
-		})
+		}
+		rememberAutoGrabCandidate(&c)
+		out = append(out, c)
 	}
 	return out
 }

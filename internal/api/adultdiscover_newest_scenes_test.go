@@ -444,9 +444,10 @@ func TestAdultNewestEntityScenesHandler_Page2MappingAndGrabSafety(t *testing.T) 
 	if it.Rating != 0 || it.Source != "prowlarr" {
 		t.Errorf("expected Rating 0 + Source prowlarr, got rating=%v source=%q", it.Rating, it.Source)
 	}
-	if it.ReleaseTitle != rawTitle || it.DownloadURL != "magnet:?xt=urn:btih:GRAB" || it.Protocol != "torrent" || it.SizeBytes != 900000000 {
+	if it.ReleaseTitle != rawTitle || it.Protocol != "torrent" || it.SizeBytes != 900000000 {
 		t.Errorf("expected grab-bearing fields unchanged, got %+v", it)
 	}
+	assertRememberedEnclosure(t, it.GUID, "magnet:?xt=urn:btih:GRAB", "torrent")
 	if atomic.LoadInt32(&sceneByID) != 0 {
 		t.Errorf("resolveTPDBDuration/GetSceneByID must never fire, got %d calls", sceneByID)
 	}
@@ -662,9 +663,10 @@ func TestAdultNewestShowMore_CollapsesQualityVariantsBySceneIdentity(t *testing.
 	}
 	// The higher-seeder (9, the 2160p release) must survive, with its raw
 	// grab-bearing fields exactly as Prowlarr returned them (grab-safety).
-	if it.ReleaseTitle != raw2160 || it.DownloadURL != "magnet:?xt=urn:btih:BBB" || it.Protocol != "torrent" || it.SizeBytes != 900000000 {
+	if it.ReleaseTitle != raw2160 || it.Protocol != "torrent" || it.SizeBytes != 900000000 {
 		t.Errorf("expected the higher-seeder (2160p) survivor's raw fields unchanged, got %+v", it)
 	}
+	assertRememberedEnclosure(t, it.GUID, "magnet:?xt=urn:btih:BBB", "torrent")
 }
 
 // TestAdultNewestShowMore_RootCauseAndWinner exercises the Show More wrapper

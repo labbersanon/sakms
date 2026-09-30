@@ -177,7 +177,7 @@ describe("AdultDiscover — sceneTarget direct-enclosure (D4/C1) via select-mode
         rowType: "scene",
         durationSeconds: 1800,
         releaseTitle: "Fresh.Scene.2026.1080p",
-        downloadUrl: "https://feed.example/fetch/abc.torrent",
+        guid: "https://feed.example/fetch/abc.torrent",
         protocol: "torrent",
         sizeBytes: 2147483648,
       }),
@@ -210,7 +210,7 @@ describe("AdultDiscover — sceneTarget direct-enclosure (D4/C1) via select-mode
         studio: "Vixen",
         releaseTitle: "Fresh.Scene.2026.1080p",
         durationSeconds: 1800,
-        downloadUrl: "https://feed.example/fetch/abc.torrent",
+        guid: "https://feed.example/fetch/abc.torrent",
         downloadProtocol: "torrent",
       },
     });
@@ -257,7 +257,7 @@ describe("AdultDiscover — sceneTarget direct-enclosure (D4/C1) via select-mode
       title: "Browse Scene",
       studio: "Blacked",
     });
-    expect("downloadUrl" in request).toBe(false);
+    expect("guid" in request).toBe(false);
     expect("downloadProtocol" in request).toBe(false);
   });
 

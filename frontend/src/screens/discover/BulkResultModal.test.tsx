@@ -36,10 +36,10 @@ const response: AutoGrabBatchResponse = {
       message: "Nothing cleared the quality floor — pick one:",
       candidates: [
         {
+          guid: "g-fallback",
           title: "Fallback Movie 1080p WEB",
           indexer: "Indexer A",
           protocol: "torrent",
-          downloadUrl: "magnet:?xt=fallback",
           size: 1,
           seeders: 5,
           status: "below-floor",

@@ -36,7 +36,6 @@ describe("RequestsSeriesDetail — Search & pick", () => {
               protocol: "usenet",
               size: 1000,
               seeders: 0,
-              downloadUrl: "https://idx/nzb",
               publishDate: "",
               score: 10,
             },

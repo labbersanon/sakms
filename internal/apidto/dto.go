@@ -288,13 +288,17 @@ type AdultDiscoverItem struct {
 	ReleaseTitle    string   `json:"releaseTitle,omitempty"`
 	Genres          []string `json:"genres,omitempty"`
 	Performers      []string `json:"performers,omitempty"`
+	// GUID is the opaque handle for a fresh-feed enclosure. The raw
+	// DownloadURL is never sent to the browser (json:"-"); grab/autograb
+	// look it up in the server-side GUID cache.
+	GUID string `json:"guid,omitempty"`
 	// DownloadURL/Protocol/SizeBytes are the feed enclosure for a pooled,
 	// feed-sourced entity — populated ONLY when the item's feed is currently
 	// fresh (the backend builds them via FeedHealth.DirectGrabURL). When present
-	// the Grab dialog threads them into AutoGrabRequest.DownloadURL/
-	// DownloadProtocol for a direct grab; when empty (browse-only, or a feed not
-	// currently fresh) the card falls back to the Prowlarr search path (D4/D5).
-	DownloadURL string `json:"downloadUrl,omitempty"`
+	// the Grab dialog threads GUID into AutoGrabRequest for a direct grab; when
+	// empty (browse-only, or a feed not currently fresh) the card falls back to
+	// the Prowlarr search path (D4/D5).
+	DownloadURL string `json:"-"`
 	Protocol    string `json:"protocol,omitempty"`
 	SizeBytes   int64  `json:"sizeBytes,omitempty"`
 	// Seeders is the Prowlarr seeder count for a Show More (page>1) result,
@@ -354,7 +358,7 @@ type SearchReleaseResult struct {
 	Protocol    string `json:"protocol"`
 	Size        int64  `json:"size"`
 	Seeders     int    `json:"seeders"`
-	DownloadURL string `json:"downloadUrl"`
+	DownloadURL string `json:"-"`
 	PublishDate string `json:"publishDate"`
 	Score       int    `json:"score"`
 	// Claude 2026-09-26: parsed axes for the Search & pick filter pills.
@@ -722,14 +726,14 @@ type AutoGrabRequest struct {
 	DurationSeconds int    `json:"durationSeconds,omitempty"`
 	// ReleaseTitle is Adult-only — see this struct's doc comment above.
 	ReleaseTitle string `json:"releaseTitle,omitempty"`
-	// DownloadURL/DownloadProtocol are the direct-grab fields (Adult feed
-	// entities): when DownloadURL is present the server dispatches it straight to
-	// the download client, skipping the Prowlarr search entirely — identically
-	// for the single (autoGrabHandler) and bulk (grabOneBatchItem) entrypoints,
-	// so one code path serves both (D4/C1). Empty ⇒ the existing Prowlarr search
-	// path runs, unchanged. The card only carries these while its feed is fresh
-	// (see FeedHealth.DirectGrabURL); otherwise it falls back to the Prowlarr path.
-	DownloadURL      string `json:"downloadUrl,omitempty"`
+	// GUID is the opaque handle for a previously-serialized enclosure (Adult
+	// feed / RSS / search result). The server looks it up and ignores any
+	// client-supplied DownloadURL (SSRF: authenticated grab must not fetch an
+	// operator-chosen URL). Empty GUID ⇒ Prowlarr search path.
+	GUID string `json:"guid,omitempty"`
+	// DownloadURL is filled server-side from the GUID cache (or the Adult
+	// persisted-release feeder). json:"-" so a client cannot inject a fetch URL.
+	DownloadURL      string `json:"-"`
 	DownloadProtocol string `json:"downloadProtocol,omitempty"`
 	// Box/SceneID carry the catalog scene identity (stash-box source name + UUID)
 	// for Adult requests. The resolver uses them to build a stable cache key
@@ -764,10 +768,11 @@ type AutoGrabRequest struct {
 // (below) reuses this same candidate type for a bulk grab's per-item fallback
 // pick list.
 type AutoGrabCandidate struct {
+	GUID        string  `json:"guid"`
 	Title       string  `json:"title"`
 	Indexer     string  `json:"indexer"`
 	Protocol    string  `json:"protocol"`
-	DownloadURL string  `json:"downloadUrl"`
+	DownloadURL string  `json:"-"`
 	Size        int64   `json:"size"`
 	Seeders     int     `json:"seeders"`
 	Status      string  `json:"status"`
@@ -992,7 +997,7 @@ type AvailabilityCandidate struct {
 	Protocol    string  `json:"protocol"`
 	Size        int64   `json:"size"`
 	Seeders     int     `json:"seeders"`
-	DownloadURL string  `json:"downloadUrl"`
+	DownloadURL string  `json:"-"`
 	PublishDate string  `json:"publishDate"`
 	Score       float64 `json:"score"`
 }
@@ -2283,11 +2288,12 @@ type AdultNewestReleaseItem struct {
 	// indirectly via the ?gender= filter on the resolve endpoint rather than
 	// from this field client-side.
 	Gender string `json:"gender,omitempty"`
+	GUID   string `json:"guid,omitempty"`
 	// DownloadURL/Protocol/SizeBytes are the feed enclosure for a feed-sourced
 	// pooled entity — populated ONLY when the item's feed is currently fresh (via
 	// FeedHealth.DirectGrabURL). Empty for a browse-only entity or a feed not
 	// currently fresh, in which case the card grabs via the Prowlarr path (D4/D5).
-	DownloadURL string `json:"downloadUrl,omitempty"`
+	DownloadURL string `json:"-"`
 	Protocol    string `json:"protocol,omitempty"`
 	SizeBytes   int64  `json:"sizeBytes,omitempty"`
 }
@@ -2630,11 +2636,12 @@ type RssFeedReorderRequest struct {
 // no poster exactly as before this field existed. The grab still uses the raw
 // Title + DownloadURL, never these display-only fields.
 type RssFeedItem struct {
+	GUID           string `json:"guid"`
 	Title          string `json:"title"`
 	Link           string `json:"link"`
 	PubDate        string `json:"pubDate"`
 	SizeBytes      int64  `json:"sizeBytes,omitempty"`
-	DownloadURL    string `json:"downloadUrl"`
+	DownloadURL    string `json:"-"`
 	Protocol       string `json:"protocol"`
 	Indexer        string `json:"indexer"`
 	ResolvedTitle  string `json:"resolvedTitle,omitempty"`

@@ -874,7 +874,7 @@ export const DetailPopup: Component<{
           studio: scene.studio,
           releaseTitle: scene.releaseTitle,
           durationSeconds: scene.durationSeconds,
-          downloadUrl: scene.downloadUrl,
+          guid: scene.guid,
           protocol: scene.protocol,
           sizeBytes: scene.sizeBytes,
           box: isCatalog ? scene.source : undefined,
@@ -1092,7 +1092,7 @@ export const DetailPopup: Component<{
       // Troubleshooting: replaces the opaque server 400 with the exact bad fields.
       // Review if: AvailabilityCandidate validates these fields while decoding.
       const missing = [
-        !c.downloadUrl?.trim() ? "downloadUrl" : "",
+        !c.guid?.trim() ? "guid" : "",
         !c.protocol?.trim() ? "protocol" : "",
       ].filter(Boolean);
       if (missing.length) {
@@ -1115,7 +1115,7 @@ export const DetailPopup: Component<{
         seasonSpecified: mode() === "series" ? true : undefined,
         indexer: c.indexer,
         protocol: c.protocol,
-        downloadUrl: c.downloadUrl,
+        guid: c.guid,
         rootFolderPath: root,
       });
       setGrabbedTitle(c.title);
@@ -1129,7 +1129,7 @@ export const DetailPopup: Component<{
 
   const pickFallback = async (c: AutoGrabCandidate) => {
     setGrabError("");
-    setManualPicking(c.downloadUrl);
+    setManualPicking(c.guid);
     try {
       const root = await libraryRootFolder(mode());
       if (!root) {
@@ -1146,7 +1146,7 @@ export const DetailPopup: Component<{
         seasonSpecified: mode() === "series" ? true : undefined,
         indexer: c.indexer,
         protocol: c.protocol,
-        downloadUrl: c.downloadUrl,
+        guid: c.guid,
         rootFolderPath: root,
       });
       setGrabbedTitle(c.title);

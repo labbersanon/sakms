@@ -192,6 +192,20 @@ func TestParseNZB_EmptyInput(t *testing.T) {
 	}
 }
 
+func TestRequireHTTPURL(t *testing.T) {
+	if err := requireHTTPURL("https://idx.example/a.nzb"); err != nil {
+		t.Errorf("https: %v", err)
+	}
+	if err := requireHTTPURL("http://10.1.10.7:9696/api?id=1"); err != nil {
+		t.Errorf("http LAN: %v", err)
+	}
+	for _, raw := range []string{"file:///etc/passwd", "gopher://x/", "magnet:?xt=urn:btih:abc", "not-a-url"} {
+		if err := requireHTTPURL(raw); err == nil {
+			t.Errorf("requireHTTPURL(%q) = nil, want error", raw)
+		}
+	}
+}
+
 // -- sanitizeName --
 
 func TestSanitizeName_ForwardSlash(t *testing.T) {
@@ -226,8 +240,17 @@ func TestSanitizeName_NoSpecialChars(t *testing.T) {
 }
 
 func TestSanitizeName_Empty(t *testing.T) {
-	if got := sanitizeName(""); got != "" {
-		t.Errorf("expected empty string, got %q", got)
+	if got := sanitizeName(""); got != "_" {
+		t.Errorf("expected underscore for empty, got %q", got)
+	}
+}
+
+func TestSanitizeName_DotComponents(t *testing.T) {
+	for _, raw := range []string{".", "..", " .. ", "/.."} {
+		got := sanitizeName(raw)
+		if got == "." || got == ".." || got == "" {
+			t.Errorf("sanitizeName(%q) = %q, want a non-dot component", raw, got)
+		}
 	}
 }
 

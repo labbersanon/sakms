@@ -93,7 +93,7 @@ interface ManualGrabBody {
   seasonSpecified?: boolean;
   indexer: string;
   protocol: string;
-  downloadUrl: string;
+  guid: string;
   rootFolderPath: string;
 }
 

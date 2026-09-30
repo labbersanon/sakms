@@ -30,6 +30,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1491,6 +1492,12 @@ func (m *Manager) torrentHTTPClient() *http.Client {
 			if len(via) >= 10 {
 				return errors.New("stopped after 10 redirects")
 			}
+			if req.URL != nil {
+				scheme := strings.ToLower(req.URL.Scheme)
+				if scheme != "http" && scheme != "https" {
+					return fmt.Errorf("downloader: refusing redirect to scheme %q", scheme)
+				}
+			}
 			return nil
 		},
 	}
@@ -1500,6 +1507,17 @@ func (m *Manager) torrentHTTPClient() *http.Client {
 // URI when the server redirects to Location: magnet:… (Prowlarr's common path
 // for magnet-only indexer results). Exactly one of (mi, magnet) is set on success.
 func (m *Manager) fetchMetainfoOrMagnet(ctx context.Context, uri string) (*metainfo.MetaInfo, string, error) {
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(uri)), "magnet:") {
+		return nil, uri, nil
+	}
+	u, err := url.Parse(uri)
+	if err != nil || u.Host == "" {
+		return nil, "", fmt.Errorf("downloader: invalid torrent URL")
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return nil, "", fmt.Errorf("downloader: torrent URL scheme must be http or https")
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("downloader: building torrent request: %w", err)

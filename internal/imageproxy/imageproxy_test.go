@@ -74,6 +74,18 @@ func TestValidateHostNotPrivate_LiteralIPs(t *testing.T) {
 	}
 }
 
+func TestRejectBlockedDialAddress(t *testing.T) {
+	if err := rejectBlockedDialAddress("127.0.0.1:443"); !errors.Is(err, ErrHostNotAllowed) {
+		t.Errorf("loopback dial = %v, want ErrHostNotAllowed", err)
+	}
+	if err := rejectBlockedDialAddress("10.1.10.3:80"); !errors.Is(err, ErrHostNotAllowed) {
+		t.Errorf("private dial = %v, want ErrHostNotAllowed", err)
+	}
+	if err := rejectBlockedDialAddress("8.8.8.8:443"); err != nil {
+		t.Errorf("public dial rejected: %v", err)
+	}
+}
+
 // TestValidate_SchemeAndSyntax covers Validate's local, DNS-free checks
 // (scheme/parse/empty-host) — the parts that stay pure regardless of the
 // resolve-then-check host guard. Uses IP-literal hosts throughout so no test

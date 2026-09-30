@@ -140,6 +140,7 @@ func searchHandler(httpClient *http.Client, connStore *connections.Store, scStor
 				Resolution: res,
 				Quality:    tier,
 			}
+			rememberSearchRelease(&out[i])
 		}
 		sort.Slice(out, func(i, j int) bool { return out[i].Score > out[j].Score })
 
@@ -303,8 +304,11 @@ type grabRequest struct {
 	QualityProfileID int    `json:"qualityProfileId,omitempty"`
 	Indexer          string `json:"indexer"`
 	Protocol         string `json:"protocol"`
-	DownloadURL      string `json:"downloadUrl"`
-	RootFolderPath   string `json:"rootFolderPath"`
+	GUID             string `json:"guid"`
+	// DownloadURL is filled from grabReleaseCache by GUID (json:"-" so a
+	// client cannot inject a fetch URL; same SSRF posture as AutoGrabRequest).
+	DownloadURL    string `json:"-"`
+	RootFolderPath string `json:"rootFolderPath"`
 }
 
 // grabHandler sends one chosen search result to the appropriate download
@@ -327,12 +331,15 @@ func grabHandler(httpClient *http.Client, connStore *connections.Store, scStore 
 		// candidate, protocol mapping, or configured root caused the rejection.
 		// Troubleshooting: makes malformed availability candidates diagnosable.
 		// Review if: request decoding moves to shared field-level validation.
+		// Claude 2026-09-30: grab by opaque guid, dest under browsable roots.
+		// Reason: client downloadUrl was an authenticated SSRF; rootFolderPath
+		//   could write outside /media|/downloads|/adult|/staging.
+		// Troubleshooting: 400 unknown guid → re-search; dest 400 → pick a
+		//   FolderPicker path.
+		// Review if: grab tickets are persisted instead of an in-memory TTL.
 		var missing []string
-		if strings.TrimSpace(req.DownloadURL) == "" {
-			missing = append(missing, "downloadUrl")
-		}
-		if strings.TrimSpace(req.Protocol) == "" {
-			missing = append(missing, "protocol")
+		if strings.TrimSpace(req.GUID) == "" {
+			missing = append(missing, "guid")
 		}
 		if strings.TrimSpace(req.RootFolderPath) == "" {
 			missing = append(missing, "rootFolderPath")
@@ -341,6 +348,19 @@ func grabHandler(httpClient *http.Client, connStore *connections.Store, scStore 
 			http.Error(w, "missing required field(s): "+strings.Join(missing, ", "), http.StatusBadRequest)
 			return
 		}
+		handle, ok := grabReleaseCache.lookup(req.GUID)
+		if !ok {
+			http.Error(w, errUnknownReleaseGUID.Error(), http.StatusBadRequest)
+			return
+		}
+		req.DownloadURL = handle.DownloadURL
+		req.Protocol = handle.Protocol
+		root, err := resolveBrowsablePath(req.RootFolderPath)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		req.RootFolderPath = root
 
 		sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, dl, m)
 		if err != nil {

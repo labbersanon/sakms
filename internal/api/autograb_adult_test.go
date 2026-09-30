@@ -186,14 +186,14 @@ func TestAutoGrabHandler_Adult_CardEnclosureWinsOverCache(t *testing.T) {
 	// grab the cache release and record adultCacheTestIndexer instead of "feed".
 	srv, grabsStore, _, _ := newAdultCacheServer(t, sceneTitle, sceneKey)
 
+	guid := grabReleaseCache.remember("", feedMagnet, "torrent")
 	body, _ := json.Marshal(apidto.AutoGrabRequest{
-		Title:            sceneTitle,
-		Studio:           "SomeStudio",
-		Box:              "stashdb",
-		SceneID:          "test-scene-003",
-		DurationSeconds:  6000,
-		DownloadURL:      feedMagnet, // explicit enclosure — feeder must NOT fire
-		DownloadProtocol: "torrent",
+		Title:           sceneTitle,
+		Studio:          "SomeStudio",
+		Box:             "stashdb",
+		SceneID:         "test-scene-003",
+		DurationSeconds: 6000,
+		GUID:            guid,
 	})
 	resp, err := http.Post(srv.URL+"/api/modes/adult/autograb", "application/json", bytes.NewReader(body))
 	if err != nil {

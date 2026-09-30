@@ -83,7 +83,8 @@ type adultScene struct {
 	// These mirror apidto.AdultDiscoverItem's tags exactly so the one frontend
 	// type parses both this emitted shape and the generated DTO. See D4/D5.
 	ReleaseTitle string `json:"releaseTitle,omitempty"`
-	DownloadURL  string `json:"downloadUrl,omitempty"`
+	GUID         string `json:"guid,omitempty"`
+	DownloadURL  string `json:"-"`
 	Protocol     string `json:"protocol,omitempty"`
 	SizeBytes    int64  `json:"sizeBytes,omitempty"`
 }
@@ -112,6 +113,7 @@ func poolReleaseToAdultScene(m adultnewest.MatchedRelease, feedHealth *adultnewe
 		s.Protocol = m.DownloadProtocol
 		s.SizeBytes = m.SizeBytes
 	}
+	rememberAdultScene(&s)
 	return s
 }
 

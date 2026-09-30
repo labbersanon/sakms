@@ -1,14 +1,22 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
 
-// TestOllamaModelsHandler_ReturnsModelNames proves the endpoint returns the
-// installed model names from a live-fetched /api/tags call.
+func ollamaModelsHandlerFor(t *testing.T, ollamaURL string) http.HandlerFunc {
+	t.Helper()
+	connStore, _, _, _, _, _, _, _, _, _ := testStores(t)
+	if err := connStore.Upsert(context.Background(), "ollama", ollamaURL, ""); err != nil {
+		t.Fatalf("ollama upsert: %v", err)
+	}
+	return ollamaModelsHandler(connStore, testHTTPClient())
+}
+
 func TestOllamaModelsHandler_ReturnsModelNames(t *testing.T) {
 	ollamaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/tags" {
@@ -19,8 +27,8 @@ func TestOllamaModelsHandler_ReturnsModelNames(t *testing.T) {
 	}))
 	defer ollamaSrv.Close()
 
-	h := ollamaModelsHandler(testHTTPClient())
-	req := httptest.NewRequest(http.MethodGet, "/api/ollama/models?url="+ollamaSrv.URL, nil)
+	h := ollamaModelsHandlerFor(t, ollamaSrv.URL)
+	req := httptest.NewRequest(http.MethodGet, "/api/ollama/models", nil)
 	rec := httptest.NewRecorder()
 	h(rec, req)
 
@@ -37,29 +45,46 @@ func TestOllamaModelsHandler_ReturnsModelNames(t *testing.T) {
 	}
 }
 
-// TestOllamaModelsHandler_MissingURL proves a missing url query param is a
-// clean 400, never a 500 or a panic.
-func TestOllamaModelsHandler_MissingURL(t *testing.T) {
-	h := ollamaModelsHandler(testHTTPClient())
+func TestOllamaModelsHandler_MissingConnection(t *testing.T) {
+	connStore, _, _, _, _, _, _, _, _, _ := testStores(t)
+	h := ollamaModelsHandler(connStore, testHTTPClient())
 	req := httptest.NewRequest(http.MethodGet, "/api/ollama/models", nil)
 	rec := httptest.NewRecorder()
 	h(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for a missing url, got %d", rec.Code)
+		t.Fatalf("expected 400 for a missing ollama connection, got %d", rec.Code)
 	}
 }
 
-// TestOllamaModelsHandler_UnreachableInstance proves an unreachable Ollama
-// instance surfaces as a clean 502 Bad Gateway, not a crash — the same
-// gateway-style error netscanProwlarrKeyHandler uses for the equivalent
-// "operator-supplied unreachable URL" case, never a bare 500.
+func TestOllamaModelsHandler_IgnoresQueryURL(t *testing.T) {
+	saved := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"models":[{"name":"saved:latest"}]}`))
+	}))
+	defer saved.Close()
+	h := ollamaModelsHandlerFor(t, saved.URL)
+	req := httptest.NewRequest(http.MethodGet, "/api/ollama/models?url=http://169.254.169.254/", nil)
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from saved connection, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	var models []string
+	if err := json.Unmarshal(rec.Body.Bytes(), &models); err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 1 || models[0] != "saved:latest" {
+		t.Errorf("got %v, want [saved:latest] (query url must be ignored)", models)
+	}
+}
+
 func TestOllamaModelsHandler_UnreachableInstance(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Close() // closed: connection refused
+	srv.Close()
 
-	h := ollamaModelsHandler(testHTTPClient())
-	req := httptest.NewRequest(http.MethodGet, "/api/ollama/models?url="+srv.URL, nil)
+	h := ollamaModelsHandlerFor(t, srv.URL)
+	req := httptest.NewRequest(http.MethodGet, "/api/ollama/models", nil)
 	rec := httptest.NewRecorder()
 	h(rec, req)
 
@@ -68,9 +93,6 @@ func TestOllamaModelsHandler_UnreachableInstance(t *testing.T) {
 	}
 }
 
-// TestOllamaModelsHandler_UnexpectedShape proves a response that doesn't
-// decode as the expected {"models": [...]} shape is a clean 502 Bad Gateway
-// (the upstream Ollama instance responded, just not usefully), never a 500.
 func TestOllamaModelsHandler_UnexpectedShape(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -78,8 +100,8 @@ func TestOllamaModelsHandler_UnexpectedShape(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	h := ollamaModelsHandler(testHTTPClient())
-	req := httptest.NewRequest(http.MethodGet, "/api/ollama/models?url="+srv.URL, nil)
+	h := ollamaModelsHandlerFor(t, srv.URL)
+	req := httptest.NewRequest(http.MethodGet, "/api/ollama/models", nil)
 	rec := httptest.NewRecorder()
 	h(rec, req)
 

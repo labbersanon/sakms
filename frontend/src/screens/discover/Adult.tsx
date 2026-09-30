@@ -294,7 +294,7 @@ export const AdultCard: Component<{
         releaseTitle: props.item.releaseTitle,
         durationSeconds: props.item.durationSeconds,
         // Direct-enclosure grab (D4/C1): when the card's feed is currently fresh
-        // it carries a downloadUrl+protocol, so the bulk batch dispatches straight
+        // it carries a guid+protocol, so the bulk batch dispatches straight
         // to the download client and skips Prowlarr. Absent (browse-only / stale
         // feed) → undefined, dropped by JSON.stringify → the Prowlarr search path
         // runs unchanged. protocol maps to downloadProtocol.
@@ -309,10 +309,10 @@ export const AdultCard: Component<{
         // (GATE-A).
         // Troubleshooting: keeps the loss traceable so a future session does not
         // read the survival of these two fields as "nothing changed".
-        // Review if: DetailPopup ever learns to thread downloadUrl through its
+        // Review if: DetailPopup ever learns to thread guid through its
         // Adult grab, at which point the one-click path is restored and §0.2's
         // GATE-A is moot.
-        downloadUrl: props.item.downloadUrl,
+        guid: props.item.guid,
         downloadProtocol: props.item.protocol,
         box: isCatalog ? props.item.source : undefined,
         sceneId: isCatalog ? props.item.id : undefined,

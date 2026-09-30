@@ -297,14 +297,11 @@ export interface AdultDiscoverItem {
   genres?: string[];
   performers?: string[];
   /**
-   * DownloadURL/Protocol/SizeBytes are the feed enclosure for a pooled,
-   * feed-sourced entity — populated ONLY when the item's feed is currently
-   * fresh (the backend builds them via FeedHealth.DirectGrabURL). When present
-   * the Grab dialog threads them into AutoGrabRequest.DownloadURL/
-   * DownloadProtocol for a direct grab; when empty (browse-only, or a feed not
-   * currently fresh) the card falls back to the Prowlarr search path (D4/D5).
+   * GUID is the opaque handle for a fresh-feed enclosure. The raw
+   * DownloadURL is never sent to the browser (json:"-"); grab/autograb
+   * look it up in the server-side GUID cache.
    */
-  downloadUrl?: string;
+  guid?: string;
   protocol?: string;
   sizeBytes?: number /* int64 */;
   /**
@@ -368,7 +365,6 @@ export interface SearchReleaseResult {
   protocol: string;
   size: number /* int64 */;
   seeders: number /* int */;
-  downloadUrl: string;
   publishDate: string;
   score: number /* int */;
   /**
@@ -729,15 +725,12 @@ export interface AutoGrabRequest {
    */
   releaseTitle?: string;
   /**
-   * DownloadURL/DownloadProtocol are the direct-grab fields (Adult feed
-   * entities): when DownloadURL is present the server dispatches it straight to
-   * the download client, skipping the Prowlarr search entirely — identically
-   * for the single (autoGrabHandler) and bulk (grabOneBatchItem) entrypoints,
-   * so one code path serves both (D4/C1). Empty ⇒ the existing Prowlarr search
-   * path runs, unchanged. The card only carries these while its feed is fresh
-   * (see FeedHealth.DirectGrabURL); otherwise it falls back to the Prowlarr path.
+   * GUID is the opaque handle for a previously-serialized enclosure (Adult
+   * feed / RSS / search result). The server looks it up and ignores any
+   * client-supplied DownloadURL (SSRF: authenticated grab must not fetch an
+   * operator-chosen URL). Empty GUID ⇒ Prowlarr search path.
    */
-  downloadUrl?: string;
+  guid?: string;
   downloadProtocol?: string;
   /**
    * Box/SceneID carry the catalog scene identity (stash-box source name + UUID)
@@ -778,10 +771,10 @@ export interface AutoGrabRequest {
  * pick list.
  */
 export interface AutoGrabCandidate {
+  guid: string;
   title: string;
   indexer: string;
   protocol: string;
-  downloadUrl: string;
   size: number /* int64 */;
   seeders: number /* int */;
   status: string;
@@ -993,7 +986,6 @@ export interface AvailabilityCandidate {
   protocol: string;
   size: number /* int64 */;
   seeders: number /* int */;
-  downloadUrl: string;
   publishDate: string;
   score: number /* float64 */;
 }
@@ -2247,13 +2239,7 @@ export interface AdultNewestReleaseItem {
    * from this field client-side.
    */
   gender?: string;
-  /**
-   * DownloadURL/Protocol/SizeBytes are the feed enclosure for a feed-sourced
-   * pooled entity — populated ONLY when the item's feed is currently fresh (via
-   * FeedHealth.DirectGrabURL). Empty for a browse-only entity or a feed not
-   * currently fresh, in which case the card grabs via the Prowlarr path (D4/D5).
-   */
-  downloadUrl?: string;
+  guid?: string;
   protocol?: string;
   sizeBytes?: number /* int64 */;
 }
@@ -2595,11 +2581,11 @@ export interface RssFeedReorderRequest {
  * Title + DownloadURL, never these display-only fields.
  */
 export interface RssFeedItem {
+  guid: string;
   title: string;
   link: string;
   pubDate: string;
   sizeBytes?: number /* int64 */;
-  downloadUrl: string;
   protocol: string;
   indexer: string;
   resolvedTitle?: string;

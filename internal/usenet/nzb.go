@@ -16,13 +16,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 )
 
 // NZB represents a parsed .nzb file per the NZB 1.1 specification.
 type NZB struct {
-	Meta  []NZBMeta  `xml:"head>meta"`
-	Files []NZBFile  `xml:"file"`
+	Meta  []NZBMeta `xml:"head>meta"`
+	Files []NZBFile `xml:"file"`
 }
 
 // NZBMeta is an optional key=value metadata pair in the NZB header.
@@ -73,11 +75,56 @@ func parseDNZBHeaders(h http.Header) DNZBHeaders {
 	}
 }
 
+func requireHTTPURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("usenet: invalid NZB URL")
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("usenet: NZB URL scheme must be http or https")
+	}
+	return nil
+}
+
+func nzbHTTPClient(base *http.Client) *http.Client {
+	c := &http.Client{}
+	if base != nil {
+		clone := *base
+		c = &clone
+	}
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		if req.URL != nil {
+			if err := requireHTTPURL(req.URL.String()); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return c
+}
+
 // fetchNZB GETs the NZB URL via httpClient, extracts X-DNZB-* metadata, and
 // parses the body. Returns an error if the indexer signals a failure via
 // X-DNZB-RCode even when the HTTP status is 200.
-func fetchNZB(httpClient *http.Client, url string) (*NZB, DNZBHeaders, error) {
-	resp, err := httpClient.Get(url)
+//
+// Claude 2026-09-30: scheme http/https only; redirects re-checked.
+// Reason: grab SSRF is bound by GUID cache, but a remembered Prowlarr URL
+//
+//	that 3xx'd to file:// still must not be followed. Private LAN hosts are
+//	allowed — Prowlarr NZB URLs are 10.1.10.x with apikey= in the query.
+//
+// Troubleshooting: "scheme must be http or https" → indexer returned a magnet
+//
+//	or non-http enclosure as usenet.
+func fetchNZB(httpClient *http.Client, rawURL string) (*NZB, DNZBHeaders, error) {
+	if err := requireHTTPURL(rawURL); err != nil {
+		return nil, DNZBHeaders{}, err
+	}
+	resp, err := nzbHTTPClient(httpClient).Get(rawURL)
 	if err != nil {
 		return nil, DNZBHeaders{}, fmt.Errorf("usenet: fetching NZB: %w", err)
 	}

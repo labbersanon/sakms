@@ -11,7 +11,6 @@ const row = (
   protocol: "usenet",
   size: 1,
   seeders: 0,
-  downloadUrl: "http://x",
   publishDate: "",
   score: 1,
   resolution: 1080,

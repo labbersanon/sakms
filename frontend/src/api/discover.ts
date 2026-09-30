@@ -81,6 +81,8 @@ const TMDB_BACKDROP_BASE = "https://image.tmdb.org/t/p/w1280";
 // for a blank input so callers can Show/skip a missing thumbnail.
 export function proxyImage(rawURL: string): string {
   if (!rawURL) return "";
+  // Protocol-relative "//host/path" is not same-origin — treat as external.
+  if (rawURL.startsWith("//")) return "";
   // A same-origin poster (local folder.jpg) is already an app URL.
   if (rawURL.startsWith("/")) return rawURL;
   return "/api/images/proxy?url=" + encodeURIComponent(rawURL);
@@ -455,7 +457,7 @@ interface AvailabilityPreviewParams {
   box?: string;
   sceneId?: string;
   performers?: string[];
-  downloadUrl?: string;
+  guid?: string;
   protocol?: string;
   sizeBytes?: number;
 }
@@ -492,7 +494,7 @@ export function fetchAvailabilityPreview(
     // Troubleshooting: if the popup shows a zero-release empty state for a card
     // with a direct link, confirm these three params are present in the request.
     // Review if: availability accepts a request body instead of query params.
-    if (params.downloadUrl) q.set("downloadUrl", params.downloadUrl);
+    if (params.guid) q.set("guid", params.guid);
     if (params.protocol) q.set("protocol", params.protocol);
     if (params.sizeBytes != null) q.set("sizeBytes", String(params.sizeBytes));
   } else {

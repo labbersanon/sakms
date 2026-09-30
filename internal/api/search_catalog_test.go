@@ -105,17 +105,22 @@ func TestAdultSearch_CollapsesProwlarrVariantsPoolLocal(t *testing.T) {
 	if len(card.Releases) != 2 {
 		t.Fatalf("expected both distinct-quality variants selectable in Releases, got %d (%+v)", len(card.Releases), card.Releases)
 	}
-	// Grab-safety: both carried releases keep exactly what Prowlarr returned.
-	byURL := map[string]apidto.SearchReleaseResult{}
+	// Grab-safety: both carried releases keep title/protocol/size; enclosure
+	// lives in the GUID cache (DownloadURL is json:"-").
+	byTitle := map[string]apidto.SearchReleaseResult{}
 	for _, rel := range card.Releases {
-		byURL[rel.DownloadURL] = rel
+		byTitle[rel.Title] = rel
 	}
-	if r := byURL["magnet:?xt=urn:btih:AAA"]; r.Title != raw1080 || r.Protocol != "torrent" || r.Size != 900000000 {
-		t.Errorf("expected the 1080p variant's grab fields unchanged, got %+v", r)
+	r1080 := byTitle[raw1080]
+	if r1080.Protocol != "torrent" || r1080.Size != 900000000 {
+		t.Errorf("expected the 1080p variant's grab fields unchanged, got %+v", r1080)
 	}
-	if r := byURL["magnet:?xt=urn:btih:BBB"]; r.Title != raw2160 || r.Protocol != "torrent" || r.Size != 1900000000 {
-		t.Errorf("expected the 2160p variant's grab fields unchanged, got %+v", r)
+	assertRememberedEnclosure(t, r1080.GUID, "magnet:?xt=urn:btih:AAA", "torrent")
+	r2160 := byTitle[raw2160]
+	if r2160.Protocol != "torrent" || r2160.Size != 1900000000 {
+		t.Errorf("expected the 2160p variant's grab fields unchanged, got %+v", r2160)
 	}
+	assertRememberedEnclosure(t, r2160.GUID, "magnet:?xt=urn:btih:BBB", "torrent")
 }
 
 // TestAdultSearch_Page2PagesPoolZeroProwlarr proves pagination pages the RSS

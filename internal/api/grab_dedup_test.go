@@ -32,7 +32,8 @@ func newAdultDedupGrabServer(t *testing.T) (*httptest.Server, *downloader.Manage
 
 func postDirectGrab(t *testing.T, url, title, magnet string) apidto.AutoGrabResponse {
 	t.Helper()
-	body, _ := json.Marshal(apidto.AutoGrabRequest{Title: title, DownloadURL: magnet, DownloadProtocol: "torrent"})
+	guid := grabReleaseCache.remember("", magnet, "torrent")
+	body, _ := json.Marshal(apidto.AutoGrabRequest{Title: title, GUID: guid})
 	resp, err := http.Post(url+"/api/modes/adult/autograb", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST failed: %v", err)
@@ -97,9 +98,10 @@ func TestAutoGrabHandler_DuplicateDownloadGIDDoesNotDuplicateRow(t *testing.T) {
 func TestAutoGrabBatch_DuplicateItemReportedAsAlreadyGrabbing(t *testing.T) {
 	srv, _ := newAdultDedupGrabServer(t)
 
+	guid := grabReleaseCache.remember("", feedMagnet, "torrent")
 	req := apidto.AutoGrabBatchRequest{Items: []apidto.AutoGrabBatchItem{
-		{Mode: "adult", Request: apidto.AutoGrabRequest{Title: "Feed Scene", DownloadURL: feedMagnet, DownloadProtocol: "torrent"}},
-		{Mode: "adult", Request: apidto.AutoGrabRequest{Title: "Feed Scene", DownloadURL: feedMagnet, DownloadProtocol: "torrent"}},
+		{Mode: "adult", Request: apidto.AutoGrabRequest{Title: "Feed Scene", GUID: guid}},
+		{Mode: "adult", Request: apidto.AutoGrabRequest{Title: "Feed Scene", GUID: guid}},
 	}}
 	resp, out := postBatch(t, srv.URL, req)
 	defer resp.Body.Close()

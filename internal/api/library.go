@@ -112,7 +112,17 @@ func putLibraryRootFolderHandler(
 			http.Error(w, "path is required", http.StatusBadRequest)
 			return
 		}
-		if err := settingsStore.Set(r.Context(), key, req.Path); err != nil {
+		// Claude 2026-09-30: library root must sit under a browsable mount.
+		// Reason: PUT previously stored any path; combined with the write-test
+		//   that created a temp file, this was an authenticated arbitrary write.
+		// Troubleshooting: 400 "path must be within one of the mounted roots".
+		// Review if: compose grows another library volume — add it to browsableRoots.
+		cleaned, err := resolveBrowsablePath(req.Path)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := settingsStore.Set(r.Context(), key, cleaned); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -183,10 +193,8 @@ type pathTestResult struct {
 // check can lie under some filesystems/ACLs), matching the Linux-container
 // deployment target.
 //
-// Deliberately NOT confined to browse.go's browsableRoots: that allowlist
-// scopes only the autocomplete helper's suggestion range. The root folder
-// itself is free-typed under this app's single-operator trust model, so the
-// test validates whatever path is configured.
+// Confined to browse.go's browsableRoots: a path outside those mounts is
+// rejected before any stat or write probe.
 //
 // A wrong/missing/not-a-directory/unwritable path is ordinary user input, so
 // it returns {ok:false} with a clear message, never a 500 — 500 is reserved
@@ -202,6 +210,16 @@ func testLibraryRootFolderHandler() http.HandlerFunc {
 			writeJSON(w, pathTestResult{Error: "path is required"})
 			return
 		}
+		// Claude 2026-09-30: write-test confined to browsableRoots.
+		// Reason: the probe created a temp file at any operator-supplied path.
+		// Troubleshooting: {ok:false} with the mounted-roots message.
+		// Review if: compose grows another library volume — add it to browsableRoots.
+		cleaned, err := resolveBrowsablePath(req.Path)
+		if err != nil {
+			writeJSON(w, pathTestResult{Error: err.Error()})
+			return
+		}
+		req.Path = cleaned
 
 		info, err := os.Stat(req.Path)
 		if err != nil {

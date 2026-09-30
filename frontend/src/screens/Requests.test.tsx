@@ -640,7 +640,6 @@ describe("Requests", () => {
             protocol: "usenet",
             size: 1000,
             seeders: 0,
-            downloadUrl: "https://idx/nzb",
             publishDate: "",
             score: 10,
           },
@@ -676,7 +675,7 @@ describe("Requests", () => {
     expect(grab.body).toMatchObject({
       title: "Stuck Movie",
       tmdbId: 42,
-      downloadUrl: "https://idx/nzb",
+      guid: "g1",
       protocol: "usenet",
       rootFolderPath: "/media/movies",
     });
@@ -704,7 +703,6 @@ describe("Requests", () => {
             protocol: "usenet",
             size: 1000,
             seeders: 0,
-            downloadUrl: "https://idx/nzb",
             publishDate: "",
             score: 10,
             resolution: 1080,
@@ -717,7 +715,6 @@ describe("Requests", () => {
             protocol: "torrent",
             size: 2000,
             seeders: 20,
-            downloadUrl: "https://idx/tor",
             publishDate: "",
             score: 8,
             resolution: 2160,

@@ -84,7 +84,7 @@ export const RssFeedCard: Component<{
         title: props.item.title,
         indexer: props.item.indexer,
         protocol: props.item.protocol,
-        downloadUrl: props.item.downloadUrl,
+        guid: props.item.guid,
         rootFolderPath: root,
       });
       setGrabbed(true);

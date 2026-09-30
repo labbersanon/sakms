@@ -74,7 +74,20 @@ func putKidsRootPathHandler(
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		if err := settingsStore.Set(r.Context(), key, req.Path); err != nil {
+		path := strings.TrimSpace(req.Path)
+		if path != "" {
+			// Claude 2026-09-30: kids dest under browsableRoots (empty still = off).
+			// Reason: PUT previously stored any path the same way the main library
+			//   root did.
+			// Troubleshooting: 400 "path must be within one of the mounted roots".
+			cleaned, err := resolveBrowsablePath(path)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			path = cleaned
+		}
+		if err := settingsStore.Set(r.Context(), key, path); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -82,7 +95,7 @@ func putKidsRootPathHandler(
 		// Claude 2026-09-23: saving a kids root scans existing files.
 		// Reason: PUT previously stored the path only; Library stayed empty.
 		// Review if: empty path (feature off) should cancel an in-flight scan.
-		if strings.TrimSpace(req.Path) != "" {
+		if strings.TrimSpace(path) != "" {
 			go scanFromWatcher(context.Background(), m, httpClient, connStore, scStore, settingsStore, propStore, libStore, videoHasher, prober, entityStore)
 		}
 		w.WriteHeader(http.StatusNoContent)

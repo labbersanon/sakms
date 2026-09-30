@@ -81,10 +81,16 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 #   tag that still exists on the releases page and copy the asset name +
 #   checksums.sha256 line.
 # Review if: BtbN drops n8.1 the same way, or trixie ffmpeg gains libvmaf.
+# Claude 2026-09-30: bump BtbN pin to autobuild-2026-09-29-13-10 / n8.1.3.
+# Reason: helper refresh; prior autobuild-2026-09-19-13-11 was 10 days behind
+#   and BtbN deletes old dated assets.
+# Troubleshooting: compose build wget 404 on BtbN/FFmpeg-Builds — copy tag,
+#   linux64-gpl-8.1 asset name, and checksums.sha256 line. Stay on n8.1, not n9.0.
+# Review if: n8.1 autobuilds stop publishing, or trixie ffmpeg gains libvmaf.
 FROM debian:trixie-slim AS ffmpeg
-ARG FFMPEG_TAG=autobuild-2026-09-19-13-11
-ARG FFMPEG_ASSET=ffmpeg-n8.1.2-54-gc573a95381-linux64-gpl-8.1.tar.xz
-ARG FFMPEG_SHA256=5c7ffcf37fd5e0ab99ee2a4a6a5e70219379ec5a4dee2ed39f891c3790a2cbb5
+ARG FFMPEG_TAG=autobuild-2026-09-29-13-10
+ARG FFMPEG_ASSET=ffmpeg-n8.1.3-6-gff48edd8b2-linux64-gpl-8.1.tar.xz
+ARG FFMPEG_SHA256=9f96ca3806df5926dc6645a93fab35c2ed3783c9824c319ca99e9dc6dc286875
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update \
@@ -114,6 +120,12 @@ FROM debian:trixie-slim AS base
 #   DEB822 debian.sources shipped by trixie-slim.
 # Troubleshooting: staging full of .partNN.rar after download completes.
 # Review if: a pure-Go unpacker replaces the binaries.
+# Claude 2026-09-30: APT_REFRESH busts this apt layer on helper refreshes.
+# Reason: sakms-auto-update `compose build` does not --no-cache, so unrar/p7zip
+#   otherwise stay on the previous ffmpeg-bump image.
+# Troubleshooting: dpkg versions still old after an ffmpeg-only pin bump.
+# Review if: auto-update gains --pull --no-cache.
+ARG APT_REFRESH=2026-09-30
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     if [ -f /etc/apt/sources.list.d/debian.sources ]; then \

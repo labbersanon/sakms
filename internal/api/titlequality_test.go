@@ -40,6 +40,12 @@ func TestFileNeedsQualityUpgrade(t *testing.T) {
 	if fileNeedsQualityUpgrade("Show.S01E01.1080p.BluRay.REMUX.mkv", "medium", floor, 1080) {
 		t.Fatal("1080p remux at/above floor must not upgrade")
 	}
+	if !fileNeedsQualityUpgrade("Movie.mkv", "high", floor, 1080) {
+		t.Fatal("unknown height with min 1080 must need upgrade")
+	}
+	if fileNeedsQualityUpgrade("Movie.mkv", "high", floor, 0) {
+		t.Fatal("unknown height without a min resolution must not force upgrade")
+	}
 }
 
 func TestRequireMinResolution(t *testing.T) {

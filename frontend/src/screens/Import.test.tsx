@@ -190,4 +190,78 @@ describe("Import", () => {
       expect(applies).toEqual([{ mode: "adult", items: [adultItem] }]);
     });
   });
+
+  it("clears a previous scan when the library chip changes", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/browse")) {
+          return jsonResponse({ path: "", entries: [] });
+        }
+        if (url.includes("/api/organize/import/scan")) {
+          return jsonResponse({
+            path: "/downloads",
+            destRoot: "/media/movies",
+            items: [pendingItem],
+          });
+        }
+        return jsonResponse({});
+      }),
+    );
+
+    render(() => <Import />);
+    fireEvent.input(screen.getByLabelText("Source folder"), {
+      target: { value: "/downloads" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Scan" }));
+    expect(await screen.findByText("The Matrix (1999)")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Series" }));
+    expect(screen.queryByText("The Matrix (1999)")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Import selected" })).toBeDisabled();
+  });
+
+  it("names every dest root in the confirm copy", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/browse")) {
+          return jsonResponse({ path: "", entries: [] });
+        }
+        if (url.includes("/api/organize/import/scan")) {
+          return jsonResponse({
+            path: "/downloads",
+            destRoot: "/media/movies",
+            items: [
+              pendingItem,
+              {
+                ...pendingItem,
+                sourcePath: "/downloads/Kids.Movie.mkv",
+                sourceName: "Kids.Movie.mkv",
+                destPath: "/media/kids/Kids Movie/Kids Movie.mkv",
+                destRoot: "/media/kids",
+                title: "Kids Movie",
+                tmdbId: 7,
+              },
+            ],
+          });
+        }
+        return jsonResponse({});
+      }),
+    );
+
+    render(() => <Import />);
+    fireEvent.input(screen.getByLabelText("Source folder"), {
+      target: { value: "/downloads" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Scan" }));
+    expect(await screen.findByText("The Matrix (1999)")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Import selected" }));
+    expect(
+      await screen.findByText(
+        /2 files will be moved into \/media\/movies and \/media\/kids/,
+      ),
+    ).toBeInTheDocument();
+  });
 });

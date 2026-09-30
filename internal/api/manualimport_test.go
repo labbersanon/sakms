@@ -190,6 +190,26 @@ func TestManualImportItemToProposal_RequiresBrowsableSource(t *testing.T) {
 	}
 }
 
+func TestManualImportItemToProposal_RejectsModeMismatch(t *testing.T) {
+	source := t.TempDir()
+	srcFile := filepath.Join(source, "Show.S01E01.mkv")
+	if err := os.WriteFile(srcFile, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withBrowsableRoot(t, source)
+	_, err := importItemToProposal(manualImportItem{
+		SourcePath:    srcFile,
+		Title:         "Show",
+		TMDBID:        42,
+		SeasonNumber:  1,
+		EpisodeNumber: 1,
+		Mode:          "series",
+	}, mode.Movies, "/media/movies")
+	if err == nil || !strings.Contains(err.Error(), "different library") {
+		t.Fatalf("mode mismatch: %v", err)
+	}
+}
+
 func TestManualImportItemToProposal_AdultRequiresIdentity(t *testing.T) {
 	source := t.TempDir()
 	srcFile := filepath.Join(source, "scene.mp4")

@@ -2,12 +2,14 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -36,6 +38,10 @@ import (
 // restoreMissingURLReason is parked only when a forgotten in-flight grab has no
 // durable DownloadURL to relaunch from. Detail-free: rendered on Requests.
 const restoreMissingURLReason = "the in-flight download could not be restored after a restart — it will be re-searched"
+
+// nzbURLDeadReason is parked when relaunch cannot fetch the stored NZB URL
+// (HTTP 4xx or indexer reject). Detail-free: rendered on Requests.
+const nzbURLDeadReason = "the NZB URL is gone — it will be re-searched"
 
 // DownloadReconcileDeps is everything ReconcileInFlightDownloads needs to
 // import completed staging or re-attach forgotten engine jobs. Nil managers
@@ -329,6 +335,19 @@ func reconcileUsenetInFlight(ctx context.Context, deps DownloadReconcileDeps, g 
 			log.Printf("download reconcile: grab %d parked — precheck rejected relaunch", g.ID)
 			return false
 		}
+		// Claude 2026-09-30: park definite NZB-URL death instead of leaving queued.
+		// Reason: fetchNZB 404 / indexer reject logged and returned; drain hammered
+		//   the same URL with no backoff. 5xx stays queued (transient).
+		// Troubleshooting: journal "NZB URL is gone"; grab must leave queued/downloading.
+		// Review if: locator resolve 404 should share this park.
+		if isPermanentRelaunchFail(err) {
+			if parkErr := parkGrabForRetry(ctx, AutoGrabDeps{SettingsStore: deps.SettingsStore, GrabsStore: deps.GrabsStore}, g.ID, nzbURLDeadReason); parkErr != nil {
+				log.Printf("download reconcile: parking grab %d after dead NZB URL: %v", g.ID, parkErr)
+				return false
+			}
+			log.Printf("download reconcile: grab %d parked — relaunch NZB URL is dead", g.ID)
+			return false
+		}
 		log.Printf("download reconcile: relaunching usenet grab %d gid %s: %v", g.ID, g.DownloadGID, err)
 		return false
 	}
@@ -451,6 +470,34 @@ func usenetStagingReadyForImport(stagingRoot, stagingPath string) (ok bool, reas
 		return false, "video too small"
 	}
 	return true, ""
+}
+
+func isPermanentRelaunchFail(err error) bool {
+	if err == nil {
+		return false
+	}
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		msg := e.Error()
+		if strings.Contains(msg, "indexer rejected NZB") {
+			return true
+		}
+		const prefix = "usenet: NZB URL returned "
+		if i := strings.Index(msg, prefix); i >= 0 {
+			rest := msg[i+len(prefix):]
+			n := 0
+			for n < len(rest) && rest[n] >= '0' && rest[n] <= '9' {
+				n++
+			}
+			if n == 0 {
+				continue
+			}
+			code, convErr := strconv.Atoi(rest[:n])
+			if convErr == nil && code >= 400 && code < 500 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // relaunchUsenetGrab re-arms a usenet grab into its existing GID. sakms-nntp:

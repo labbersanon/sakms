@@ -135,6 +135,14 @@ func importItemToProposal(item manualImportItem, m mode.Mode, destRoot string) (
 	if err != nil {
 		return proposals.Proposal{}, err
 	}
+	if item.Mode != "" && mode.Mode(strings.TrimSpace(item.Mode)) != m {
+		// Claude 2026-09-30: refuse apply when the chip mode is not the scan mode.
+		// Reason: Series rows have title+tmdbId; Movies apply would MOVE them
+		//   into the Movies library. Empty Mode still allowed (older clients).
+		// Troubleshooting: "item was scanned as a different library".
+		// Review if: scan payloads always set mode (they do as of Adult Import).
+		return proposals.Proposal{}, errors.New("item was scanned as a different library")
+	}
 	if m == mode.Adult {
 		if strings.TrimSpace(item.Title) == "" || strings.TrimSpace(item.Box) == "" || strings.TrimSpace(item.SceneID) == "" {
 			return proposals.Proposal{}, errors.New("only identified scenes can be imported")

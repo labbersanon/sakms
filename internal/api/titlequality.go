@@ -301,7 +301,12 @@ func queueQualityUpgrades(ctx context.Context, deps titleQualityDeps, m mode.Mod
 
 func fileNeedsQualityUpgrade(filePath, stampedTier string, floor quality.Tier, minRes int) bool {
 	info := release.Parse(filepath.Base(filePath))
-	if minRes > 0 && info.Resolution > 0 && info.Resolution < minRes {
+	// Claude 2026-09-30: unknown parse resolution still fails a set minRes.
+	// Reason: a 720p file named without a height token skipped the floor and
+	//   never entered upgrade-watch. Treat unresolved height as below floor.
+	// Troubleshooting: Movie.mkv with min 1080 never queued.
+	// Review if: ffprobe height is used when the basename has no token.
+	if minRes > 0 && (info.Resolution == 0 || info.Resolution < minRes) {
 		return true
 	}
 	if inferred, ok := quality.InferTier(info); ok {

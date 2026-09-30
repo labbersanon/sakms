@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -454,5 +455,23 @@ func TestSortUsenetReconcilePriority_OrdersSidecarFirst(t *testing.T) {
 	sortUsenetReconcilePriority(nzb, list)
 	if list[0].DownloadGID != sidecarGID {
 		t.Fatalf("first = %q, want sidecar %q", list[0].DownloadGID, sidecarGID)
+	}
+}
+
+func TestIsPermanentRelaunchFail(t *testing.T) {
+	if !isPermanentRelaunchFail(fmt.Errorf("usenet: NZB URL returned 404")) {
+		t.Fatal("404 must park")
+	}
+	if !isPermanentRelaunchFail(fmt.Errorf("relaunch: %w", fmt.Errorf("usenet: NZB URL returned 410"))) {
+		t.Fatal("wrapped 410 must park")
+	}
+	if !isPermanentRelaunchFail(fmt.Errorf("usenet: indexer rejected NZB: gone")) {
+		t.Fatal("indexer reject must park")
+	}
+	if isPermanentRelaunchFail(fmt.Errorf("usenet: NZB URL returned 503")) {
+		t.Fatal("503 must stay queued")
+	}
+	if isPermanentRelaunchFail(fmt.Errorf("usenet: fetching NZB: connection refused")) {
+		t.Fatal("transport error must stay queued")
 	}
 }

@@ -9830,6 +9830,23 @@ status stays active.
 | `internal/api/import.go` | Grab-complete fallback |
 | `docs/ROADMAP.md` | Shipped note |
 
+## 2026-09-29 — Adult Organize Import
+
+**Problem:** Organize → Import was Movies and Series only. Adult dump-folder files had no confirm-to-MOVE path; grab-complete `OrganizeImportedAdult` skips unmatched instead of minting a local scene.
+**Fix:** Import accepts Adult. Scan walks a browsable dump folder, reuses Rename's `identifyAdultFiles` cascade, and proposes MOVE into the Adult library root via `ApplyLibraryAdult`. Unmatched files with a phash become Pending local scenes (`box=local`, `scene_id=phash:<hash>`). Already-tracked box/scene or phash hits fold as PendingAlternate. Confirm reconstructs identity from the scan payload (box/sceneId/studio/date/phash). Hasher is required for Adult scan. No Kids split. Schema-named dump files are still proposed (unlike Rename's library walk).
+**Outcome:** An operator can pick a dump folder, review identified and local Adult rows, and MOVE them into the Adult library. Not merged/deployed with this change.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/rename/import.go` | `ScanImportAdult`, local mint, Adult `ImportDestPath` |
+| `internal/api/manualimport.go` | Adult mode, hasher, reconstruct, `ApplyLibraryAdult` |
+| `internal/api/handler.go` | Import scan gets `videoHasher` |
+| `frontend/src/screens/Import.tsx` | Adult chip |
+| `frontend/src/api/manualImport.ts` | Adult fields + `ImportMode` includes adult |
+| `docs/ROADMAP.md` | Adult Import shipped note |
+
 
 
 

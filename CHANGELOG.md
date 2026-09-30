@@ -9913,5 +9913,12 @@ status stays active.
 **Fix:** Retarget the BtbN pin to `autobuild-2026-09-29-13-10` / `ffmpeg-n8.1.3-6-gff48edd8b2-linux64-gpl-8.1` (checksum-verified, still n8.1 not n9.0). `APT_REFRESH=2026-09-30` busts the cached unrar/p7zip/gosu apt layer on the next compose build.
 **Outcome:** Next deploy rebuilds FFmpeg and Debian helpers. Sidecar `postgres:16-alpine` and `python:3-slim` pulls are host-side, not this file.
 
+## 2026-09-30 — Code-review fixes (Import mode, relaunch park, MaxJobs)
+
+**Problem:** Organize Import kept the previous scan when the Movies/Series/Adult chip changed, then apply used the chip mode — Series files could MOVE into the Movies library. Confirm copy ignored Kids dests. Usenet relaunch 4xx left grabs queued. Node MaxJobs reset on SSE reconnect. Upgrade-watch skipped minRes when the filename had no height token.
+**Fix:** Chip change clears the scan. Apply refuses `item.mode` ≠ request mode. Confirm lists unique dest roots. Reconcile parks HTTP 4xx / indexer-reject NZB URLs. One `jobSem` lives for the reconnect loop. Unknown parse resolution fails a set minRes. Adult Identify comment matches Build (always constructed; AI is nil-able).
+**Outcome:** Import cannot MOVE a Series scan into Movies via the chip. Dead NZB URLs re-search instead of hammering. Hash concurrency stays at MaxJobs across reconnects.
+
+
 
 

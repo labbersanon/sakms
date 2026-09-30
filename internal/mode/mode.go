@@ -186,11 +186,10 @@ type Session struct {
 	// assume this is non-nil.
 	Servarr *servarr.Client
 
-	// Identify is the AI-assisted content-identification pipeline, populated
-	// ONLY for Adult mode and ONLY when its backbone (a connection for the
-	// configured AIProviderKey backend AND the AIModelKey setting) is
-	// configured; nil otherwise — including for every Movies/Series session.
-	// Consumers must nil-check before use.
+	// Identify is Adult's identification pipeline. Build always constructs it
+	// for Adult (filename/DB/boxes work without AI). Identify.AI is nil when
+	// no provider is configured; Identify() matching degrades, but Boxes /
+	// SceneByID stay usable. Nil for Movies/Series. Consumers must nil-check.
 	Identify *identify.Identifier
 
 	// MainstreamAI is Movies/Series Rename's AI title-guess fallback client —

@@ -180,6 +180,12 @@ func run(
 ) error {
 	var wg sync.WaitGroup
 	defer wg.Wait()
+	// Claude 2026-09-30: one jobSem for the reconnect loop, not per SSE session.
+	// Reason: connect() used to allocate hashSem locally; reconnect started
+	//   running=0 while in-flight jobs still held the old sem — up to 2× MaxJobs.
+	// Troubleshooting: MaxJobs=1 still ran two ffmpeg hashes after a blip.
+	// Review if: browse jobs should share this cap (they do not).
+	var hashSem jobSem
 
 	backoff := time.Second
 	const maxBackoff = 30 * time.Second
@@ -189,7 +195,7 @@ func run(
 			return nil
 		}
 
-		err := connect(ctx, cfg, configPath, hw, phashHasher, videoHasher, postClient, statusSrv, sess, capApplier, capState, &wg)
+		err := connect(ctx, cfg, configPath, hw, phashHasher, videoHasher, postClient, statusSrv, sess, capApplier, capState, &wg, &hashSem)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -229,6 +235,7 @@ func connect(
 	capApplier *capApplier,
 	capState *capState,
 	wg *sync.WaitGroup,
+	hashSem *jobSem,
 ) error {
 	streamURL, err := url.Parse(cfg.ServerURL + "/api/nodes/stream")
 	if err != nil {
@@ -282,7 +289,6 @@ func connect(
 
 	go heartbeat(connCtx, nodeID, cfg, postClient, capState)
 
-	var hashSem jobSem
 	for {
 		select {
 		case <-connCtx.Done():
@@ -291,7 +297,7 @@ func connect(
 			if !ok {
 				return nil
 			}
-			applyServerSettings(cfg, configPath, statusSrv, capApplier, &hashSem, s)
+			applyServerSettings(cfg, configPath, statusSrv, capApplier, hashSem, s)
 		case br, ok := <-browseCh:
 			if !ok {
 				return nil
@@ -309,11 +315,13 @@ func connect(
 			wg.Add(1)
 			go func(j nodes.Job) {
 				defer wg.Done()
-				if err := hashSem.acquire(connCtx, cfg.maxJobsSnapshot); err != nil {
-					postResult(postClient, cfg, nodes.JobResult{JobID: j.ID, Error: err.Error()})
-					return
+				if hashSem != nil {
+					if err := hashSem.acquire(connCtx, cfg.maxJobsSnapshot); err != nil {
+						postResult(postClient, cfg, nodes.JobResult{JobID: j.ID, Error: err.Error()})
+						return
+					}
+					defer hashSem.release()
 				}
-				defer hashSem.release()
 				result := executeJob(context.Background(), cfg, j, phashHasher, videoHasher)
 				postResult(postClient, cfg, result)
 			}(job)

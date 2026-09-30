@@ -38,6 +38,16 @@ function applyError(results: { ok: boolean; sourcePath: string; error?: string }
     .join("\n");
 }
 
+function destSummary(items: ManualImportItem[]): string {
+  const roots: string[] = [];
+  for (const item of items) {
+    const root = (item.destRoot ?? "").trim();
+    if (root && !roots.includes(root)) roots.push(root);
+  }
+  if (roots.length === 0) return "the library";
+  return roots.join(" and ");
+}
+
 export const Import: Component = () => {
   const [mode, setMode] = createSignal<ImportMode>("movies");
   const [path, setPath] = createSignal("");
@@ -47,6 +57,20 @@ export const Import: Component = () => {
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal("");
   const [confirm, setConfirm] = createSignal(false);
+
+  const pickMode = (next: ImportMode) => {
+    // Claude 2026-09-30: changing the chip drops the previous scan.
+    // Reason: apply posts the chip mode; leftover Series rows MOVEd into Movies.
+    // Troubleshooting: Import selected still enabled after chip switch.
+    // Review if: apply also 400s on item.mode mismatch (it does).
+    if (mode() === next) return;
+    setMode(next);
+    setItems([]);
+    setSelected(new Set<string>());
+    setDestRoot("");
+    setConfirm(false);
+    setError("");
+  };
 
   const pending = createMemo(() =>
     items().filter((i) => i.status === "pending" && i.destPath),
@@ -131,19 +155,19 @@ export const Import: Component = () => {
       <div class="mb-4 flex flex-wrap gap-2">
         <Button
           variant={mode() === "movies" ? "primary" : "secondary"}
-          onClick={() => setMode("movies")}
+          onClick={() => pickMode("movies")}
         >
           Movies
         </Button>
         <Button
           variant={mode() === "series" ? "primary" : "secondary"}
-          onClick={() => setMode("series")}
+          onClick={() => pickMode("series")}
         >
           Series
         </Button>
         <Button
           variant={mode() === "adult" ? "primary" : "secondary"}
-          onClick={() => setMode("adult")}
+          onClick={() => pickMode("adult")}
         >
           Adult
         </Button>
@@ -260,7 +284,7 @@ export const Import: Component = () => {
           <Muted class="mb-3">
             {selectedPending().length} file
             {selectedPending().length === 1 ? "" : "s"} will be moved into{" "}
-            {destRoot() || "the library"}. The source copies are not kept.
+            {destSummary(selectedPending())}. The source copies are not kept.
           </Muted>
           <div class="mt-4 flex justify-end gap-2">
             <Button

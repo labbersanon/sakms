@@ -2,11 +2,32 @@ package api
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/labbersanon/sakms/internal/apidto"
 )
+
+// assertRememberedEnclosure checks the GUID cache rather than the JSON
+// DownloadURL field — that field is json:"-" so HTTP decodes always see it empty.
+func assertRememberedEnclosure(t *testing.T, guid, wantURL, wantProto string) {
+	t.Helper()
+	guid = strings.TrimSpace(guid)
+	if guid == "" {
+		t.Fatal("expected a non-empty guid for the remembered enclosure")
+	}
+	h, ok := grabReleaseCache.lookup(guid)
+	if !ok {
+		t.Fatalf("guid %q not in grabReleaseCache", guid)
+	}
+	if h.DownloadURL != wantURL {
+		t.Errorf("cached DownloadURL = %q, want %q", h.DownloadURL, wantURL)
+	}
+	if wantProto != "" && h.Protocol != wantProto {
+		t.Errorf("cached Protocol = %q, want %q", h.Protocol, wantProto)
+	}
+}
 
 func TestReleaseGUIDCache_RememberAndLookup(t *testing.T) {
 	c := newReleaseGUIDCache(time.Minute)

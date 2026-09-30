@@ -210,15 +210,14 @@ func TestResolveRssFeedHandler_MapsItemsToDTO(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("expected 2 items, got %+v", items)
 	}
-	if items[0].DownloadURL != "https://example.com/fetch/1.nzb" || items[0].SizeBytes != 1024 {
-		t.Errorf("unexpected first item: %+v", items[0])
+	if items[0].SizeBytes != 1024 {
+		t.Errorf("unexpected first item size: %+v", items[0])
 	}
 	if items[0].Protocol != "usenet" || items[0].Indexer != "My Feed" {
 		t.Errorf("expected protocol/indexer from feed config, got %+v", items[0])
 	}
-	if items[1].DownloadURL != "https://example.com/details/2" {
-		t.Errorf("expected item with no enclosure to fall back to Link, got %+v", items[1])
-	}
+	assertRememberedEnclosure(t, items[0].GUID, "https://example.com/fetch/1.nzb", "usenet")
+	assertRememberedEnclosure(t, items[1].GUID, "https://example.com/details/2", "usenet")
 }
 
 // adultEnrichFeedXML is a two-item RSS body: the first item's enclosure URL is
@@ -305,9 +304,10 @@ func TestResolveRssFeedHandler_AdultEnrichesFromPool(t *testing.T) {
 		items[0].ResolvedImage != "https://cdn.theporndb.net/scene-123.jpg" {
 		t.Errorf("expected matched item enriched, got %+v", items[0])
 	}
-	if items[0].Title != "Raw.Scene.Release.2026.XXX" || items[0].DownloadURL != "https://example.com/fetch/1.torrent" {
-		t.Errorf("enrichment must not alter the raw grab fields, got %+v", items[0])
+	if items[0].Title != "Raw.Scene.Release.2026.XXX" {
+		t.Errorf("enrichment must not alter the raw grab title, got %+v", items[0])
 	}
+	assertRememberedEnclosure(t, items[0].GUID, "https://example.com/fetch/1.torrent", "torrent")
 
 	// The unmatched release must be absent from the response entirely — asserted by
 	// identity, not merely by the count above, so this pins the new filter behavior.

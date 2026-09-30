@@ -216,9 +216,10 @@ func TestAdultMergedRecent_FreshFeedExposesEnclosure(t *testing.T) {
 	if len(items) != 1 || items[0].ID != "feedonly" {
 		t.Fatalf("expected the feed-only row visible on a fresh feed, got %+v", items)
 	}
-	if items[0].DownloadURL != "http://feed/x.torrent" || items[0].Protocol != "torrent" || items[0].SizeBytes != 4242 {
-		t.Errorf("expected the enclosure exposed on a fresh feed, got %+v", items[0])
+	if items[0].Protocol != "torrent" || items[0].SizeBytes != 4242 {
+		t.Errorf("expected protocol/size on a fresh feed, got %+v", items[0])
 	}
+	assertRememberedEnclosure(t, items[0].GUID, "http://feed/x.torrent", "torrent")
 }
 
 // getJSON GETs url, asserts 200, and decodes the body into out.

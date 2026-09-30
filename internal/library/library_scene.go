@@ -221,6 +221,50 @@ func (s *Store) ListScenesFiltered(ctx context.Context, aspect string) ([]Scene,
 	return s.ListScenesByAspect(ctx, aspect)
 }
 
+// Claude 2026-09-29: empty-row Adult poster backfill (no GET /tracked probe).
+// Reason: 0012 stored poster_url at grab but did not backfill; Library cards
+//
+//	stay on a video still until catalog art is written.
+//
+// Troubleshooting: local/empty scene_id rows must stay skipped — no catalog.
+// Review if: aspect is re-measured from the stored URL.
+// Related files: internal/api/adult_poster.go, internal/api/poster_backfill.go
+func (s *Store) ListScenesNeedingPoster(ctx context.Context) ([]Scene, error) {
+	out, err := s.queryScenes(ctx, `
+		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier, poster_aspect_class, poster_url, rating
+		FROM library_scenes
+		WHERE poster_url = '' AND box <> ? AND scene_id <> ''
+		ORDER BY title
+	`, LocalSceneBox)
+	if err != nil {
+		return nil, fmt.Errorf("listing scenes needing poster: %w", err)
+	}
+	return out, nil
+}
+
+// SetScenePosterURL writes poster_url fill-if-empty. Rejects non-https /
+// private hosts the same way UpsertScene does.
+func (s *Store) SetScenePosterURL(ctx context.Context, id int64, url string) error {
+	raw := strings.TrimSpace(url)
+	url = sanitizePosterURL(ctx, raw)
+	if raw != "" && url == "" {
+		return fmt.Errorf("setting scene poster url for id %d: rejected by imageproxy", id)
+	}
+	if id == 0 || url == "" {
+		return nil
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE library_scenes
+		SET poster_url = ?, updated_at = sakms_now()
+		WHERE id = ? AND poster_url = ''
+	`, url, id)
+	if err != nil {
+		return fmt.Errorf("setting scene poster url for id %d: %w", id, err)
+	}
+	_, err = res.RowsAffected()
+	return err
+}
+
 // DeleteScene permanently removes scene id and its tags. Explicit two-
 // statement delete rather than relying on the schema's declared foreign
 // keys — same reasoning as Store.Delete: SQLite only enforces them when a

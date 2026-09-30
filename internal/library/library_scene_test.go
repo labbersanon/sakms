@@ -507,6 +507,59 @@ func TestUpsertScene_RejectsPrivatePosterURL(t *testing.T) {
 	}
 }
 
+func TestListScenesNeedingPoster_SkipsLocalAndFilled(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if _, err := s.UpsertScene(ctx, Scene{
+		Box: LocalSceneBox, SceneID: LocalSceneID("abc"), Title: "Local", RootFolderPath: "/adult",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertScene(ctx, Scene{
+		Box: "stashdb", SceneID: "has-art", Title: "Has Art", RootFolderPath: "/adult",
+		PosterURL: "https://1.1.1.1/have.jpg",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	need, err := s.UpsertScene(ctx, Scene{
+		Box: "stashdb", SceneID: "need-art", Title: "Need Art", RootFolderPath: "/adult",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ListScenesNeedingPoster(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != need.ID {
+		t.Fatalf("need = %+v", got)
+	}
+}
+
+func TestSetScenePosterURL_FillIfEmpty(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	sc, err := s.UpsertScene(ctx, Scene{
+		Box: "stashdb", SceneID: "fill", Title: "Fill", RootFolderPath: "/adult",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetScenePosterURL(ctx, sc.ID, "https://1.1.1.1/first.jpg"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetScenePosterURL(ctx, sc.ID, "https://1.1.1.1/second.jpg"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetSceneByID(ctx, sc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PosterURL != "https://1.1.1.1/first.jpg" {
+		t.Fatalf("PosterURL = %q", got.PosterURL)
+	}
+}
+
 func TestRematchScene_UpdatesSameRow(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

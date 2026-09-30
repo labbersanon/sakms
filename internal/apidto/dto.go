@@ -199,6 +199,9 @@ type DiscoverItem struct {
 	ReleaseDate string  `json:"releaseDate"`
 	VoteAverage float64 `json:"voteAverage"`
 	MediaType   string  `json:"mediaType"`
+	// BackdropURL is an absolute cached fanart URL (Library tracked rows).
+	// Discover list cards leave this empty; DetailPopup then uses TitleDetail.
+	BackdropURL string `json:"backdropUrl,omitempty"`
 }
 
 // SeriesSearchItem is one Rename SearchTakeover hit from TVDB-backed series
@@ -441,9 +444,10 @@ type PerformerSummary struct {
 // starts carrying overview (then the card can read it from the list payload
 // and this field can go back to poster-only).
 type PosterResponse struct {
-	PosterPath string `json:"posterPath"`
-	PosterURL  string `json:"posterUrl,omitempty"`
-	Overview   string `json:"overview"`
+	PosterPath  string `json:"posterPath"`
+	PosterURL   string `json:"posterUrl,omitempty"`
+	BackdropURL string `json:"backdropUrl,omitempty"`
+	Overview    string `json:"overview"`
 }
 
 // --- Connections (reference implementation of the three-state secret rule) -
@@ -1127,6 +1131,9 @@ type TitleDetail struct {
 	// comes from. Library tracked rows cache no poster art; the popup uses
 	// this instead of a second /poster round-trip when the card passed "".
 	PosterPath string `json:"posterPath"`
+	// BackdropPath is the TMDB fanart path from the same details call.
+	// DetailPopup washes the header; cards stay 2:3 posters.
+	BackdropPath string `json:"backdropPath,omitempty"`
 	// Ratings is the official catalog-score row (IMDb / TMDB / Trakt).
 	// Never null — [] when every source is empty or unconfigured.
 	Ratings []OfficialRating `json:"ratings"`
@@ -1764,6 +1771,7 @@ type TrackedItem struct {
 	Files          []TrackedItemFile `json:"files,omitempty"`
 	VideoURL       string            `json:"videoUrl,omitempty"`
 	PosterURL      string            `json:"posterUrl,omitempty"`
+	BackdropURL    string            `json:"backdropUrl,omitempty"`
 	Box            string            `json:"box,omitempty"`
 	SceneID        string            `json:"sceneId,omitempty"`
 	Studio         string            `json:"studio,omitempty"`

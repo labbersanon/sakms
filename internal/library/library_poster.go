@@ -28,14 +28,18 @@ const (
 //
 // Troubleshooting: /poster re-resolving every card on every Library load.
 // Review if: poster columns are folded into Item/Series and List SELECTs.
+// Claude 2026-09-29: BackdropURL is the TMDB w1280 fanart, fill-if-empty.
+// Reason: same details call as the poster; cards stay 2:3.
+// Review if: Adult scenes gain a backdrop column.
 type PosterArt struct {
-	RowID  int64
-	TMDBID int
-	TVDBID int // series only; 0 on movies
-	Title  string
-	Year   int
-	URL    string
-	Source string
+	RowID       int64
+	TMDBID      int
+	TVDBID      int // series only; 0 on movies
+	Title       string
+	Year        int
+	URL         string
+	Source      string
+	BackdropURL string
 }
 
 // MoviePosterArt loads poster cache + title/year for one library_items row.
@@ -43,11 +47,11 @@ type PosterArt struct {
 func (s *Store) MoviePosterArt(ctx context.Context, m mode.Mode, tmdbID int) (PosterArt, error) {
 	var art PosterArt
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, tmdb_id, title, year, poster_url, poster_source
+		SELECT id, tmdb_id, title, year, poster_url, poster_source, backdrop_url
 		FROM library_items
 		WHERE mode = ? AND tmdb_id = ?
 	`, string(m), tmdbID).Scan(
-		&art.RowID, &art.TMDBID, &art.Title, &art.Year, &art.URL, &art.Source,
+		&art.RowID, &art.TMDBID, &art.Title, &art.Year, &art.URL, &art.Source, &art.BackdropURL,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PosterArt{}, ErrNotFound
@@ -56,6 +60,53 @@ func (s *Store) MoviePosterArt(ctx context.Context, m mode.Mode, tmdbID int) (Po
 		return PosterArt{}, fmt.Errorf("loading movie poster art for tmdb %d: %w", tmdbID, err)
 	}
 	return art, nil
+}
+
+// ListMoviesNeedingBackdrop returns movies with a TMDB id and no fanart.
+func (s *Store) ListMoviesNeedingBackdrop(ctx context.Context, m mode.Mode) ([]Item, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, tmdb_id, title, year, file_path
+		FROM library_items
+		WHERE mode = ? AND tmdb_id <> 0 AND backdrop_url = ''
+		ORDER BY title
+	`, string(m))
+	if err != nil {
+		return nil, fmt.Errorf("listing movies needing backdrop: %w", err)
+	}
+	defer rows.Close()
+	var out []Item
+	for rows.Next() {
+		var item Item
+		item.Mode = m
+		if err := rows.Scan(&item.ID, &item.TMDBID, &item.Title, &item.Year, &item.FilePath); err != nil {
+			return nil, fmt.Errorf("scanning movie needing backdrop: %w", err)
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+// ListSeriesNeedingBackdrop returns series with a TMDB id and no fanart.
+func (s *Store) ListSeriesNeedingBackdrop(ctx context.Context) ([]Series, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, tmdb_id, tvdb_id, title, year, root_folder_path
+		FROM library_series
+		WHERE tmdb_id > 0 AND backdrop_url = ''
+		ORDER BY title
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("listing series needing backdrop: %w", err)
+	}
+	defer rows.Close()
+	var out []Series
+	for rows.Next() {
+		var ser Series
+		if err := rows.Scan(&ser.ID, &ser.TMDBID, &ser.TVDBID, &ser.Title, &ser.Year, &ser.RootFolderPath); err != nil {
+			return nil, fmt.Errorf("scanning series needing backdrop: %w", err)
+		}
+		out = append(out, ser)
+	}
+	return out, rows.Err()
 }
 
 // ListMoviesNeedingPoster returns movie rows with an empty poster_url.
@@ -113,11 +164,11 @@ func (s *Store) ListSeriesNeedingPoster(ctx context.Context) ([]Series, error) {
 func (s *Store) SeriesPosterArt(ctx context.Context, tmdbID int) (PosterArt, error) {
 	var art PosterArt
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, tmdb_id, tvdb_id, title, year, poster_url, poster_source
+		SELECT id, tmdb_id, tvdb_id, title, year, poster_url, poster_source, backdrop_url
 		FROM library_series
 		WHERE tmdb_id = ?
 	`, tmdbID).Scan(
-		&art.RowID, &art.TMDBID, &art.TVDBID, &art.Title, &art.Year, &art.URL, &art.Source,
+		&art.RowID, &art.TMDBID, &art.TVDBID, &art.Title, &art.Year, &art.URL, &art.Source, &art.BackdropURL,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PosterArt{}, ErrNotFound
@@ -230,6 +281,84 @@ func (s *Store) SetSeriesPosterByID(ctx context.Context, seriesID int64, url, so
 		return ErrNotFound
 	}
 	return nil
+}
+
+// SetMovieBackdrop writes backdrop_url fill-if-empty on library_items.
+func (s *Store) SetMovieBackdrop(ctx context.Context, m mode.Mode, tmdbID int, url string) error {
+	url = strings.TrimSpace(url)
+	if tmdbID == 0 || url == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE library_items
+		SET backdrop_url = ?, updated_at = sakms_now()
+		WHERE mode = ? AND tmdb_id = ? AND backdrop_url = ''
+	`, url, string(m), tmdbID)
+	if err != nil {
+		return fmt.Errorf("setting movie backdrop for tmdb %d: %w", tmdbID, err)
+	}
+	return nil
+}
+
+// SetSeriesBackdrop writes backdrop_url fill-if-empty on library_series.
+func (s *Store) SetSeriesBackdrop(ctx context.Context, tmdbID int, url string) error {
+	url = strings.TrimSpace(url)
+	if tmdbID == 0 || url == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE library_series
+		SET backdrop_url = ?, updated_at = sakms_now()
+		WHERE tmdb_id = ? AND backdrop_url = ''
+	`, url, tmdbID)
+	if err != nil {
+		return fmt.Errorf("setting series backdrop for tmdb %d: %w", tmdbID, err)
+	}
+	return nil
+}
+
+// MovieBackdropURLMap returns tmdb_id → backdrop_url for movies with cached fanart.
+func (s *Store) MovieBackdropURLMap(ctx context.Context, m mode.Mode) (map[int]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT tmdb_id, backdrop_url FROM library_items
+		WHERE mode = ? AND backdrop_url <> ''
+	`, string(m))
+	if err != nil {
+		return nil, fmt.Errorf("listing movie backdrop urls: %w", err)
+	}
+	defer rows.Close()
+	out := map[int]string{}
+	for rows.Next() {
+		var id int
+		var url string
+		if err := rows.Scan(&id, &url); err != nil {
+			return nil, fmt.Errorf("scanning movie backdrop url: %w", err)
+		}
+		out[id] = url
+	}
+	return out, rows.Err()
+}
+
+// SeriesBackdropURLMap returns tmdb_id → backdrop_url for series with cached fanart.
+func (s *Store) SeriesBackdropURLMap(ctx context.Context) (map[int]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT tmdb_id, backdrop_url FROM library_series
+		WHERE backdrop_url <> ''
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("listing series backdrop urls: %w", err)
+	}
+	defer rows.Close()
+	out := map[int]string{}
+	for rows.Next() {
+		var id int
+		var url string
+		if err := rows.Scan(&id, &url); err != nil {
+			return nil, fmt.Errorf("scanning series backdrop url: %w", err)
+		}
+		out[id] = url
+	}
+	return out, rows.Err()
 }
 
 // MoviePosterURLMap returns tmdb_id → poster_url for movies with cached art.

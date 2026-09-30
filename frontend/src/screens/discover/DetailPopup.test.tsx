@@ -1822,6 +1822,19 @@ describe("DetailPopup — F1 rich detail sections (Movies/Series)", () => {
     expect(screen.getByText("Keywords")).toBeInTheDocument();
   });
 
+  it("washes the header with TitleDetail backdropPath", async () => {
+    stubWithDetail(titleDetail({ backdropPath: "/fanart.jpg" }));
+    const target: DetailTarget = {
+      mode: "movies",
+      item: movie({ id: 42, title: "Hero Movie" }),
+    };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+    const wash = await screen.findByTestId("title-backdrop");
+    expect(wash.getAttribute("style") ?? "").toContain(
+      encodeURIComponent("https://image.tmdb.org/t/p/w1280/fanart.jpg"),
+    );
+  });
+
   it("renders the poster from TitleDetail when the item posterPath is empty", async () => {
     stubWithDetail(titleDetail({ posterPath: "/from-detail.jpg" }));
     const target: DetailTarget = {

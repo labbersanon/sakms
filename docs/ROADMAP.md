@@ -475,6 +475,14 @@ existing library titles are left alone. Toggle-off cancels never-dispatched
 parks of that origin only. Auto-grab remains the gate. See CHANGELOG
 2026-09-28.
 
+### Artwork persist — shipped 2026-09-29
+Adult library rows with empty `poster_url` are filled from TPDB
+`GetSceneByID` or stash-box `FindScene` during the existing poster
+backfill (2s gap). GET `/tracked` stays read-only. Movies/Series persist
+TMDB `backdrop_url` (w1280) from the same details call as the poster
+chain; DetailPopup washes the header on Library and Discover. Cards stay
+2:3 posters. Local `fanart.jpg` is not picked up. See CHANGELOG 2026-09-29.
+
 ### Daily and anime episode identify — shipped 2026-09-28
 Rename, Organize Import, and grab-complete import now resolve date-named
 dailies (`Show.2024.03.15`) and absolute-numbered anime (`Show - 1089`,
@@ -985,6 +993,10 @@ and `SeasonDetails` is still called to verify the season exists. 7 new
 tests added to `internal/nfo/nfo_test.go`.
 
 Artwork reuse (local poster/fanart) remains open if it comes up.
+**UPDATED 2026-09-29:** catalog persist shipped — Adult empty `poster_url`
+backfill (TPDB/stash-box by id, not Identify) and Movies/Series
+`backdrop_url` from the existing TMDB details call. Cards stay 2:3 posters;
+DetailPopup washes the header. Local `fanart.jpg` pickup is still not built.
 
 ### TVDB fallback for Movies/Series Rename — shipped 2026-07-17
 When TMDB search returns zero results or a below-threshold confidence match
@@ -2262,6 +2274,8 @@ surface) shipped 2026-07-19 — see "Recently shipped" below.
   over direct TVDB. Do **not** hardcode the key in the sakms git tree.
 - **Local `.nfo` preference** — shipped 2026-07-17, see "Recently shipped"
   below. Artwork reuse (local poster/fanart) remains open if it comes up.
+  **UPDATED 2026-09-29:** catalog Adult poster backfill + Movies/Series
+  backdrop persist/display shipped; local `fanart.jpg` pickup is still open.
   **UPDATED 2026-08-06:** Series NFO fast-path no longer hard-unmatches when
   `SeasonDetails` 404s for the sidecar TMDB id — it falls through to filename
   TMDB search → TVDB → web-authority (same pipeline as no-NFO orphans).

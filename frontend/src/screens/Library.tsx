@@ -109,6 +109,7 @@ const trackedToDiscoverItem = (
   releaseDate: item.year ? String(item.year) : "",
   voteAverage: 0,
   mediaType: mode === "series" ? "tv" : "movie",
+  backdropUrl: item.backdropUrl ?? "",
 });
 
 // trackedToAdultDiscoverItem maps stored library_scenes identity onto the

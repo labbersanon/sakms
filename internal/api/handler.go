@@ -259,6 +259,11 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// Reason: quality-prefs GET carries the flag; this PUT is the write + cancel.
 	// Troubleshooting: TitleQualityPrefs "Watch for better release" switch.
 	mux.HandleFunc("PUT /api/modes/movies/library/tmdb/{tmdbId}/upgrade-watch", putMovieUpgradeWatchHandler(libStore, grabsStore))
+	// Claude 2026-09-29: series upgrade-watch — same write+cancel as movies.
+	// Reason: owned-episode hunt shares the sixth retry-cycle pass budget.
+	// Troubleshooting: TitleQualityPrefs switch; library_series.upgrade_watch.
+	mux.HandleFunc("PUT /api/modes/series/library/{seriesID}/upgrade-watch", putSeriesUpgradeWatchByIDHandler(libStore, grabsStore))
+	mux.HandleFunc("PUT /api/modes/series/library/tmdb/{tmdbId}/upgrade-watch", putSeriesUpgradeWatchByTMDBHandler(libStore, grabsStore))
 
 	// Server-side directory browser for the Settings root-folder pickers +
 	// their as-you-type autocomplete — restricted to the mounted roots (see
@@ -281,11 +286,12 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("POST /api/organize/browse/delete", organizeBrowseDeleteHandler(libStore))
 	mux.HandleFunc("GET /api/organize/browse/stat", organizeBrowseStatHandler(libStore, prober))
 	mux.HandleFunc("GET /api/organize/browse/video", organizeBrowseVideoHandler())
-	// Claude 2026-09-28: Organize Import — identify then MOVE into the library.
-	// Reason: prefix /api/organize/ stays {organize}; confirm-then-mutate like Browse.
+	// Claude 2026-09-29: Organize Import — Movies/Series/Adult confirm-to-MOVE.
+	// Reason: prefix /api/organize/ stays {organize}; Adult hasher is body-mode
+	//   (Layer 3 denyIfAdultLocked + mode.Build), not a URL {mode} segment.
 	// Troubleshooting: SL-9 — these literals must stay under /api/organize/.
-	// Review if: Adult import is added.
-	mux.HandleFunc("POST /api/organize/import/scan", manualImportScanHandler(httpClient, connStore, scStore, settingsStore, libStore, prober))
+	// Review if: Import grows a /modes/{mode}/ path or a proposals queue.
+	mux.HandleFunc("POST /api/organize/import/scan", manualImportScanHandler(httpClient, connStore, scStore, settingsStore, libStore, prober, videoHasher))
 	mux.HandleFunc("POST /api/organize/import/apply", manualImportApplyHandler(httpClient, connStore, scStore, settingsStore, libStore, prober))
 	mux.HandleFunc("GET /api/modes/{mode}/quality-prefs", getQualityPrefsHandler(settingsStore))
 	mux.HandleFunc("PUT /api/modes/{mode}/quality-prefs", putQualityPrefsHandler(settingsStore))
@@ -682,6 +688,8 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("POST /api/modes/adult/scenes/{sceneId}/tags", addSceneTagHandler(libStore))
 	mux.HandleFunc("DELETE /api/modes/adult/scenes/{sceneId}/tags/{tagId}", removeSceneTagHandler(libStore))
 	mux.HandleFunc("PUT /api/modes/adult/scenes/{sceneId}/rating", putSceneRatingHandler(libStore))
+	mux.HandleFunc("GET /api/modes/adult/scenes/{sceneId}/catalog-posters", catalogAdultPostersHandler(httpClient, connStore, scStore, settingsStore, libStore))
+	mux.HandleFunc("PUT /api/modes/adult/scenes/{sceneId}/poster", putAdultScenePosterHandler(httpClient, connStore, scStore, settingsStore, libStore))
 
 	mux.HandleFunc("GET /api/setup/status", setupStatusHandler(connStore, scStore, settingsStore))
 	mux.HandleFunc("PUT /api/setup/dismissed", dismissSetupHandler(settingsStore))

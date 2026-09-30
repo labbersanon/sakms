@@ -92,14 +92,19 @@ func identifyAdultFiles(ctx context.Context, sess *mode.Session, hasher PHasher,
 		go func(i int, path string) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			if hasher == nil {
+				return
+			}
 			h, err := hasher.Hash(ctx, path)
 			if err != nil {
 				return // ok stays false -> this file routes to legacy
 			}
 			r := hashResult{phash: h, ok: true}
-			if pr, perr := prober.Probe(ctx, path); perr == nil {
-				// float64 seconds -> int, matching the old int(f.Duration).
-				r.duration = int(pr.Duration)
+			if prober != nil {
+				if pr, perr := prober.Probe(ctx, path); perr == nil {
+					// float64 seconds -> int, matching the old int(f.Duration).
+					r.duration = int(pr.Duration)
+				}
 			}
 			results[i] = r
 		}(i, files[i].path)

@@ -211,6 +211,11 @@ export interface DiscoverItem {
   releaseDate: string;
   voteAverage: number /* float64 */;
   mediaType: string;
+  /**
+   * BackdropURL is an absolute cached fanart URL (Library tracked rows).
+   * Discover list cards leave this empty; DetailPopup then uses TitleDetail.
+   */
+  backdropUrl?: string;
 }
 /**
  * SeriesSearchItem is one Rename SearchTakeover hit from TVDB-backed series
@@ -458,6 +463,7 @@ export interface PerformerSummary {
 export interface PosterResponse {
   posterPath: string;
   posterUrl?: string;
+  backdropUrl?: string;
   overview: string;
 }
 /**
@@ -1130,6 +1136,11 @@ export interface TitleDetail {
    */
   posterPath: string;
   /**
+   * BackdropPath is the TMDB fanart path from the same details call.
+   * DetailPopup washes the header; cards stay 2:3 posters.
+   */
+  backdropPath?: string;
+  /**
    * Ratings is the official catalog-score row (IMDb / TMDB / Trakt).
    * Never null — [] when every source is empty or unconfigured.
    */
@@ -1732,6 +1743,7 @@ export interface TrackedItem {
   files?: TrackedItemFile[];
   videoUrl?: string;
   posterUrl?: string;
+  backdropUrl?: string;
   box?: string;
   sceneId?: string;
   studio?: string;
@@ -1745,7 +1757,7 @@ export interface TrackedItem {
   /**
    * Claude 2026-09-15: derived monitored flag — true when the item has an
    * active grab (any mode) OR any monitored season (Series only) OR
-   * upgrade_watch (Movies only, shipped 2026-09-28). Absent (omitempty)
+   * upgrade_watch (Movies 2026-09-28, Series 2026-09-29). Absent (omitempty)
    * means false. Derived at list time. See plan §1.2.
    * Reason: client-side filter chip on Library and Discover Mainstream.
    * Review if: GET /tracked gains server-side filter params.
@@ -3330,8 +3342,8 @@ export interface TitleQualityPrefsResponse {
   inherited: boolean;
   upgradeQueued?: number /* int */;
   /**
-   * Claude 2026-09-28: movie upgrade-watch, present only when a library_items
-   *   row exists for this TMDB id. Series always omits both fields.
+   * Claude 2026-09-28: upgrade-watch, present only when a library row exists
+   *   for this TMDB id (movies: library_items; series: library_series).
    * Reason: TitleQualityPrefs is the toggle home; one GET carries prefs + flag.
    * Troubleshooting: PUT .../upgrade-watch is the write; these fields are read-only here.
    */
@@ -3339,8 +3351,9 @@ export interface TitleQualityPrefsResponse {
   upgradeWatchAvailable?: boolean;
 }
 /**
- * MovieUpgradeWatchRequest is PUT /api/modes/movies/library/tmdb/{tmdbId}/upgrade-watch.
- * Setting false also cancels never-dispatched upgrade-watch retries for that title.
+ * MovieUpgradeWatchRequest is PUT .../library/.../upgrade-watch for movies
+ * (tmdb) and series (seriesID or tmdb). Setting false also cancels
+ * never-dispatched upgrade-watch retries for that title.
  */
 export interface MovieUpgradeWatchRequest {
   upgradeWatch: boolean;

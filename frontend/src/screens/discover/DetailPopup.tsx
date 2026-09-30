@@ -68,9 +68,12 @@ import {
   fetchAdultDescription,
   fetchAvailabilityPreview,
   fetchTitleDetail,
-  fetchTitlePoster,
+  fetchTitleCard,
   fetchTrailer,
+  cardBackdropSrc,
+  cardPosterSrc,
   proxyImage,
+  tmdbBackdrop,
   tmdbLogo,
   tmdbPoster,
   tmdbProfile,
@@ -91,6 +94,8 @@ import { headerPlayFromSeasons } from "../seriesPlay";
 import { type GrabTarget, FallbackPickList, Modal } from "./shared";
 import { PosterCard } from "./Mainstream";
 import { SeasonEpisodePicker } from "./SeasonEpisodePicker";
+import { canEditAdultPoster } from "../../api/adultPoster";
+import { AdultPosterPicker } from "../../components/AdultPosterPicker";
 
 // DetailTarget is the card DetailPopup was opened for — a discriminated union
 // so Adult's scene-shaped item (no overview/voteAverage/tmdbId) and
@@ -664,6 +669,12 @@ export const DetailPopup: Component<{
   // Reason: SearchTakeover is a full page; nesting it here stacks two overlays.
   // Review if: Rematch also rewrites on-disk file names.
   onRematch?: () => void;
+  // Claude 2026-09-29: owned Adult scene id for catalog-poster edit.
+  // Reason: persist is library_scenes.id; hide for local/untracked.
+  // Review if: untracked Discover cards gain a persist target.
+  librarySceneId?: number;
+  ownedPosterUrl?: string;
+  onPosterPicked?: (url: string) => void;
   // Claude 2026-09-24: rematch pick with S/E, or episode-row Replace.
   // Reason: pre-set slot skips SeasonEpisodePicker so grab is the episode.
   replaceSlot?: { season: number; episode: number };
@@ -780,16 +791,28 @@ export const DetailPopup: Component<{
   // list-payload path never pay a second round-trip.
   // Troubleshooting: popup showed MediaFallbackTile next to More on TMDB.
   // Review if: tracked list starts carrying poster paths.
-  const [lazyPoster] = createResource(
+  // Claude 2026-09-29: one /poster call supplies poster + backdrop.
+  // Reason: fanart wash must not add a second fetch; TitleDetail.backdropPath
+  //   is preferred when the detail bundle already landed.
+  // Review if: GET /tracked starts carrying backdropUrl for every title
+  //   (then this fetch can skip when item.backdropUrl is set).
+  const [lazyCard] = createResource(
     () => {
       if (!hasCatalogTmdb()) return null;
       const it = item() as DiscoverItem;
-      if (it.posterPath) return null;
       if (detail.loading) return null;
-      if (detail()?.posterPath) return null;
+      const havePoster = !!(it.posterPath || detail()?.posterPath);
+      const haveBackdrop = !!(it.backdropUrl || detail()?.backdropPath);
+      if (havePoster && haveBackdrop) return null;
       return { m: mode() as "movies" | "series", tmdbId: it.id };
     },
-    ({ m, tmdbId }) => fetchTitlePoster(m, tmdbId).catch(() => ""),
+    ({ m, tmdbId }) =>
+      fetchTitleCard(m, tmdbId).catch(() => ({
+        posterPath: "",
+        posterUrl: "",
+        backdropUrl: "",
+        overview: "",
+      })),
   );
 
   // Adult scene description — the dedicated endpoint (AC3/AC4), fired once per
@@ -951,17 +974,43 @@ export const DetailPopup: Component<{
   // deliberately across all three modes, so a TMDB title with an empty overview
   // now renders no line either. The guard is on the <p> itself, since an empty
   // one still contributes margin and a line box.
+  const [pickedPoster, setPickedPoster] = createSignal("");
+  const [posterPickerOpen, setPosterPickerOpen] = createSignal(false);
+  createEffect(() => {
+    props.target;
+    props.librarySceneId;
+    setPickedPoster("");
+    setPosterPickerOpen(false);
+  });
+  const canChangePoster = () =>
+    mode() === "adult" &&
+    !!props.librarySceneId &&
+    canEditAdultPoster((item() as AdultDiscoverItem).source);
   const posterSrc = () => {
     if (mode() === "adult") {
-      return proxyImage((item() as AdultDiscoverItem).image);
+      return proxyImage(
+        pickedPoster() ||
+          props.ownedPosterUrl ||
+          (item() as AdultDiscoverItem).image,
+      );
     }
     const path =
       (item() as DiscoverItem).posterPath ||
       (detail()?.posterPath ?? "");
     if (path) return tmdbPoster(path);
-    // Claude 2026-09-22: lazyPoster is already a proxied src (cardPosterSrc).
+    // Claude 2026-09-22: lazy card poster is already a proxied src.
     // Reason: TVDB/AI absolute URLs; do not wrap with tmdbPoster again.
-    return lazyPoster() ?? "";
+    const card = lazyCard();
+    return card ? cardPosterSrc(card) : "";
+  };
+  const backdropSrc = () => {
+    if (mode() === "adult") return "";
+    const it = item() as DiscoverItem;
+    if (it.backdropUrl) return proxyImage(it.backdropUrl);
+    const path = detail()?.backdropPath ?? "";
+    if (path) return tmdbBackdrop(path);
+    const card = lazyCard();
+    return card ? cardBackdropSrc(card) : "";
   };
   const catalogHref = () => externalDetailURL(props.target);
   const PosterArt: Component = () => (
@@ -1111,6 +1160,7 @@ export const DetailPopup: Component<{
   };
 
   return (
+    <>
     <Modal title={item().title} onClose={props.onClose}>
       {/* Claude 2026-09-01: poster + synopsis + More/Trailer/Play sit ABOVE
           the Series ready() gate. Discover Series used to hide this whole
@@ -1121,7 +1171,16 @@ export const DetailPopup: Component<{
           no plot text.
           Troubleshooting: overview lived inside <Show when={ready()}>.
           Review if: Series stops gating availability behind the picker. */}
-      <div class="flex items-start gap-3">
+      <div class="relative overflow-hidden rounded-lg">
+        <Show when={backdropSrc()}>
+          <div
+            class="pointer-events-none absolute inset-0 bg-cover bg-center opacity-40"
+            style={{ "background-image": `url("${backdropSrc()}")` }}
+            data-testid="title-backdrop"
+          />
+          <div class="pointer-events-none absolute inset-0 bg-gradient-to-r from-surface via-surface/85 to-surface/50" />
+        </Show>
+      <div class="relative flex items-start gap-3 p-1">
         <Show
           when={catalogHref()}
           fallback={
@@ -1236,6 +1295,16 @@ export const DetailPopup: Component<{
               Rematch
             </button>
           </Show>
+          <Show when={canChangePoster()}>
+            <button
+              type="button"
+              class={HEADER_ACTION_CLASS}
+              data-testid="change-poster"
+              onClick={() => setPosterPickerOpen(true)}
+            >
+              Change poster
+            </button>
+          </Show>
           <Show when={props.canReplace && replaceOpen()}>
             <button
               type="button"
@@ -1246,6 +1315,7 @@ export const DetailPopup: Component<{
             </button>
           </Show>
         </div>
+      </div>
       </div>
 
       {/* Claude 2026-09-22: quality prefs + season monitors sit UNDER poster/
@@ -1723,5 +1793,16 @@ export const DetailPopup: Component<{
         </Show>
       </Show>
     </Modal>
+    <Show when={posterPickerOpen() && props.librarySceneId}>
+      <AdultPosterPicker
+        sceneId={props.librarySceneId!}
+        onClose={() => setPosterPickerOpen(false)}
+        onPicked={(url) => {
+          setPickedPoster(url);
+          props.onPosterPicked?.(url);
+        }}
+      />
+    </Show>
+    </>
   );
 };

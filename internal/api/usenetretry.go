@@ -339,12 +339,16 @@ func runUsenetRetryCycle(ctx context.Context, deps AutoGrabDeps, build sessionBu
 	// Claude 2026-08-24: fifth pass — Adult monitored-entity dispatch.
 	// Reads pool for scenes added since monitored_since, dispatches auto-grabs.
 	monitorAdultEntities(ctx, deps, build, libStore, monitoredStore, releaseStore, excluded, now)
-	// Claude 2026-09-28: sixth pass — movie upgrade-watch.
-	// Reason: ROADMAP owned-movie hunt; opt-in flag + prefs-floor cutoff;
-	//   same RunAutoGrab gate as air-date. Daily cycle only, not the 60s drain.
-	// Troubleshooting: library_items.upgrade_watch; TriggerQualityWatch.
+	// Claude 2026-09-29: sixth pass — movie then series upgrade-watch.
+	// Reason: ROADMAP owned-title hunt; series shares leftover cycle slots
+	//   after movies so one pass cannot starve the other independently.
+	//   Daily cycle only, not the 60s drain.
+	// Troubleshooting: library_items.upgrade_watch / library_series.upgrade_watch;
+	//   TriggerQualityWatch.
 	// Review if: this hunt should share the drain tick with air-date.
-	monitorMovieUpgradeWatch(ctx, deps, build, libStore, excluded)
+	watchBudget := loadUsenetCycleSlots(ctx, deps.SettingsStore)
+	watchUsed := runMovieUpgradeWatch(ctx, deps, build, libStore, excluded, watchBudget)
+	runSeriesUpgradeWatch(ctx, deps, build, libStore, excluded, watchBudget-watchUsed)
 	// Claude 2026-09-28: seventh pass — Trakt / TMDB / IMDb list ingest.
 	// Reason: Discover already fetches Trakt; TMDB/IMDb share the same
 	//   movie-Request / series-monitor-all dispatch and one cycle budget.

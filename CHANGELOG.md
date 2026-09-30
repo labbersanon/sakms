@@ -9830,6 +9830,82 @@ status stays active.
 | `internal/api/import.go` | Grab-complete fallback |
 | `docs/ROADMAP.md` | Shipped note |
 
+## 2026-09-29 — Node MaxJobs + series upgrade-watch
+
+**Problem:** `sakms-node` stored MaxJobs and logged it but never bounded hash dispatch. Series had no analog of movie upgrade-watch, so owned episodes below prefs were never hunted unless the operator clicked Grab.
+**Fix:** Node hash jobs acquire a `jobSem` (0 = unlimited); browse stays unbounded; raising MaxJobs notifies waiters. Series get `library_series.upgrade_watch` (default off; UpsertSeries does not write it). The sixth retry-cycle pass runs movies first then series on leftover Usenet cycle slots. Owned episodes below the title floor go through `RunAutoGrab` (`TriggerQualityWatch`, `SeasonSpecified`). Missing episodes stay air-date. TitleQualityPrefs shows the watch switch when a library_series row exists. Tracked `Monitored` ORs the flag. Turning the switch off cancels never-dispatched `origin=upgrade-watch` parks for that TMDB id.
+**Outcome:** Hash concurrency honors MaxJobs. An opted-in series hunts better owned-episode releases on the daily auto-grab cycle.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `cmd/sakms-node/jobsem.go` | Semaphore for hash dispatch |
+| `cmd/sakms-node/main.go` | Acquire inside hash goroutine; notify on MaxJobs save |
+| `internal/db/migrations/0034_library_series_upgrade_watch.sql` | `library_series.upgrade_watch` |
+| `internal/library/library_series.go` | Flag + Set/List; UpsertSeries does not write it |
+| `internal/api/seriesupgradewatch.go` | PUT handlers + sixth-pass series hunt |
+| `internal/api/movieupgradewatch.go` | Shared budget return count |
+| `internal/api/usenetretry.go` | Movies then leftover series slots |
+| `internal/api/titlequality.go` | Series quality-prefs carry the flag |
+| `internal/api/tracked.go` | Series Monitored ORs upgrade_watch |
+| `frontend/src/components/TitleQualityPrefs.tsx` | Watch switch for owned series |
+| `docs/ROADMAP.md` | MaxJobs + series watch marked shipped |
+
+## 2026-09-29 — Adult poster backfill and Movies/Series backdrops
+
+**Problem:** Adult Library cards with empty `poster_url` stayed on a video still; Movies/Series TMDB fanart was fetched with posters but never stored or shown in SAK.
+**Fix:** Boot/admin poster backfill now fills empty Adult `poster_url` via TPDB `GetSceneByID` / stash-box `FindScene` (not Identify). Local/empty scene ids stay skipped; GET `/tracked` stays read-only. Movies/Series persist `backdrop_url` (TMDB w1280) fill-if-empty from the same details call as the poster chain. Library + Discover DetailPopup washes the header; cards stay 2:3 posters. Local `fanart.jpg` is not picked up.
+**Outcome:** Existing Adult rows can gain catalog posters without per-card fetches. Movies/Series detail headers show fanart when TMDB has it.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/db/migrations/0035_library_backdrop_url.sql` | `backdrop_url` on items/series |
+| `internal/library/library_scene.go` | `ListScenesNeedingPoster` / `FillScenePosterURL` |
+| `internal/library/library_poster.go` | Backdrop persist + maps |
+| `internal/api/adult_poster.go` | Catalog-id Adult resolve |
+| `internal/api/poster.go` / `poster_backfill.go` | Persist backdrop; Adult + backdrop passes |
+| `internal/apidto/dto.go` | `backdropUrl` / `backdropPath` |
+| `frontend/src/screens/discover/DetailPopup.tsx` | Header wash; one `/poster` card fetch |
+| `docs/ROADMAP.md` | Shipped note; local fanart still open |
+
+## 2026-09-29 — Adult Organize Import
+
+**Problem:** Organize → Import was Movies and Series only. Adult dump-folder files had no confirm-to-MOVE path; grab-complete `OrganizeImportedAdult` skips unmatched instead of minting a local scene.
+**Fix:** Import accepts Adult. Scan walks a browsable dump folder, reuses Rename's `identifyAdultFiles` cascade, and proposes MOVE into the Adult library root via `ApplyLibraryAdult`. Unmatched files with a phash become Pending local scenes (`box=local`, `scene_id=phash:<hash>`). Already-tracked box/scene or phash hits fold as PendingAlternate. Confirm reconstructs identity from the scan payload (box/sceneId/studio/date/phash). Hasher is required for Adult scan. No Kids split. Schema-named dump files are still proposed (unlike Rename's library walk).
+**Outcome:** An operator can pick a dump folder, review identified and local Adult rows, and MOVE them into the Adult library.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/rename/import.go` | `ScanImportAdult`, local mint, Adult `ImportDestPath` |
+| `internal/api/manualimport.go` | Adult mode, hasher, reconstruct, `ApplyLibraryAdult` |
+| `internal/api/handler.go` | Import scan gets `videoHasher` |
+| `frontend/src/screens/Import.tsx` | Adult chip |
+| `frontend/src/api/manualImport.ts` | Adult fields + `ImportMode` includes adult |
+| `docs/ROADMAP.md` | Adult Import shipped note |
+
+## 2026-09-29 — Adult poster edit from catalog images
+
+**Problem:** Owned Adult cards showed the first catalog image (or a video still) with no way to pick another image from that scene's stash-box/TPDB set. A later fill-if-empty upsert or poster backfill could also replace an operator choice.
+**Fix:** GET `/api/modes/adult/scenes/{sceneId}/catalog-posters` lists sanitized stash-box `images[]` or TPDB Background.Large/Poster/Image. PUT `/api/modes/adult/scenes/{sceneId}/poster` `{url}` overwrites `library_scenes.poster_url` and sets `poster_source=operator`. UpsertScene and `ListScenesNeedingPoster` keep operator rows. Picker is on Library, owned Discover cards, and detail. Local scenes have no catalog list. Discover overlays the tracked `posterUrl` on owned cards. GET `/tracked` still does not probe catalog.
+**Outcome:** An operator can change an owned Adult poster from that scene's catalog images; the pick survives later backfill.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/db/migrations/0036_library_scenes_poster_source.sql` | `poster_source` on `library_scenes` |
+| `internal/library/library_scene.go` | Operator overwrite + backfill skip |
+| `internal/stashbox/client.go` | `Scene.ImageURLs` from all `images[]` |
+| `internal/tpdbrest/client.go` | `Scene.Images` unique Background/Poster/Image |
+| `internal/identify/boxlookup.go` | `CatalogPosterURLs` (not `Identify()`) |
+| `internal/api/adult_poster_edit.go` | GET catalog-posters + PUT poster |
+| `frontend/src/components/AdultPosterPicker.tsx` | Catalog image picker |
+| `docs/ROADMAP.md` | Shipped note |
 
 
 

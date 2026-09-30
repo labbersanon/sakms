@@ -60,11 +60,10 @@ const (
 	// makes this a genuinely new category ("deferred operator approval", §6.1) and
 	// not a member of TriggerOperator's immediate-click exemption.
 	TriggerPreRelease AutoGrabTrigger = "prerelease"
-	// TriggerQualityWatch is Movies upgrade-watch: an owned title whose
-	// operator flipped library_items.upgrade_watch on, dispatched by
-	// monitorMovieUpgradeWatch (internal/api/movieupgradewatch.go), the
-	// SIXTH pass of runUsenetRetryCycle. Gated like every non-TriggerOperator
-	// trigger, by construction.
+	// TriggerQualityWatch is Movies/Series upgrade-watch: an owned title whose
+	// operator flipped upgrade_watch on, dispatched by runMovieUpgradeWatch /
+	// runSeriesUpgradeWatch, the SIXTH pass of runUsenetRetryCycle. Gated like
+	// every non-TriggerOperator trigger, by construction.
 	TriggerQualityWatch AutoGrabTrigger = "qualitywatch"
 	// TriggerTraktWatchlist is unattended ingest of the linked Trakt
 	// watchlist, dispatched by monitorTraktWatchlist

@@ -13,11 +13,12 @@ import (
 // the same number is a different TV show, and the library year matches the
 // movie.
 type seriesPosterCatalog struct {
-	PosterPath string
-	Overview   string
-	Title      string
-	Year       int
-	FromMovie  bool
+	PosterPath   string
+	BackdropPath string
+	Overview     string
+	Title        string
+	Year         int
+	FromMovie    bool
 }
 
 // preferMovieForSeriesYear reports whether a series row should read the
@@ -65,29 +66,32 @@ func loadSeriesPosterCatalog(ctx context.Context, client *tmdb.Client, tmdbID, l
 	tvYear := tvPremiereYear(tv)
 	if tvOK && tv.PosterPath != "" && (libraryYear <= 0 || tvYear == libraryYear) {
 		return seriesPosterCatalog{
-			PosterPath: tv.PosterPath,
-			Overview:   tv.Overview,
-			Title:      tv.Title,
-			Year:       tvYear,
+			PosterPath:   tv.PosterPath,
+			BackdropPath: tv.BackdropPath,
+			Overview:     tv.Overview,
+			Title:        tv.Title,
+			Year:         tvYear,
 		}
 	}
 	movie, movieErr := client.MovieDetails(ctx, tmdbID)
 	movieOK := movieErr == nil && strings.TrimSpace(movie.Title) != ""
 	if preferMovieForSeriesYear(tvOK, tvYear, movieOK, parseYearPrefix(movie.ReleaseDate), libraryYear) {
 		return seriesPosterCatalog{
-			PosterPath: movie.PosterPath,
-			Overview:   movie.Overview,
-			Title:      movie.Title,
-			Year:       parseYearPrefix(movie.ReleaseDate),
-			FromMovie:  true,
+			PosterPath:   movie.PosterPath,
+			BackdropPath: movie.BackdropPath,
+			Overview:     movie.Overview,
+			Title:        movie.Title,
+			Year:         parseYearPrefix(movie.ReleaseDate),
+			FromMovie:    true,
 		}
 	}
 	if tvOK {
 		return seriesPosterCatalog{
-			PosterPath: tv.PosterPath,
-			Overview:   tv.Overview,
-			Title:      tv.Title,
-			Year:       tvPremiereYear(tv),
+			PosterPath:   tv.PosterPath,
+			BackdropPath: tv.BackdropPath,
+			Overview:     tv.Overview,
+			Title:        tv.Title,
+			Year:         tvPremiereYear(tv),
 		}
 	}
 	return seriesPosterCatalog{}

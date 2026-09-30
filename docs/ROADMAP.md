@@ -195,6 +195,12 @@ ceiling regardless of this gap), but it is not a substitute for fixing
 limits on the same node. Fixing `MaxJobs` enforcement is its own,
 not-yet-scheduled follow-up — out of scope for the CPU governor work.
 
+**SHIPPED 2026-09-29 — `MaxJobs` is now enforced on hash dispatch.**
+`cmd/sakms-node` acquires a `jobSem` inside each hash goroutine (not the
+SSE select). 0 remains unlimited. Browse requests stay unbounded. Raising
+MaxJobs via server settings notifies waiters. Adult-scan worker count and
+per-job ffmpeg frame fan-out are still independent of this cap.
+
 ### phash-based Dedup — refinement + phash-primary grouping shipped; PDQ migration open
 <!-- Claude 2026-08-04: heading corrected. Reason: this heading said
      phash-primary grouping was "still open," but its own section body
@@ -469,6 +475,14 @@ existing library titles are left alone. Toggle-off cancels never-dispatched
 parks of that origin only. Auto-grab remains the gate. See CHANGELOG
 2026-09-28.
 
+### Artwork persist — shipped 2026-09-29
+Adult library rows with empty `poster_url` are filled from TPDB
+`GetSceneByID` or stash-box `FindScene` during the existing poster
+backfill (2s gap). GET `/tracked` stays read-only. Movies/Series persist
+TMDB `backdrop_url` (w1280) from the same details call as the poster
+chain; DetailPopup washes the header on Library and Discover. Cards stay
+2:3 posters. Local `fanart.jpg` is not picked up. See CHANGELOG 2026-09-29.
+
 ### Daily and anime episode identify — shipped 2026-09-28
 Rename, Organize Import, and grab-complete import now resolve date-named
 dailies (`Show.2024.03.15`) and absolute-numbered anime (`Show - 1089`,
@@ -476,12 +490,23 @@ dailies (`Show.2024.03.15`) and absolute-numbered anime (`Show - 1089`,
 (SxxExx) is unchanged. Destination names stay the existing SxxExx preset.
 See CHANGELOG 2026-09-28.
 
-### Manual import — shipped 2026-09-28
+### Manual import — shipped 2026-09-28, Adult 2026-09-29
 Organize → Import identifies videos in a browsable dump folder (same
 Rename matchers) and **moves** them into the mode library root (Kids
-when classify says so). Confirm is the approval. Movies and Series only.
-Not a proposals queue — scan is in-memory; apply reconstructs a Pending
-row and calls RelocateMovie / RelocateEpisode. See CHANGELOG 2026-09-28.
+when classify says so; Adult has no Kids split). Confirm is the approval.
+Movies, Series, and Adult. Adult reuses `identifyAdultFiles` +
+`ApplyLibraryAdult`. Unmatched+phash files MOVE as local scenes
+(`box=local`). Already-tracked scenes fold as PendingAlternate. Not a
+proposals queue — scan is in-memory; apply reconstructs a Pending row.
+See CHANGELOG 2026-09-28 and 2026-09-29.
+
+### Adult poster edit — shipped 2026-09-29
+Owned Adult scenes can pick a poster from that scene's stash-box/TPDB
+catalog images. The pick overwrites `library_scenes.poster_url` and sets
+`poster_source=operator`, so later UpsertScene fill-if-empty and poster
+backfill cannot replace it. Edit lives on Library, owned Discover cards,
+and detail. Local scenes have no catalog list. GET `/tracked` stays
+read-only (no catalog probe). See CHANGELOG 2026-09-29.
 
 ### Adult release persistence — shipped 2026-08-11
 Plan: `.omc/plans/autopilot-impl-adult-release-persistence.md` (Wave 5 / T1–T8).
@@ -979,6 +1004,10 @@ and `SeasonDetails` is still called to verify the season exists. 7 new
 tests added to `internal/nfo/nfo_test.go`.
 
 Artwork reuse (local poster/fanart) remains open if it comes up.
+**UPDATED 2026-09-29:** catalog persist shipped — Adult empty `poster_url`
+backfill (TPDB/stash-box by id, not Identify) and Movies/Series
+`backdrop_url` from the existing TMDB details call. Cards stay 2:3 posters;
+DetailPopup washes the header. Local `fanart.jpg` pickup is still not built.
 
 ### TVDB fallback for Movies/Series Rename — shipped 2026-07-17
 When TMDB search returns zero results or a below-threshold confidence match
@@ -2256,6 +2285,8 @@ surface) shipped 2026-07-19 — see "Recently shipped" below.
   over direct TVDB. Do **not** hardcode the key in the sakms git tree.
 - **Local `.nfo` preference** — shipped 2026-07-17, see "Recently shipped"
   below. Artwork reuse (local poster/fanart) remains open if it comes up.
+  **UPDATED 2026-09-29:** catalog Adult poster backfill + Movies/Series
+  backdrop persist/display shipped; local `fanart.jpg` pickup is still open.
   **UPDATED 2026-08-06:** Series NFO fast-path no longer hard-unmatches when
   `SeasonDetails` 404s for the sidecar TMDB id — it falls through to filename
   TMDB search → TVDB → web-authority (same pipeline as no-NFO orphans).
@@ -2602,3 +2633,13 @@ as monitored from a hand-maintained duplicate of the grabs table. It now ORs
 in `upgrade_watch` because that flag is the genuine "keep watching this owned
 movie" signal the 2026-09-15 plan deferred. See
 `.omc/plans/monitored-only-chip-discover-library.md` §0.
+
+## Shipped: series upgrade-watch — owned-episode hunt on the same daily pass
+
+Shipped 2026-09-29. Series analog of movie upgrade-watch: `library_series.upgrade_watch`
+(default off; `UpsertSeries` does not write it). Hunting walks owned episodes
+whose on-disk file is below the title's quality prefs and dispatches
+`RunAutoGrab` with `SeasonSpecified` + `TriggerQualityWatch`. Missing episodes
+stay air-date's job. Movies run first in the sixth retry-cycle pass; series
+uses leftover `loadUsenetCycleSlots`. TitleQualityPrefs shows the same switch
+when a `library_series` row exists. Tracked `Monitored` ORs the flag.

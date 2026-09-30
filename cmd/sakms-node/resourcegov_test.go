@@ -112,7 +112,7 @@ func writeSyntheticLeaf(t *testing.T, dir, leafType string) {
 // kernel). Runs against a synthetic temp-dir cgroup layout — no root, no real
 // cgroupfs.
 func TestSetupLeaf_ConvertsLeafWhenInvalid(t *testing.T) {
-	dir := t.TempDir() // stands in for the daemon's own (delegated) cgroup dir
+	dir := t.TempDir()                                                             // stands in for the daemon's own (delegated) cgroup dir
 	writeTestFile(t, filepath.Join(dir, "cgroup.subtree_control"), "cpu memory\n") // cpu already enabled
 	writeSyntheticLeaf(t, dir, "domain invalid\n")
 
@@ -460,7 +460,7 @@ func TestApplyServerSettings_CPUCapAppliedDespitePathMapRejection(t *testing.T) 
 	defer cancel()
 	go applier.run(ctx)
 
-	applyServerSettings(cfg, configPath, statusSrv, applier, nodes.NodeSettings{
+	applyServerSettings(cfg, configPath, statusSrv, applier, nil, nodes.NodeSettings{
 		PathMap:       []nodes.PathMapping{{Server: "/srv/x", Local: "/var/other"}}, // outside /mnt/media → rejected
 		CPUCapPercent: 30,
 	})

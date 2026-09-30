@@ -108,8 +108,11 @@ type Scene struct {
 	// Adult's bitrate-quality-floor scorer, which never re-fetches a real
 	// runtime the way Movies/Series do.
 	ImageURL string
-	Tags     []string
-	Duration int
+	// ImageURLs is every images[].url from the catalog payload, first-seen
+	// order. ImageURL remains images[0] for existing callers.
+	ImageURLs []string
+	Tags      []string
+	Duration  int
 	// Details is the scene's catalog synopsis/description (the stash-box
 	// schema's Scene.details, live-verified present on both stashdb.org and
 	// fansdb.cc). Populated ONLY by the identification paths (SearchScene and
@@ -159,9 +162,14 @@ func (s rawScene) toScene() Scene {
 			studioName = s.Studio.Parent.Name
 		}
 	}
+	var rawURLs []string
+	for _, img := range s.Images {
+		rawURLs = append(rawURLs, img.URL)
+	}
+	imageURLs := uniqueImageURLs(rawURLs)
 	imageURL := ""
-	if len(s.Images) > 0 {
-		imageURL = s.Images[0].URL
+	if len(imageURLs) > 0 {
+		imageURL = imageURLs[0]
 	}
 	var tags []string
 	for _, t := range s.Tags {
@@ -174,9 +182,24 @@ func (s rawScene) toScene() Scene {
 		ReleaseDate: s.ReleaseDate,
 		StudioName:  studioName,
 		ImageURL:    imageURL,
+		ImageURLs:   imageURLs,
 		Tags:        tags,
 		Duration:    s.Duration,
 	}
+}
+
+func uniqueImageURLs(urls []string) []string {
+	seen := make(map[string]bool, len(urls))
+	out := make([]string, 0, len(urls))
+	for _, raw := range urls {
+		u := strings.TrimSpace(raw)
+		if u == "" || seen[u] {
+			continue
+		}
+		seen[u] = true
+		out = append(out, u)
+	}
+	return out
 }
 
 type gqlError struct {
@@ -318,9 +341,14 @@ func (s rawBrowseScene) toScene() Scene {
 			studioName = s.Studio.Parent.Name
 		}
 	}
+	var rawURLs []string
+	for _, img := range s.Images {
+		rawURLs = append(rawURLs, img.URL)
+	}
+	imageURLs := uniqueImageURLs(rawURLs)
 	imageURL := ""
-	if len(s.Images) > 0 {
-		imageURL = s.Images[0].URL
+	if len(imageURLs) > 0 {
+		imageURL = imageURLs[0]
 	}
 	var tags []string
 	for _, t := range s.Tags {
@@ -338,6 +366,7 @@ func (s rawBrowseScene) toScene() Scene {
 		ReleaseDate: s.ReleaseDate,
 		StudioName:  studioName,
 		ImageURL:    imageURL,
+		ImageURLs:   imageURLs,
 		Tags:        tags,
 		Duration:    s.Duration,
 		PHashes:     phashes,

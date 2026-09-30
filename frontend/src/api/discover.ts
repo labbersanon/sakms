@@ -71,6 +71,10 @@ const TMDB_LOGO_BASE = "https://image.tmdb.org/t/p/w92";
 // and same proxyImage wrapping as every other root here.
 const TMDB_STILL_BASE = "https://image.tmdb.org/t/p/w300";
 
+// TMDB_BACKDROP_BASE is the w1280 fanart root DetailPopup washes behind the
+// header. Same proxyImage wrapping as every other TMDB size root.
+const TMDB_BACKDROP_BASE = "https://image.tmdb.org/t/p/w1280";
+
 // proxyImage rewrites an absolute upstream image URL into a same-origin image
 // proxy request. This is the ONLY way images reach the DOM in this app: an
 // <img src> must be proxyImage(...)'d, never the raw upstream URL. Returns ""
@@ -111,6 +115,12 @@ export function tmdbLogo(logoPath: string): string {
 export function tmdbStill(stillPath: string): string {
   if (!stillPath) return "";
   return proxyImage(TMDB_STILL_BASE + stillPath);
+}
+
+// tmdbBackdrop turns a TMDB backdropPath into a proxied header-wash URL.
+export function tmdbBackdrop(backdropPath: string): string {
+  if (!backdropPath) return "";
+  return proxyImage(TMDB_BACKDROP_BASE + backdropPath);
 }
 
 // fetchDiscover returns one TMDB category (trending/popular) for Movies/Series,
@@ -244,6 +254,15 @@ export function cardPosterSrc(card: {
 }): string {
   if (card.posterUrl) return proxyImage(card.posterUrl);
   return tmdbPoster(card.posterPath ?? "");
+}
+
+// cardBackdropSrc prefers an absolute cached backdropUrl, else a TMDB path.
+export function cardBackdropSrc(card: {
+  backdropPath?: string;
+  backdropUrl?: string;
+}): string {
+  if (card.backdropUrl) return proxyImage(card.backdropUrl);
+  return tmdbBackdrop(card.backdropPath ?? "");
 }
 
 // fetchTitlePoster returns a same-origin proxied <img src> (or "") — callers

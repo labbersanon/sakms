@@ -345,3 +345,32 @@ func (b *BoxSearcher) ResolveCatalogRef(ctx context.Context, box, id string, isM
 	}
 	return b.SceneByID(ctx, box, id)
 }
+
+// CatalogPosterURLs returns the unique image URLs the named catalog has for
+// one scene. Stash-box (stashdb/fansdb) uses FindScene images[]; TPDB uses
+// GetSceneByID Background.Large/Poster/Image. Local or unconfigured boxes
+// return an empty list. This is not Identify() — it is a by-id catalog read.
+func (b *BoxSearcher) CatalogPosterURLs(ctx context.Context, box, sceneID string) ([]string, error) {
+	if b == nil || box == "" || sceneID == "" || box == "local" {
+		return nil, nil
+	}
+	if box == "tpdb" {
+		if b.tpdb == nil {
+			return nil, nil
+		}
+		sc, err := b.tpdb.GetSceneByID(ctx, sceneID)
+		if err != nil || sc == nil {
+			return nil, err
+		}
+		return append([]string(nil), sc.Images...), nil
+	}
+	client := b.stashBoxes[box]
+	if client == nil {
+		return nil, nil
+	}
+	sc, err := client.FindScene(ctx, sceneID)
+	if err != nil || sc == nil {
+		return nil, err
+	}
+	return append([]string(nil), sc.ImageURLs...), nil
+}

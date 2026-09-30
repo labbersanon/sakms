@@ -344,6 +344,7 @@ func discoverDetailHandler(httpClient *http.Client, connStore *connections.Store
 			Recommendations:       mapDiscoverItems(recs),
 			Overview:              ext.Overview,
 			PosterPath:            ext.PosterPath,
+			BackdropPath:          ext.BackdropPath,
 			Ratings:               ratings,
 			// `"seasons":[]` and never null — for a Movie (which never populates
 			// ext.Seasons), for a Series whose TVDetails call soft-failed, and for
@@ -376,6 +377,7 @@ type titleExtended struct {
 	ReleaseDates          []apidto.ReleaseDateEntry
 	Overview              string
 	PosterPath            string
+	BackdropPath          string
 	IMDBID                string
 	VoteAverage           float64
 	VoteCount             int
@@ -399,6 +401,7 @@ func extendedFromMovie(d tmdb.MovieDetails) titleExtended {
 		ReleaseDates:          mapReleaseDates(d.ReleaseDates),
 		Overview:              d.Overview,
 		PosterPath:            d.PosterPath,
+		BackdropPath:          d.BackdropPath,
 		IMDBID:                d.IMDBID,
 		VoteAverage:           d.VoteAverage,
 		VoteCount:             d.VoteCount,
@@ -417,6 +420,7 @@ func extendedFromTV(d tmdb.TVDetails) titleExtended {
 		Seasons:               d.Seasons,
 		Overview:              d.Overview,
 		PosterPath:            d.PosterPath,
+		BackdropPath:          d.BackdropPath,
 		VoteAverage:           d.VoteAverage,
 		VoteCount:             d.VoteCount,
 	}

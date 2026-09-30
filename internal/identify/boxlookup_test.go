@@ -260,6 +260,54 @@ func TestSceneByID_Found(t *testing.T) {
 	}
 }
 
+func TestCatalogPosterURLs_StashBoxListsAllImages(t *testing.T) {
+	b := newBoxSearcherWithFakes(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"findScene":{"id":"uuid1","title":"T","images":[{"url":"https://1.1.1.1/a.jpg"},{"url":"https://1.1.1.1/b.jpg"},{"url":"https://1.1.1.1/a.jpg"}]}}}`))
+	}, nil)
+
+	got, err := b.CatalogPosterURLs(context.Background(), "stashdb", "uuid1")
+	if err != nil {
+		t.Fatalf("CatalogPosterURLs: %v", err)
+	}
+	if len(got) != 2 || got[0] != "https://1.1.1.1/a.jpg" || got[1] != "https://1.1.1.1/b.jpg" {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestCatalogPosterURLs_TPDBUniqueImages(t *testing.T) {
+	b := newBoxSearcherWithFakes(t, nil, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"_id":"9","title":"T","background":{"large":"https://1.1.1.1/bg.jpg"},"poster":"https://1.1.1.1/p.jpg","image":"https://1.1.1.1/bg.jpg"}}`))
+	})
+
+	got, err := b.CatalogPosterURLs(context.Background(), "tpdb", "9")
+	if err != nil {
+		t.Fatalf("CatalogPosterURLs: %v", err)
+	}
+	if len(got) != 2 || got[0] != "https://1.1.1.1/bg.jpg" || got[1] != "https://1.1.1.1/p.jpg" {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestCatalogPosterURLs_LocalOrEmpty(t *testing.T) {
+	b := newBoxSearcherWithFakes(t, func(http.ResponseWriter, *http.Request) {
+		t.Fatal("stash-box must not be called for a local scene")
+	}, nil)
+
+	got, err := b.CatalogPosterURLs(context.Background(), "local", "phash:abc")
+	if err != nil {
+		t.Fatalf("local: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("local catalog list = %v", got)
+	}
+	got, err = b.CatalogPosterURLs(context.Background(), "", "x")
+	if err != nil || len(got) != 0 {
+		t.Fatalf("empty box = %v %v", got, err)
+	}
+}
+
 // newBoxSearcherMultiFakes is newBoxSearcherWithFakes' multi-stash-box
 // sibling: ListSceneCandidates fans out across an arbitrary number of
 // configured stash boxes (unlike SearchStashBox's single-box lookups above),

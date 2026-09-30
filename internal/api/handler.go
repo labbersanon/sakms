@@ -259,6 +259,11 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// Reason: quality-prefs GET carries the flag; this PUT is the write + cancel.
 	// Troubleshooting: TitleQualityPrefs "Watch for better release" switch.
 	mux.HandleFunc("PUT /api/modes/movies/library/tmdb/{tmdbId}/upgrade-watch", putMovieUpgradeWatchHandler(libStore, grabsStore))
+	// Claude 2026-09-29: series upgrade-watch — same write+cancel as movies.
+	// Reason: owned-episode hunt shares the sixth retry-cycle pass budget.
+	// Troubleshooting: TitleQualityPrefs switch; library_series.upgrade_watch.
+	mux.HandleFunc("PUT /api/modes/series/library/{seriesID}/upgrade-watch", putSeriesUpgradeWatchByIDHandler(libStore, grabsStore))
+	mux.HandleFunc("PUT /api/modes/series/library/tmdb/{tmdbId}/upgrade-watch", putSeriesUpgradeWatchByTMDBHandler(libStore, grabsStore))
 
 	// Server-side directory browser for the Settings root-folder pickers +
 	// their as-you-type autocomplete — restricted to the mounted roots (see

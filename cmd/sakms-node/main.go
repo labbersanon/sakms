@@ -282,6 +282,7 @@ func connect(
 
 	go heartbeat(connCtx, nodeID, cfg, postClient, capState)
 
+	var hashSem jobSem
 	for {
 		select {
 		case <-connCtx.Done():
@@ -290,7 +291,7 @@ func connect(
 			if !ok {
 				return nil
 			}
-			applyServerSettings(cfg, configPath, statusSrv, capApplier, s)
+			applyServerSettings(cfg, configPath, statusSrv, capApplier, &hashSem, s)
 		case br, ok := <-browseCh:
 			if !ok {
 				return nil
@@ -308,6 +309,11 @@ func connect(
 			wg.Add(1)
 			go func(j nodes.Job) {
 				defer wg.Done()
+				if err := hashSem.acquire(connCtx, cfg.maxJobsSnapshot); err != nil {
+					postResult(postClient, cfg, nodes.JobResult{JobID: j.ID, Error: err.Error()})
+					return
+				}
+				defer hashSem.release()
 				result := executeJob(context.Background(), cfg, j, phashHasher, videoHasher)
 				postResult(postClient, cfg, result)
 			}(job)
@@ -324,7 +330,7 @@ func connect(
 // path, and it deliberately takes NO pathmapPusher — a server push is applied,
 // never re-pushed. Only the control-socket edit path schedules an outbound push,
 // so a server echo can never ping-pong back into another push.
-func applyServerSettings(cfg *NodeConfig, configPath string, statusSrv *statusServer, capApplier *capApplier, s nodes.NodeSettings) {
+func applyServerSettings(cfg *NodeConfig, configPath string, statusSrv *statusServer, capApplier *capApplier, hashSem *jobSem, s nodes.NodeSettings) {
 	// P8: apply the display-only pause echo in its OWN small write, BEFORE the
 	// pathMap-validation early-return below. A pause echo bundled in a frame
 	// whose pathMap fails node-side validation must still update the node's
@@ -378,6 +384,8 @@ func applyServerSettings(cfg *NodeConfig, configPath string, statusSrv *statusSe
 		mergedTotal = len(cfg.PathMap)
 	}); saveErr != nil {
 		log.Printf("sakms-node: saving updated settings: %v", saveErr)
+	} else if hashSem != nil {
+		hashSem.notify()
 	}
 	log.Printf("sakms-node: settings updated (maxJobs=%d, paths=%d, merged total=%d)", s.MaxJobs, len(s.PathMap), mergedTotal)
 }

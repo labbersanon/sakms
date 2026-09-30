@@ -16,6 +16,7 @@ import (
 const (
 	qualityWatchStaticModulePath = "github.com/labbersanon/sakms"
 	qualityWatchStaticFile       = "movieupgradewatch.go"
+	qualityWatchSeriesStaticFile = "seriesupgradewatch.go"
 	qualityWatchStaticMainFile   = "main.go"
 )
 
@@ -30,62 +31,67 @@ var qualityWatchBannedTimeFuncs = map[string]bool{
 
 func TestMovieUpgradeWatchHasNoSchedulerOfItsOwn(t *testing.T) {
 	apiPkg, _ := qualityWatchStaticLoad(t)
-	file := qualityWatchStaticFindFile(t, apiPkg, qualityWatchStaticFile)
+	for _, name := range []string{qualityWatchStaticFile, qualityWatchSeriesStaticFile} {
+		file := qualityWatchStaticFindFile(t, apiPkg, name)
 
-	ast.Inspect(file, func(n ast.Node) bool {
-		if goStmt, ok := n.(*ast.GoStmt); ok {
-			pos := apiPkg.Fset.Position(goStmt.Pos())
-			t.Errorf("%s:%d launches a goroutine — this pass is a plain function called as the sixth step of runUsenetRetryCycle.",
-				qualityWatchStaticFile, pos.Line)
-		}
-		return true
-	})
+		ast.Inspect(file, func(n ast.Node) bool {
+			if goStmt, ok := n.(*ast.GoStmt); ok {
+				pos := apiPkg.Fset.Position(goStmt.Pos())
+				t.Errorf("%s:%d launches a goroutine — this pass is a plain function called as the sixth step of runUsenetRetryCycle.",
+					name, pos.Line)
+			}
+			return true
+		})
 
-	ast.Inspect(file, func(n ast.Node) bool {
-		ident, ok := n.(*ast.Ident)
-		if !ok {
+		ast.Inspect(file, func(n ast.Node) bool {
+			ident, ok := n.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			obj := apiPkg.TypesInfo.Uses[ident]
+			if obj == nil {
+				return true
+			}
+			fn, isFunc := obj.(*types.Func)
+			if !isFunc || fn.Pkg() == nil || fn.Pkg().Path() != "time" {
+				return true
+			}
+			if sig, ok := fn.Type().(*types.Signature); !ok || sig.Recv() != nil {
+				return true
+			}
+			if qualityWatchBannedTimeFuncs[fn.Name()] {
+				pos := apiPkg.Fset.Position(ident.Pos())
+				t.Errorf("%s:%d references time.%s — this pass runs inside runUsenetRetryCycle, not on its own cadence.",
+					name, pos.Line, fn.Name())
+			}
 			return true
-		}
-		obj := apiPkg.TypesInfo.Uses[ident]
-		if obj == nil {
-			return true
-		}
-		fn, isFunc := obj.(*types.Func)
-		if !isFunc || fn.Pkg() == nil || fn.Pkg().Path() != "time" {
-			return true
-		}
-		if sig, ok := fn.Type().(*types.Signature); !ok || sig.Recv() != nil {
-			return true
-		}
-		if qualityWatchBannedTimeFuncs[fn.Name()] {
-			pos := apiPkg.Fset.Position(ident.Pos())
-			t.Errorf("%s:%d references time.%s — this pass runs inside runUsenetRetryCycle, not on its own cadence.",
-				qualityWatchStaticFile, pos.Line, fn.Name())
-		}
-		return true
-	})
+		})
+	}
 }
 
 func TestMainDoesNotReferenceMovieUpgradeWatch(t *testing.T) {
 	apiPkg, cmdPkg := qualityWatchStaticLoad(t)
-	monitorFile := qualityWatchStaticFindFile(t, apiPkg, qualityWatchStaticFile)
 	mainFile := qualityWatchStaticFindFile(t, cmdPkg, qualityWatchStaticMainFile)
 
 	declared := map[types.Object]bool{}
 	declaredNames := map[string]bool{}
-	monitorPath := apiPkg.Fset.Position(monitorFile.Pos()).Filename
+	watchPaths := map[string]bool{}
+	for _, name := range []string{qualityWatchStaticFile, qualityWatchSeriesStaticFile} {
+		file := qualityWatchStaticFindFile(t, apiPkg, name)
+		watchPaths[apiPkg.Fset.Position(file.Pos()).Filename] = true
+	}
 	for ident, obj := range apiPkg.TypesInfo.Defs {
 		if obj == nil || obj.Pkg() == nil {
 			continue
 		}
-		if apiPkg.Fset.Position(ident.Pos()).Filename != monitorPath {
+		if !watchPaths[apiPkg.Fset.Position(ident.Pos()).Filename] {
 			continue
 		}
 		declared[obj] = true
 		declaredNames[obj.Name()] = true
 	}
 	if len(declared) == 0 {
-		t.Fatalf("no declarations collected from %s — type info is empty, assertion would pass vacuously", qualityWatchStaticFile)
+		t.Fatalf("no declarations collected from upgrade-watch files — type info is empty, assertion would pass vacuously")
 	}
 
 	ast.Inspect(mainFile, func(n ast.Node) bool {
@@ -104,8 +110,8 @@ func TestMainDoesNotReferenceMovieUpgradeWatch(t *testing.T) {
 			return true
 		}
 		pos := cmdPkg.Fset.Position(ident.Pos())
-		t.Errorf("%s:%d references %s declared in %s — movie upgrade-watch must NOT be launched from main.go; it is the sixth pass inside runUsenetRetryCycle.",
-			qualityWatchStaticMainFile, pos.Line, obj.Name(), qualityWatchStaticFile)
+		t.Errorf("%s:%d references %s declared in upgrade-watch — it must NOT be launched from main.go; it is the sixth pass inside runUsenetRetryCycle.",
+			qualityWatchStaticMainFile, pos.Line, obj.Name())
 		return true
 	})
 }

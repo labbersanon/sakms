@@ -24,18 +24,21 @@ func TestQualityWatchOriginated(t *testing.T) {
 		Mode: mode.Movies, Origin: grabOriginUpgradeWatch, Status: grabs.PendingRetry,
 		TMDBID: 42,
 	}
-	if !qualityWatchOriginated(base, 42) {
+	if !qualityWatchOriginated(base, mode.Movies, 42) {
 		t.Fatal("expected originated for a never-dispatched watch grab")
 	}
 	dispatched := base
 	dispatched.Indexer = "I"
 	dispatched.DownloadURL = "magnet:?xt=urn:btih:abc"
-	if qualityWatchOriginated(dispatched, 42) {
+	if qualityWatchOriginated(dispatched, mode.Movies, 42) {
 		t.Fatal("dispatched grab must not be originated")
 	}
 	wrongTitle := base
-	if qualityWatchOriginated(wrongTitle, 99) {
+	if qualityWatchOriginated(wrongTitle, mode.Movies, 99) {
 		t.Fatal("other TMDB id must not match")
+	}
+	if qualityWatchOriginated(base, mode.Series, 42) {
+		t.Fatal("series mode must not match a movies grab")
 	}
 }
 
@@ -88,7 +91,7 @@ func TestCancelQualityWatchRetries_CancelsNeverDispatchedOnly(t *testing.T) {
 		t.Fatalf("status other: %v", err)
 	}
 
-	cancelQualityWatchRetries(ctx, grabsStore, 42)
+	cancelQualityWatchRetries(ctx, grabsStore, mode.Movies, 42)
 
 	gotParked, err := grabsStore.Get(ctx, parked.ID)
 	if err != nil {

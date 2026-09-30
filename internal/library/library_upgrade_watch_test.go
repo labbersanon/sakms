@@ -85,3 +85,79 @@ func TestSetItemUpgradeWatch_Missing(t *testing.T) {
 		t.Fatalf("missing id: got %v, want ErrNotFound", err)
 	}
 }
+
+func TestSetSeriesUpgradeWatch_RoundTripAndSurvivesUpsert(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	series, err := s.UpsertSeries(ctx, Series{
+		TMDBID: 300, Title: "Watched Show", RootFolderPath: "/tv",
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got, err := s.GetSeries(ctx, series.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.UpgradeWatch {
+		t.Fatal("upgrade watch must default off")
+	}
+
+	if err := s.SetSeriesUpgradeWatch(ctx, series.ID, true); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	got, err = s.GetSeries(ctx, series.ID)
+	if err != nil {
+		t.Fatalf("get after set: %v", err)
+	}
+	if !got.UpgradeWatch {
+		t.Fatal("expected upgrade watch on")
+	}
+
+	if _, err := s.UpsertSeries(ctx, Series{
+		TMDBID: 300, Title: "Watched Show (renamed)", RootFolderPath: "/tv",
+	}); err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+	got, err = s.GetSeries(ctx, series.ID)
+	if err != nil {
+		t.Fatalf("get after upsert: %v", err)
+	}
+	if !got.UpgradeWatch {
+		t.Fatal("upsert wiped upgrade watch")
+	}
+
+	listed, err := s.ListUpgradeWatchSeries(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(listed) != 1 || listed[0].TMDBID != 300 {
+		t.Fatalf("list = %+v, want the watched series", listed)
+	}
+
+	if err := s.SetSeriesUpgradeWatch(ctx, series.ID, false); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	got, err = s.GetSeriesByTMDBID(ctx, 300)
+	if err != nil {
+		t.Fatalf("get by tmdb: %v", err)
+	}
+	if got.UpgradeWatch {
+		t.Fatal("expected upgrade watch off after clear")
+	}
+	listed, err = s.ListUpgradeWatchSeries(ctx)
+	if err != nil {
+		t.Fatalf("list after clear: %v", err)
+	}
+	if len(listed) != 0 {
+		t.Fatalf("list after clear = %+v, want empty", listed)
+	}
+}
+
+func TestSetSeriesUpgradeWatch_Missing(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.SetSeriesUpgradeWatch(context.Background(), 999999, true); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing id: got %v, want ErrNotFound", err)
+	}
+}

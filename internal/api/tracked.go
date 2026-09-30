@@ -76,8 +76,8 @@ type libraryTrackedItem struct {
 	Rating int `json:"rating,omitempty"`
 	// Claude 2026-09-15: derived monitored flag — true when the item has an
 	// active grab (any mode) OR any monitored season (Series only) OR
-	// upgrade_watch (Movies, 2026-09-28). Derived at list time; the watch
-	// flag is stored, the chip boolean is still computed here.
+	// upgrade_watch (Movies 2026-09-28, Series 2026-09-29). Derived at list
+	// time; the watch flag is stored, the chip boolean is still computed here.
 	// Reason: client-side filter chip on Library/Discover — see plan §1.2.
 	// Troubleshooting: absent (omitempty) means false; compare explicitly with === true.
 	// Review if: GET /tracked gains server-side filter params (move filter server-side).
@@ -282,7 +282,7 @@ func listTrackedHandler(libStore *library.Store, grabsStore *grabs.Store) http.H
 					ID: s.ID, Title: s.Title, Tags: tags, TMDBID: s.TMDBID, Year: s.Year,
 					Genres: s.Genres, Cast: s.Cast, CreatedAt: s.CreatedAt,
 					QualityTiers: tiersBySeries[s.ID], PosterURL: posterURLs[s.TMDBID], Rating: s.Rating,
-					Monitored: monitoredSeries[s.ID] || activeSeries[requestKey(mode.Series, s.TMDBID, s.Title)],
+					Monitored: monitoredSeries[s.ID] || activeSeries[requestKey(mode.Series, s.TMDBID, s.Title)] || s.UpgradeWatch,
 				}
 			}
 			w.Header().Set("Content-Type", "application/json")

@@ -15,6 +15,7 @@ import type { Mode } from "../api/discover";
 import {
   fetchTitleQualityPrefs,
   putMovieUpgradeWatch,
+  putSeriesUpgradeWatch,
   putTitleQualityPrefs,
   type TitleQualityKey,
 } from "../api/titlequality";
@@ -103,12 +104,16 @@ export const TitleQualityPrefs: Component<{
   };
 
   const setWatch = async (next: boolean) => {
-    const tmdbId = props.titleKey.tmdbId;
-    if (tmdbId == null) return;
     setBusy(true);
     setWriteError("");
     try {
-      await putMovieUpgradeWatch(tmdbId, next);
+      if (props.mode === "series") {
+        await putSeriesUpgradeWatch(props.titleKey, next);
+      } else {
+        const tmdbId = props.titleKey.tmdbId;
+        if (tmdbId == null) return;
+        await putMovieUpgradeWatch(tmdbId, next);
+      }
       await refetch();
     } catch (e) {
       setWriteError((e as Error).message);
@@ -171,11 +176,11 @@ export const TitleQualityPrefs: Component<{
         <Show when={upgradeNote()}>
           <Muted class="mt-1">{upgradeNote()}</Muted>
         </Show>
-        {/* Claude 2026-09-28: opt-in movie upgrade-watch on the quality card.
-            Reason: ROADMAP owned-movie hunt; GET quality-prefs carries
-              upgradeWatchAvailable so unowned Discover titles hide the switch.
+        {/* Claude 2026-09-29: opt-in upgrade-watch on the quality card.
+            Reason: owned-title hunt for movies and series; GET quality-prefs
+              carries upgradeWatchAvailable so unowned Discover titles hide it.
             Troubleshooting: PUT .../upgrade-watch; sixth retry-cycle pass.
-            Review if: Series gets a matching per-title watch control. */}
+            Review if: Adult gets a matching per-title watch control. */}
         <Show when={prefs()!.upgradeWatchAvailable}>
           <div class="mt-3 flex items-start justify-between gap-3">
             <div>
@@ -183,7 +188,7 @@ export const TitleQualityPrefs: Component<{
               <Muted class="mt-0.5">
                 Search each auto-grab cycle until a release meets this title's
                 quality minimum. Stops while the file on disk already meets that
-                floor.
+                floor. For series, hunts owned episodes only.
               </Muted>
             </div>
             <Switch

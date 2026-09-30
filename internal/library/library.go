@@ -92,7 +92,7 @@ type Item struct {
 	//   Monitored chip (active grab). The daily retry cycle skips when the
 	//   on-disk file already meets prefs.
 	// Troubleshooting: library_items.upgrade_watch; monitorMovieUpgradeWatch.
-	// Review if: Series gains a matching per-episode flag.
+	// Review if: per-file movie watch flags replace the title-level switch.
 	UpgradeWatch bool `json:"upgradeWatch,omitempty"`
 	// PHash is the SAK-computed perceptual hash of this item's video file,
 	// cached so Dedup decodes each tracked file once rather than every Scan.

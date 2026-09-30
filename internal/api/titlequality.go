@@ -44,7 +44,7 @@ func getSeriesQualityPrefsByIDHandler(deps titleQualityDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		writeJSON(w, effectiveTitleQualityPrefs(r.Context(), deps, mode.Series, series.TMDBID))
+		writeTitleQualityPrefs(w, r.Context(), deps, mode.Series, series.TMDBID, effectiveTitleQualityPrefs(r.Context(), deps, mode.Series, series.TMDBID))
 	}
 }
 
@@ -54,7 +54,7 @@ func getSeriesQualityPrefsByTMDBHandler(deps titleQualityDeps) http.HandlerFunc 
 		if !ok {
 			return
 		}
-		writeJSON(w, effectiveTitleQualityPrefs(r.Context(), deps, mode.Series, tmdbID))
+		writeTitleQualityPrefs(w, r.Context(), deps, mode.Series, tmdbID, effectiveTitleQualityPrefs(r.Context(), deps, mode.Series, tmdbID))
 	}
 }
 
@@ -152,8 +152,11 @@ func putTitleQualityPrefs(w http.ResponseWriter, r *http.Request, deps titleQual
 }
 
 func writeTitleQualityPrefs(w http.ResponseWriter, ctx context.Context, deps titleQualityDeps, m mode.Mode, tmdbID int, out apidto.TitleQualityPrefsResponse) {
-	if m == mode.Movies {
+	switch m {
+	case mode.Movies:
 		out = attachMovieUpgradeWatch(ctx, deps.lib, tmdbID, out)
+	case mode.Series:
+		out = attachSeriesUpgradeWatch(ctx, deps.lib, tmdbID, out)
 	}
 	writeJSON(w, out)
 }

@@ -34,6 +34,8 @@ func TestClassify(t *testing.T) {
 		{"/api/modes/movies/items/12/tags/3", []string{SectionDiscover, SectionLibrary}},
 		{"/api/modes/movies/items/12/rating", []string{SectionDiscover, SectionLibrary}},
 		{"/api/modes/adult/scenes/9/rating", []string{SectionAdultContent, SectionDiscover, SectionLibrary}},
+		{"/api/modes/adult/scenes/9/catalog-posters", []string{SectionAdultContent, SectionDiscover, SectionLibrary}},
+		{"/api/modes/adult/scenes/9/poster", []string{SectionAdultContent, SectionDiscover, SectionLibrary}},
 		{"/api/modes/movies/collections", []string{SectionCollections}},
 		{"/api/modes/movies/tracked", []string{SectionDiscover, SectionLibrary}},
 		{"/api/modes/series/library/9/seasons", []string{SectionDiscover, SectionLibrary}},

@@ -20,7 +20,7 @@ import {
   Show,
 } from "solid-js";
 import { A, useParams } from "@solidjs/router";
-import { fetchDiscover, type DiscoverItem } from "../../api/discover";
+import { fetchDiscover, type AdultDiscoverItem, type DiscoverItem } from "../../api/discover";
 import {
   fetchAdultNewestRowItems,
   fetchAdultNewestRows,
@@ -39,7 +39,12 @@ import { DISCOVER_NAV_LINK_CLASS } from "../../components/ViewAllLink";
 import { MEDIA_POSTER_GRID_CLASS } from "../../components/media";
 import { ADULT_CONTENT_SECTION, sectionLabel } from "../../api/sectionLock";
 import { MAINSTREAM_ROWS, PosterCard } from "./Mainstream";
-import { AdultCard, toAdultDiscoverItem } from "./Adult";
+import {
+  AdultCard,
+  AdultOwnedProvider,
+  toAdultDiscoverItem,
+  useAdultOwnedLookup,
+} from "./Adult";
 import { RssFeedCard } from "./RssFeedCard";
 import { WatchlistCard } from "../../components/TraktWatchlistRow";
 import {
@@ -149,6 +154,7 @@ const AdultNewestRowBody: Component<{ rowId: number }> = (props) => {
   const configureFor = () => notConfiguredService(setupError());
 
   return (
+    <AdultOwnedProvider reloadToken={reloadToken}>
     <div>
       <Show
         when={!rows.loading}
@@ -198,10 +204,38 @@ const AdultNewestRowBody: Component<{ rowId: number }> = (props) => {
       </Show>
       <Show when={detailTarget()}>
         {(t) => (
-          <DetailPopup target={t()} onClose={() => setDetailTarget(null)} />
+          <RowAdultDetail target={t()} onClose={() => setDetailTarget(null)} />
         )}
       </Show>
     </div>
+    </AdultOwnedProvider>
+  );
+};
+
+const RowAdultDetail: Component<{
+  target: DetailTarget;
+  onClose: () => void;
+}> = (props) => {
+  const lookup = useAdultOwnedLookup();
+  const catalog = () =>
+    props.target.mode === "adult"
+      ? (props.target.item as AdultDiscoverItem)
+      : undefined;
+  const owned = () =>
+    catalog()
+      ? lookup?.itemFor(catalog()!.source, catalog()!.id)
+      : undefined;
+  return (
+    <DetailPopup
+      target={props.target}
+      librarySceneId={owned()?.id}
+      ownedPosterUrl={owned()?.posterUrl}
+      onPosterPicked={(url) => {
+        const id = owned()?.id;
+        if (id) lookup?.setPoster(id, url);
+      }}
+      onClose={props.onClose}
+    />
   );
 };
 

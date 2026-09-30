@@ -52,9 +52,13 @@ func backfillAdultPosters(
 			return ok, fail
 		}
 		url := resolveAdultScenePoster(ctx, boxes, sc.Box, sc.SceneID)
+		// Claude 2026-09-29: FillScenePosterURL, not SetScenePosterURL.
+		// Reason: SetScenePosterURL is the operator overwrite + poster_source lock.
+		// Troubleshooting: using Set here would mark backfill as operator and skip later refill.
+		// Review if: backfill and operator pick share one write helper.
 		if url == "" {
 			fail++
-		} else if err := libStore.SetScenePosterURL(ctx, sc.ID, url); err != nil {
+		} else if err := libStore.FillScenePosterURL(ctx, sc.ID, url); err != nil {
 			log.Printf("poster backfill: scene id=%d: %v", sc.ID, err)
 			fail++
 		} else {

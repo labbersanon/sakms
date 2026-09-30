@@ -249,6 +249,10 @@ const makeHandler = (
         return jsonResponse(overrides.adultVertical ?? []);
       return jsonResponse(overrides.adult ?? []);
     }
+    if (url.includes("/catalog-posters"))
+      return jsonResponse({ urls: ["https://1.1.1.1/a.jpg", "https://1.1.1.1/b.jpg"] });
+    if (method === "PUT" && /\/scenes\/\d+\/poster$/.test(url))
+      return overrides.onPut ? overrides.onPut(url) : noContent();
     if (url.includes("/poster"))
       return overrides.onPoster
         ? overrides.onPoster(url)
@@ -1366,6 +1370,41 @@ describe("Library — Adult catalog", () => {
       "/api/images/proxy?url=" + encodeURIComponent("https://1.1.1.1/scene.jpg"),
     );
     expect(card.querySelector("video")).toBeNull();
+  });
+
+  it("shows Change poster for a catalog Adult scene and hides it for a local scene", async () => {
+    const puts: string[] = [];
+    stubFetch(
+      makeHandler([inception()], {
+        adult: [
+          item({
+            id: 50,
+            title: "Catalog Art Scene",
+            box: "stashdb",
+            sceneId: "uuid-1",
+            posterUrl: "https://1.1.1.1/scene.jpg",
+          }),
+          item({
+            id: 51,
+            title: "Local Dump",
+            box: "local",
+            sceneId: "phash:abc",
+          }),
+        ],
+        onPut: (url) => {
+          puts.push(url);
+          return noContent();
+        },
+      }),
+    );
+    renderOwned({ mode: "adult" });
+    await screen.findByRole("button", { name: "Catalog Art Scene" });
+    const edits = screen.getAllByTestId("change-poster");
+    expect(edits).toHaveLength(1);
+    fireEvent.click(edits[0]!);
+    const pick = await screen.findByTestId("adult-poster-picker");
+    fireEvent.click(pick.querySelector("button")!);
+    await waitFor(() => expect(puts.some((u) => u.includes("/scenes/50/poster"))).toBe(true));
   });
 
   it("drops the Adult video still for the letter tile when the video cannot load", async () => {

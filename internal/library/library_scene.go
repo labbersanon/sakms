@@ -59,9 +59,12 @@ type Scene struct {
 	PosterAspectClass string `json:"posterAspectClass,omitempty"`
 	// PosterURL is the catalog artwork URL copied from MatchResult.Image at
 	// grab/import (imageproxy-validated). Empty when identify had no art or
-	// the URL failed Validate. Fill-if-empty on later upserts; never fetched
-	// by GET /tracked.
+	// the URL failed Validate. Fill-if-empty on later upserts unless
+	// PosterSource is operator; never fetched by GET /tracked.
 	PosterURL string `json:"posterUrl,omitempty"`
+	// PosterSource is '' (catalog/import) or PosterSourceOperator. Operator
+	// picks are never replaced by UpsertScene fill-if-empty or poster backfill.
+	PosterSource string `json:"posterSource,omitempty"`
 	// Claude 2026-08-14: operator 1–5 star rating. 0 = unset.
 	// Reason: same column as library_items/library_series; UpsertScene must
 	//   not write it. Adult Movies vs Scenes share library_scenes, so one
@@ -69,6 +72,10 @@ type Scene struct {
 	// Review if: Adult Movies split off library_scenes.
 	Rating int `json:"rating,omitempty"`
 }
+
+// PosterSourceOperator marks a library_scenes.poster_url the operator chose
+// from catalog images. Backfill and UpsertScene must not replace it.
+const PosterSourceOperator = "operator"
 
 // UpsertScene creates a scene, or updates it if one already exists for the
 // same (box, scene_id) pair — mirrors Upsert's re-entrant "this is now what
@@ -102,7 +109,11 @@ func (s *Store) UpsertScene(ctx context.Context, scene Scene) (Scene, error) {
 			phash_file_mtime = excluded.phash_file_mtime,
 			size = excluded.size,
 			quality_tier = excluded.quality_tier,
-			poster_url = CASE WHEN library_scenes.poster_url = '' THEN excluded.poster_url ELSE library_scenes.poster_url END,
+			poster_url = CASE
+				WHEN library_scenes.poster_source = 'operator' THEN library_scenes.poster_url
+				WHEN library_scenes.poster_url = '' THEN excluded.poster_url
+				ELSE library_scenes.poster_url
+			END,
 			updated_at = sakms_now()
 		RETURNING id, created_at, updated_at, poster_aspect_class, poster_url
 	`, scene.Box, scene.SceneID, scene.Title, scene.Studio, scene.Date, scene.FilePath, scene.RootFolderPath, scene.PHash, scene.PHashFileSize, scene.PHashFileMTime, scene.Size, scene.QualityTier, scene.PosterAspectClass, scene.PosterURL)
@@ -223,9 +234,8 @@ func (s *Store) ListScenesFiltered(ctx context.Context, aspect string) ([]Scene,
 
 // Claude 2026-09-29: empty-row Adult poster backfill (no GET /tracked probe).
 // Reason: 0012 stored poster_url at grab but did not backfill; Library cards
-//
-//	stay on a video still until catalog art is written.
-//
+//   stay on a video still until catalog art is written. Operator-locked
+//   empty rows stay skipped so later backfill cannot refill a cleared pick.
 // Troubleshooting: local/empty scene_id rows must stay skipped — no catalog.
 // Review if: aspect is re-measured from the stored URL.
 // Related files: internal/api/adult_poster.go, internal/api/poster_backfill.go
@@ -233,18 +243,18 @@ func (s *Store) ListScenesNeedingPoster(ctx context.Context) ([]Scene, error) {
 	out, err := s.queryScenes(ctx, `
 		SELECT id, box, scene_id, title, studio, date, file_path, root_folder_path, phash, phash_file_size, phash_file_mtime, created_at, updated_at, size, quality_tier, poster_aspect_class, poster_url, rating
 		FROM library_scenes
-		WHERE poster_url = '' AND box <> ? AND scene_id <> ''
+		WHERE poster_url = '' AND box <> ? AND scene_id <> '' AND poster_source <> ?
 		ORDER BY title
-	`, LocalSceneBox)
+	`, LocalSceneBox, PosterSourceOperator)
 	if err != nil {
 		return nil, fmt.Errorf("listing scenes needing poster: %w", err)
 	}
 	return out, nil
 }
 
-// SetScenePosterURL writes poster_url fill-if-empty. Rejects non-https /
-// private hosts the same way UpsertScene does.
-func (s *Store) SetScenePosterURL(ctx context.Context, id int64, url string) error {
+// FillScenePosterURL writes poster_url fill-if-empty for catalog backfill.
+// Does not set poster_source. Operator-locked rows are left untouched.
+func (s *Store) FillScenePosterURL(ctx context.Context, id int64, url string) error {
 	raw := strings.TrimSpace(url)
 	url = sanitizePosterURL(ctx, raw)
 	if raw != "" && url == "" {
@@ -256,13 +266,37 @@ func (s *Store) SetScenePosterURL(ctx context.Context, id int64, url string) err
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE library_scenes
 		SET poster_url = ?, updated_at = sakms_now()
-		WHERE id = ? AND poster_url = ''
-	`, url, id)
+		WHERE id = ? AND poster_url = '' AND poster_source <> ?
+	`, url, id, PosterSourceOperator)
 	if err != nil {
 		return fmt.Errorf("setting scene poster url for id %d: %w", id, err)
 	}
 	_, err = res.RowsAffected()
 	return err
+}
+
+// SetScenePosterURL overwrites poster_url and marks the row operator-owned.
+func (s *Store) SetScenePosterURL(ctx context.Context, id int64, url string) error {
+	url = sanitizePosterURL(ctx, url)
+	if url == "" {
+		return fmt.Errorf("poster url is not allowed")
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE library_scenes
+		SET poster_url = ?, poster_source = ?, updated_at = sakms_now()
+		WHERE id = ?
+	`, url, PosterSourceOperator, id)
+	if err != nil {
+		return fmt.Errorf("setting scene %d poster: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("setting scene %d poster: %w", id, err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // DeleteScene permanently removes scene id and its tags. Explicit two-

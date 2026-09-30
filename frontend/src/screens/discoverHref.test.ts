@@ -82,6 +82,7 @@ describe("discoverOwnedHref / libraryPathToDiscover", () => {
 
   it("adult identity key is box:sceneId and empty when either half is missing", () => {
     expect(adultOwnedIdentityKey("stashdb", "abc")).toBe("stashdb:abc");
+    expect(adultOwnedIdentityKey("stashdb", 9)).toBe("stashdb:9");
     expect(adultOwnedIdentityKey("", "abc")).toBe("");
     expect(adultOwnedIdentityKey("stashdb", "")).toBe("");
   });

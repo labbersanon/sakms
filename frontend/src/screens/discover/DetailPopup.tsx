@@ -68,9 +68,12 @@ import {
   fetchAdultDescription,
   fetchAvailabilityPreview,
   fetchTitleDetail,
-  fetchTitlePoster,
+  fetchTitleCard,
   fetchTrailer,
+  cardBackdropSrc,
+  cardPosterSrc,
   proxyImage,
+  tmdbBackdrop,
   tmdbLogo,
   tmdbPoster,
   tmdbProfile,
@@ -780,16 +783,28 @@ export const DetailPopup: Component<{
   // list-payload path never pay a second round-trip.
   // Troubleshooting: popup showed MediaFallbackTile next to More on TMDB.
   // Review if: tracked list starts carrying poster paths.
-  const [lazyPoster] = createResource(
+  // Claude 2026-09-29: one /poster call supplies poster + backdrop.
+  // Reason: fanart wash must not add a second fetch; TitleDetail.backdropPath
+  //   is preferred when the detail bundle already landed.
+  // Review if: GET /tracked starts carrying backdropUrl for every title
+  //   (then this fetch can skip when item.backdropUrl is set).
+  const [lazyCard] = createResource(
     () => {
       if (!hasCatalogTmdb()) return null;
       const it = item() as DiscoverItem;
-      if (it.posterPath) return null;
       if (detail.loading) return null;
-      if (detail()?.posterPath) return null;
+      const havePoster = !!(it.posterPath || detail()?.posterPath);
+      const haveBackdrop = !!(it.backdropUrl || detail()?.backdropPath);
+      if (havePoster && haveBackdrop) return null;
       return { m: mode() as "movies" | "series", tmdbId: it.id };
     },
-    ({ m, tmdbId }) => fetchTitlePoster(m, tmdbId).catch(() => ""),
+    ({ m, tmdbId }) =>
+      fetchTitleCard(m, tmdbId).catch(() => ({
+        posterPath: "",
+        posterUrl: "",
+        backdropUrl: "",
+        overview: "",
+      })),
   );
 
   // Adult scene description — the dedicated endpoint (AC3/AC4), fired once per
@@ -959,9 +974,19 @@ export const DetailPopup: Component<{
       (item() as DiscoverItem).posterPath ||
       (detail()?.posterPath ?? "");
     if (path) return tmdbPoster(path);
-    // Claude 2026-09-22: lazyPoster is already a proxied src (cardPosterSrc).
+    // Claude 2026-09-22: lazy card poster is already a proxied src.
     // Reason: TVDB/AI absolute URLs; do not wrap with tmdbPoster again.
-    return lazyPoster() ?? "";
+    const card = lazyCard();
+    return card ? cardPosterSrc(card) : "";
+  };
+  const backdropSrc = () => {
+    if (mode() === "adult") return "";
+    const it = item() as DiscoverItem;
+    if (it.backdropUrl) return proxyImage(it.backdropUrl);
+    const path = detail()?.backdropPath ?? "";
+    if (path) return tmdbBackdrop(path);
+    const card = lazyCard();
+    return card ? cardBackdropSrc(card) : "";
   };
   const catalogHref = () => externalDetailURL(props.target);
   const PosterArt: Component = () => (
@@ -1121,7 +1146,16 @@ export const DetailPopup: Component<{
           no plot text.
           Troubleshooting: overview lived inside <Show when={ready()}>.
           Review if: Series stops gating availability behind the picker. */}
-      <div class="flex items-start gap-3">
+      <div class="relative overflow-hidden rounded-lg">
+        <Show when={backdropSrc()}>
+          <div
+            class="pointer-events-none absolute inset-0 bg-cover bg-center opacity-40"
+            style={{ "background-image": `url("${backdropSrc()}")` }}
+            data-testid="title-backdrop"
+          />
+          <div class="pointer-events-none absolute inset-0 bg-gradient-to-r from-surface via-surface/85 to-surface/50" />
+        </Show>
+      <div class="relative flex items-start gap-3 p-1">
         <Show
           when={catalogHref()}
           fallback={
@@ -1246,6 +1280,7 @@ export const DetailPopup: Component<{
             </button>
           </Show>
         </div>
+      </div>
       </div>
 
       {/* Claude 2026-09-22: quality prefs + season monitors sit UNDER poster/

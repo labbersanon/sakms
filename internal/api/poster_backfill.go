@@ -213,8 +213,54 @@ func RunPosterBackfill(
 		}
 	}
 
-	log.Printf("poster backfill: done movies_ok=%d movies_fail=%d series_ok=%d series_fail=%d series_id_repaired=%d movie_id_repaired=%d",
-		moviesOK, moviesFail, seriesOK, seriesFail, repaired, idRepaired)
+	adultOK, adultFail := backfillAdultPosters(ctx, httpClient, connStore, scStore, settingsStore, libStore)
+	if ctx.Err() != nil {
+		log.Printf("poster backfill: cancelled during adult (ok=%d fail=%d)", adultOK, adultFail)
+		return
+	}
+
+	backdropOK := 0
+	if needBD, err := libStore.ListMoviesNeedingBackdrop(ctx, mode.Movies); err != nil {
+		log.Printf("poster backfill: list movie backdrops: %v", err)
+	} else {
+		for i, it := range needBD {
+			if ctx.Err() != nil {
+				log.Printf("poster backfill: cancelled during movie backdrops after %d", i)
+				return
+			}
+			if it.TMDBID != 0 {
+				out := resolvePoster(ctx, mode.Movies, it.TMDBID, httpClient, connStore, scStore, settingsStore, libStore)
+				if out.BackdropURL != "" {
+					backdropOK++
+				}
+			}
+			if err := sleepBackfillGap(ctx); err != nil {
+				return
+			}
+		}
+	}
+	if needBD, err := libStore.ListSeriesNeedingBackdrop(ctx); err != nil {
+		log.Printf("poster backfill: list series backdrops: %v", err)
+	} else {
+		for i, ser := range needBD {
+			if ctx.Err() != nil {
+				log.Printf("poster backfill: cancelled during series backdrops after %d", i)
+				return
+			}
+			if ser.TMDBID > 0 {
+				out := resolvePoster(ctx, mode.Series, ser.TMDBID, httpClient, connStore, scStore, settingsStore, libStore)
+				if out.BackdropURL != "" {
+					backdropOK++
+				}
+			}
+			if err := sleepBackfillGap(ctx); err != nil {
+				return
+			}
+		}
+	}
+
+	log.Printf("poster backfill: done movies_ok=%d movies_fail=%d series_ok=%d series_fail=%d series_id_repaired=%d movie_id_repaired=%d adult_ok=%d adult_fail=%d backdrop_ok=%d",
+		moviesOK, moviesFail, seriesOK, seriesFail, repaired, idRepaired, adultOK, adultFail, backdropOK)
 }
 
 func repairMovieIdentity(ctx context.Context, libStore *library.Store, sess *mode.Session, prober *mediainfo.Prober, it library.Item) bool {
@@ -510,6 +556,9 @@ func ensureImportPoster(ctx context.Context, libStore *library.Store, sess *mode
 		if cat.Year != 0 {
 			year = cat.Year
 		}
+		if cat.BackdropPath != "" {
+			persistBackdrop(ctx, libStore, m, tmdbID, tmdbBackdropAbsolute+cat.BackdropPath)
+		}
 		if cat.PosterPath != "" {
 			persistPoster(ctx, libStore, m, tmdbID, tmdbPosterAbsolute+cat.PosterPath, library.PosterSourceTMDB)
 			return
@@ -526,6 +575,9 @@ func ensureImportPoster(ctx context.Context, libStore *library.Store, sess *mode
 		if err == nil {
 			title = details.Title
 			year = parseYearPrefix(details.ReleaseDate)
+			if details.BackdropPath != "" {
+				persistBackdrop(ctx, libStore, m, tmdbID, tmdbBackdropAbsolute+details.BackdropPath)
+			}
 			if details.PosterPath != "" {
 				abs := tmdbPosterAbsolute + details.PosterPath
 				persistPoster(ctx, libStore, m, tmdbID, abs, library.PosterSourceTMDB)

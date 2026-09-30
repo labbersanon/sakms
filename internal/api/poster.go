@@ -23,6 +23,10 @@ import (
 // relative-path round-trip through tmdbPoster().
 const tmdbPosterAbsolute = "https://image.tmdb.org/t/p/w342"
 
+// tmdbBackdropAbsolute matches mediafolder's w1280 fanart. Persisted so
+// DetailPopup can wash the header without a second TMDB round-trip.
+const tmdbBackdropAbsolute = "https://image.tmdb.org/t/p/w1280"
+
 // posterHandler resolves a Movies/Series library card's poster art (and
 // synopsis) lazily, per card, keyed by tmdbId. Movies/Series only — Adult
 // scenes carry their own image inline from TPDB.
@@ -74,6 +78,9 @@ func resolvePoster(
 		if posterURLIsImage(art.URL) {
 			out.PosterURL = art.URL
 		}
+		if art.BackdropURL != "" {
+			out.BackdropURL = art.BackdropURL
+		}
 	}
 
 	sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, m)
@@ -104,6 +111,16 @@ func resolvePoster(
 		if cat.FromMovie {
 			searchAsMovie = true
 		}
+		// Claude 2026-09-29: persist backdrop before the poster early-return.
+		// Reason: a cached poster used to skip writing fanart forever.
+		// Review if: Adult scenes gain a backdrop column.
+		if cat.BackdropPath != "" {
+			abs := tmdbBackdropAbsolute + cat.BackdropPath
+			persistBackdrop(ctx, libStore, m, tmdbID, abs)
+			if out.BackdropURL == "" {
+				out.BackdropURL = abs
+			}
+		}
 		if cat.PosterPath != "" {
 			out.PosterPath = cat.PosterPath
 			abs := tmdbPosterAbsolute + cat.PosterPath
@@ -122,6 +139,13 @@ func resolvePoster(
 			}
 			if year == 0 {
 				year = parseYearPrefix(details.ReleaseDate)
+			}
+			if details.BackdropPath != "" {
+				abs := tmdbBackdropAbsolute + details.BackdropPath
+				persistBackdrop(ctx, libStore, m, tmdbID, abs)
+				if out.BackdropURL == "" {
+					out.BackdropURL = abs
+				}
 			}
 			if details.PosterPath != "" {
 				out.PosterPath = details.PosterPath
@@ -222,6 +246,17 @@ func persistPoster(ctx context.Context, libStore *library.Store, m mode.Mode, tm
 		return
 	}
 	_ = libStore.SetMoviePosterArt(ctx, m, tmdbID, url, source)
+}
+
+func persistBackdrop(ctx context.Context, libStore *library.Store, m mode.Mode, tmdbID int, url string) {
+	if libStore == nil || tmdbID == 0 || strings.TrimSpace(url) == "" {
+		return
+	}
+	if m == mode.Series {
+		_ = libStore.SetSeriesBackdrop(ctx, tmdbID, url)
+		return
+	}
+	_ = libStore.SetMovieBackdrop(ctx, m, tmdbID, url)
 }
 
 func searchedPoster(ctx context.Context, sess *mode.Session, title string, year int, kind string) string {

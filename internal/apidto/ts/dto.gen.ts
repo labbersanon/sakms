@@ -211,6 +211,11 @@ export interface DiscoverItem {
   releaseDate: string;
   voteAverage: number /* float64 */;
   mediaType: string;
+  /**
+   * BackdropURL is an absolute cached fanart URL (Library tracked rows).
+   * Discover list cards leave this empty; DetailPopup then uses TitleDetail.
+   */
+  backdropUrl?: string;
 }
 /**
  * SeriesSearchItem is one Rename SearchTakeover hit from TVDB-backed series
@@ -458,6 +463,7 @@ export interface PerformerSummary {
 export interface PosterResponse {
   posterPath: string;
   posterUrl?: string;
+  backdropUrl?: string;
   overview: string;
 }
 /**
@@ -1130,6 +1136,11 @@ export interface TitleDetail {
    */
   posterPath: string;
   /**
+   * BackdropPath is the TMDB fanart path from the same details call.
+   * DetailPopup washes the header; cards stay 2:3 posters.
+   */
+  backdropPath?: string;
+  /**
    * Ratings is the official catalog-score row (IMDb / TMDB / Trakt).
    * Never null — [] when every source is empty or unconfigured.
    */
@@ -1732,6 +1743,7 @@ export interface TrackedItem {
   files?: TrackedItemFile[];
   videoUrl?: string;
   posterUrl?: string;
+  backdropUrl?: string;
   box?: string;
   sceneId?: string;
   studio?: string;

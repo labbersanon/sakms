@@ -312,7 +312,7 @@ func TestPosterHandler_ReturnsPosterPath(t *testing.T) {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"id":99,"title":"A Movie","poster_path":"/p99.jpg","overview":"A movie plot."}`))
+		w.Write([]byte(`{"id":99,"title":"A Movie","poster_path":"/p99.jpg","backdrop_path":"/b99.jpg","overview":"A movie plot."}`))
 	})
 
 	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
@@ -341,6 +341,9 @@ func TestPosterHandler_ReturnsPosterPath(t *testing.T) {
 	if got.Overview != "A movie plot." {
 		t.Errorf("expected overview, got %+v", got)
 	}
+	if got.BackdropURL != "https://image.tmdb.org/t/p/w1280/b99.jpg" {
+		t.Errorf("expected backdrop url, got %+v", got)
+	}
 }
 
 // TestPosterHandler_ReturnsSeriesOverview proves the Series branch returns
@@ -352,7 +355,7 @@ func TestPosterHandler_ReturnsSeriesOverview(t *testing.T) {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"id":77,"name":"A Show","poster_path":"/s77.jpg","overview":"A show plot."}`))
+		w.Write([]byte(`{"id":77,"name":"A Show","poster_path":"/s77.jpg","backdrop_path":"/sb77.jpg","overview":"A show plot."}`))
 	})
 
 	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
@@ -380,6 +383,9 @@ func TestPosterHandler_ReturnsSeriesOverview(t *testing.T) {
 	}
 	if got.Overview != "A show plot." {
 		t.Errorf("expected overview, got %+v", got)
+	}
+	if got.BackdropURL != "https://image.tmdb.org/t/p/w1280/sb77.jpg" {
+		t.Errorf("expected series backdrop url, got %+v", got)
 	}
 }
 

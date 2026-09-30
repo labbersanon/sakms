@@ -9830,6 +9830,24 @@ status stays active.
 | `internal/api/import.go` | Grab-complete fallback |
 | `docs/ROADMAP.md` | Shipped note |
 
+## 2026-09-29 — Adult poster backfill and Movies/Series backdrops
+
+**Problem:** Adult Library cards with empty `poster_url` stayed on a video still; Movies/Series TMDB fanart was fetched with posters but never stored or shown in SAK.
+**Fix:** Boot/admin poster backfill now fills empty Adult `poster_url` via TPDB `GetSceneByID` / stash-box `FindScene` (not Identify). Local/empty scene ids stay skipped; GET `/tracked` stays read-only. Movies/Series persist `backdrop_url` (TMDB w1280) fill-if-empty from the same details call as the poster chain. Library + Discover DetailPopup washes the header; cards stay 2:3 posters. Local `fanart.jpg` is not picked up.
+**Outcome:** Existing Adult rows can gain catalog posters without per-card fetches. Movies/Series detail headers show fanart when TMDB has it. Not merged/deployed with this change.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/db/migrations/0034_library_backdrop_url.sql` | `backdrop_url` on items/series |
+| `internal/library/library_scene.go` | `ListScenesNeedingPoster` / `SetScenePosterURL` |
+| `internal/library/library_poster.go` | Backdrop persist + maps |
+| `internal/api/adult_poster.go` | Catalog-id Adult resolve |
+| `internal/api/poster.go` / `poster_backfill.go` | Persist backdrop; Adult + backdrop passes |
+| `internal/apidto/dto.go` | `backdropUrl` / `backdropPath` |
+| `frontend/src/screens/discover/DetailPopup.tsx` | Header wash; one `/poster` card fetch |
+| `docs/ROADMAP.md` | Shipped note; local fanart still open |
 
 
 

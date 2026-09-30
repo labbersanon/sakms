@@ -88,3 +88,48 @@ func TestListSeriesNeedingPoster_IncludesZeroTMDB(t *testing.T) {
 		t.Fatalf("expected zero-tmdb series in need list: %+v", need)
 	}
 }
+
+func TestMovieBackdrop_SetAndGetFillIfEmpty(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if _, err := s.Upsert(ctx, Item{
+		Mode: mode.Movies, TMDBID: 42, Title: "Fanart Movie", Year: 2020,
+		FilePath: "/m.mkv", RootFolderPath: "/movies",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	need, err := s.ListMoviesNeedingBackdrop(ctx, mode.Movies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(need) != 1 || need[0].TMDBID != 42 {
+		t.Fatalf("need = %+v", need)
+	}
+	if err := s.SetMovieBackdrop(ctx, mode.Movies, 42, "https://image.tmdb.org/t/p/w1280/b.jpg"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetMovieBackdrop(ctx, mode.Movies, 42, "https://image.tmdb.org/t/p/w1280/other.jpg"); err != nil {
+		t.Fatal(err)
+	}
+	art, err := s.MoviePosterArt(ctx, mode.Movies, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if art.BackdropURL != "https://image.tmdb.org/t/p/w1280/b.jpg" {
+		t.Fatalf("backdrop = %q", art.BackdropURL)
+	}
+	m, err := s.MovieBackdropURLMap(ctx, mode.Movies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m[42] != "https://image.tmdb.org/t/p/w1280/b.jpg" {
+		t.Fatalf("map = %#v", m)
+	}
+	need, err = s.ListMoviesNeedingBackdrop(ctx, mode.Movies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(need) != 0 {
+		t.Fatalf("still needing backdrop: %+v", need)
+	}
+}

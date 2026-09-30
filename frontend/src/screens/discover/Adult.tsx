@@ -30,10 +30,12 @@
 import {
   type Component,
   type JSX,
+  createContext,
   createEffect,
   createResource,
   createSignal,
   onCleanup,
+  useContext,
   For,
   Show,
 } from "solid-js";
@@ -67,6 +69,8 @@ import {
 } from "../Library";
 import { adultOwnedIdentityKey } from "../discoverHref";
 import { fetchTrackedItems, type TrackedItem } from "../../api/tag";
+import { canEditAdultPoster } from "../../api/adultPoster";
+import { AdultPosterPicker } from "../../components/AdultPosterPicker";
 import {
   type GrabTarget,
   ConfigureConnectionModal,
@@ -132,6 +136,99 @@ export const toAdultDiscoverItem = (
   slug: "",
 });
 
+type AdultOwnedLookup = {
+  itemFor: (source: string, id: string) => TrackedItem | undefined;
+  setPoster: (id: number, url: string) => void;
+};
+
+const AdultOwnedContext = createContext<AdultOwnedLookup | undefined>();
+
+export const AdultOwnedProvider: Component<{
+  children: JSX.Element;
+  reloadToken?: () => number;
+}> = (props) => {
+  const [owned, { mutate }] = createResource(
+    () => props.reloadToken?.() ?? 0,
+    async () => {
+      const items = await fetchTrackedItems("adult").catch(
+        () => [] as TrackedItem[],
+      );
+      const map = new Map<string, TrackedItem>();
+      for (const it of items) {
+        const k = adultOwnedIdentityKey(it.box, it.sceneId);
+        if (k) map.set(k, it);
+      }
+      return map;
+    },
+  );
+  const lookup: AdultOwnedLookup = {
+    itemFor: (source, id) =>
+      owned()?.get(adultOwnedIdentityKey(source, id)),
+    setPoster: (id, url) => {
+      mutate((prev) => {
+        if (!prev) return prev;
+        const next = new Map(prev);
+        for (const [k, it] of next) {
+          if (it.id === id) next.set(k, { ...it, posterUrl: url });
+        }
+        return next;
+      });
+    },
+  };
+  return (
+    <AdultOwnedContext.Provider value={lookup}>
+      {props.children}
+    </AdultOwnedContext.Provider>
+  );
+};
+
+export function useAdultOwnedLookup(): AdultOwnedLookup | undefined {
+  return useContext(AdultOwnedContext);
+}
+
+const AdultDiscoverDetail: Component<{
+  target: DetailTarget;
+  owned: TrackedItem | null;
+  onClose: () => void;
+  onRematch?: () => void;
+}> = (props) => {
+  const lookup = useAdultOwnedLookup();
+  const catalogItem = () =>
+    props.target.mode === "adult"
+      ? (props.target.item as AdultDiscoverItem)
+      : undefined;
+  const librarySceneId = () =>
+    props.owned?.id ??
+    (catalogItem()
+      ? lookup?.itemFor(catalogItem()!.source, catalogItem()!.id)?.id
+      : undefined);
+  const ownedPosterUrl = () =>
+    props.owned?.posterUrl ??
+    (catalogItem()
+      ? lookup?.itemFor(catalogItem()!.source, catalogItem()!.id)?.posterUrl
+      : undefined);
+  return (
+    <DetailPopup
+      target={props.target}
+      allowGrab={!props.owned}
+      canReplace={!!props.owned}
+      playSrc={
+        props.owned
+          ? playableLibrarySrc("adult", props.owned) || undefined
+          : undefined
+      }
+      librarySceneId={librarySceneId()}
+      ownedPosterUrl={ownedPosterUrl()}
+      onPosterPicked={(url) => {
+        const id = librarySceneId();
+        if (id) lookup?.setPoster(id, url);
+      }}
+      onRematch={props.onRematch}
+      onClose={props.onClose}
+    />
+  );
+};
+
 // AdultCard is one scene, from TPDB or (via the sort bar's merged "Newest
 // Releases" feed, or a newest row whose match resolved against StashDB/FansDB)
 // a stash-box source. Both frequently return no art, so
@@ -165,7 +262,13 @@ export const AdultCard: Component<{
 }> = (props) => {
   const selection = useSelection();
   const inSelect = () => selection?.selectMode() ?? false;
-  const src = () => proxyImage(props.item.image);
+  const owned = useAdultOwnedLookup();
+  const tracked = () => owned?.itemFor(props.item.source, props.item.id);
+  const src = () =>
+    proxyImage(tracked()?.posterUrl || props.item.image);
+  const [pickerOpen, setPickerOpen] = createSignal(false);
+  const canEdit = () =>
+    !!tracked()?.id && canEditAdultPoster(props.item.source);
   const subtitle = () =>
     [props.item.studio, yearOf(props.item.date), sourceLabel(props.item.source)]
       .filter(Boolean)
@@ -247,6 +350,7 @@ export const AdultCard: Component<{
   // display-only inside the shell.
   // Review if: a nested interactive control is added inside the poster frame.
   return (
+    <div class="relative">
     <MediaCardShell
       class={
         props.layout === "grid"
@@ -283,6 +387,27 @@ export const AdultCard: Component<{
         <div class="mt-1.5 truncate text-sm text-fg">{props.item.title}</div>
         <div class="truncate text-xs text-muted">{subtitle() || "—"}</div>
     </MediaCardShell>
+    <Show when={canEdit() && !inSelect()}>
+      <button
+        type="button"
+        class="absolute right-1 top-1 z-10 rounded bg-black/70 px-1.5 py-0.5 text-[10px] text-white"
+        data-testid="change-poster"
+        onClick={(e) => {
+          e.stopPropagation();
+          setPickerOpen(true);
+        }}
+      >
+        Change poster
+      </button>
+    </Show>
+    <Show when={pickerOpen() && tracked()?.id}>
+      <AdultPosterPicker
+        sceneId={tracked()!.id}
+        onClose={() => setPickerOpen(false)}
+        onPicked={(url) => owned?.setPoster(tracked()!.id, url)}
+      />
+    </Show>
+    </div>
   );
 };
 
@@ -900,6 +1025,7 @@ export const AdultDiscover: Component<{
   };
 
   return (
+    <AdultOwnedProvider reloadToken={reloadToken}>
     <div>
       <Show when={rematchItem()}>
         {(item) => (
@@ -1270,15 +1396,9 @@ export const AdultDiscover: Component<{
 
       <Show when={detailTarget()}>
         {(t) => (
-          <DetailPopup
+          <AdultDiscoverDetail
             target={t()}
-            allowGrab={!ownedDetail()}
-            canReplace={!!ownedDetail()}
-            playSrc={
-              ownedDetail()
-                ? playableLibrarySrc("adult", ownedDetail()!) || undefined
-                : undefined
-            }
+            owned={ownedDetail()}
             onRematch={
               ownedDetail()
                 ? () => {
@@ -1295,5 +1415,6 @@ export const AdultDiscover: Component<{
       </Show>
       </div>
     </div>
+    </AdultOwnedProvider>
   );
 };

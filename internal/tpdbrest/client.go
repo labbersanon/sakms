@@ -144,6 +144,9 @@ type Scene struct {
 	Date  string
 	Site  string // studio name
 	Image string // scene thumbnail/poster URL (may be empty; see rawScene.Image)
+	// Images is Background.Large, Poster, and Image in preference order,
+	// de-duplicated — the Adult poster picker lists these.
+	Images []string
 	// Duration is the scene's runtime in seconds — see rawScene.Duration for
 	// sourcing/confidence. May be 0 (absent/unknown); consumers computing an
 	// implied bitrate (Size×8/runtime) MUST treat 0 as "unknown, skip the
@@ -381,8 +384,12 @@ func (s rawScene) toScene() Scene {
 	// Prefer TPDB's own re-hosted, reliable images over the studio-passthrough
 	// fields — see rawScene's doc comment for the live evidence behind this
 	// order.
-	image := firstNonEmpty(s.Background.Large, s.Poster, s.Image)
-	return Scene{ID: string(s.ID), Title: s.Title, Slug: s.Slug, Date: s.Date, Site: site, Image: image, Duration: s.Duration, Rating: s.Rating, Hashes: phashes, Tags: tags, Type: s.Type, Performers: performers, Description: s.Description}
+	images := uniqueNonEmpty(s.Background.Large, s.Poster, s.Image)
+	image := ""
+	if len(images) > 0 {
+		image = images[0]
+	}
+	return Scene{ID: string(s.ID), Title: s.Title, Slug: s.Slug, Date: s.Date, Site: site, Image: image, Images: images, Duration: s.Duration, Rating: s.Rating, Hashes: phashes, Tags: tags, Type: s.Type, Performers: performers, Description: s.Description}
 }
 
 // firstNonEmpty returns the first non-empty string from vals, or "" if all are
@@ -396,6 +403,20 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+func uniqueNonEmpty(vals ...string) []string {
+	seen := make(map[string]bool, len(vals))
+	out := make([]string, 0, len(vals))
+	for _, v := range vals {
+		v = strings.TrimSpace(v)
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
 }
 
 type scenesResponse struct {

@@ -54,10 +54,10 @@ export function mergeOwnedCatalogSearch(
 // a title-only owned match cannot hide an unrelated catalog card.
 export function adultOwnedIdentityKey(
   box: string | undefined,
-  id: string | undefined,
+  id: string | number | undefined,
 ): string {
-  const b = (box ?? "").trim();
-  const scene = (id ?? "").trim();
+  const b = String(box ?? "").trim();
+  const scene = String(id ?? "").trim();
   return b && scene ? `${b}:${scene}` : "";
 }
 

@@ -507,6 +507,68 @@ func TestUpsertScene_RejectsPrivatePosterURL(t *testing.T) {
 	}
 }
 
+func TestSetScenePosterURL_OverwritesAndLocksOperator(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	first := "https://1.1.1.1/first.jpg"
+	picked := "https://1.1.1.1/picked.jpg"
+	later := "https://1.1.1.1/later.jpg"
+	created, err := s.UpsertScene(ctx, Scene{
+		Box: "stashdb", SceneID: "uuid-op", Title: "Op", RootFolderPath: "/adult",
+		PosterURL: first,
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := s.SetScenePosterURL(ctx, created.ID, picked); err != nil {
+		t.Fatalf("SetScenePosterURL: %v", err)
+	}
+	got, err := s.GetSceneByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.PosterURL != picked {
+		t.Fatalf("operator poster = %q, want %q", got.PosterURL, picked)
+	}
+	updated, err := s.UpsertScene(ctx, Scene{
+		Box: "stashdb", SceneID: "uuid-op", Title: "Op 2", RootFolderPath: "/adult",
+		PosterURL: later,
+	})
+	if err != nil {
+		t.Fatalf("upsert after operator: %v", err)
+	}
+	if updated.PosterURL != picked {
+		t.Fatalf("UpsertScene must keep operator poster, got %q", updated.PosterURL)
+	}
+}
+
+func TestListScenesNeedingPoster_SkipsOperator(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	empty, err := s.UpsertScene(ctx, Scene{
+		Box: "stashdb", SceneID: "need-art", Title: "Need", RootFolderPath: "/adult",
+	})
+	if err != nil {
+		t.Fatalf("empty upsert: %v", err)
+	}
+	locked, err := s.UpsertScene(ctx, Scene{
+		Box: "stashdb", SceneID: "locked-empty", Title: "Locked", RootFolderPath: "/adult",
+	})
+	if err != nil {
+		t.Fatalf("locked upsert: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE library_scenes SET poster_source = ? WHERE id = ?`, PosterSourceOperator, locked.ID); err != nil {
+		t.Fatalf("mark operator: %v", err)
+	}
+	need, err := s.ListScenesNeedingPoster(ctx)
+	if err != nil {
+		t.Fatalf("ListScenesNeedingPoster: %v", err)
+	}
+	if len(need) != 1 || need[0].ID != empty.ID {
+		t.Fatalf("need = %+v, want only id %d", need, empty.ID)
+	}
+}
+
 func TestRematchScene_UpdatesSameRow(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

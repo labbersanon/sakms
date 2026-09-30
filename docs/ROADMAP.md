@@ -483,6 +483,14 @@ when classify says so). Confirm is the approval. Movies and Series only.
 Not a proposals queue — scan is in-memory; apply reconstructs a Pending
 row and calls RelocateMovie / RelocateEpisode. See CHANGELOG 2026-09-28.
 
+### Adult poster edit — shipped 2026-09-29
+Owned Adult scenes can pick a poster from that scene's stash-box/TPDB
+catalog images. The pick overwrites `library_scenes.poster_url` and sets
+`poster_source=operator`, so later UpsertScene fill-if-empty and poster
+backfill cannot replace it. Edit lives on Library, owned Discover cards,
+and detail. Local scenes have no catalog list. GET `/tracked` stays
+read-only (no catalog probe). See CHANGELOG 2026-09-29.
+
 ### Adult release persistence — shipped 2026-08-11
 Plan: `.omc/plans/autopilot-impl-adult-release-persistence.md` (Wave 5 / T1–T8).
 "Search once, persist, reuse" cache for Adult Discover and auto-grab:

@@ -9830,6 +9830,25 @@ status stays active.
 | `internal/api/import.go` | Grab-complete fallback |
 | `docs/ROADMAP.md` | Shipped note |
 
+## 2026-09-29 — Adult poster edit from catalog images
+
+**Problem:** Owned Adult cards showed the first catalog image (or a video still) with no way to pick another image from that scene's stash-box/TPDB set. A later fill-if-empty upsert or poster backfill could also replace an operator choice.
+**Fix:** GET `/api/modes/adult/scenes/{sceneId}/catalog-posters` lists sanitized stash-box `images[]` or TPDB Background.Large/Poster/Image. PUT `/api/modes/adult/scenes/{sceneId}/poster` `{url}` overwrites `library_scenes.poster_url` and sets `poster_source=operator`. UpsertScene and `ListScenesNeedingPoster` keep operator rows. Picker is on Library, owned Discover cards, and detail. Local scenes have no catalog list. Discover overlays the tracked `posterUrl` on owned cards. GET `/tracked` still does not probe catalog.
+**Outcome:** An operator can change an owned Adult poster from that scene's catalog images; the pick survives later backfill. Not merged/deployed with this change.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/db/migrations/0034_library_scenes_poster_source.sql` | `poster_source` on `library_scenes` |
+| `internal/library/library_scene.go` | Operator overwrite + backfill skip |
+| `internal/stashbox/client.go` | `Scene.ImageURLs` from all `images[]` |
+| `internal/tpdbrest/client.go` | `Scene.Images` unique Background/Poster/Image |
+| `internal/identify/boxlookup.go` | `CatalogPosterURLs` (not `Identify()`) |
+| `internal/api/adult_poster_edit.go` | GET catalog-posters + PUT poster |
+| `frontend/src/components/AdultPosterPicker.tsx` | Catalog image picker |
+| `docs/ROADMAP.md` | Shipped note |
+
 
 
 

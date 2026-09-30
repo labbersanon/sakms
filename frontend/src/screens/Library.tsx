@@ -34,6 +34,8 @@ import {
   removeTag,
 } from "../api/tag";
 import { setItemRating } from "../api/rating";
+import { canEditAdultPoster } from "../api/adultPoster";
+import { AdultPosterPicker } from "../components/AdultPosterPicker";
 import { fetchLibraryScanStatus } from "../api/settings";
 import {
   Button,
@@ -205,6 +207,7 @@ export const LibraryPosterCard: Component<{
   // Review if: LibraryPosterCard grows its own select-mode awareness.
   disabled?: boolean;
   class?: string;
+  onPosterPicked?: (url: string) => void;
 }> = (props) => {
   // Key the resource on tmdbId — when absent, the source accessor returns
   // undefined and Solid skips the fetch entirely.
@@ -237,8 +240,10 @@ export const LibraryPosterCard: Component<{
   // Reason: TVDB/AI fallback returns absolute posterUrl, not a TMDB path.
   // Troubleshooting: letter tiles after TMDB miss even when /poster has art.
   // Review if: GET /tracked posterUrl alone feeds the card (skip /poster).
+  const [pickedPoster, setPickedPoster] = createSignal("");
   const posterUrl = () => {
-    if (props.mode === "adult") return proxyImage(props.item.posterUrl ?? "");
+    if (props.mode === "adult")
+      return proxyImage(pickedPoster() || props.item.posterUrl || "");
     // Prefer list-payload cache when /poster has not resolved yet.
     if (props.item.posterUrl) return proxyImage(props.item.posterUrl);
     const c = card();
@@ -255,6 +260,9 @@ export const LibraryPosterCard: Component<{
   const [videoError, setVideoError] = createSignal(false);
   const showAdultVideo = () =>
     adultVideoUrl() && videoVisible() && !videoError();
+  const [pickerOpen, setPickerOpen] = createSignal(false);
+  const canEditPoster = () =>
+    props.mode === "adult" && canEditAdultPoster(props.item.box);
   let posterBox: HTMLDivElement | undefined;
 
   // A grid of Adult cards would otherwise ask the server for every scene's
@@ -363,6 +371,29 @@ export const LibraryPosterCard: Component<{
         onChange={props.onRate}
       />
     </div>
+    <Show when={canEditPoster()}>
+      <button
+        type="button"
+        class="absolute right-1 top-1 z-10 rounded bg-black/70 px-1.5 py-0.5 text-[10px] text-white"
+        data-testid="change-poster"
+        onClick={(e) => {
+          e.stopPropagation();
+          setPickerOpen(true);
+        }}
+      >
+        Change poster
+      </button>
+    </Show>
+    <Show when={pickerOpen()}>
+      <AdultPosterPicker
+        sceneId={props.item.id}
+        onClose={() => setPickerOpen(false)}
+        onPicked={(url) => {
+          setPickedPoster(url);
+          props.onPosterPicked?.(url);
+        }}
+      />
+    </Show>
     </div>
   );
 };
@@ -1113,6 +1144,28 @@ export const LibraryView: Component<{
                       target={target}
                       allowGrab={false}
                       canReplace
+                      librarySceneId={
+                        isLibraryTarget() &&
+                        props.mode === "adult" &&
+                        canEditAdultPoster(item().box)
+                          ? item().id
+                          : undefined
+                      }
+                      ownedPosterUrl={
+                        isLibraryTarget() && props.mode === "adult"
+                          ? item().posterUrl
+                          : undefined
+                      }
+                      onPosterPicked={(url) => {
+                        void act(async () => {
+                          await refresh();
+                        });
+                        setDetailTarget((prev) =>
+                          prev?.mode === "adult"
+                            ? { ...prev, item: { ...prev.item, image: url } }
+                            : prev,
+                        );
+                      }}
                       onClose={closeDetail}
                       onSelectRecommendation={setDetailTarget}
                       seriesID={

@@ -682,6 +682,8 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("POST /api/modes/adult/scenes/{sceneId}/tags", addSceneTagHandler(libStore))
 	mux.HandleFunc("DELETE /api/modes/adult/scenes/{sceneId}/tags/{tagId}", removeSceneTagHandler(libStore))
 	mux.HandleFunc("PUT /api/modes/adult/scenes/{sceneId}/rating", putSceneRatingHandler(libStore))
+	mux.HandleFunc("GET /api/modes/adult/scenes/{sceneId}/catalog-posters", catalogAdultPostersHandler(httpClient, connStore, scStore, settingsStore, libStore))
+	mux.HandleFunc("PUT /api/modes/adult/scenes/{sceneId}/poster", putAdultScenePosterHandler(httpClient, connStore, scStore, settingsStore, libStore))
 
 	mux.HandleFunc("GET /api/setup/status", setupStatusHandler(connStore, scStore, settingsStore))
 	mux.HandleFunc("PUT /api/setup/dismissed", dismissSetupHandler(settingsStore))

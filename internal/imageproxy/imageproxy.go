@@ -33,13 +33,11 @@
 //
 // KNOWN RESIDUAL RISK (honesty-about-limitations convention, project
 // CLAUDE.md): validateHostNotPrivate's resolve-then-check is not atomic with
-// the actual outbound connection — a host under attacker control with a very
-// low DNS TTL could resolve publicly at validation time and privately by the
-// time the HTTP client actually dials (DNS rebinding). internal/netscan's
-// existing validatePrivateHost carries the same residual gap; closing it
-// fully would need a custom dial-time net.Dialer.Control hook, which neither
-// package implements today. Flagging honestly rather than presenting this as
-// airtight.
+// the actual outbound connection. Dialer.Control re-checks the connected IP
+// at dial time (see rejectBlockedDialAddress), which closes the classic DNS
+// rebinding window for this package. A remaining gap is a TOCTOU between
+// Control and the first byte if the kernel route changes — not practical to
+// close from userspace here.
 package imageproxy
 
 import (
@@ -51,6 +49,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // maxImageBytes caps how much of an upstream image body this proxy reads into
@@ -205,6 +205,52 @@ func New(client *http.Client) *Proxy {
 	}
 }
 
+// rejectBlockedDialAddress refuses a Dialer.Control address that is a
+// private/loopback IP. Control sees the already-resolved IP:port, which is
+// the DNS-rebinding close for this package (validateHostNotPrivate ran
+// earlier against DNS answers that could have changed by dial time).
+func rejectBlockedDialAddress(address string) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		host = address
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf("%w: dial address %q is not an IP", ErrHostNotAllowed, address)
+	}
+	if isBlockedIP(ip) {
+		return fmt.Errorf("%w: connected address %s", ErrHostNotAllowed, ip)
+	}
+	return nil
+}
+
+// attachIPGuard wraps client.Transport with a Dialer.Control that re-checks
+// the connected IP. Tests pass a non-nil allowPrivateHosts so httptest
+// (127.0.0.1) still works; production New() passes nil.
+func attachIPGuard(client *http.Client, allowPrivateHosts map[string]bool) {
+	if client == nil || allowPrivateHosts != nil {
+		return
+	}
+	var rt *http.Transport
+	switch t := client.Transport.(type) {
+	case *http.Transport:
+		rt = t.Clone()
+	case nil:
+		rt = http.DefaultTransport.(*http.Transport).Clone()
+	default:
+		return
+	}
+	d := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+		Control: func(network, address string, c syscall.RawConn) error {
+			return rejectBlockedDialAddress(address)
+		},
+	}
+	rt.DialContext = d.DialContext
+	client.Transport = rt
+}
+
 // newGuardedClient returns a dedicated *http.Client for image fetching: a
 // shallow copy of base (preserving its Timeout/Transport) whose CheckRedirect
 // re-runs the SSRF check against every redirect target. This is the fix for
@@ -231,6 +277,7 @@ func newGuardedClient(base *http.Client, allowPrivateHosts map[string]bool) *htt
 		}
 		return nil
 	}
+	attachIPGuard(guarded, allowPrivateHosts)
 	return guarded
 }
 

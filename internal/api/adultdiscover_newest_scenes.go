@@ -168,7 +168,7 @@ func adultNewestEntityScenesHandler(connStore *connections.Store, scStore *servi
 
 		items := make([]apidto.AdultDiscoverItem, 0, len(releases))
 		for _, rel := range releases {
-			items = append(items, apidto.AdultDiscoverItem{
+			it := apidto.AdultDiscoverItem{
 				Title:        rel.Title,
 				ReleaseTitle: rel.Title,
 				DownloadURL:  rel.DownloadURL,
@@ -176,7 +176,9 @@ func adultNewestEntityScenesHandler(connStore *connections.Store, scStore *servi
 				SizeBytes:    rel.Size,
 				Seeders:      rel.Seeders,
 				Source:       "prowlarr",
-			})
+			}
+			rememberAdultDiscoverItem(&it)
+			items = append(items, it)
 		}
 
 		matched, sceneKeys := enrichNewestScenesShowMore(tctx, sess.Identify, releaseStore, kind, name, items)
@@ -447,6 +449,7 @@ func poolReleaseToDiscoverItem(m adultnewest.MatchedRelease, feedHealth *adultne
 		it.Protocol = m.DownloadProtocol
 		it.SizeBytes = m.SizeBytes
 	}
+	rememberAdultDiscoverItem(&it)
 	return it
 }
 

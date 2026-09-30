@@ -281,7 +281,7 @@ export const FallbackPickList: Component<{
                 onClick={() => props.onPick(c)}
                 disabled={!!props.grabbing}
               >
-                {props.grabbing === c.downloadUrl ? "Grabbing…" : "Grab this"}
+                {props.grabbing === c.guid ? "Grabbing…" : "Grab this"}
               </Button>
             </li>
           )}
@@ -518,7 +518,7 @@ export const GrabDialog: Component<{ target: GrabTarget; onClose: () => void }> 
 
   const pickManual = async (c: AutoGrabCandidate) => {
     setManualError("");
-    setGrabbing(c.downloadUrl);
+    setGrabbing(c.guid);
     try {
       const root = await libraryRootFolder(props.target.mode);
       if (!root) {
@@ -534,7 +534,7 @@ export const GrabDialog: Component<{ target: GrabTarget; onClose: () => void }> 
         seasonSpecified: props.target.request.seasonSpecified,
         indexer: c.indexer,
         protocol: c.protocol,
-        downloadUrl: c.downloadUrl,
+        guid: c.guid,
         rootFolderPath: root,
       });
       setManualGrabbed(c.title);
@@ -687,10 +687,10 @@ function searchResultsToPickList(
     fallback: true,
     message: "Pick a release to grab.",
     candidates: results.map((r) => ({
+      guid: r.guid,
       title: r.title,
       indexer: r.indexer,
       protocol: r.protocol,
-      downloadUrl: r.downloadUrl,
       size: r.size,
       seeders: r.seeders,
       status: "",
@@ -735,7 +735,7 @@ export const ReleasePickDialog: Component<{
 
   const pickManual = async (c: AutoGrabCandidate) => {
     setManualError("");
-    setGrabbing(c.downloadUrl);
+    setGrabbing(c.guid);
     try {
       const root = await libraryRootFolder(props.target.mode);
       if (!root) {
@@ -751,7 +751,7 @@ export const ReleasePickDialog: Component<{
         seasonSpecified: props.target.request.seasonSpecified,
         indexer: c.indexer,
         protocol: c.protocol,
-        downloadUrl: c.downloadUrl,
+        guid: c.guid,
         rootFolderPath: root,
       });
       setManualGrabbed(c.title);

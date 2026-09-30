@@ -102,3 +102,20 @@ func TestKidsRootPath_RejectsAdultMode(t *testing.T) {
 		t.Fatalf("expected 400 for adult PUT, got %d", putResp.StatusCode)
 	}
 }
+
+func TestKidsRootPath_RejectsPathOutsideRoots(t *testing.T) {
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	body, _ := json.Marshal(kidsRootPathRequest{Path: "/etc/passwd"})
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/modes/movies/rename/kids-root-path", bytes.NewReader(body))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a path outside browsable roots, got %d", resp.StatusCode)
+	}
+}

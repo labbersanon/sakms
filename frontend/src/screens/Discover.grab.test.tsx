@@ -182,10 +182,10 @@ describe("Discover auto-grab — Movies (direct one-click)", () => {
           message: "nothing cleared the quality floor automatically — pick one below",
           candidates: [
             {
+              guid: "g1",
               title: "Hero.Movie.1080p.x265-GRP",
               indexer: "IndexerA",
               protocol: "torrent",
-              downloadUrl: "magnet:?xt=urn:btih:abc",
               size: 100,
               seeders: 2,
               status: "low-seeders",
@@ -217,7 +217,7 @@ describe("Discover auto-grab — Movies (direct one-click)", () => {
     expect(grab?.body).toMatchObject({
       indexer: "IndexerA",
       protocol: "torrent",
-      downloadUrl: "magnet:?xt=urn:btih:abc",
+      guid: "g1",
       rootFolderPath: "/movies",
     });
     expect(autograbCalls(calls)).toHaveLength(1);

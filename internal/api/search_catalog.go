@@ -202,14 +202,16 @@ func poolMatchesToSearchScenes(matches []adultnewest.MatchedRelease, feedHealth 
 		releases := []apidto.SearchReleaseResult{}
 		if scene.DownloadURL != "" {
 			res, tier := searchReleaseQuality(release.Parse(scene.ReleaseTitle))
-			releases = append(releases, apidto.SearchReleaseResult{
+			rel := apidto.SearchReleaseResult{
 				Title:       scene.ReleaseTitle,
 				Protocol:    scene.Protocol,
 				Size:        scene.SizeBytes,
 				DownloadURL: scene.DownloadURL,
 				Resolution:  res,
 				Quality:     tier,
-			})
+			}
+			rememberSearchRelease(&rel)
+			releases = append(releases, rel)
 		}
 		out = append(out, apidto.AdultSearchScene{Scene: scene, Releases: releases})
 	}
@@ -348,7 +350,7 @@ func boxIdentifyRelease(ctx context.Context, id *identify.Identifier, rawTitle s
 func prowlarrToSearchRelease(rel prowlarr.Release, prefs release.Profile, now time.Time) apidto.SearchReleaseResult {
 	info := release.Parse(rel.Title)
 	res, tier := searchReleaseQuality(info)
-	return apidto.SearchReleaseResult{
+	out := apidto.SearchReleaseResult{
 		GUID: rel.GUID, Title: rel.Title, Indexer: rel.Indexer,
 		Protocol: string(rel.Protocol), Size: rel.Size, Seeders: rel.Seeders,
 		DownloadURL: rel.DownloadURL, PublishDate: rel.PublishDate,
@@ -359,6 +361,8 @@ func prowlarrToSearchRelease(rel prowlarr.Release, prefs release.Profile, now ti
 		Resolution: res,
 		Quality:    tier,
 	}
+	rememberSearchRelease(&out)
+	return out
 }
 
 // matchResultToDiscoverItem maps a box identification result onto the Adult

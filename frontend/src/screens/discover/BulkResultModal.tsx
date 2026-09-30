@@ -58,7 +58,7 @@ const FallbackRow: Component<{
 
   const pick = async (c: AutoGrabCandidate) => {
     setError("");
-    setGrabbing(c.downloadUrl);
+    setGrabbing(c.guid);
     try {
       const root = await libraryRootFolder(props.item.mode);
       if (!root) {
@@ -75,7 +75,7 @@ const FallbackRow: Component<{
         seasonSpecified: req.seasonSpecified,
         indexer: c.indexer,
         protocol: c.protocol,
-        downloadUrl: c.downloadUrl,
+        guid: c.guid,
         rootFolderPath: root,
       });
       setGrabbed(c.title);

@@ -224,8 +224,8 @@ describe("Discover search — Adult one-shot", () => {
             {
               scene: scene({ id: "sc1", title: "Adult Search Scene", studio: "Vixen" }),
               releases: [
-                { guid: "r1", title: "Adult.Scene.XXX.2160p-GRP", indexer: "AdlA", protocol: "torrent", size: 4000000000, seeders: 8, downloadUrl: "magnet:?a1", publishDate: "", score: 50 },
-                { guid: "r2", title: "Adult.Scene.XXX.1080p-GRP", indexer: "AdlB", protocol: "torrent", size: 2000000000, seeders: 20, downloadUrl: "magnet:?a2", publishDate: "", score: 40 },
+                { guid: "r1", title: "Adult.Scene.XXX.2160p-GRP", indexer: "AdlA", protocol: "torrent", size: 4000000000, seeders: 8, publishDate: "", score: 50 },
+                { guid: "r2", title: "Adult.Scene.XXX.1080p-GRP", indexer: "AdlB", protocol: "torrent", size: 2000000000, seeders: 20, publishDate: "", score: 40 },
               ],
             },
           ],
@@ -266,7 +266,7 @@ describe("Discover search — Adult one-shot", () => {
             {
               scene: scene({ id: "sc1", title: "Grab Scene" }),
               releases: [
-                { guid: "r1", title: "Grab.Scene.1080p", indexer: "AdlA", protocol: "torrent", size: 2000000000, seeders: 9, downloadUrl: "magnet:?g", publishDate: "", score: 30 },
+                { guid: "r1", title: "Grab.Scene.1080p", indexer: "AdlA", protocol: "torrent", size: 2000000000, seeders: 9, publishDate: "", score: 30 },
               ],
             },
           ],

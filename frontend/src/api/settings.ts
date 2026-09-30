@@ -457,16 +457,12 @@ export function putAIModel(model: string): Promise<void> {
   });
 }
 
-// fetchOllamaModels lists the models actually installed on a given Ollama
-// instance (backend calls that instance's /api/tags), for the model <select>
-// in AI.tsx when the ollama provider is active. Callers should source `url`
-// from the SAVED ollama connection, not an in-progress edit (see plan ADR).
-// Rejects cleanly (via api()'s non-ok throw) on an unreachable/bad URL so
-// callers can render an inline error instead of a blank dropdown.
-export function fetchOllamaModels(url: string): Promise<string[]> {
-  return api<string[]>(
-    `/api/ollama/models?url=${encodeURIComponent(url)}`,
-  );
+// fetchOllamaModels lists the models actually installed on the saved Ollama
+// connection (backend GET /api/ollama/models uses that stored URL, never a
+// query param). Rejects cleanly (via api()'s non-ok throw) when Ollama isn't
+// configured or is unreachable so callers can render an inline error.
+export function fetchOllamaModels(): Promise<string[]> {
+  return api<string[]>("/api/ollama/models");
 }
 
 // --- Per-mode: library root folder / quality / naming / kids ----------------

@@ -9934,3 +9934,23 @@ status stays active.
 | `internal/api/import.go` | Complete-import uses the same finished check |
 | `internal/place/move.go` | `ErrCopiedSourceRemains` + `AcceptCopiedDest` |
 | `internal/rename/rename.go` | Relocate keeps dest after leftover source |
+
+## 2026-09-30 — Security review: grab SSRF, dest roots, path sanitizers, deps
+
+**Problem:** Authenticated grab accepted a client `downloadUrl` (SSRF, including LAN Prowlarr NZB URLs we must still fetch). Ollama models GET took `?url=`. Library/kids dest and the write-test were not bound to browsable mounts. `SafePathComponent` / yEnc `sanitizeName` allowed `..`. Browser DTOs echoed indexer download URLs. imageproxy resolved DNS then dialed later. pion/dtls, pion/stun, gorilla/websocket had known CVEs.
+**Fix:** Remember enclosure URLs under an opaque GUID at serialize time; grab/autograb look up by guid and ignore wire `downloadUrl`. Ollama lists models from the saved connection. PUT/test dest paths go through `resolveBrowsablePath`. Path sanitizers reject `.`/`..`. imageproxy `Dialer.Control` re-checks the connected IP. Bump pion/dtls, pion/stun, gorilla/websocket.
+**Outcome:** Grab cannot fetch an operator-chosen URL. Dest writes stay under `/media|/downloads|/adult|/staging`. govulncheck findings for those modules are cleared.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/releaseguid.go` | In-memory GUID → enclosure cache |
+| `internal/api/search.go` | Grab by guid; dest under browsable roots |
+| `internal/api/autograb.go` | GUID lookup; candidates remember enclosure |
+| `internal/api/autograb_batch.go` | Resolve guid before the Prowlarr preflight |
+| `internal/apidto/dto.go` | `downloadUrl` `json:"-"`; guid on candidates/RSS |
+| `internal/imageproxy/imageproxy.go` | Dial-time private-IP reject |
+| `internal/naming/naming.go` | Reject `.` / `..` path components |
+| `go.mod` | pion/dtls, pion/stun, gorilla/websocket bumps |
+

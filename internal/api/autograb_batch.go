@@ -151,6 +151,17 @@ func autoGrabBatchHandler(httpClient *http.Client, connStore *connections.Store,
 			// the Prowlarr guard is relaxed — grabOneBatchItem's feeder will use
 			// the same cached release. The extra DB read is the cost of doing the
 			// guard before the feeder; a cache miss is a no-op.
+			// Claude 2026-09-30: resolve guid before the Prowlarr preflight.
+			// Reason: AutoGrabRequest.DownloadURL is json:"-" so a batch item
+			//   only carries guid on the wire; checking DownloadURL here left
+			//   every GUID-only item looking like a Prowlarr search.
+			// Troubleshooting: bulk grab of a fresh-feed Adult card 400s
+			//   "prowlarr isn't configured" while the single autograb works.
+			// Review if: grab tickets are persisted instead of an in-memory TTL.
+			if err := resolveClientEnclosure(&item.Request); err != nil {
+				fail(err.Error())
+				continue
+			}
 			directGrab := strings.TrimSpace(item.Request.DownloadURL) != ""
 			if !directGrab && m == mode.Adult {
 				if _, ok := pickPersistedAdultEnclosure(ctx, store, settingsStore, item.Request); ok {
@@ -285,6 +296,9 @@ func rejectSeasonEpisodeOverlap(items []apidto.AutoGrabBatchItem) error {
 // Claude 2026-08-11: store parameter added (A3/§6.1) for Adult release cache;
 // nil degrades to a live Prowlarr search.
 func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, store *adultnewest.ReleaseStore, settingsStore *settings.Store, nzb *usenet.Manager, grabsStore *grabs.Store, req apidto.AutoGrabRequest) (grab *apidto.Grab, fallback bool, alreadyGrabbing bool, candidates []apidto.AutoGrabCandidate, message string, err error) {
+	if err := resolveClientEnclosure(&req); err != nil {
+		return nil, false, false, nil, "", err
+	}
 	// Adult persistence feeder (§6.1/batch): for Adult items without their own
 	// enclosure URL, try the release cache before any Prowlarr search. Strong
 	// identity → populate enclosure fields and fall through to grabDirectEnclosure.

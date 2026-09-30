@@ -71,8 +71,9 @@ func TestAutoGrabHandler_DirectGrabUsenet_SharesRetrievalAndRecordsDownloadURL(t
 
 	srv, grabsStore, settingsStore := newAdultDirectGrabUsenetServer(t)
 
+	guid := grabReleaseCache.remember("", nzbSrv.URL, "usenet")
 	body, _ := json.Marshal(apidto.AutoGrabRequest{
-		Title: "Feed Scene", DownloadURL: nzbSrv.URL, DownloadProtocol: "usenet",
+		Title: "Feed Scene", GUID: guid,
 	})
 	resp, err := http.Post(srv.URL+"/api/modes/adult/autograb", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -139,8 +140,9 @@ func TestAutoGrabHandler_DirectGrabUsenet_SharesRetrievalAndRecordsDownloadURL(t
 func TestAutoGrabHandler_DirectGrabUsenet_NoManagerConfigured(t *testing.T) {
 	srv := newAdultDirectGrabServer(t) // nzb == nil in this helper
 
+	guid := grabReleaseCache.remember("", "http://example.invalid/release.nzb", "usenet")
 	body, _ := json.Marshal(apidto.AutoGrabRequest{
-		Title: "Feed Scene", DownloadURL: "http://example.invalid/release.nzb", DownloadProtocol: "usenet",
+		Title: "Feed Scene", GUID: guid,
 	})
 	resp, err := http.Post(srv.URL+"/api/modes/adult/autograb", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -194,14 +196,10 @@ func TestGrabHandler_RssResolvedUsenetItem_SharesRetrieval(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	// Field set mirrors exactly what RssFeedCard.tsx's manualGrab sends: title,
-	// indexer (the feed's own Title, per resolveRssFeedHandler's doc comment),
-	// protocol (the feed's admin-set rssfeeds.Usenet, same string value as
-	// prowlarr.Usenet), the item's enclosure URL, and a root folder resolved
-	// client-side via libraryRootFolder.
+	grabReleaseCache.remember("g-rss-nzb", nzbSrv.URL, "usenet")
 	body, _ := json.Marshal(grabRequest{
-		Title: "Some RSS Release", Indexer: "My Usenet Feed", Protocol: "usenet",
-		DownloadURL: nzbSrv.URL, RootFolderPath: "/tv",
+		Title: "Some RSS Release", Indexer: "My Usenet Feed", GUID: "g-rss-nzb",
+		RootFolderPath: "/media",
 	})
 	resp, err := http.Post(srv.URL+"/api/modes/series/search/grab", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -268,7 +266,8 @@ func newAdultDirectGrabServer(t *testing.T) *httptest.Server {
 func TestAutoGrabHandler_DirectGrabSkipsProwlarr(t *testing.T) {
 	srv := newAdultDirectGrabServer(t)
 
-	body, _ := json.Marshal(apidto.AutoGrabRequest{Title: "Feed Scene", DownloadURL: feedMagnet, DownloadProtocol: "torrent"})
+	guid := grabReleaseCache.remember("", feedMagnet, "torrent")
+	body, _ := json.Marshal(apidto.AutoGrabRequest{Title: "Feed Scene", GUID: guid})
 	resp, err := http.Post(srv.URL+"/api/modes/adult/autograb", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST failed: %v", err)
@@ -300,8 +299,9 @@ func TestAutoGrabHandler_DirectGrabSkipsProwlarr(t *testing.T) {
 func TestAutoGrabBatchHandler_DirectGrabSkipsProwlarr(t *testing.T) {
 	srv := newAdultDirectGrabServer(t)
 
+	guid := grabReleaseCache.remember("", feedMagnet, "torrent")
 	req := apidto.AutoGrabBatchRequest{Items: []apidto.AutoGrabBatchItem{
-		{Mode: "adult", Request: apidto.AutoGrabRequest{Title: "Feed Scene", DownloadURL: feedMagnet, DownloadProtocol: "torrent"}},
+		{Mode: "adult", Request: apidto.AutoGrabRequest{Title: "Feed Scene", GUID: guid}},
 	}}
 	resp, out := postBatch(t, srv.URL, req)
 	defer resp.Body.Close()

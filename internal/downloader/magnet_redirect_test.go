@@ -117,3 +117,13 @@ func TestMagnetLocation(t *testing.T) {
 		t.Fatalf("non-redirect Location should be ignored, got %q", got)
 	}
 }
+
+func TestFetchMetainfoOrMagnet_RejectsNonHTTP(t *testing.T) {
+	m := &Manager{}
+	if _, mag, err := m.fetchMetainfoOrMagnet(context.Background(), "magnet:?xt=urn:btih:abc"); err != nil || mag == "" {
+		t.Fatalf("magnet short-circuit: mag=%q err=%v", mag, err)
+	}
+	if _, _, err := m.fetchMetainfoOrMagnet(context.Background(), "file:///tmp/x.torrent"); err == nil {
+		t.Fatal("expected error for file://")
+	}
+}

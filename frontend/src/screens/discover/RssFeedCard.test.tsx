@@ -39,11 +39,11 @@ const stubFetch = (override?: Override) => {
 afterEach(() => vi.unstubAllGlobals());
 
 const item = (over: Partial<RssFeedItem> = {}): RssFeedItem => ({
+  guid: "rss-1",
   title: "Some.Release.2026",
   link: "https://example.com/details/1",
   pubDate: "Wed, 15 Jul 2026 12:00:00 +0000",
   sizeBytes: 1073741824,
-  downloadUrl: "https://example.com/fetch/1.nzb",
   protocol: "usenet",
   indexer: "My Feed",
   ...over,
@@ -71,7 +71,7 @@ describe("RssFeedCard — grab", () => {
       title: "Some.Release.2026",
       indexer: "My Feed",
       protocol: "usenet",
-      downloadUrl: "https://example.com/fetch/1.nzb",
+      guid: "rss-1",
       rootFolderPath: "/data/movies",
     });
   });

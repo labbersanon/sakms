@@ -56,8 +56,21 @@ func Valid(p Preset) bool {
 // Reason: TMDB titles like "9/11: …" made MovieFolderName/MovieFileName nest under Movies/9/… and Apply failed
 // Troubleshooting: apply-batch 0/1 with leftover Movies/9/<title> folders — sanitize before Join
 // Review if: Jellyfin's own path sanitization rules are adopted as a stricter shared helper
+// Claude 2026-09-30: reject "." / ".." after separator strip.
+// Reason: only / \ NUL were replaced, so a title of ".." was a path escape.
+// Troubleshooting: a TMDB title that is only dots becomes "_" on disk.
+//
+//	Empty stays empty — episode titles are optional interpolations, not
+//	directory names, and "_" leaked into "S03E05 _.mkv".
+//
+// Review if: Jellyfin's own path sanitization rules are adopted as a stricter shared helper
 func SafePathComponent(s string) string {
-	return strings.NewReplacer("/", "-", "\\", "-", "\x00", "_").Replace(s)
+	s = strings.NewReplacer("/", "-", "\\", "-", "\x00", "_").Replace(s)
+	s = strings.TrimSpace(s)
+	if s == "." || s == ".." {
+		return "_"
+	}
+	return s
 }
 
 // MovieFolderName formats a movie's wrapping folder name. year/tmdbID of 0

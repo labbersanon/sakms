@@ -34,6 +34,7 @@ func postPathTest(t *testing.T, srv *httptest.Server, path string) pathTestResul
 func TestLibraryRootFolderTest_ExistingWritableDir(t *testing.T) {
 	srv, _ := newStoredTestMux(t)
 	dir := t.TempDir()
+	withBrowsableRoot(t, dir)
 
 	result := postPathTest(t, srv, dir)
 	if !result.OK || result.Error != "" {
@@ -51,8 +52,10 @@ func TestLibraryRootFolderTest_ExistingWritableDir(t *testing.T) {
 
 func TestLibraryRootFolderTest_NonexistentPath(t *testing.T) {
 	srv, _ := newStoredTestMux(t)
+	root := t.TempDir()
+	withBrowsableRoot(t, root)
 
-	result := postPathTest(t, srv, filepath.Join(t.TempDir(), "does-not-exist"))
+	result := postPathTest(t, srv, filepath.Join(root, "does-not-exist"))
 	if result.OK {
 		t.Fatal("expected ok=false for a nonexistent path")
 	}
@@ -63,7 +66,9 @@ func TestLibraryRootFolderTest_NonexistentPath(t *testing.T) {
 
 func TestLibraryRootFolderTest_FileNotDirectory(t *testing.T) {
 	srv, _ := newStoredTestMux(t)
-	file := filepath.Join(t.TempDir(), "a-file")
+	dir := t.TempDir()
+	withBrowsableRoot(t, dir)
+	file := filepath.Join(dir, "a-file")
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatalf("creating file: %v", err)
 	}
@@ -83,5 +88,16 @@ func TestLibraryRootFolderTest_EmptyPath(t *testing.T) {
 	result := postPathTest(t, srv, "")
 	if result.OK {
 		t.Fatal("expected ok=false for an empty path")
+	}
+}
+
+func TestLibraryRootFolderTest_OutsideBrowsableRoots(t *testing.T) {
+	srv, _ := newStoredTestMux(t)
+	result := postPathTest(t, srv, "/etc")
+	if result.OK {
+		t.Fatal("expected ok=false for a path outside browsable roots")
+	}
+	if result.Error == "" {
+		t.Error("expected a populated error message")
 	}
 }

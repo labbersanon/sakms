@@ -124,6 +124,12 @@ func TestSearchHandler_ScoresAndSortsResults(t *testing.T) {
 	if results[1].Resolution != 480 || results[1].Quality != "medium" {
 		t.Errorf("480p HDTV x264: resolution/quality = %d/%q, want 480/medium", results[1].Resolution, results[1].Quality)
 	}
+	if results[0].DownloadURL != "" {
+		t.Errorf("search JSON leaked downloadUrl: %q", results[0].DownloadURL)
+	}
+	if _, ok := grabReleaseCache.lookup(results[0].GUID); !ok {
+		t.Errorf("guid %q was not remembered for grab", results[0].GUID)
+	}
 }
 
 func TestSearchReleaseQuality(t *testing.T) {
@@ -291,14 +297,14 @@ func TestGrabHandler_NamesMissingRequiredFields(t *testing.T) {
 		want string
 	}{
 		{
-			name: "download URL only",
-			req:  grabRequest{Protocol: "torrent", RootFolderPath: "/adult"},
-			want: "missing required field(s): downloadUrl\n",
+			name: "root folder only",
+			req:  grabRequest{RootFolderPath: "/adult"},
+			want: "missing required field(s): guid\n",
 		},
 		{
-			name: "protocol and root folder",
-			req:  grabRequest{DownloadURL: "magnet:?xt=urn:btih:abc"},
-			want: "missing required field(s): protocol, rootFolderPath\n",
+			name: "guid only",
+			req:  grabRequest{GUID: "g1"},
+			want: "missing required field(s): rootFolderPath\n",
 		},
 	}
 
@@ -342,9 +348,9 @@ func TestGrabHandler_Torrent_SendsToAria2AndRecordsGrab(t *testing.T) {
 	defer srv.Close()
 
 	magnet := "magnet:?xt=urn:btih:ABCDEF1234567890abcdef1234567890abcdef12"
+	grabReleaseCache.remember("g-magnet", magnet, "torrent")
 	body, _ := json.Marshal(grabRequest{
-		Title: "Some Movie", TMDBID: 42, Protocol: "torrent",
-		DownloadURL: magnet, RootFolderPath: "/movies",
+		Title: "Some Movie", TMDBID: 42, GUID: "g-magnet", RootFolderPath: "/media",
 	})
 	resp, err := http.Post(srv.URL+"/api/modes/movies/search/grab", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -392,9 +398,9 @@ func TestGrabHandler_UnreleasedMovieReturns409(t *testing.T) {
 	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, dl, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
+	grabReleaseCache.remember("g-nr", "magnet:?xt=urn:btih:ABCDEF1234567890abcdef1234567890abcdef99", "torrent")
 	body, _ := json.Marshal(grabRequest{
-		Title: "In-Cinema Film", TMDBID: 99, Protocol: "torrent",
-		DownloadURL: "magnet:?xt=urn:btih:ABCDEF1234567890abcdef1234567890abcdef99", RootFolderPath: "/movies",
+		Title: "In-Cinema Film", TMDBID: 99, GUID: "g-nr", RootFolderPath: "/media",
 	})
 	resp, err := http.Post(srv.URL+"/api/modes/movies/search/grab", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -418,9 +424,10 @@ func TestGrabHandler_SeasonSpecified_RoundTrips(t *testing.T) {
 	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, dl, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
+	grabReleaseCache.remember("g-spec", "magnet:?xt=urn:btih:ABCDEF1234567890abcdef1234567890abcdef12", "torrent")
 	body, _ := json.Marshal(grabRequest{
 		Title: "Some Show Special", TMDBID: 555, SeasonNumber: 0, EpisodeNumber: 0, SeasonSpecified: true,
-		Protocol: "torrent", DownloadURL: "magnet:?xt=urn:btih:ABCDEF1234567890abcdef1234567890abcdef12", RootFolderPath: "/tv",
+		GUID: "g-spec", RootFolderPath: "/media",
 	})
 	resp, err := http.Post(srv.URL+"/api/modes/series/search/grab", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -451,9 +458,9 @@ func TestGrabHandler_Usenet_NotSupported(t *testing.T) {
 	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, dl, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
+	grabReleaseCache.remember("g-nzb", "http://example/download.nzb", "usenet")
 	body, _ := json.Marshal(grabRequest{
-		Title: "Some Show S01E01", TVDBID: 7, Protocol: "usenet",
-		DownloadURL: "http://example/download.nzb", RootFolderPath: "/tv",
+		Title: "Some Show S01E01", TVDBID: 7, GUID: "g-nzb", RootFolderPath: "/media",
 	})
 	resp, err := http.Post(srv.URL+"/api/modes/series/search/grab", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -473,7 +480,8 @@ func TestGrabHandler_UnrecognizedProtocol(t *testing.T) {
 	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil, nil))
 	defer srv.Close()
 
-	body, _ := json.Marshal(grabRequest{Title: "X", Protocol: "carrier-pigeon", DownloadURL: "http://x", RootFolderPath: "/movies"})
+	grabReleaseCache.remember("g-pigeon", "http://x", "carrier-pigeon")
+	body, _ := json.Marshal(grabRequest{Title: "X", GUID: "g-pigeon", RootFolderPath: "/media"})
 	resp, err := http.Post(srv.URL+"/api/modes/movies/search/grab", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST failed: %v", err)
@@ -481,6 +489,22 @@ func TestGrabHandler_UnrecognizedProtocol(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400 for an unrecognized protocol, got %d", resp.StatusCode)
+	}
+}
+
+func TestGrabHandler_UnknownGUID(t *testing.T) {
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	body, _ := json.Marshal(grabRequest{Title: "X", GUID: "never-cached", RootFolderPath: "/media"})
+	resp, err := http.Post(srv.URL+"/api/modes/movies/search/grab", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown guid, got %d", resp.StatusCode)
 	}
 }
 

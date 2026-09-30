@@ -41,6 +41,14 @@ func TestSafePathComponent(t *testing.T) {
 	if got := SafePathComponent(`a/b\c` + "\x00" + "d"); got != "a-b-c_d" {
 		t.Errorf("got %q", got)
 	}
+	if got := SafePathComponent(""); got != "" {
+		t.Errorf("empty title must stay empty, got %q", got)
+	}
+	for _, raw := range []string{".", "..", " .. "} {
+		if got := SafePathComponent(raw); got == "." || got == ".." || got == "" {
+			t.Errorf("SafePathComponent(%q) = %q, want a non-dot component", raw, got)
+		}
+	}
 }
 
 func TestMovieFileName(t *testing.T) {

@@ -2313,8 +2313,17 @@ func sameDownloads(a, b []Download) bool {
 
 // sanitizeName strips path separators and null bytes so a release name or
 // yEnc filename can be used safely as a filesystem path component.
+//
+// Claude 2026-09-30: reject "." / ".." / empty after separator strip.
+// Reason: yEnc names of ".." could escape the GID-keyed staging dir.
+// Troubleshooting: a decode whose filename is only dots writes as "_".
 func sanitizeName(s string) string {
-	return strings.NewReplacer("/", "_", "\\", "_", "\x00", "_").Replace(s)
+	s = strings.NewReplacer("/", "_", "\\", "_", "\x00", "_").Replace(s)
+	s = strings.TrimSpace(s)
+	if s == "" || s == "." || s == ".." {
+		return "_"
+	}
+	return s
 }
 
 // knownOutputExt reports whether name ends with a media/par2 extension the

@@ -195,6 +195,7 @@ func toDTOReleaseItem(m adultnewest.MatchedRelease, feedHealth *adultnewest.Feed
 		item.Protocol = m.DownloadProtocol
 		item.SizeBytes = m.SizeBytes
 	}
+	rememberAdultNewestReleaseItem(&item)
 	return item
 }
 

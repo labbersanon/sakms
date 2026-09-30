@@ -64,7 +64,9 @@ func TestLibraryRescan_RequiresRoot(t *testing.T) {
 		t.Fatalf("expected 400 without a root, got %d", resp.StatusCode)
 	}
 
-	putBody, _ := json.Marshal(libraryRootFolderRequest{Path: t.TempDir()})
+	root := t.TempDir()
+	withBrowsableRoot(t, root)
+	putBody, _ := json.Marshal(libraryRootFolderRequest{Path: root})
 	putReq, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/modes/series/library/root-folder", bytes.NewReader(putBody))
 	putResp, err := http.DefaultClient.Do(putReq)
 	if err != nil {

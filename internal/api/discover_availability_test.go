@@ -612,9 +612,10 @@ func TestDiscoverAvailability_Adult_KnownEnclosureSurvivesZeroProwlarrResults(t 
 		releaseName = "Vixen.Known.Enclosure.Scene.XXX.1080p.x265-GROUP"
 		downloadURL = "magnet:?xt=urn:btih:KNOWNENCLOSURE"
 	)
+	guid := grabReleaseCache.remember("g-known-enc", downloadURL, "torrent")
 	reqURL := fmt.Sprintf(
-		"%s/api/modes/adult/discover/availability?title=%s&releaseTitle=%s&durationSeconds=1800&downloadUrl=%s&protocol=torrent&sizeBytes=900000000",
-		srv.URL, urlQueryEscape(title), urlQueryEscape(releaseName), urlQueryEscape(downloadURL),
+		"%s/api/modes/adult/discover/availability?title=%s&releaseTitle=%s&durationSeconds=1800&guid=%s&protocol=torrent&sizeBytes=900000000",
+		srv.URL, urlQueryEscape(title), urlQueryEscape(releaseName), urlQueryEscape(guid),
 	)
 	resp, err := http.Get(reqURL)
 	if err != nil {
@@ -639,8 +640,8 @@ func TestDiscoverAvailability_Adult_KnownEnclosureSurvivesZeroProwlarrResults(t 
 	if got == nil {
 		t.Fatalf("expected the known 1080p torrent in res1080/low/torrent, got %+v", out.Res1080)
 	}
-	if got.DownloadURL != downloadURL || got.Protocol != "torrent" || got.Size != 900000000 {
-		t.Errorf("forced enclosure fields = %+v, want URL/protocol/size from the card", got)
+	if got.GUID != guid || got.Protocol != "torrent" || got.Size != 900000000 {
+		t.Errorf("forced enclosure fields = %+v, want guid/protocol/size from the card", got)
 	}
 	if out.Diagnostics.RawReleaseCount != 1 || out.Diagnostics.MatchedReleaseCount != 1 {
 		t.Errorf("diagnostics = %+v, want one known raw/matched enclosure", out.Diagnostics)

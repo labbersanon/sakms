@@ -472,6 +472,7 @@ func resolveRssFeedHandler(httpClient *http.Client, store *rssfeeds.Store, relea
 				Protocol:    string(f.Protocol),
 				Indexer:     f.Title,
 			}
+			rememberRssFeedItem(&out[i])
 			// downloadURL == "" only for a degenerate item with no enclosure and
 			// no link (feedItemKey would hash it instead) — never a real pool key,
 			// so skip it and avoid a spurious "" lookup.

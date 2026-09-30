@@ -174,7 +174,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// instance (see ai_models.go) — deliberately NOT /api/settings/ai-models,
 	// which would collide with the existing singular GET/PUT
 	// /api/settings/ai-model pair below.
-	mux.HandleFunc("GET /api/ollama/models", ollamaModelsHandler(httpClient))
+	mux.HandleFunc("GET /api/ollama/models", ollamaModelsHandler(connStore, httpClient))
 
 	mux.HandleFunc("GET /api/modes/{mode}/tracked", listTrackedHandler(libStore, grabsStore))
 	mux.HandleFunc("GET /api/modes/{mode}/tracked/{id}/video", trackedVideoHandler(libStore))
@@ -191,9 +191,6 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("GET /api/modes/{mode}/library/root-folder", getLibraryRootFolderHandler(settingsStore))
 	mux.HandleFunc("PUT /api/modes/{mode}/library/root-folder", putLibraryRootFolderHandler(httpClient, connStore, scStore, settingsStore, propStore, libStore, prober, videoHasher, entityStore))
 	mux.HandleFunc("POST /api/modes/{mode}/library/rescan", libraryRescanHandler(httpClient, connStore, scStore, settingsStore, propStore, libStore, prober, videoHasher, entityStore))
-	// Validates that a candidate root folder both exists and is writable (SAK
-	// writes into it for rename/dedup) — deliberately NOT confined to
-	// browse.go's browsableRoots, which scope only the autocomplete helper.
 	mux.HandleFunc("POST /api/modes/{mode}/library/root-folder/test", testLibraryRootFolderHandler())
 
 	// Per-season monitoring (see airdatemonitor.go). The literal `series`

@@ -9919,6 +9919,18 @@ status stays active.
 **Fix:** Chip change clears the scan. Apply refuses `item.mode` ≠ request mode. Confirm lists unique dest roots. Reconcile parks HTTP 4xx / indexer-reject NZB URLs. One `jobSem` lives for the reconnect loop. Unknown parse resolution fails a set minRes. Adult Identify comment matches Build (always constructed; AI is nil-able).
 **Outcome:** Import cannot MOVE a Series scan into Movies via the chip. Dead NZB URLs re-search instead of hammering. Hash concurrency stays at MaxJobs across reconnects.
 
+## 2026-09-30 — Hollow import gate and EXDEV leftover source
 
+**Problem:** Reconcile imported a ≥1MiB video when the resume sidecar was gone even if the file was sparse or all-NUL (Truncate-up leftover). `place.Move` EXDEV copy-then-failed-unlink returned a generic error, so import/Apply treated dest as failed while the library already held the file.
+**Fix:** `VideoLooksFinished` requires expected sidecar size when known and rejects sparse/all-NUL payloads. Sidecar-absent hollow staging parks for an alternate NZB (same as other no-usable-video). After EXDEV copy, `ErrCopiedSourceRemains` keeps dest; Relocate retries source unlink and still returns dest so import can record it.
+**Outcome:** Hollow staging is re-searched instead of imported. Cross-device moves that copy but cannot unlink still land in the library.
 
+### Files changed
 
+| File | Change |
+|---|---|
+| `internal/usenet/video_finished.go` | Finished-video check + sidecar expected size |
+| `internal/api/downloadreconcile.go` | Hollow reason parks; no relaunch after content park |
+| `internal/api/import.go` | Complete-import uses the same finished check |
+| `internal/place/move.go` | `ErrCopiedSourceRemains` + `AcceptCopiedDest` |
+| `internal/rename/rename.go` | Relocate keeps dest after leftover source |

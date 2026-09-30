@@ -194,6 +194,87 @@ func TestUsenetStagingReadyForImport_Gates(t *testing.T) {
 	}
 }
 
+func TestUsenetStagingReadyForImport_HollowAndPopulated(t *testing.T) {
+	root := t.TempDir()
+	gid := "nzb-2222222222222222"
+	dir := filepath.Join(root, gid)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, usenet.OwnedMarkerFile), []byte("sakms\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	zeros := filepath.Join(dir, "Hollow.mkv")
+	if err := os.WriteFile(zeros, make([]byte, minUsenetReconcileImportBytes+64), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if ok, why := usenetStagingReadyForImport(root, dir); ok || why != usenetStagingHollowReason {
+		t.Fatalf("hollow = (%v, %q)", ok, why)
+	}
+	if err := os.Remove(zeros); err != nil {
+		t.Fatal(err)
+	}
+	payload := make([]byte, minUsenetReconcileImportBytes+64)
+	for i := range payload {
+		payload[i] = byte('A' + (i % 26))
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Movie.mkv"), payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if ok, why := usenetStagingReadyForImport(root, dir); !ok || why != "" {
+		t.Fatalf("populated = (%v, %q)", ok, why)
+	}
+	if err := os.WriteFile(filepath.Join(dir, usenet.ResumeFileName), []byte(`{"v":3,"files":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if ok, why := usenetStagingReadyForImport(root, dir); ok || why != "resume sidecar present" {
+		t.Fatalf("sidecar = (%v, %q)", ok, why)
+	}
+	n := minUsenetReconcileImportBytes + 64
+	if err := os.WriteFile(filepath.Join(dir, "Movie.mkv"), make([]byte, n), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sidecar := fmt.Sprintf(`{"v":3,"files":{"Movie.mkv":{"size":%d,"done":{}}}}`, n)
+	if err := os.WriteFile(filepath.Join(dir, usenet.ResumeFileName), []byte(sidecar), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if ok, why := usenetStagingReadyForImport(root, dir); ok || why != usenetStagingHollowReason {
+		t.Fatalf("full-size hollow with sidecar = (%v, %q)", ok, why)
+	}
+}
+
+func TestReconcileInFlightDownloads_HollowVideoParks(t *testing.T) {
+	ctx := context.Background()
+	_, _, settingsStore, grabsStore, libStore, _, _, _, _, _ := testStores(t)
+	staging := t.TempDir()
+	nzb := usenet.New(usenet.Config{StagingDir: staging})
+	gid := "nzb-eeeeeeeeeeeeeeee"
+	dir := filepath.Join(staging, gid)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, usenet.OwnedMarkerFile), []byte("sakms\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Movie.mkv"), make([]byte, minUsenetReconcileImportBytes+64), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := dispatchedUsenetGrab(t, grabsStore, gid)
+	ReconcileInFlightDownloads(ctx, DownloadReconcileDeps{
+		SettingsStore: settingsStore, GrabsStore: grabsStore, LibStore: libStore, NZB: nzb,
+	})
+	got, err := grabsStore.Get(ctx, g.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status == grabs.Imported {
+		t.Fatal("imported hollow video")
+	}
+	if got.Status != grabs.PendingRetry {
+		t.Fatalf("status = %q, want pending_retry", got.Status)
+	}
+}
+
 func TestReconcileInFlightDownloads_ForceFullSkipsImport(t *testing.T) {
 	ctx := context.Background()
 	_, _, settingsStore, grabsStore, libStore, _, _, _, _, _ := testStores(t)

@@ -143,8 +143,16 @@ func Relocate(sourcePath, destRoot string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return moveCommitted(sourcePath, unique)
+}
+
+// Claude 2026-09-30: Relocate must not return "" when dest already has the copy.
+// Reason: UniquePath .2 retry duplicated the library file.
+// Troubleshooting: journal leftover source; dest path is still returned.
+// Review if: AcceptCopiedDest is called from torrent import copies too (Relocate covers them).
+func moveCommitted(sourcePath, unique string) (string, error) {
 	if err := place.Move(sourcePath, unique); err != nil {
-		return "", fmt.Errorf("moving %q to %q: %w", sourcePath, unique, err)
+		return place.AcceptCopiedDest(unique, fmt.Errorf("moving %q to %q: %w", sourcePath, unique, err))
 	}
 	return unique, nil
 }
@@ -567,10 +575,7 @@ func RelocateMovie(sourcePath, destRoot, title string, year, tmdbID int, preset 
 	if err != nil {
 		return "", err
 	}
-	if err := place.Move(sourcePath, unique); err != nil {
-		return "", fmt.Errorf("moving %q to %q: %w", sourcePath, unique, err)
-	}
-	return unique, nil
+	return moveCommitted(sourcePath, unique)
 }
 
 // ApplyLibrary is Rename's Movies-library apply. p must be Pending. There's
@@ -2014,10 +2019,7 @@ func RelocateEpisodeRange(sourcePath, destRoot, seriesTitle string, seriesYear, 
 	if err != nil {
 		return "", err
 	}
-	if err := place.Move(sourcePath, unique); err != nil {
-		return "", fmt.Errorf("moving %q to %q: %w", sourcePath, unique, err)
-	}
-	return unique, nil
+	return moveCommitted(sourcePath, unique)
 }
 
 // ApplyLibrarySeries is Rename's Series-library counterpart to ApplyLibrary.

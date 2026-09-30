@@ -1,10 +1,8 @@
-// Claude 2026-09-28: Organize Import tab — identify, then MOVE into the library.
-// Reason: SAK is the file manager; dump-folder files must leave the source
-//   and land in the configured Movies/Series root. Confirm is the approval.
-// Troubleshooting: Scan 400 — path outside /media,/downloads,/adult,/staging
-//   or no library root. Adult is not a mode here. Unmatched rows stay listed
-//   but cannot be imported.
-// Review if: Adult import is added.
+// Claude 2026-09-29: Organize Import tab — Movies, Series, and Adult.
+// Reason: dump-folder files MOVE into the configured library root. Adult
+//   unmatched+phash rows are local Pending and importable. Confirm is approval.
+// Troubleshooting: Scan 400 — path outside mounted roots or no library root.
+// Review if: Adult gains a Kids split.
 
 import {
   type Component,
@@ -127,7 +125,7 @@ export const Import: Component = () => {
       <h2 class="mb-1 text-lg font-semibold text-fg">Import</h2>
       <Muted class="mb-4">
         Identify videos in a dump folder and move them into the library.
-        Source copies are not kept. Movies and Series only.
+        Source copies are not kept.
       </Muted>
 
       <div class="mb-4 flex flex-wrap gap-2">
@@ -142,6 +140,12 @@ export const Import: Component = () => {
           onClick={() => setMode("series")}
         >
           Series
+        </Button>
+        <Button
+          variant={mode() === "adult" ? "primary" : "secondary"}
+          onClick={() => setMode("adult")}
+        >
+          Adult
         </Button>
       </div>
 

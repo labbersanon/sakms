@@ -1,17 +1,20 @@
 package rename
 
-// Claude 2026-09-28: Organize manual import scan — identify then MOVE.
-// Reason: SAK is the library manager; files picked under a browsable source
-//   must land in the mode library root (Kids when classify says so), not
-//   stay in the dump folder. Reuses proposeOneLibrary / proposeOneEpisodeLibrary
-//   so identity matches Rename. Anthology / catalog-in-place stays Rename-only.
-// Troubleshooting: dest is destRoot, never sourcePath. Apply uses Relocate*.
-// Review if: Adult gains an import walk, or anthology import is added.
+// Claude 2026-09-29: Organize Import now includes Adult.
+// Reason: dump-folder Adult files reuse identifyAdultFiles + ApplyLibraryAdult
+//   (MOVE). Unmatched+phash mint a local Pending (box=local, phash:<hash>).
+//   Already-tracked box/scene or phash becomes PendingAlternate like Rename.
+//   MatchesAdultSchema is NOT skipped — a dump file may already look named.
+// Troubleshooting: dest is destRoot (Adult library root), never sourcePath.
+//   Identify + hasher required. No Kids split. Confirm reconstructs identity.
+// Review if: Adult import gains a Kids root, or unmatched-without-phash is
+//   allowed to MOVE.
 
 import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/labbersanon/sakms/internal/config"
 	"github.com/labbersanon/sakms/internal/library"
@@ -172,8 +175,126 @@ func ScanImportSeries(ctx context.Context, sess *mode.Session, libStore *library
 	return out, nil
 }
 
-// ImportDestPath is the library path RelocateMovie/RelocateEpisode will use
-// for a pending import proposal. Empty when the row is not ready to move.
+// ScanImportAdult walks sourcePath for videos that are not already in the
+// Adult library and identifies them the same way Rename does
+// (identifyAdultFiles: phash → stash-box/TPDB → text). Destination is
+// destRoot (the Adult library root). Unlike ScanLibraryAdult, a file that
+// already matches AdultFileName is still proposed when it is sitting in the
+// dump folder — schema-skip is Rename-only, for files already in the library.
+//
+// Unmatched files with a computed phash become Pending local scenes
+// (box=local, scene_id=phash:<hash>) so Confirm can MOVE them. Already-tracked
+// catalog or phash hits stay on the PendingAlternate fold that
+// buildAdultLibraryProposal already applies.
+func ScanImportAdult(ctx context.Context, sess *mode.Session, libStore *library.Store, hasher PHasher, prober Prober, sourcePath, destRoot string, cfg MatchConfig) ([]proposals.Proposal, error) {
+	cfg = cfg.Normalize()
+	if sess == nil || sess.Identify == nil {
+		return nil, fmt.Errorf("adult identification isn't configured — add a connection for your chosen AI provider and set the AI model in Settings, plus at least one of StashDB/FansDB/TPDB")
+	}
+	if hasher == nil {
+		return nil, fmt.Errorf("adult import needs a video hasher")
+	}
+	if destRoot == "" {
+		return nil, fmt.Errorf("no Adult library root folder configured yet — add one in Settings first")
+	}
+	if sourcePath == "" {
+		return nil, fmt.Errorf("source folder is required")
+	}
+
+	known := map[string]bool{}
+	if paths, err := libStore.AllScenePaths(ctx); err == nil {
+		for _, p := range paths {
+			known[p] = true
+		}
+	} else {
+		scenes, listErr := libStore.ListScenes(ctx)
+		if listErr != nil {
+			return nil, fmt.Errorf("loading library scenes: %w", listErr)
+		}
+		for _, sc := range scenes {
+			known[sc.FilePath] = true
+		}
+	}
+
+	entries, err := library.ScanRootFolder(sourcePath, known)
+	if err != nil {
+		return nil, fmt.Errorf("scanning %s: %w", sourcePath, err)
+	}
+
+	type candidate struct {
+		entry     library.UnmappedEntry
+		videoPath string
+	}
+	var candidates []candidate
+	for _, entry := range entries {
+		if cfg.OnProgress != nil {
+			cfg.OnProgress(len(candidates)+1, len(entries), entry.Name)
+		}
+		if config.SidecarExts[strings.ToLower(filepath.Ext(entry.Name))] {
+			continue
+		}
+		videoPath, err := library.ResolveVideoFile(entry.Path)
+		if err != nil {
+			continue
+		}
+		if searchterm.IsSampleVideo(videoPath) {
+			continue
+		}
+		candidates = append(candidates, candidate{entry: entry, videoPath: videoPath})
+	}
+
+	files := make([]adultFileID, len(candidates))
+	for i, c := range candidates {
+		files[i] = adultFileID{
+			path:       c.videoPath,
+			stem:       filepath.Base(c.videoPath),
+			parentName: filepath.Base(filepath.Dir(c.videoPath)),
+		}
+	}
+	ids := identifyAdultFiles(ctx, sess, hasher, prober, files)
+
+	var out []proposals.Proposal
+	for i, c := range candidates {
+		p := buildAdultLibraryProposal(ctx, libStore, destRoot, c.entry, c.videoPath, ids[i])
+		p.Workflow = proposals.Rename
+		mintAdultImportLocal(&p, c.videoPath, ids[i])
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// mintAdultImportLocal turns an Unmatched Adult import row into a Pending
+// local scene when a phash exists. Catalog Pending and PendingAlternate rows
+// are left alone. A DB-error Unmatched (could not check tracked) is left
+// unmatched so apply does not invent a second identity.
+func mintAdultImportLocal(p *proposals.Proposal, videoPath string, id adultIdentification) {
+	if p == nil || p.Status == proposals.Pending {
+		return
+	}
+	if !id.hashed || strings.TrimSpace(id.phash) == "" {
+		return
+	}
+	if strings.Contains(p.Reason, "could not check whether") {
+		return
+	}
+	title := strings.TrimSpace(p.Title)
+	if title == "" {
+		title = strings.TrimSuffix(filepath.Base(videoPath), filepath.Ext(videoPath))
+	}
+	p.Status = proposals.Pending
+	p.Title = title
+	p.GiveBackBox = library.LocalSceneBox
+	p.GiveBackSceneID = library.LocalSceneID(id.phash)
+	p.PHash = id.phash
+	if p.DurationSeconds == 0 {
+		p.DurationSeconds = id.duration
+	}
+	p.Reason = "local identity — no catalog scene; will MOVE as a local scene"
+}
+
+// ImportDestPath is the library path RelocateMovie/RelocateEpisode/
+// RelocateAdultScene will use for a pending import proposal. Empty when the
+// row is not ready to move.
 func ImportDestPath(p proposals.Proposal, preset naming.Preset) string {
 	if p.Status != proposals.Pending || p.RootFolderPath == "" || p.Title == "" {
 		return ""
@@ -190,6 +311,11 @@ func ImportDestPath(p proposals.Proposal, preset naming.Preset) string {
 		seriesFolder := naming.SeriesFolderName(preset, p.Title, p.Year, p.TMDBID)
 		seasonDir := filepath.Join(p.RootFolderPath, seriesFolder, naming.SeasonDirName(p.SeasonNumber))
 		return filepath.Join(seasonDir, naming.EpisodeRangeFileName(preset, p.Title, p.SeasonNumber, eps, "", filepath.Ext(p.SourcePath)))
+	case mode.Adult:
+		if p.GiveBackBox == "" || p.GiveBackSceneID == "" {
+			return ""
+		}
+		return filepath.Join(p.RootFolderPath, naming.AdultFileName(p.Studio, p.Title, p.Date, p.PHash, filepath.Ext(p.SourcePath)))
 	default:
 		return ""
 	}

@@ -119,4 +119,75 @@ describe("Import", () => {
     expect(screen.getByRole("button", { name: "Import selected" })).toBeDisabled();
     expect(applies).toEqual([]);
   });
+
+  it("scans Adult and moves a local scene into the library", async () => {
+    const adultItem = {
+      sourcePath: "/downloads/raw-scene.mp4",
+      sourceName: "raw-scene.mp4",
+      destPath: "/adult/Dump - Local Scene (2024-01-02) [phash-importhash].mp4",
+      destRoot: "/adult",
+      title: "Local Scene",
+      box: "local",
+      sceneId: "phash:importhash",
+      studio: "Dump",
+      date: "2024-01-02",
+      phash: "importhash",
+      status: "pending",
+      mode: "adult",
+    };
+    const applies: unknown[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (url.includes("/api/browse")) {
+          return jsonResponse({ path: "", entries: [] });
+        }
+        if (url.includes("/api/organize/import/scan") && method === "POST") {
+          const body = JSON.parse(String(init?.body)) as {
+            mode: string;
+            path: string;
+          };
+          expect(body).toEqual({ mode: "adult", path: "/downloads" });
+          return jsonResponse({
+            path: "/downloads",
+            destRoot: "/adult",
+            items: [adultItem],
+          });
+        }
+        if (url.includes("/api/organize/import/apply") && method === "POST") {
+          applies.push(JSON.parse(String(init?.body)));
+          return jsonResponse({
+            results: [
+              {
+                sourcePath: adultItem.sourcePath,
+                destPath: adultItem.destPath,
+                ok: true,
+              },
+            ],
+          });
+        }
+        return jsonResponse({});
+      }),
+    );
+
+    render(() => <Import />);
+    fireEvent.click(screen.getByRole("button", { name: "Adult" }));
+    fireEvent.input(screen.getByLabelText("Source folder"), {
+      target: { value: "/downloads" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Scan" }));
+    expect(await screen.findByText("Local Scene")).toBeInTheDocument();
+    expect(screen.getByText(/Library: \/adult/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Import selected" }));
+    expect(
+      await screen.findByText(/1 file will be moved into \/adult/),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Move files" }));
+    await waitFor(() => {
+      expect(applies).toEqual([{ mode: "adult", items: [adultItem] }]);
+    });
+  });
 });

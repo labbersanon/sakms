@@ -1,12 +1,13 @@
-// Claude 2026-09-28: Organize Import client.
+// Claude 2026-09-29: Organize Import client — Movies, Series, and Adult.
 // Reason: scan/apply stay off the proposals queue; confirm-then-MOVE.
-// Troubleshooting: 400 path must be a mounted root; Adult is refused.
-// Review if: Adult import is added.
+//   Adult reconstructs box/sceneId/phash so apply can RelocateAdultScene.
+// Troubleshooting: 400 path must be a mounted root; Adult needs a library root.
+// Review if: scan results are queued.
 
 import { api } from "./client";
 import type { Mode } from "./discover";
 
-export type ImportMode = Exclude<Mode, "adult">;
+export type ImportMode = Mode;
 
 export type ManualImportItem = {
   sourcePath: string;
@@ -19,6 +20,12 @@ export type ManualImportItem = {
   seasonNumber?: number;
   episodeNumber?: number;
   extraEpisodeNumbers?: number[];
+  box?: string;
+  sceneId?: string;
+  studio?: string;
+  date?: string;
+  phash?: string;
+  durationSeconds?: number;
   status: string;
   reason?: string;
   mode: string;

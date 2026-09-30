@@ -90,9 +90,10 @@ func Classify(rawPath string) Set {
 		// Reason: prefix rule already covers the new list/rename/move/delete
 		//   routes; they must stay {organize}, never {settings} like /api/browse.
 		// Review if: Browse grows a mode or node-id segment in the path.
-		// Claude 2026-09-28: POST /api/organize/import/scan|apply (Import tab).
-		// Reason: same prefix rule; confirm-then-MOVE into the library root.
-		// Review if: Adult import is added.
+		// Claude 2026-09-29: POST /api/organize/import/scan|apply (Import tab).
+		// Reason: same prefix rule; confirm-then-MOVE. Adult mode is in the
+		//   body — Layer 3 denyIfAdultLocked + mode.Build, not this path rule.
+		// Review if: Import grows a /modes/{mode}/ path.
 		out.Add(SectionOrganize)
 	case "autograb-batch":
 		// Discover's select-mode bulk grab. Adult items inside the body

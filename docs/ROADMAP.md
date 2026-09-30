@@ -490,12 +490,15 @@ dailies (`Show.2024.03.15`) and absolute-numbered anime (`Show - 1089`,
 (SxxExx) is unchanged. Destination names stay the existing SxxExx preset.
 See CHANGELOG 2026-09-28.
 
-### Manual import — shipped 2026-09-28
+### Manual import — shipped 2026-09-28, Adult 2026-09-29
 Organize → Import identifies videos in a browsable dump folder (same
 Rename matchers) and **moves** them into the mode library root (Kids
-when classify says so). Confirm is the approval. Movies and Series only.
-Not a proposals queue — scan is in-memory; apply reconstructs a Pending
-row and calls RelocateMovie / RelocateEpisode. See CHANGELOG 2026-09-28.
+when classify says so; Adult has no Kids split). Confirm is the approval.
+Movies, Series, and Adult. Adult reuses `identifyAdultFiles` +
+`ApplyLibraryAdult`. Unmatched+phash files MOVE as local scenes
+(`box=local`). Already-tracked scenes fold as PendingAlternate. Not a
+proposals queue — scan is in-memory; apply reconstructs a Pending row.
+See CHANGELOG 2026-09-28 and 2026-09-29.
 
 ### Adult release persistence — shipped 2026-08-11
 Plan: `.omc/plans/autopilot-impl-adult-release-persistence.md` (Wave 5 / T1–T8).

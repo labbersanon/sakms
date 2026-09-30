@@ -185,12 +185,13 @@ func moveUnique(source, dest string) (string, []mode.PathChange, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	if err := place.Move(source, unique); err != nil {
-		return "", nil, fmt.Errorf("moving %q to %q: %w", source, unique, err)
+	landed, err := moveCommitted(source, unique)
+	if err != nil {
+		return "", nil, err
 	}
-	return unique, []mode.PathChange{
+	return landed, []mode.PathChange{
 		{Path: source, Kind: mode.Deleted},
-		{Path: unique, Kind: mode.Created},
+		{Path: landed, Kind: mode.Created},
 	}, nil
 }
 

@@ -274,6 +274,14 @@ func importGrabMovies(ctx context.Context, libStore *library.Store, g *grabs.Gra
 	if err != nil {
 		return nil, fmt.Errorf("resolving the video file failed: %w", err)
 	}
+	// Claude 2026-09-30: complete-import twin of the reconcile hollow gate.
+	// Reason: UsenetCompleteImporter skipped usenetStagingReadyForImport and
+	//   Relocate'd Truncate-up sparse/NUL files into the library.
+	// Troubleshooting: importGrabContent returns ErrNoVideoUnpacked.
+	// Review if: torrent complete grows the same check (it shares this function).
+	if err := usenet.VideoLooksFinished(videoPath, 0); err != nil {
+		return nil, err
+	}
 	year := movieYearFromTMDB(ctx, sess, g.TMDBID)
 	// Claude 2026-09-22: capture prior library path before Upsert replaces it.
 	// Reason: quality-upgrade re-grabs left the inferior movie file on disk.
@@ -355,6 +363,9 @@ func importGrabSeries(ctx context.Context, libStore *library.Store, g *grabs.Gra
 	}
 	var changes []mode.PathChange
 	for _, videoPath := range videoPaths {
+		if err := usenet.VideoLooksFinished(videoPath, 0); err != nil {
+			return changes, err
+		}
 		season, episodes, ok := library.ParseEpisodeNumbers(filepath.Base(videoPath))
 		if !ok {
 			season, episodes, ok = resolveImportEpisodeSlot(ctx, sess, g.TMDBID, videoPath)
@@ -462,6 +473,11 @@ func importGrabAdult(ctx context.Context, libStore *library.Store, g *grabs.Grab
 	//   root (same as Rename Apply); staging→root still needs the first move.
 	// Troubleshooting: identifying from /data/downloads left files on the wrong volume.
 	// Review if: OrganizeImportedAdult accepts a staging source and relocates in one step.
+	if video, resolveErr := library.ResolveVideoFile(contentPath); resolveErr == nil {
+		if err := usenet.VideoLooksFinished(video, 0); err != nil {
+			return nil, err
+		}
+	}
 	movedPath, err := rename.Relocate(contentPath, g.RootFolderPath)
 	if err != nil {
 		return nil, fmt.Errorf("download completed but import failed: %w", err)

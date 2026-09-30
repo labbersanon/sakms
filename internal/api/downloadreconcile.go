@@ -296,11 +296,25 @@ func reconcileUsenetInFlight(ctx context.Context, deps DownloadReconcileDeps, g 
 		log.Printf("download reconcile: grab %d force-full — skipping staging import, will relaunch", g.ID)
 	} else if ok, why := usenetStagingReadyForImport(deps.NZB.StagingDir(), stagingPath); ok {
 		if err := reconcileImportUsenet(ctx, deps, g, stagingPath); err != nil {
+			if contentUnusableFailure(err) {
+				log.Printf("download reconcile: grab %d unusable staging — already parked, not relaunching", g.ID)
+				return false
+			}
 			log.Printf("download reconcile: importing usenet staging for grab %d: %v — will relaunch", g.ID, err)
 		} else {
 			log.Printf("download reconcile: grab %d (%s) imported from staging after engine forget", g.ID, g.Title)
 			return false
 		}
+	} else if why == usenetStagingHollowReason {
+		// Claude 2026-09-30: sidecar-absent hollow ≥1MiB must park, not relaunch.
+		// Reason: relaunch would keep importing the same sparse/NUL file.
+		// Troubleshooting: journal "hollow video"; grab pending_retry no-usable-video.
+		// Review if: usenetStagingReadyForImport is shared with UsenetCompleteImporter.
+		adeps := AutoGrabDeps{SettingsStore: deps.SettingsStore, GrabsStore: deps.GrabsStore, NZB: deps.NZB}
+		if parkErr := parkContentFailureOrDaysLadder(ctx, adeps, *g, usenet.ErrNoVideoUnpacked, deps.NZB); parkErr != nil {
+			log.Printf("download reconcile: parking grab %d after hollow staging: %v", g.ID, parkErr)
+		}
+		return false
 	} else if why != "" {
 		log.Printf("download reconcile: grab %d staging not import-ready (%s) — will relaunch", g.ID, why)
 	}
@@ -444,15 +458,21 @@ func reconcileImportUsenet(ctx context.Context, deps DownloadReconcileDeps, g *g
 // (samples, truncates) that are not a finished feature release.
 const minUsenetReconcileImportBytes = 1 << 20 // 1 MiB
 
+const usenetStagingHollowReason = "hollow video"
+
 // usenetStagingReadyForImport gates reconcile import: owned staging, non-sample
-// video, and a minimum size floor.
+// video, a minimum size floor, and a finished-looking payload.
+// Claude 2026-09-30: sidecar-absent ≥1MiB is not enough — sparse/NUL files imported.
+// Reason: Truncate-up left a large hollow MKV; resume sidecar was already gone.
+// Troubleshooting: why == "hollow video" → park, not relaunch.
+// Review if: complete importer is the only other caller (it uses VideoLooksFinished directly).
 func usenetStagingReadyForImport(stagingRoot, stagingPath string) (ok bool, reason string) {
 	if !usenet.IsOwnedStagingPath(stagingRoot, stagingPath) {
 		return false, "not owned staging"
 	}
-	if _, err := os.Stat(filepath.Join(stagingPath, usenet.ResumeFileName)); err == nil {
-		return false, "resume sidecar present"
-	} else if err != nil && !os.IsNotExist(err) {
+	_, sidecarErr := os.Stat(filepath.Join(stagingPath, usenet.ResumeFileName))
+	sidecarPresent := sidecarErr == nil
+	if sidecarErr != nil && !os.IsNotExist(sidecarErr) {
 		return false, "resume sidecar stat failed"
 	}
 	video, err := library.ResolveVideoFile(stagingPath)
@@ -468,6 +488,20 @@ func usenetStagingReadyForImport(stagingRoot, stagingPath string) (ok bool, reas
 	}
 	if fi.Size() < minUsenetReconcileImportBytes {
 		return false, "video too small"
+	}
+	expected := int64(0)
+	if sidecarPresent {
+		expected = usenet.ResumeExpectedFileSize(stagingPath, filepath.Base(video))
+	}
+	finishedErr := usenet.VideoLooksFinished(video, expected)
+	if sidecarPresent {
+		if finishedErr != nil && expected > 0 && fi.Size() >= expected {
+			return false, usenetStagingHollowReason
+		}
+		return false, "resume sidecar present"
+	}
+	if finishedErr != nil {
+		return false, usenetStagingHollowReason
 	}
 	return true, ""
 }

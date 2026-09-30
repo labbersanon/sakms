@@ -400,10 +400,7 @@ func RelocateAdultScene(sourcePath, destRoot, studio, title, date, phash string)
 	if err != nil {
 		return "", err
 	}
-	if err := place.Move(sourcePath, unique); err != nil {
-		return "", fmt.Errorf("moving %q to %q: %w", sourcePath, unique, err)
-	}
-	return unique, nil
+	return moveCommitted(sourcePath, unique)
 }
 
 // OrganizeImportedAdult identifies a just-imported Adult video and, on a

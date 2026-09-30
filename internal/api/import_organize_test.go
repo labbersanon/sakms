@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/naming"
+	"github.com/labbersanon/sakms/internal/usenet"
 )
 
 func TestImportGrabContent_MoviesUsesRelocateMovie(t *testing.T) {
@@ -46,6 +48,27 @@ func TestImportGrabContent_MoviesUsesRelocateMovie(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].FilePath != want || items[0].TMDBID != 42 {
 		t.Fatalf("library item = %+v", items)
+	}
+}
+
+func TestImportGrabContent_RejectsHollowMovie(t *testing.T) {
+	_, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	staging := t.TempDir()
+	root := t.TempDir()
+	src := filepath.Join(staging, "Hollow.Movie.mkv")
+	if err := os.WriteFile(src, make([]byte, 1<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := &grabs.Grab{
+		Mode: mode.Movies, Title: "Hollow Movie", TMDBID: 43,
+		RootFolderPath: root,
+	}
+	_, err := importGrabContent(context.Background(), libStore, g, src, "bluray", settingsStore, nil, nil, nil)
+	if !errors.Is(err, usenet.ErrNoVideoUnpacked) {
+		t.Fatalf("err = %v, want ErrNoVideoUnpacked", err)
+	}
+	if _, statErr := os.Stat(src); statErr != nil {
+		t.Fatalf("source should stay in staging: %v", statErr)
 	}
 }
 

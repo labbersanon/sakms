@@ -111,6 +111,57 @@ func TestMove_CrossDeviceDirectory(t *testing.T) {
 	}
 }
 
+func TestMove_CopiedSourceRemainsKeepsDest(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+	src := filepath.Join(srcDir, "scene.mp4")
+	dst := filepath.Join(dstDir, "library.mp4")
+	if err := os.WriteFile(src, []byte("payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	restoreRename := SetRenameForTest(func(oldpath, newpath string) error {
+		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: syscall.EXDEV}
+	})
+	t.Cleanup(restoreRename)
+	restoreRemove := SetRemoveAllForTest(func(path string) error {
+		if path == src {
+			return errors.New("busy")
+		}
+		return os.RemoveAll(path)
+	})
+	t.Cleanup(restoreRemove)
+
+	err := Move(src, dst)
+	if !errors.Is(err, ErrCopiedSourceRemains) {
+		t.Fatalf("Move err = %v, want ErrCopiedSourceRemains", err)
+	}
+	gotSrc, gotDst, ok := CopiedSource(err)
+	if !ok || gotSrc != src || gotDst != dst {
+		t.Fatalf("CopiedSource = %q %q %v", gotSrc, gotDst, ok)
+	}
+	if _, err := os.Stat(src); err != nil {
+		t.Fatalf("source should remain: %v", err)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil || string(got) != "payload" {
+		t.Fatalf("dst = %q err=%v", got, err)
+	}
+
+	kept, aerr := AcceptCopiedDest(dst, err)
+	if aerr != nil || kept != dst {
+		t.Fatalf("AcceptCopiedDest = %q %v", kept, aerr)
+	}
+}
+
+func TestAcceptCopiedDest_OtherErrorsUnchanged(t *testing.T) {
+	err := errors.New("nope")
+	got, aerr := AcceptCopiedDest("/dst", err)
+	if got != "/dst" || aerr != err {
+		t.Fatalf("got %q %v", got, aerr)
+	}
+}
+
 func TestIsEXDEV(t *testing.T) {
 	err := &os.LinkError{Op: "rename", Old: "a", New: "b", Err: syscall.EXDEV}
 	if !isEXDEV(err) {

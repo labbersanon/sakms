@@ -10055,5 +10055,52 @@ status stays active.
 | `internal/rename/import.go` | `ImportDestPath` interpolates episode title |
 | `frontend/src/naming.ts` | Proposed series name uses `episodeTitle` |
 
+## 2026-10-01 — TVDB Rename search returns series and episode hits
+
+**Problem:** Switching Rename Search to TVDB always showed "No results."
+**Fix:** Search both show names and episode titles. Map a miss from TMDB's TVDB cross-reference to the same synthetic anthology id Scan already uses, instead of dropping the hit. Seed episode catalogs from tracked library shows so an episode title does not have to also be a series name.
+**Outcome:** Typing a show name (Looney Tunes) or an episode name (A Hare Grows in Manhattan / Duck Soup) returns TVDB tiles.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/SearchTakeover.tsx` | TVDB queries `kind=series` and `kind=episode` |
+| `internal/tvdb/search_episodes.go` | `SearchEpisodesWithSeeds` scans extra parent catalogs |
+| `internal/api/discover.go` | Library seeds; anthology TMDB id on Find miss |
+| `internal/api/handler.go` | Pass `libStore` into tvdb-search |
+| `internal/rename/series_tvdb_episode_match.go` | Export `AnthologyTMDBID` |
+
+## 2026-10-01 — Rename search Advanced title/series/year/ID
+
+**Problem:** Rename Search had a single query box, so a TVDB episode title could not be scoped to a parent show, year, or catalog id.
+**Fix:** An Advanced disclosure on Movies/Series search adds Title, Series (Series mode), Year, and TMDB/TVDB ID. The APIs accept `year`, `id`, and `series` without changing Discover's tmdb-search callers.
+**Outcome:** Operators can look up Looney Tunes by TVDB id 7266, year 1930, or Series + Title (Duck Soup under Laurel & Hardy).
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/SearchTakeover.tsx` | Advanced disclosure; passes year/id/series |
+| `frontend/src/api/rename.ts` | Optional catalog search params |
+| `internal/api/discover.go` | tmdb-search id/year; tvdb-search id/year/series |
+| `internal/tvdb/search_episodes.go` | `SearchEpisodesIn` for a known parent |
+
+## 2026-10-01 — Adult Rename search Advanced performer/title/studio/year
+
+**Problem:** Adult Rename Search had a single query box and no Advanced panel, so a scene could not be looked up by actress/actor, studio, or year.
+**Fix:** Advanced on Adult search adds Actress/actor, Title, Studio, and Year. `GET /api/modes/adult/scene-search` accepts `performer`, `studio`, and `year`; `q` is optional when performer or studio is set. A performer query resolves the name to an id and lists that person's scenes (candidates have no performer names to post-filter).
+**Outcome:** Operators can find an Adult scene by performer, title, studio, and year without relying on a unique scene title.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/SearchTakeover.tsx` | Adult Advanced fields; passes performer/studio/year |
+| `frontend/src/api/rename.ts` | Optional adult scene-search params |
+| `internal/api/adult_scene_search.go` | Optional `q`; performer/studio/year → filtered list |
+| `internal/identify/boxlookup.go` | `ListSceneCandidatesFiltered` performer/studio/year paths |
+
+
 
 

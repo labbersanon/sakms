@@ -12,10 +12,13 @@ import (
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/discoverrefresh"
+	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/rename"
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/tmdb"
+	"github.com/labbersanon/sakms/internal/tvdb"
 )
 
 // mediaTypeForMode maps {mode} onto TMDB's media type, the same convention
@@ -419,8 +422,10 @@ func tmdbSearchHandler(httpClient *http.Client, connStore *connections.Store, sc
 			return
 		}
 		ctx := r.Context()
-		query := r.URL.Query().Get("q")
-		if query == "" {
+		query := strings.TrimSpace(r.URL.Query().Get("q"))
+		id := parsePositiveQueryInt(r, "id")
+		year := parsePositiveQueryInt(r, "year")
+		if query == "" && id == 0 {
 			http.Error(w, "q query parameter is required", http.StatusBadRequest)
 			return
 		}
@@ -436,7 +441,9 @@ func tmdbSearchHandler(httpClient *http.Client, connStore *connections.Store, sc
 		}
 
 		var items []tmdb.Item
-		if m == mode.Series {
+		if id > 0 {
+			items, err = tmdbSearchByID(ctx, sess.TMDB, m, id)
+		} else if m == mode.Series {
 			items, err = sess.TMDB.SearchTV(ctx, query)
 		} else {
 			items, err = sess.TMDB.SearchMovies(ctx, query)
@@ -445,6 +452,7 @@ func tmdbSearchHandler(httpClient *http.Client, connStore *connections.Store, sc
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
+		items = filterTMDBItemsByYear(items, year)
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(items)
@@ -454,9 +462,10 @@ func tmdbSearchHandler(httpClient *http.Client, connStore *connections.Store, sc
 // tvdbSearchHandler is Rename SearchTakeover's TVDB-backed series search
 // (GET /api/modes/series/tvdb-search). kind=series searches show names;
 // kind=episode searches episode titles and returns slot numbers for one-click
-// repick. Every hit is mapped to a TMDB id via FindTVByTVDBID so the existing
-// repick/move endpoints stay unchanged.
-func tvdbSearchHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store) http.HandlerFunc {
+// repick. TMDB id comes from the library row when that TVDB series is
+// tracked, else FindTVByTVDBID, else a synthetic anthology id — dropping
+// unmapped hits made TVDB search look empty for Looney Tunes / Laurel & Hardy.
+func tvdbSearchHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, libStore *library.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		if m != mode.Series {
@@ -464,17 +473,20 @@ func tvdbSearchHandler(httpClient *http.Client, connStore *connections.Store, sc
 			return
 		}
 		ctx := r.Context()
-		query := r.URL.Query().Get("q")
-		if query == "" {
-			http.Error(w, "q query parameter is required", http.StatusBadRequest)
-			return
-		}
+		query := strings.TrimSpace(r.URL.Query().Get("q"))
 		kind := r.URL.Query().Get("kind")
 		if kind == "" {
 			kind = "series"
 		}
 		if kind != "series" && kind != "episode" {
 			http.Error(w, "kind must be series or episode", http.StatusBadRequest)
+			return
+		}
+		seriesName := strings.TrimSpace(r.URL.Query().Get("series"))
+		id := parsePositiveQueryInt(r, "id")
+		year := parsePositiveQueryInt(r, "year")
+		if query == "" && seriesName == "" && id == 0 {
+			http.Error(w, "q, series, or id query parameter is required", http.StatusBadRequest)
 			return
 		}
 
@@ -492,17 +504,22 @@ func tvdbSearchHandler(httpClient *http.Client, connStore *connections.Store, sc
 			return
 		}
 
+		libByTVDB := tvdbSearchLibraryIndex(ctx, libStore)
+
 		out := []apidto.SeriesSearchItem{}
 		switch kind {
 		case "series":
-			results, err := sess.TVDB.SearchSeries(ctx, query)
+			results, err := tvdbSearchSeriesHits(ctx, sess, query, seriesName, id)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadGateway)
 				return
 			}
 			for _, res := range results {
-				tmdbID, err := sess.TMDB.FindTVByTVDBID(ctx, res.TVDBID)
-				if err != nil || tmdbID == 0 {
+				if !yearOK(res.Year, year) {
+					continue
+				}
+				tmdbID := tvdbSearchMapTMDBID(ctx, sess, libByTVDB, res.TVDBID)
+				if tmdbID == 0 {
 					continue
 				}
 				item := apidto.SeriesSearchItem{
@@ -515,7 +532,17 @@ func tvdbSearchHandler(httpClient *http.Client, connStore *connections.Store, sc
 				out = append(out, item)
 			}
 		default:
-			hits, err := sess.TVDB.SearchEpisodes(ctx, query)
+			// Claude 2026-10-01: scan tracked anthology catalogs, not only
+			//   SearchSeries(query).
+			// Reason: an episode title does not name the parent show, so the
+			//   seed list was empty and kind=episode always returned [].
+			// Troubleshooting: TVDB Rename Search "No results" for Duck Soup /
+			//   A Hare Grows in Manhattan even when Looney Tunes is tracked.
+			// Review if: TVDB adds a global episode-title search.
+			//
+			// Advanced series/id pins the parent catalog and skips SearchSeries
+			// of the episode title.
+			hits, err := tvdbSearchEpisodeHits(ctx, sess, libByTVDB, query, seriesName, id, year)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadGateway)
 				return
@@ -529,15 +556,24 @@ func tvdbSearchHandler(httpClient *http.Client, connStore *connections.Store, sc
 			for _, hit := range hits {
 				info, ok := seriesCache[hit.SeriesID]
 				if !ok {
-					tmdbID, err := sess.TMDB.FindTVByTVDBID(ctx, hit.SeriesID)
-					if err != nil || tmdbID == 0 {
+					tmdbID := tvdbSearchMapTMDBID(ctx, sess, libByTVDB, hit.SeriesID)
+					if tmdbID == 0 {
 						continue
 					}
-					name, year, err := sess.TVDB.SeriesBrief(ctx, hit.SeriesID)
-					if err != nil || name == "" {
+					name, parentYear := "", 0
+					if ser, ok := libByTVDB[hit.SeriesID]; ok && ser.Title != "" {
+						name, parentYear = ser.Title, ser.Year
+					} else {
+						var briefErr error
+						name, parentYear, briefErr = sess.TVDB.SeriesBrief(ctx, hit.SeriesID)
+						if briefErr != nil || name == "" {
+							continue
+						}
+					}
+					if !yearOK(parentYear, year) {
 						continue
 					}
-					info = episodeSeriesInfo{tmdbID: tmdbID, name: name, year: year}
+					info = episodeSeriesInfo{tmdbID: tmdbID, name: name, year: parentYear}
 					seriesCache[hit.SeriesID] = info
 				}
 				season := hit.SeasonNumber
@@ -559,6 +595,184 @@ func tvdbSearchHandler(httpClient *http.Client, connStore *connections.Store, sc
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(out)
 	}
+}
+
+const tvdbEpisodeSearchMaxExtra = 20
+
+func tvdbSearchLibraryIndex(ctx context.Context, libStore *library.Store) map[int]library.Series {
+	out := map[int]library.Series{}
+	if libStore == nil {
+		return out
+	}
+	all, err := libStore.ListSeries(ctx)
+	if err != nil {
+		return out
+	}
+	for _, s := range all {
+		if s.TVDBID > 0 {
+			out[s.TVDBID] = s
+		}
+	}
+	return out
+}
+
+// tvdbSearchMapTMDBID maps a TVDB series id onto the TMDB id repick/move
+// already accept. Tracked rows win (including negative anthology ids);
+// FindTVByTVDBID is next; a miss still returns AnthologyTMDBID so the hit
+// is not dropped.
+func tvdbSearchMapTMDBID(ctx context.Context, sess *mode.Session, libByTVDB map[int]library.Series, tvdbID int) int {
+	if tvdbID <= 0 {
+		return 0
+	}
+	if ser, ok := libByTVDB[tvdbID]; ok && ser.TMDBID != 0 {
+		return ser.TMDBID
+	}
+	if sess != nil && sess.TMDB != nil {
+		id, err := sess.TMDB.FindTVByTVDBID(ctx, tvdbID)
+		if err == nil && id > 0 {
+			return id
+		}
+	}
+	return rename.AnthologyTMDBID(tvdbID)
+}
+
+func tvdbEpisodeSearchSeeds(libByTVDB map[int]library.Series) []tvdb.Result {
+	var anth, rest []tvdb.Result
+	for _, s := range libByTVDB {
+		r := tvdb.Result{TVDBID: s.TVDBID, Name: s.Title, Year: s.Year}
+		if s.TMDBID < 0 || (s.Year > 0 && s.Year < 1970) {
+			anth = append(anth, r)
+			continue
+		}
+		rest = append(rest, r)
+	}
+	out := anth
+	if len(out) > tvdbEpisodeSearchMaxExtra {
+		return out[:tvdbEpisodeSearchMaxExtra]
+	}
+	need := tvdbEpisodeSearchMaxExtra - len(out)
+	if need > len(rest) {
+		need = len(rest)
+	}
+	return append(out, rest[:need]...)
+}
+
+func parsePositiveQueryInt(r *http.Request, key string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get(key)))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
+}
+
+func yearOK(got, want int) bool {
+	return want <= 0 || got == want
+}
+
+func tmdbItemYear(it tmdb.Item) int {
+	if len(it.ReleaseDate) < 4 {
+		return 0
+	}
+	y, err := strconv.Atoi(it.ReleaseDate[:4])
+	if err != nil {
+		return 0
+	}
+	return y
+}
+
+func filterTMDBItemsByYear(items []tmdb.Item, year int) []tmdb.Item {
+	if year <= 0 {
+		return items
+	}
+	out := []tmdb.Item{}
+	for _, it := range items {
+		y := tmdbItemYear(it)
+		if y == 0 || y == year {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+func tmdbSearchByID(ctx context.Context, client *tmdb.Client, m mode.Mode, id int) ([]tmdb.Item, error) {
+	if m == mode.Series {
+		d, err := client.TVDetails(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		return []tmdb.Item{{
+			ID:          d.ID,
+			Title:       d.Title,
+			PosterPath:  d.PosterPath,
+			Overview:    d.Overview,
+			VoteAverage: d.VoteAverage,
+			MediaType:   tmdb.TV,
+		}}, nil
+	}
+	d, err := client.MovieDetails(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return []tmdb.Item{{
+		ID:          d.ID,
+		Title:       d.Title,
+		PosterPath:  d.PosterPath,
+		Overview:    d.Overview,
+		ReleaseDate: d.ReleaseDate,
+		VoteAverage: d.VoteAverage,
+		MediaType:   tmdb.Movie,
+	}}, nil
+}
+
+func tvdbSearchSeriesHits(ctx context.Context, sess *mode.Session, query, seriesName string, id int) ([]tvdb.Result, error) {
+	if id > 0 {
+		name, yr, err := sess.TVDB.SeriesBrief(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if name == "" {
+			return []tvdb.Result{}, nil
+		}
+		return []tvdb.Result{{TVDBID: id, Name: name, Year: yr}}, nil
+	}
+	q := query
+	if q == "" {
+		q = seriesName
+	}
+	if q == "" {
+		return []tvdb.Result{}, nil
+	}
+	return sess.TVDB.SearchSeries(ctx, q)
+}
+
+func tvdbSearchEpisodeHits(ctx context.Context, sess *mode.Session, libByTVDB map[int]library.Series, query, seriesName string, id, year int) ([]tvdb.EpisodeHit, error) {
+	if query == "" {
+		return []tvdb.EpisodeHit{}, nil
+	}
+	if id > 0 {
+		name, yr, err := sess.TVDB.SeriesBrief(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if !yearOK(yr, year) {
+			return []tvdb.EpisodeHit{}, nil
+		}
+		return sess.TVDB.SearchEpisodesIn(ctx, query, []tvdb.Result{{TVDBID: id, Name: name, Year: yr}})
+	}
+	if seriesName != "" {
+		found, err := sess.TVDB.SearchSeries(ctx, seriesName)
+		if err != nil {
+			return nil, err
+		}
+		var seeds []tvdb.Result
+		for _, r := range found {
+			if yearOK(r.Year, year) {
+				seeds = append(seeds, r)
+			}
+		}
+		return sess.TVDB.SearchEpisodesIn(ctx, query, seeds)
+	}
+	return sess.TVDB.SearchEpisodesWithSeeds(ctx, query, tvdbEpisodeSearchSeeds(libByTVDB))
 }
 
 // posterHandler lived here through 2026-09-01 (TMDB-only). Moved to poster.go

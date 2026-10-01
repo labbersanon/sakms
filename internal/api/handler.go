@@ -561,7 +561,11 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("GET /api/images/proxy", imageProxyHandler(imageProxy))
 	mux.HandleFunc("GET /api/modes/{mode}/discover/tvdb-id", resolveTVDBIDHandler(httpClient, connStore, scStore, settingsStore))
 	mux.HandleFunc("GET /api/modes/{mode}/tmdb-search", tmdbSearchHandler(httpClient, connStore, scStore, settingsStore))
-	mux.HandleFunc("GET /api/modes/{mode}/tvdb-search", tvdbSearchHandler(httpClient, connStore, scStore, settingsStore))
+	// Claude 2026-10-01: tvdb-search takes libStore for catalog seeds and ids.
+	// Reason: episode search seeded only from SearchSeries(query) returned [].
+	// Troubleshooting: TVDB Rename Search never showed results.
+	// Review if: TVDB search no longer reads the library.
+	mux.HandleFunc("GET /api/modes/{mode}/tvdb-search", tvdbSearchHandler(httpClient, connStore, scStore, settingsStore, libStore))
 	// poster resolves a library card's TMDB poster art lazily, per card (the
 	// library caches no poster path) — see posterHandler.
 	mux.HandleFunc("GET /api/modes/{mode}/poster", posterHandler(httpClient, connStore, scStore, settingsStore, libStore))

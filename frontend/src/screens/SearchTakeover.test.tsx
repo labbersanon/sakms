@@ -1342,7 +1342,7 @@ describe("SearchTakeover — Series search merges the movies catalog", () => {
 });
 
 describe("SearchTakeover — Series database dropdown", () => {
-  it("shows Series name placeholder on TMDB and Episode name on TVDB", () => {
+  it("shows Series name placeholder on TMDB and Series or episode name on TVDB", () => {
     render(() => (
       <SearchTakeover
         heading="Re-pick"
@@ -1359,12 +1359,21 @@ describe("SearchTakeover — Series database dropdown", () => {
     fireEvent.change(screen.getByLabelText("Database"), {
       target: { value: "tvdb" },
     });
-    expect(screen.getByPlaceholderText("Episode name")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Series or episode name")).toBeInTheDocument();
   });
 
-  it("calls tvdb-search with kind=episode when TVDB is selected", async () => {
+  it("calls tvdb-search with kind=series and kind=episode when TVDB is selected", async () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (url.includes("/tvdb-search")) {
+        if (String(url).includes("kind=series")) {
+          return jsonResponse([
+            {
+              tmdbId: 42,
+              title: "Laurel & Hardy",
+              releaseDate: "1921-01-01",
+            },
+          ]);
+        }
         return jsonResponse([
           {
             tmdbId: 42,
@@ -1396,11 +1405,228 @@ describe("SearchTakeover — Series database dropdown", () => {
     fireEvent.click(screen.getByText("Search"));
 
     expect(await screen.findByLabelText("Use Duck Soup")).toBeInTheDocument();
-    const tvdbCall = fetchMock.mock.calls.find(([u]) =>
-      String(u).includes("/tvdb-search"),
-    );
-    expect(tvdbCall).toBeTruthy();
-    expect(String(tvdbCall![0])).toContain("kind=episode");
+    expect(screen.getByLabelText("Use Laurel & Hardy")).toBeInTheDocument();
+    const tvdbCalls = fetchMock.mock.calls
+      .map(([u]) => String(u))
+      .filter((u) => u.includes("/tvdb-search"));
+    expect(tvdbCalls.some((u) => u.includes("kind=series"))).toBe(true);
+    expect(tvdbCalls.some((u) => u.includes("kind=episode"))).toBe(true);
+  });
+});
+
+describe("SearchTakeover — Advanced search", () => {
+  it("hides Title/Series/Year/ID until Advanced is opened", () => {
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick"
+        searchMode="series"
+        initialQuery="A Show"
+        autoSearch={false}
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    expect(screen.getByText("Advanced")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Title")).toBeNull();
+    expect(screen.queryByLabelText("Series")).toBeNull();
+    expect(screen.queryByLabelText("Year")).toBeNull();
+    expect(screen.queryByLabelText("TMDB ID")).toBeNull();
+    fireEvent.click(screen.getByText("Advanced"));
+    expect(screen.getByLabelText("Title")).toBeInTheDocument();
+    expect(screen.getByLabelText("Series")).toBeInTheDocument();
+    expect(screen.getByLabelText("Year")).toBeInTheDocument();
+    expect(screen.getByLabelText("TMDB ID")).toBeInTheDocument();
+  });
+
+  it("shows Actress/actor, Title, Studio, and Year in Adult Advanced", () => {
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick"
+        searchMode="adult"
+        initialQuery=""
+        autoSearch={false}
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+    expect(screen.getByText("Advanced")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Actress / actor")).toBeNull();
+    fireEvent.click(screen.getByText("Advanced"));
+    expect(screen.getByLabelText("Actress / actor")).toBeInTheDocument();
+    expect(screen.getByLabelText("Title")).toBeInTheDocument();
+    expect(screen.getByLabelText("Studio")).toBeInTheDocument();
+    expect(screen.getByLabelText("Year")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Series")).toBeNull();
+    expect(screen.queryByLabelText("TMDB ID")).toBeNull();
+  });
+
+  it("sends performer, studio, year, and title on an advanced Adult search", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("/scene-search")) {
+        return jsonResponse({
+          items: [
+            {
+              box: "stashdb",
+              sceneId: "sc1",
+              title: "Gaping Anal",
+              studio: "Tushy",
+              date: "2022-09-05",
+            },
+          ],
+        });
+      }
+      return jsonResponse({ items: [] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick"
+        searchMode="adult"
+        initialQuery=""
+        autoSearch={false}
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText("Advanced"));
+    fireEvent.input(screen.getByLabelText("Actress / actor"), {
+      target: { value: "Riley Reid" },
+    });
+    fireEvent.input(screen.getByLabelText("Title"), {
+      target: { value: "Gaping Anal" },
+    });
+    fireEvent.input(screen.getByLabelText("Studio"), {
+      target: { value: "Tushy" },
+    });
+    fireEvent.input(screen.getByLabelText("Year"), {
+      target: { value: "2022" },
+    });
+    fireEvent.click(screen.getByText("Search"));
+
+    expect(await screen.findByLabelText("Use Gaping Anal")).toBeInTheDocument();
+    const sceneCall = fetchMock.mock.calls
+      .map(([u]) => String(u))
+      .find((u) => u.includes("/scene-search"));
+    expect(sceneCall).toContain("q=Gaping%20Anal");
+    expect(sceneCall).toContain("performer=Riley%20Reid");
+    expect(sceneCall).toContain("studio=Tushy");
+    expect(sceneCall).toContain("year=2022");
+  });
+
+  it("sends year, series, and TVDB id on an advanced TVDB search", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("/tvdb-search")) {
+        if (String(url).includes("kind=series")) {
+          return jsonResponse([
+            {
+              tmdbId: 42,
+              title: "Laurel & Hardy",
+              releaseDate: "1921-01-01",
+            },
+          ]);
+        }
+        return jsonResponse([
+          {
+            tmdbId: 42,
+            title: "Duck Soup",
+            seriesTitle: "Laurel & Hardy",
+            releaseDate: "1921-01-01",
+            seasonNumber: 3,
+            episodeNumber: 1,
+          },
+        ]);
+      }
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick"
+        searchMode="series"
+        initialQuery=""
+        initialSeriesDatabase="tvdb"
+        autoSearch={false}
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText("Advanced"));
+    fireEvent.input(screen.getByLabelText("Title"), {
+      target: { value: "Duck Soup" },
+    });
+    fireEvent.input(screen.getByLabelText("Series"), {
+      target: { value: "Laurel & Hardy" },
+    });
+    fireEvent.input(screen.getByLabelText("Year"), {
+      target: { value: "1921" },
+    });
+    fireEvent.input(screen.getByLabelText("TVDB ID"), {
+      target: { value: "73910" },
+    });
+    fireEvent.click(screen.getByText("Search"));
+
+    expect(await screen.findByLabelText("Use Duck Soup")).toBeInTheDocument();
+    const tvdbCalls = fetchMock.mock.calls
+      .map(([u]) => String(u))
+      .filter((u) => u.includes("/tvdb-search"));
+    expect(tvdbCalls.length).toBeGreaterThan(0);
+    expect(tvdbCalls.every((u) => u.includes("year=1921"))).toBe(true);
+    expect(tvdbCalls.every((u) => u.includes("id=73910"))).toBe(true);
+    expect(tvdbCalls.some((u) => u.includes("series=Laurel"))).toBe(true);
+  });
+
+  it("omits Series and uses TMDB ID in Movies advanced search", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("/tmdb-search")) {
+        return jsonResponse([
+          {
+            id: 550,
+            title: "Fight Club",
+            posterPath: "",
+            overview: "",
+            releaseDate: "1999-10-15",
+            voteAverage: 0,
+            mediaType: "movie",
+          },
+        ]);
+      }
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick"
+        searchMode="movies"
+        initialQuery=""
+        autoSearch={false}
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText("Advanced"));
+    expect(screen.queryByLabelText("Series")).toBeNull();
+    fireEvent.input(screen.getByLabelText("TMDB ID"), {
+      target: { value: "550" },
+    });
+    fireEvent.click(screen.getByText("Search"));
+
+    expect(await screen.findByLabelText("Use Fight Club")).toBeInTheDocument();
+    const tmdbCall = fetchMock.mock.calls
+      .map(([u]) => String(u))
+      .find((u) => u.includes("/tmdb-search"));
+    expect(tmdbCall).toContain("id=550");
   });
 });
 

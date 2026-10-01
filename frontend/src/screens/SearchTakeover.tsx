@@ -93,10 +93,10 @@ import type {
   SeriesSearchItem,
 } from "@dto";
 import { type Mode, proxyImage, tmdbPoster } from "../api/discover";
-import { adultSceneSearch, adultSceneResolve, tmdbSearch, tvdbSearch } from "../api/rename";
+import { adultSceneSearch, adultSceneResolve, tmdbSearch, tvdbSearch, type AdultSearchOpts, type CatalogSearchOpts } from "../api/rename";
 import { SectionLockedError } from "../api/client";
 import { ADULT_CONTENT_SECTION, sectionLabel } from "../api/sectionLock";
-import { Button, ErrorText, Muted, yearOf } from "../components/ui";
+import { Button, ErrorText, Muted, yearOf, inputClass, labelClass } from "../components/ui";
 import { MediaFallbackTile } from "../components/media";
 import { SeasonEpisodeAccordion } from "./discover/SeasonEpisodeAccordion";
 
@@ -204,6 +204,72 @@ type PickedShow = {
 
 type SeriesDatabase = "tmdb" | "tvdb";
 
+type AdvancedFields = {
+  on: boolean;
+  title: string;
+  series: string;
+  year: string;
+  id: string;
+  performer: string;
+  studio: string;
+};
+
+function emptyAdvanced(): AdvancedFields {
+  return {
+    on: false,
+    title: "",
+    series: "",
+    year: "",
+    id: "",
+    performer: "",
+    studio: "",
+  };
+}
+
+const EMPTY_ADVANCED: AdvancedFields = emptyAdvanced();
+
+function parsePositiveInt(raw: string): number {
+  const n = Number.parseInt(raw.trim(), 10);
+  if (!Number.isFinite(n) || n <= 0) {
+    return 0;
+  }
+  return n;
+}
+
+function catalogOpts(adv: AdvancedFields): CatalogSearchOpts | undefined {
+  if (!adv.on) {
+    return undefined;
+  }
+  const year = parsePositiveInt(adv.year);
+  const id = parsePositiveInt(adv.id);
+  const series = adv.series.trim();
+  if (!year && !id && !series) {
+    return undefined;
+  }
+  return {
+    year: year || undefined,
+    id: id || undefined,
+    series: series || undefined,
+  };
+}
+
+function adultOpts(adv: AdvancedFields): AdultSearchOpts | undefined {
+  if (!adv.on) {
+    return undefined;
+  }
+  const year = parsePositiveInt(adv.year);
+  const performer = adv.performer.trim();
+  const studio = adv.studio.trim();
+  if (!year && !performer && !studio) {
+    return undefined;
+  }
+  return {
+    year: year || undefined,
+    performer: performer || undefined,
+    studio: studio || undefined,
+  };
+}
+
 function tvdbItemToHit(item: SeriesSearchItem): CatalogHit {
   const presetSlot =
     item.seasonNumber != null && item.episodeNumber != null
@@ -255,8 +321,8 @@ export const SearchTakeover: Component<{
   searchMode: Mode;
   initialQuery: string;
   // initialSeriesDatabase seeds the Series-only database dropdown (TMDB vs TVDB).
-  // TMDB searches series names; TVDB searches episode titles — one field, hint
-  // follows the database choice.
+  // TMDB searches series names; TVDB searches show names and episode titles —
+  // one field, hint follows the database choice.
   initialSeriesDatabase?: SeriesDatabase;
   // autoSearch true seeds `submitted` from initialQuery, reproducing
   // RepickPanel's mount-time search; false starts empty, reproducing
@@ -301,21 +367,27 @@ export const SearchTakeover: Component<{
   const [submittedSeriesDatabase, setSubmittedSeriesDatabase] = createSignal<
     SeriesDatabase
   >(props.autoSearch ? (props.initialSeriesDatabase ?? "tmdb") : "tmdb");
+  const [advancedOpen, setAdvancedOpen] = createSignal(false);
+  const [advTitle, setAdvTitle] = createSignal("");
+  const [advSeries, setAdvSeries] = createSignal("");
+  const [advYear, setAdvYear] = createSignal("");
+  const [advId, setAdvId] = createSignal("");
+  const [advPerformer, setAdvPerformer] = createSignal("");
+  const [advStudio, setAdvStudio] = createSignal("");
+  const [submittedAdv, setSubmittedAdv] = createSignal<AdvancedFields>(EMPTY_ADVANCED);
 
   const [results] = createResource(
     () => ({
       q: submitted(),
       seriesDatabase:
         props.searchMode === "series" ? submittedSeriesDatabase() : "tmdb",
+      adv: submittedAdv(),
     }),
-    async ({ q, seriesDatabase }): Promise<SearchResult> => {
+    async ({ q, seriesDatabase, adv }): Promise<SearchResult> => {
     // Solid only skips a fetcher for false/null/undefined — a key with an empty
     // query still RUNS the fetcher. This guard is what makes autoSearch={false}
     // issue zero network calls on mount while the resource still resolves.
     if (props.searchMode === "adult") {
-      if (!q.trim()) {
-        return { kind: "adult", items: [] };
-      }
       if (isAdultResolveURL(q)) {
         const res = await adultSceneResolve(q.trim());
         if (!res.item) {
@@ -326,22 +398,48 @@ export const SearchTakeover: Component<{
           items: [res.item],
         };
       }
-      const res = await adultSceneSearch(q);
+      const title = adv.on && adv.title.trim() ? adv.title.trim() : q.trim();
+      const opts = adultOpts(adv);
+      if (!title && !opts?.performer && !opts?.studio) {
+        return { kind: "adult", items: [] };
+      }
+      const res = await adultSceneSearch(title, opts);
       return { kind: "adult", items: res.items, errors: res.errors };
     }
     if (props.searchMode === "series" && seriesDatabase === "tvdb") {
-      const tvdbQ = q.trim();
-      if (!tvdbQ) {
+      const title =
+        adv.on && adv.title.trim() ? adv.title.trim() : q.trim();
+      const seriesName = adv.on ? adv.series.trim() : "";
+      const opts = catalogOpts(adv);
+      if (!title && !seriesName && !opts?.id) {
         return { kind: "catalog", items: [] };
       }
-      const items = await tvdbSearch(tvdbQ, "episode");
+      // Claude 2026-10-01: TVDB search runs kind=series and kind=episode.
+      // Reason: kind=episode alone seeds catalogs from SearchSeries(query), so
+      //   a show name matches no episode titles and an episode title matches
+      //   no series — both look like "No results."
+      // Troubleshooting: TVDB Rename Search never returns hits.
+      // Review if: the backend grows a combined kind.
+      const seriesQ = seriesName || title;
+      const [seriesItems, episodeItems] = await Promise.all([
+        seriesQ || opts?.id
+          ? tvdbSearch(seriesQ, "series", opts)
+          : Promise.resolve([]),
+        title
+          ? tvdbSearch(title, "episode", opts)
+          : Promise.resolve([]),
+      ]);
       return {
         kind: "catalog",
-        items: items.map((item) => tvdbItemToHit(item)),
+        items: [
+          ...seriesItems.map((item) => tvdbItemToHit(item)),
+          ...episodeItems.map((item) => tvdbItemToHit(item)),
+        ],
       };
     }
-    const tmdbQ = q.trim();
-    if (!tmdbQ) {
+    const tmdbQ = adv.on && adv.title.trim() ? adv.title.trim() : q.trim();
+    const tmdbOpts = catalogOpts(adv);
+    if (!tmdbQ && !tmdbOpts?.id) {
       return { kind: "catalog", items: [] };
     }
     // SERIES SEARCHES BOTH CATALOGS. The motivating case is a short film that
@@ -367,9 +465,16 @@ export const SearchTakeover: Component<{
     // populates `results.error`, which the render already handles. The tradeoff
     // is real and accepted: a movies-catalog failure now fails a series search.
     if (props.searchMode === "series") {
+      if (tmdbOpts?.id) {
+        const series = await tmdbSearch("series", tmdbQ, tmdbOpts);
+        return {
+          kind: "catalog",
+          items: series.map((item) => ({ mode: "series" as const, item })),
+        };
+      }
       const [movies, series] = await Promise.all([
-        tmdbSearch("movies", tmdbQ),
-        tmdbSearch("series", tmdbQ),
+        tmdbSearch("movies", tmdbQ, tmdbOpts),
+        tmdbSearch("series", tmdbQ, tmdbOpts),
       ]);
       return {
         kind: "catalog",
@@ -385,7 +490,7 @@ export const SearchTakeover: Component<{
     // than a cast of props.searchMode: adult and series have both returned by
     // this line, so the literal is honest and a cast would silently admit
     // "adult" if that narrowing ever broke.
-    const items = await tmdbSearch(props.searchMode, tmdbQ);
+    const items = await tmdbSearch(props.searchMode, tmdbQ, tmdbOpts);
     return {
       kind: "catalog",
       items: items.map((item) => ({ mode: "movies" as const, item })),
@@ -559,6 +664,19 @@ export const SearchTakeover: Component<{
           if (props.searchMode === "series") {
             setSubmittedSeriesDatabase(seriesDatabase());
           }
+          setSubmittedAdv(
+            advancedOpen()
+              ? {
+                  on: true,
+                  title: advTitle(),
+                  series: advSeries(),
+                  year: advYear(),
+                  id: advId(),
+                  performer: advPerformer(),
+                  studio: advStudio(),
+                }
+              : EMPTY_ADVANCED,
+          );
         }}
       >
         <Show when={props.searchMode === "series"}>
@@ -585,12 +703,105 @@ export const SearchTakeover: Component<{
               : props.searchMode === "series"
                 ? seriesDatabase() === "tmdb"
                   ? "Series name"
-                  : "Episode name"
+                  : "Series or episode name"
                 : undefined
           }
         />
         <Button type="submit">Search</Button>
+        {/* Claude 2026-10-01: Advanced is a disclosure, not a second search page.
+            Reason: title/series/year/id (and Adult performer/studio) are opt-in;
+              autoSearch and Cancel-is-a-no-op still use only the main query
+              until Search is clicked.
+            Troubleshooting: TVDB shorts need a parent series or id; Adult
+              scenes need actress/actor or studio when the title is generic.
+            Review if: Movies/Series/Adult search grows a dedicated query DSL. */}
+        <Button
+          aria-expanded={advancedOpen()}
+          aria-controls="rename-search-advanced"
+          onClick={() => setAdvancedOpen((open) => !open)}
+        >
+          Advanced
+        </Button>
       </form>
+      <Show when={advancedOpen()}>
+        <div
+          id="rename-search-advanced"
+          class="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4"
+        >
+          <Show when={props.searchMode === "adult"}>
+            <label class="block">
+              <span class={labelClass}>Actress / actor</span>
+              <input
+                class={`${inputClass} mt-1`}
+                value={advPerformer()}
+                onInput={(e) => setAdvPerformer(e.currentTarget.value)}
+                aria-label="Actress / actor"
+              />
+            </label>
+          </Show>
+          <label class="block">
+            <span class={labelClass}>Title</span>
+            <input
+              class={`${inputClass} mt-1`}
+              value={advTitle()}
+              onInput={(e) => setAdvTitle(e.currentTarget.value)}
+              aria-label="Title"
+            />
+          </label>
+          <Show when={props.searchMode === "series"}>
+            <label class="block">
+              <span class={labelClass}>Series</span>
+              <input
+                class={`${inputClass} mt-1`}
+                value={advSeries()}
+                onInput={(e) => setAdvSeries(e.currentTarget.value)}
+                aria-label="Series"
+              />
+            </label>
+          </Show>
+          <Show when={props.searchMode === "adult"}>
+            <label class="block">
+              <span class={labelClass}>Studio</span>
+              <input
+                class={`${inputClass} mt-1`}
+                value={advStudio()}
+                onInput={(e) => setAdvStudio(e.currentTarget.value)}
+                aria-label="Studio"
+              />
+            </label>
+          </Show>
+          <label class="block">
+            <span class={labelClass}>Year</span>
+            <input
+              class={`${inputClass} mt-1`}
+              value={advYear()}
+              onInput={(e) => setAdvYear(e.currentTarget.value)}
+              inputMode="numeric"
+              aria-label="Year"
+            />
+          </label>
+          <Show when={props.searchMode !== "adult"}>
+            <label class="block">
+              <span class={labelClass}>
+                {props.searchMode === "series" && seriesDatabase() === "tvdb"
+                  ? "TVDB ID"
+                  : "TMDB ID"}
+              </span>
+              <input
+                class={`${inputClass} mt-1`}
+                value={advId()}
+                onInput={(e) => setAdvId(e.currentTarget.value)}
+                inputMode="numeric"
+                aria-label={
+                  props.searchMode === "series" && seriesDatabase() === "tvdb"
+                    ? "TVDB ID"
+                    : "TMDB ID"
+                }
+              />
+            </label>
+          </Show>
+        </div>
+      </Show>
 
       <Show when={props.notes}>
         <div class="mt-3 rounded-md border border-border bg-surface-2 p-3">

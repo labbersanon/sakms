@@ -3,6 +3,7 @@ package identify
 import (
 	"context"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/labbersanon/sakms/internal/stashbox"
@@ -204,6 +205,17 @@ type SceneCandidate struct {
 	DurationSeconds int
 }
 
+// SceneCandidateFilter is Adult Rename Advanced search. Year-only is not a
+// search (the handler requires title, performer, or studio). Performer is
+// resolved to an id and that person's scenes are listed — SceneCandidate has
+// no performer names to post-filter.
+type SceneCandidateFilter struct {
+	Title     string
+	Performer string
+	Studio    string
+	Year      int
+}
+
 // ListSceneCandidates fans a title query across every configured stash box in
 // order plus TPDB, returning the union with NO similarity filtering — the
 // operator is the filter here, unlike the automatic identification path
@@ -215,25 +227,151 @@ type SceneCandidate struct {
 // (cache.go) is keyed on a collapsed MatchResult and would serve stale/
 // incompatible entries here.
 func (b *BoxSearcher) ListSceneCandidates(ctx context.Context, title string, order []DatabaseRef) (items []SceneCandidate, softErrs []string) {
+	return b.ListSceneCandidatesFiltered(ctx, SceneCandidateFilter{Title: title}, order)
+}
+
+// Claude 2026-10-01: Adult Rename Advanced search (performer/title/studio/year).
+// Reason: SceneCandidate has no performer names; resolve SearchPerformer then list scenes.
+// Troubleshooting: Adult Rename Search Advanced by actress/actor or studio when the title is unknown.
+// Review if: stash-box SearchScene grows a performers selection, or TPDB title search accepts a performer name.
+func (b *BoxSearcher) ListSceneCandidatesFiltered(ctx context.Context, f SceneCandidateFilter, order []DatabaseRef) (items []SceneCandidate, softErrs []string) {
+	f.Title = strings.TrimSpace(f.Title)
+	f.Performer = strings.TrimSpace(f.Performer)
+	f.Studio = strings.TrimSpace(f.Studio)
 	refs := order
 	if len(refs) == 0 {
 		refs = legacyCascade
 	}
-	seen := make(map[string]struct{})
-
-	appendCandidate := func(c SceneCandidate) {
-		if len(items) >= maxSceneCandidates {
-			return
-		}
-		key := c.Box + "\x00" + c.SceneID
-		if _, ok := seen[key]; ok {
-			return
-		}
-		seen[key] = struct{}{}
-		items = append(items, c)
+	sink := &sceneCandidateSink{seen: make(map[string]struct{}), f: f}
+	switch {
+	case f.Performer != "":
+		softErrs = b.listScenesByPerformer(ctx, refs, sink)
+	case f.Title != "":
+		softErrs = b.listScenesByTitle(ctx, refs, sink)
+	case f.Studio != "":
+		softErrs = b.listScenesByStudio(ctx, refs, sink)
 	}
+	return sink.items, softErrs
+}
 
+type sceneCandidateSink struct {
+	items []SceneCandidate
+	seen  map[string]struct{}
+	f     SceneCandidateFilter
+}
+
+func (s *sceneCandidateSink) full() bool {
+	return len(s.items) >= maxSceneCandidates
+}
+
+func (s *sceneCandidateSink) add(c SceneCandidate) {
+	if s.full() {
+		return
+	}
+	if !sceneCandidateMatches(c, s.f) {
+		return
+	}
+	key := c.Box + "\x00" + c.SceneID
+	if _, ok := s.seen[key]; ok {
+		return
+	}
+	s.seen[key] = struct{}{}
+	s.items = append(s.items, c)
+}
+
+func sceneCandidateMatches(c SceneCandidate, f SceneCandidateFilter) bool {
+	if f.Year > 0 && !strings.HasPrefix(strings.TrimSpace(c.Date), strconv.Itoa(f.Year)) {
+		return false
+	}
+	if f.Studio != "" && !textMatches(c.Studio, f.Studio) {
+		return false
+	}
+	if f.Performer != "" && f.Title != "" && !textMatches(c.Title, f.Title) {
+		return false
+	}
+	return true
+}
+
+func textMatches(haystack, needle string) bool {
+	needle = strings.TrimSpace(needle)
+	if needle == "" {
+		return true
+	}
+	haystack = strings.TrimSpace(haystack)
+	if haystack == "" {
+		return false
+	}
+	if strings.Contains(strings.ToLower(haystack), strings.ToLower(needle)) {
+		return true
+	}
+	return TitleSimilarity(needle, haystack) > 0
+}
+
+type namedID struct {
+	id   string
+	name string
+}
+
+func pickNamedID(term string, items []namedID) string {
+	term = strings.TrimSpace(term)
+	if term == "" {
+		return ""
+	}
+	fallback := ""
+	best := ""
+	bestScore := 0.0
+	for _, it := range items {
+		if it.id == "" {
+			continue
+		}
+		if fallback == "" {
+			fallback = it.id
+		}
+		if strings.EqualFold(strings.TrimSpace(it.name), term) {
+			return it.id
+		}
+		if s := TitleSimilarity(term, it.name); s > bestScore {
+			bestScore = s
+			best = it.id
+		}
+	}
+	if bestScore >= 0.4 {
+		return best
+	}
+	return fallback
+}
+
+func stashSceneCandidate(box string, sc stashbox.Scene) SceneCandidate {
+	return SceneCandidate{
+		Box:             box,
+		SceneID:         sc.ID,
+		Title:           sc.Title,
+		Studio:          sc.StudioName,
+		Date:            sc.ReleaseDate,
+		ImageURL:        sc.ImageURL,
+		DurationSeconds: sc.Duration,
+	}
+}
+
+func tpdbSceneCandidate(sc tpdbrest.Scene) SceneCandidate {
+	return SceneCandidate{
+		Box:             "tpdb",
+		SceneID:         sc.ID,
+		Title:           sc.Title,
+		Studio:          sc.Site,
+		Date:            sc.Date,
+		ImageURL:        sc.Image,
+		DurationSeconds: sc.Duration,
+	}
+}
+
+func (b *BoxSearcher) listScenesByTitle(ctx context.Context, refs []DatabaseRef, sink *sceneCandidateSink) []string {
+	var softErrs []string
+	title := sink.f.Title
 	for _, ref := range refs {
+		if sink.full() {
+			return softErrs
+		}
 		client := b.stashBoxes[ref.Name]
 		if client == nil {
 			continue
@@ -244,44 +382,149 @@ func (b *BoxSearcher) ListSceneCandidates(ctx context.Context, title string, ord
 			continue
 		}
 		for _, sc := range scenes {
-			if len(items) >= maxSceneCandidates {
-				return items, softErrs
+			sink.add(stashSceneCandidate(ref.Name, sc))
+			if sink.full() {
+				return softErrs
 			}
-			appendCandidate(SceneCandidate{
-				Box:             ref.Name,
-				SceneID:         sc.ID,
-				Title:           sc.Title,
-				Studio:          sc.StudioName,
-				Date:            sc.ReleaseDate,
-				ImageURL:        sc.ImageURL,
-				DurationSeconds: sc.Duration,
-			})
 		}
 	}
+	if b.tpdb == nil || sink.full() {
+		return softErrs
+	}
+	scenes, err := b.tpdb.SearchByTitle(ctx, title, sink.f.Studio)
+	if err != nil {
+		return append(softErrs, "tpdb: "+err.Error())
+	}
+	for _, sc := range scenes {
+		sink.add(tpdbSceneCandidate(sc))
+		if sink.full() {
+			break
+		}
+	}
+	return softErrs
+}
 
-	if b.tpdb != nil {
-		scenes, err := b.tpdb.SearchByTitle(ctx, title, "")
+func (b *BoxSearcher) listScenesByPerformer(ctx context.Context, refs []DatabaseRef, sink *sceneCandidateSink) []string {
+	var softErrs []string
+	term := sink.f.Performer
+	for _, ref := range refs {
+		if sink.full() {
+			return softErrs
+		}
+		client := b.stashBoxes[ref.Name]
+		if client == nil {
+			continue
+		}
+		candidates, err := client.SearchPerformer(ctx, term, 5)
 		if err != nil {
-			softErrs = append(softErrs, "tpdb: "+err.Error())
-		} else {
-			for _, sc := range scenes {
-				if len(items) >= maxSceneCandidates {
-					break
-				}
-				appendCandidate(SceneCandidate{
-					Box:             "tpdb",
-					SceneID:         sc.ID,
-					Title:           sc.Title,
-					Studio:          sc.Site,
-					Date:            sc.Date,
-					ImageURL:        sc.Image,
-					DurationSeconds: sc.Duration,
-				})
+			softErrs = append(softErrs, ref.Name+": "+err.Error())
+			continue
+		}
+		items := make([]namedID, len(candidates))
+		for i, p := range candidates {
+			items[i] = namedID{id: p.ID, name: p.Name}
+		}
+		pid := pickNamedID(term, items)
+		if pid == "" {
+			continue
+		}
+		scenes, err := client.QueryScenesByPerformer(ctx, pid, 1, maxSceneCandidates)
+		if err != nil {
+			softErrs = append(softErrs, ref.Name+": "+err.Error())
+			continue
+		}
+		for _, sc := range scenes {
+			sink.add(stashSceneCandidate(ref.Name, sc))
+			if sink.full() {
+				return softErrs
 			}
 		}
 	}
+	if b.tpdb == nil || sink.full() {
+		return softErrs
+	}
+	candidates, err := b.tpdb.SearchPerformers(ctx, term)
+	if err != nil {
+		return append(softErrs, "tpdb: "+err.Error())
+	}
+	items := make([]namedID, len(candidates))
+	for i, p := range candidates {
+		items[i] = namedID{id: p.ID, name: p.Name}
+	}
+	pid := pickNamedID(term, items)
+	if pid == "" {
+		return softErrs
+	}
+	scenes, err := b.tpdb.ScenesByPerformer(ctx, pid, 1, maxSceneCandidates)
+	if err != nil {
+		return append(softErrs, "tpdb: "+err.Error())
+	}
+	for _, sc := range scenes {
+		sink.add(tpdbSceneCandidate(sc))
+		if sink.full() {
+			break
+		}
+	}
+	return softErrs
+}
 
-	return items, softErrs
+func (b *BoxSearcher) listScenesByStudio(ctx context.Context, refs []DatabaseRef, sink *sceneCandidateSink) []string {
+	var softErrs []string
+	term := sink.f.Studio
+	for _, ref := range refs {
+		if sink.full() {
+			return softErrs
+		}
+		client := b.stashBoxes[ref.Name]
+		if client == nil {
+			continue
+		}
+		studio, err := client.FindStudio(ctx, term)
+		if err != nil {
+			softErrs = append(softErrs, ref.Name+": "+err.Error())
+			continue
+		}
+		if studio == nil || studio.ID == "" {
+			continue
+		}
+		scenes, err := client.QueryScenesByStudio(ctx, studio.ID, 1, maxSceneCandidates)
+		if err != nil {
+			softErrs = append(softErrs, ref.Name+": "+err.Error())
+			continue
+		}
+		for _, sc := range scenes {
+			sink.add(stashSceneCandidate(ref.Name, sc))
+			if sink.full() {
+				return softErrs
+			}
+		}
+	}
+	if b.tpdb == nil || sink.full() {
+		return softErrs
+	}
+	sites, err := b.tpdb.SearchSites(ctx, term)
+	if err != nil {
+		return append(softErrs, "tpdb: "+err.Error())
+	}
+	items := make([]namedID, len(sites))
+	for i, s := range sites {
+		items[i] = namedID{id: s.ID, name: s.Name}
+	}
+	sid := pickNamedID(term, items)
+	if sid == "" {
+		return softErrs
+	}
+	scenes, err := b.tpdb.ScenesBySite(ctx, sid, 1, maxSceneCandidates)
+	if err != nil {
+		return append(softErrs, "tpdb: "+err.Error())
+	}
+	for _, sc := range scenes {
+		sink.add(tpdbSceneCandidate(sc))
+		if sink.full() {
+			break
+		}
+	}
+	return softErrs
 }
 
 // SceneByID looks up a scene directly by its stash-box UUID (StashDB/FansDB).

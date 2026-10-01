@@ -3,8 +3,10 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/labbersanon/sakms/internal/connections"
+	"github.com/labbersanon/sakms/internal/identify"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/sectionlock"
 	"github.com/labbersanon/sakms/internal/serviceconn"
@@ -49,9 +51,18 @@ type adultSceneSearchResponse struct {
 func adultSceneSearchHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		q := r.URL.Query().Get("q")
-		if q == "" {
-			http.Error(w, "q query parameter is required", http.StatusBadRequest)
+		// Claude 2026-10-01: q is optional when performer or studio is set.
+		// Reason: Adult Advanced search can look up by actress/actor or studio
+		//   without a scene title; year-only is still not a search.
+		// Troubleshooting: Adult Rename Search Advanced with performer/studio
+		//   and an empty main query returned 400.
+		// Review if: scene-search grows an id lookup distinct from scene-resolve.
+		q := strings.TrimSpace(r.URL.Query().Get("q"))
+		performer := strings.TrimSpace(r.URL.Query().Get("performer"))
+		studio := strings.TrimSpace(r.URL.Query().Get("studio"))
+		year := parsePositiveQueryInt(r, "year")
+		if q == "" && performer == "" && studio == "" {
+			http.Error(w, "q, performer, or studio query parameter is required", http.StatusBadRequest)
 			return
 		}
 
@@ -69,7 +80,12 @@ func adultSceneSearchHandler(httpClient *http.Client, connStore *connections.Sto
 			return
 		}
 
-		items, softErrs := sess.Identify.Boxes.ListSceneCandidates(ctx, q, sess.Identify.StashBoxes)
+		items, softErrs := sess.Identify.Boxes.ListSceneCandidatesFiltered(ctx, identify.SceneCandidateFilter{
+			Title:     q,
+			Performer: performer,
+			Studio:    studio,
+			Year:      year,
+		}, sess.Identify.StashBoxes)
 		resp := adultSceneSearchResponse{Errors: softErrs}
 		if len(items) > 0 {
 			resp.Items = make([]adultSceneCandidate, len(items))

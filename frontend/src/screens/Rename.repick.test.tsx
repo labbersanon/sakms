@@ -130,10 +130,12 @@ const stubRawFetch = (opts: { series?: Proposal[]; movies?: Proposal[] }) => {
       if (url.includes("/api/modes/movies/tmdb-search"))
         return jsonResponse(opts.movies?.length ? [tmdbResult] : []);
       if (url.includes("/tmdb-search")) return jsonResponse([tmdbResult]);
-      // Unmatched Series with no title auto-searches TVDB (kind=episode).
-      // Omit season/episode so there is no presetSlot: Assign episode stays
+      // Unmatched Series with no title auto-searches TVDB (series + episode).
+      // kind=series stays empty so findByLabelText sees one tile. Episode hits
+      // omit season/episode so there is no presetSlot: Assign episode stays
       // visible (a preset slot one-click commits and hides that control).
-      if (url.includes("/tvdb-search"))
+      if (url.includes("/tvdb-search")) {
+        if (String(url).includes("kind=series")) return jsonResponse([]);
         return jsonResponse([
           {
             tmdbId: tmdbResult.id,
@@ -142,6 +144,7 @@ const stubRawFetch = (opts: { series?: Proposal[]; movies?: Proposal[] }) => {
             releaseDate: tmdbResult.releaseDate,
           },
         ]);
+      }
       // SeasonEpisodeAccordion's self-fetch. Serving it is load-bearing: a
       // REJECTED seasons fetch resolves to [] and degrades to the free-text
       // fallback, where "Use show-level match only" still commits — so the

@@ -1342,7 +1342,7 @@ describe("SearchTakeover — Series search merges the movies catalog", () => {
 });
 
 describe("SearchTakeover — Series database dropdown", () => {
-  it("shows Series name placeholder on TMDB and Episode name on TVDB", () => {
+  it("shows Series name placeholder on TMDB and Series or episode name on TVDB", () => {
     render(() => (
       <SearchTakeover
         heading="Re-pick"
@@ -1359,12 +1359,21 @@ describe("SearchTakeover — Series database dropdown", () => {
     fireEvent.change(screen.getByLabelText("Database"), {
       target: { value: "tvdb" },
     });
-    expect(screen.getByPlaceholderText("Episode name")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Series or episode name")).toBeInTheDocument();
   });
 
-  it("calls tvdb-search with kind=episode when TVDB is selected", async () => {
+  it("calls tvdb-search with kind=series and kind=episode when TVDB is selected", async () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (url.includes("/tvdb-search")) {
+        if (String(url).includes("kind=series")) {
+          return jsonResponse([
+            {
+              tmdbId: 42,
+              title: "Laurel & Hardy",
+              releaseDate: "1921-01-01",
+            },
+          ]);
+        }
         return jsonResponse([
           {
             tmdbId: 42,
@@ -1396,11 +1405,12 @@ describe("SearchTakeover — Series database dropdown", () => {
     fireEvent.click(screen.getByText("Search"));
 
     expect(await screen.findByLabelText("Use Duck Soup")).toBeInTheDocument();
-    const tvdbCall = fetchMock.mock.calls.find(([u]) =>
-      String(u).includes("/tvdb-search"),
-    );
-    expect(tvdbCall).toBeTruthy();
-    expect(String(tvdbCall![0])).toContain("kind=episode");
+    expect(screen.getByLabelText("Use Laurel & Hardy")).toBeInTheDocument();
+    const tvdbCalls = fetchMock.mock.calls
+      .map(([u]) => String(u))
+      .filter((u) => u.includes("/tvdb-search"));
+    expect(tvdbCalls.some((u) => u.includes("kind=series"))).toBe(true);
+    expect(tvdbCalls.some((u) => u.includes("kind=episode"))).toBe(true);
   });
 });
 

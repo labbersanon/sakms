@@ -255,8 +255,8 @@ export const SearchTakeover: Component<{
   searchMode: Mode;
   initialQuery: string;
   // initialSeriesDatabase seeds the Series-only database dropdown (TMDB vs TVDB).
-  // TMDB searches series names; TVDB searches episode titles — one field, hint
-  // follows the database choice.
+  // TMDB searches series names; TVDB searches show names and episode titles —
+  // one field, hint follows the database choice.
   initialSeriesDatabase?: SeriesDatabase;
   // autoSearch true seeds `submitted` from initialQuery, reproducing
   // RepickPanel's mount-time search; false starts empty, reproducing
@@ -334,10 +334,22 @@ export const SearchTakeover: Component<{
       if (!tvdbQ) {
         return { kind: "catalog", items: [] };
       }
-      const items = await tvdbSearch(tvdbQ, "episode");
+      // Claude 2026-10-01: TVDB search runs kind=series and kind=episode.
+      // Reason: kind=episode alone seeds catalogs from SearchSeries(query), so
+      //   a show name matches no episode titles and an episode title matches
+      //   no series — both look like "No results."
+      // Troubleshooting: TVDB Rename Search never returns hits.
+      // Review if: the backend grows a combined kind.
+      const [seriesItems, episodeItems] = await Promise.all([
+        tvdbSearch(tvdbQ, "series"),
+        tvdbSearch(tvdbQ, "episode"),
+      ]);
       return {
         kind: "catalog",
-        items: items.map((item) => tvdbItemToHit(item)),
+        items: [
+          ...seriesItems.map((item) => tvdbItemToHit(item)),
+          ...episodeItems.map((item) => tvdbItemToHit(item)),
+        ],
       };
     }
     const tmdbQ = q.trim();
@@ -585,7 +597,7 @@ export const SearchTakeover: Component<{
               : props.searchMode === "series"
                 ? seriesDatabase() === "tmdb"
                   ? "Series name"
-                  : "Episode name"
+                  : "Series or episode name"
                 : undefined
           }
         />

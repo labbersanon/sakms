@@ -136,6 +136,14 @@ func anthologyTMDBID(tvdbID int) int {
 	return -v
 }
 
+// AnthologyTMDBID is anthologyTMDBID for callers outside this package.
+// Rename's TVDB search uses it when FindTVByTVDBID returns nothing, so a
+// TVDB hit is not dropped. Do not re-hash; the library row identity is this
+// value.
+func AnthologyTMDBID(tvdbID int) int {
+	return anthologyTMDBID(tvdbID)
+}
+
 // tvdbAnthologyReasonPrefix marks a Pending/Unmatched reason as having come
 // from this path, mirroring episodeTitleMatchReasonPrefix
 // (series_episode_title_match.go) and webMatchReasonPrefix (web_authority.go).

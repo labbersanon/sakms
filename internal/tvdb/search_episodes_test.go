@@ -49,6 +49,42 @@ func TestSearchEpisodes(t *testing.T) {
 	}
 }
 
+func TestSearchEpisodesWithSeeds_FindsEpisodeWhenSearchSeriesEmpty(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v4/login", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"success","data":{"token":"tok-ep-seed"}}`)
+	})
+	mux.HandleFunc("GET /v4/search", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"success","data":[]}`)
+	})
+	mux.HandleFunc("GET /v4/series/73910/episodes/official", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("page") {
+		case "0":
+			fmt.Fprint(w, `{"status":"success","data":{"episodes":[
+				{"id":1001,"seriesId":73910,"name":"Duck Soup","seasonNumber":3,"number":1}
+			]}}`)
+		default:
+			fmt.Fprint(w, `{"status":"success","data":{"episodes":[]}}`)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(Config{BaseURL: srv.URL, APIKey: "k"}, srv.Client())
+	results, err := c.SearchEpisodesWithSeeds(context.Background(), "duck soup", []Result{
+		{TVDBID: 73910, Name: "Laurel & Hardy", Year: 1921},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Name != "Duck Soup" || results[0].SeriesID != 73910 {
+		t.Errorf("unexpected result: %+v", results[0])
+	}
+}
+
 func TestSeriesBrief(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v4/login", func(w http.ResponseWriter, r *http.Request) {

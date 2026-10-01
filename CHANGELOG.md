@@ -10055,5 +10055,21 @@ status stays active.
 | `internal/rename/import.go` | `ImportDestPath` interpolates episode title |
 | `frontend/src/naming.ts` | Proposed series name uses `episodeTitle` |
 
+## 2026-10-01 — TVDB Rename search returns series and episode hits
+
+**Problem:** Switching Rename Search to TVDB always showed "No results."
+**Fix:** Search both show names and episode titles. Map a miss from TMDB's TVDB cross-reference to the same synthetic anthology id Scan already uses, instead of dropping the hit. Seed episode catalogs from tracked library shows so an episode title does not have to also be a series name.
+**Outcome:** Typing a show name (Looney Tunes) or an episode name (A Hare Grows in Manhattan / Duck Soup) returns TVDB tiles.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/SearchTakeover.tsx` | TVDB queries `kind=series` and `kind=episode` |
+| `internal/tvdb/search_episodes.go` | `SearchEpisodesWithSeeds` scans extra parent catalogs |
+| `internal/api/discover.go` | Library seeds; anthology TMDB id on Find miss |
+| `internal/api/handler.go` | Pass `libStore` into tvdb-search |
+| `internal/rename/series_tvdb_episode_match.go` | Export `AnthologyTMDBID` |
+
 
 

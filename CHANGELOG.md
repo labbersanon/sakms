@@ -10161,6 +10161,21 @@ status stays active.
 | `frontend/src/screens/SearchTakeover.tsx` | thread `tvdbId` / episode title on commit |
 | `frontend/src/screens/Rename.tsx` | forward `tvdbId` / `episodeTitle` on repick |
 
+## 2026-10-01 — Series dest preview after title pick
+
+**Problem:** After picking a series title in Organize Search, Proposed name was `—`.
+**Root cause:** `proposedFileName` required both season and episode. Show-level title commits write no slot. Specials season 0 is `omitempty` and arrives as missing, so those dest names were blank too.
+**Fix:** Episode `>= 1` uses the SxxExx dest (missing season = Specials 0). Title-only pending rows preview as `Title (Year).ext`.
+**Outcome:** Night Owl / Laurel & Hardy title picks show a dest name on the card.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/naming.ts` | show-level + Specials dest preview |
+| `frontend/src/naming.test.ts` | Night Owl show-level; S00E12 omitempty season |
+| `frontend/src/screens/Rename.test.tsx` | Series card dest after title-only pick |
+
 
 
 

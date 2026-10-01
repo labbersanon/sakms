@@ -492,6 +492,7 @@ func tryEpisodeTitleMatchSeries(
 	p.Year = pin.year // never fall back to TVDetails — see above
 	p.SeasonNumber = match.season
 	p.EpisodeNumber = match.episode
+	p.EpisodeTitle = match.name
 	// ExtraEpisodeNumbers stays nil: a title match resolves exactly one slot.
 	p.RootFolderPath = targetRoot
 	p.Reason = fmt.Sprintf("%s %q -> S%02dE%02d", episodeTitleMatchReasonPrefix, match.name, match.season, match.episode)

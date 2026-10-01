@@ -95,6 +95,19 @@ func TestImportDestPath_EmptyWhenUnmatched(t *testing.T) {
 	}
 }
 
+func TestImportDestPath_SeriesIncludesEpisodeTitle(t *testing.T) {
+	p := proposals.Proposal{
+		Mode: mode.Series, Status: proposals.Pending, Title: "Looney Tunes", Year: 1930,
+		SeasonNumber: 1947, EpisodeNumber: 5, EpisodeTitle: "A Hare Grows in Manhattan",
+		RootFolderPath: "/media/kids", SourcePath: "/staging/short.mp4",
+	}
+	got := ImportDestPath(p, naming.Jellyfin)
+	want := filepath.Join("/media/kids", "Looney Tunes (1930)", "Season 1947", "Looney Tunes S1947E05 A Hare Grows in Manhattan.mp4")
+	if got != want {
+		t.Fatalf("ImportDestPath = %q, want %q", got, want)
+	}
+}
+
 func TestScanImportAdult_DestIsLibraryRootNotSource(t *testing.T) {
 	source := t.TempDir()
 	dest := t.TempDir()

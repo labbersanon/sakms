@@ -1329,9 +1329,15 @@ type Proposal struct {
 	SeasonNumber        int    `json:"seasonNumber,omitempty"`
 	EpisodeNumber       int    `json:"episodeNumber,omitempty"`
 	ExtraEpisodeNumbers []int  `json:"extraEpisodeNumbers,omitempty"`
-	Studio              string `json:"studio,omitempty"`
-	Date                string `json:"date,omitempty"`
-	PHash               string `json:"phash,omitempty"`
+	// Claude 2026-10-01: Scan-time episode title for Rename dest preview.
+	// Reason: proposedFileName omitted the title when this field was absent;
+	//   year-season Looney shorts then previewed as "Show S1947E05.ext".
+	// Troubleshooting: Rename Proposed name drops the cartoon name.
+	// Review if: Scan fills this for ordinary TMDB SxxExx too.
+	EpisodeTitle string `json:"episodeTitle,omitempty"`
+	Studio       string `json:"studio,omitempty"`
+	Date         string `json:"date,omitempty"`
+	PHash        string `json:"phash,omitempty"`
 	// GiveBackBox/GiveBackSceneID mirror the wire fields that proposals.go
 	// already carries (proposals.go:167-168). The frontend uses the ABSENCE of
 	// GiveBackSceneID (with a non-empty Title) as the structural signal that an

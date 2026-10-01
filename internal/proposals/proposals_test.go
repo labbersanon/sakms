@@ -144,6 +144,32 @@ func TestReplacePending_PersistsExtraEpisodeNumbers(t *testing.T) {
 	}
 }
 
+func TestReplacePending_PersistsEpisodeTitle(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	saved, err := s.ReplacePending(ctx, mode.Series, Rename, []Proposal{
+		{
+			Status: Pending, SourceName: "A Hare Grows In Manhattan S1947E05.mp4",
+			Title: "Looney Tunes", SeasonNumber: 1947, EpisodeNumber: 5,
+			EpisodeTitle: "A Hare Grows in Manhattan", TVDBID: 7266, TMDBID: -1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if saved[0].EpisodeTitle != "A Hare Grows in Manhattan" {
+		t.Fatalf("insert kept %q", saved[0].EpisodeTitle)
+	}
+	got, err := s.Get(ctx, saved[0].ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.EpisodeTitle != "A Hare Grows in Manhattan" {
+		t.Fatalf("round-trip episode title = %q", got.EpisodeTitle)
+	}
+}
+
 // TestReplacePending_PersistsCandidatePHash proves the SAK-computed per-file
 // perceptual hash (Movies Dedup) survives the candidates_json round-trip — a
 // zero-migration field carried only inside the JSON blob, distinct from

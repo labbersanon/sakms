@@ -479,6 +479,12 @@ func tryYearSeasonTVDBParent(
 	p.Year = hit.Year
 	p.SeasonNumber = seasonOut
 	p.EpisodeNumber = epOut
+	// Claude 2026-10-01: persist corroborated cartoon name on the proposal.
+	// Reason: dest preview and Apply both named files from Title+SxxExx only;
+	//   the TVDB episode name lived only in Reason.
+	// Troubleshooting: Looney Tunes Rename omitted episode names.
+	// Review if: Proposal.EpisodeTitle is filled for ordinary TMDB SxxExx too.
+	p.EpisodeTitle = epTitle
 	if seasonOut == season && epOut == episode {
 		p.ExtraEpisodeNumbers = extraEpisodes
 	}

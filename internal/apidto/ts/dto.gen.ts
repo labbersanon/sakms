@@ -1302,6 +1302,14 @@ export interface Proposal {
   seasonNumber?: number /* int */;
   episodeNumber?: number /* int */;
   extraEpisodeNumbers?: number /* int */[];
+  /**
+   * Claude 2026-10-01: Scan-time episode title for Rename dest preview.
+   * Reason: proposedFileName omitted the title when this field was absent;
+   *   year-season Looney shorts then previewed as "Show S1947E05.ext".
+   * Troubleshooting: Rename Proposed name drops the cartoon name.
+   * Review if: Scan fills this for ordinary TMDB SxxExx too.
+   */
+  episodeTitle?: string;
   studio?: string;
   date?: string;
   phash?: string;

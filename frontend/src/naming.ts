@@ -130,7 +130,7 @@ export function proposedFileName(
       p.title,
       p.seasonNumber,
       nums,
-      "",
+      p.episodeTitle ?? "",
       ext,
     );
   }

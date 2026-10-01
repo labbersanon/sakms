@@ -828,8 +828,18 @@ func TestScanLibrarySeries_YearSeasonUsesShowFolderNotEpisodeTitle(t *testing.T)
 	if p.Status != proposals.Pending || p.Title != "Looney Tunes" || p.TVDBID != 7266 || p.SeasonNumber != 1947 || p.EpisodeNumber != 5 {
 		t.Fatalf("proposal = %+v", p)
 	}
+	if p.EpisodeTitle != "A Hare Grows in Manhattan" {
+		t.Fatalf("episode title = %q, want the TVDB cartoon name", p.EpisodeTitle)
+	}
 	if p.TMDBID != anthologyTMDBID(7266) {
 		t.Fatalf("want anthology TMDB, got %d", p.TMDBID)
+	}
+	ep, err := libStore.GetEpisode(context.Background(), parent.ID, 1947, 5)
+	if err != nil {
+		t.Fatalf("catalog episode: %v", err)
+	}
+	if ep.Title != "A Hare Grows in Manhattan" {
+		t.Fatalf("library episode title = %q, want the TVDB cartoon name", ep.Title)
 	}
 }
 

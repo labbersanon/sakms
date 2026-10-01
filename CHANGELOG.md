@@ -10101,6 +10101,20 @@ status stays active.
 | `internal/api/adult_scene_search.go` | Optional `q`; performer/studio/year → filtered list |
 | `internal/identify/boxlookup.go` | `ListSceneCandidatesFiltered` performer/studio/year paths |
 
+## 2026-10-01 — Rename Search prefills the suggested term, not the filename
+
+**Problem:** Opening Rename Search put the raw file name (or the current catalog title) in the query box, so auto-search ran against dots, tags, extensions, or the match being replaced.
+**Fix:** Prefill with the same cleaned filename term Scan uses (`searchterm` for Movies/Series, scene-release cleaner for Adult). Series also strips SxxExx / year-season markers.
+**Outcome:** A file named `Some.Movie.2021.1080p.mkv` opens Search as `Some Movie`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/searchterm.ts` | Filename → suggested query |
+| `frontend/src/screens/Rename.tsx` | SearchTakeover `initialQuery` uses suggested term |
+
+
 
 
 

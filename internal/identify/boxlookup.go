@@ -205,26 +205,15 @@ type SceneCandidate struct {
 	DurationSeconds int
 }
 
-// SceneCandidateFilter is the Adult Rename Advanced search: a scene title
-// (the main query or Advanced Title), performer (actress/actor), studio, and
-// year. Year-only is not a search — the handler requires title, performer, or
-// studio. SceneCandidate has no performer names, so a performer query resolves
-// the name to an id and lists that person's scenes rather than post-filtering
-// a title search.
+// SceneCandidateFilter is Adult Rename Advanced search. Year-only is not a
+// search (the handler requires title, performer, or studio). Performer is
+// resolved to an id and that person's scenes are listed — SceneCandidate has
+// no performer names to post-filter.
 type SceneCandidateFilter struct {
 	Title     string
 	Performer string
 	Studio    string
 	Year      int
-}
-
-func (f SceneCandidateFilter) trimmed() SceneCandidateFilter {
-	return SceneCandidateFilter{
-		Title:     strings.TrimSpace(f.Title),
-		Performer: strings.TrimSpace(f.Performer),
-		Studio:    strings.TrimSpace(f.Studio),
-		Year:      f.Year,
-	}
 }
 
 // ListSceneCandidates fans a title query across every configured stash box in
@@ -254,12 +243,14 @@ func (b *BoxSearcher) ListSceneCandidates(ctx context.Context, title string, ord
 //
 //	title search accepts a performer name.
 func (b *BoxSearcher) ListSceneCandidatesFiltered(ctx context.Context, f SceneCandidateFilter, order []DatabaseRef) (items []SceneCandidate, softErrs []string) {
-	f = f.trimmed()
+	f.Title = strings.TrimSpace(f.Title)
+	f.Performer = strings.TrimSpace(f.Performer)
+	f.Studio = strings.TrimSpace(f.Studio)
 	refs := order
 	if len(refs) == 0 {
 		refs = legacyCascade
 	}
-	sink := newSceneCandidateSink(f)
+	sink := &sceneCandidateSink{seen: make(map[string]struct{}), f: f}
 	switch {
 	case f.Performer != "":
 		softErrs = b.listScenesByPerformer(ctx, refs, sink)
@@ -272,18 +263,9 @@ func (b *BoxSearcher) ListSceneCandidatesFiltered(ctx context.Context, f SceneCa
 }
 
 type sceneCandidateSink struct {
-	items       []SceneCandidate
-	seen        map[string]struct{}
-	f           SceneCandidateFilter
-	filterTitle bool
-}
-
-func newSceneCandidateSink(f SceneCandidateFilter) *sceneCandidateSink {
-	return &sceneCandidateSink{
-		seen:        make(map[string]struct{}),
-		f:           f,
-		filterTitle: f.Performer != "" || (f.Title == "" && f.Studio != ""),
-	}
+	items []SceneCandidate
+	seen  map[string]struct{}
+	f     SceneCandidateFilter
 }
 
 func (s *sceneCandidateSink) full() bool {
@@ -294,7 +276,7 @@ func (s *sceneCandidateSink) add(c SceneCandidate) {
 	if s.full() {
 		return
 	}
-	if !sceneCandidateMatches(c, s.f, s.filterTitle) {
+	if !sceneCandidateMatches(c, s.f) {
 		return
 	}
 	key := c.Box + "\x00" + c.SceneID
@@ -305,14 +287,14 @@ func (s *sceneCandidateSink) add(c SceneCandidate) {
 	s.items = append(s.items, c)
 }
 
-func sceneCandidateMatches(c SceneCandidate, f SceneCandidateFilter, filterTitle bool) bool {
+func sceneCandidateMatches(c SceneCandidate, f SceneCandidateFilter) bool {
 	if f.Year > 0 && !strings.HasPrefix(strings.TrimSpace(c.Date), strconv.Itoa(f.Year)) {
 		return false
 	}
 	if f.Studio != "" && !textMatches(c.Studio, f.Studio) {
 		return false
 	}
-	if filterTitle && f.Title != "" && !textMatches(c.Title, f.Title) {
+	if f.Performer != "" && f.Title != "" && !textMatches(c.Title, f.Title) {
 		return false
 	}
 	return true
@@ -414,17 +396,17 @@ func (b *BoxSearcher) listScenesByTitle(ctx context.Context, refs []DatabaseRef,
 			}
 		}
 	}
-	if b.tpdb != nil && !sink.full() {
-		scenes, err := b.tpdb.SearchByTitle(ctx, title, sink.f.Studio)
-		if err != nil {
-			softErrs = append(softErrs, "tpdb: "+err.Error())
-		} else {
-			for _, sc := range scenes {
-				sink.add(tpdbSceneCandidate(sc))
-				if sink.full() {
-					break
-				}
-			}
+	if b.tpdb == nil || sink.full() {
+		return softErrs
+	}
+	scenes, err := b.tpdb.SearchByTitle(ctx, title, sink.f.Studio)
+	if err != nil {
+		return append(softErrs, "tpdb: "+err.Error())
+	}
+	for _, sc := range scenes {
+		sink.add(tpdbSceneCandidate(sc))
+		if sink.full() {
+			break
 		}
 	}
 	return softErrs
@@ -466,29 +448,29 @@ func (b *BoxSearcher) listScenesByPerformer(ctx context.Context, refs []Database
 			}
 		}
 	}
-	if b.tpdb != nil && !sink.full() {
-		candidates, err := b.tpdb.SearchPerformers(ctx, term)
-		if err != nil {
-			softErrs = append(softErrs, "tpdb: "+err.Error())
-		} else {
-			items := make([]namedID, len(candidates))
-			for i, p := range candidates {
-				items[i] = namedID{id: p.ID, name: p.Name}
-			}
-			pid := pickNamedID(term, items)
-			if pid != "" {
-				scenes, err := b.tpdb.ScenesByPerformer(ctx, pid, 1, maxSceneCandidates)
-				if err != nil {
-					softErrs = append(softErrs, "tpdb: "+err.Error())
-				} else {
-					for _, sc := range scenes {
-						sink.add(tpdbSceneCandidate(sc))
-						if sink.full() {
-							break
-						}
-					}
-				}
-			}
+	if b.tpdb == nil || sink.full() {
+		return softErrs
+	}
+	candidates, err := b.tpdb.SearchPerformers(ctx, term)
+	if err != nil {
+		return append(softErrs, "tpdb: "+err.Error())
+	}
+	items := make([]namedID, len(candidates))
+	for i, p := range candidates {
+		items[i] = namedID{id: p.ID, name: p.Name}
+	}
+	pid := pickNamedID(term, items)
+	if pid == "" {
+		return softErrs
+	}
+	scenes, err := b.tpdb.ScenesByPerformer(ctx, pid, 1, maxSceneCandidates)
+	if err != nil {
+		return append(softErrs, "tpdb: "+err.Error())
+	}
+	for _, sc := range scenes {
+		sink.add(tpdbSceneCandidate(sc))
+		if sink.full() {
+			break
 		}
 	}
 	return softErrs
@@ -525,29 +507,29 @@ func (b *BoxSearcher) listScenesByStudio(ctx context.Context, refs []DatabaseRef
 			}
 		}
 	}
-	if b.tpdb != nil && !sink.full() {
-		sites, err := b.tpdb.SearchSites(ctx, term)
-		if err != nil {
-			softErrs = append(softErrs, "tpdb: "+err.Error())
-		} else {
-			items := make([]namedID, len(sites))
-			for i, s := range sites {
-				items[i] = namedID{id: s.ID, name: s.Name}
-			}
-			sid := pickNamedID(term, items)
-			if sid != "" {
-				scenes, err := b.tpdb.ScenesBySite(ctx, sid, 1, maxSceneCandidates)
-				if err != nil {
-					softErrs = append(softErrs, "tpdb: "+err.Error())
-				} else {
-					for _, sc := range scenes {
-						sink.add(tpdbSceneCandidate(sc))
-						if sink.full() {
-							break
-						}
-					}
-				}
-			}
+	if b.tpdb == nil || sink.full() {
+		return softErrs
+	}
+	sites, err := b.tpdb.SearchSites(ctx, term)
+	if err != nil {
+		return append(softErrs, "tpdb: "+err.Error())
+	}
+	items := make([]namedID, len(sites))
+	for i, s := range sites {
+		items[i] = namedID{id: s.ID, name: s.Name}
+	}
+	sid := pickNamedID(term, items)
+	if sid == "" {
+		return softErrs
+	}
+	scenes, err := b.tpdb.ScenesBySite(ctx, sid, 1, maxSceneCandidates)
+	if err != nil {
+		return append(softErrs, "tpdb: "+err.Error())
+	}
+	for _, sc := range scenes {
+		sink.add(tpdbSceneCandidate(sc))
+		if sink.full() {
+			break
 		}
 	}
 	return softErrs

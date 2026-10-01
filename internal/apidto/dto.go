@@ -1816,6 +1816,22 @@ type TrackedIdentityRequest struct {
 	Date    string `json:"date,omitempty"`
 }
 
+// RemoveTrackedRequest is DELETE /api/modes/{mode}/tracked/{id} — owned-detail
+// remove from library. Movies and Adult ignore the body (the whole title goes).
+// Series requires entireSeries XOR seasons: seasons deletes only those season
+// rows and their files; entireSeries deletes the show.
+// Claude 2026-10-01: DetailPopup confirm; permanent disk+row delete, same as Purge.
+type RemoveTrackedRequest struct {
+	EntireSeries bool  `json:"entireSeries,omitempty"`
+	Seasons      []int `json:"seasons,omitempty"`
+}
+
+// RemoveTrackedResponse says whether the library row is gone after the delete.
+// Series seasonal remove returns gone=false when other episodes remain.
+type RemoveTrackedResponse struct {
+	Gone bool `json:"gone"`
+}
+
 // TrackedItemFile is one primary or alternate video under a Movies tracked
 // title (GET /api/modes/movies/tracked). Series/Adult leave Files empty.
 type TrackedItemFile struct {

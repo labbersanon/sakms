@@ -89,6 +89,7 @@ import { SeasonsPanel } from "../../components/SeasonsPanel";
 import { SeriesEpisodesPanel } from "../../components/SeriesEpisodesPanel";
 import { TitleQualityPrefs } from "../../components/TitleQualityPrefs";
 import { fetchSeasonStatesFor } from "../../api/seasons";
+import { deleteTracked } from "../../api/trackedRemove";
 import { putEpisodeProgress } from "../../api/seriesProgress";
 import { headerPlayFromSeasons } from "../seriesPlay";
 import { type GrabTarget, FallbackPickList, Modal } from "./shared";
@@ -675,6 +676,15 @@ export const DetailPopup: Component<{
   librarySceneId?: number;
   ownedPosterUrl?: string;
   onPosterPicked?: (url: string) => void;
+  // Claude 2026-10-01: movies owned row id for Remove from library.
+  // Reason: series uses seriesID, Adult uses librarySceneId; movies had no id prop.
+  // Troubleshooting: catalog Discover item.id is TMDB, not library_items.id.
+  // Review if: a single ownedLibraryId replaces the three id props.
+  ownedLibraryId?: number;
+  // Claude 2026-10-01: after a confirmed library remove. gone=true closes the popup.
+  // Reason: seasonal series delete can leave the show; parent still refreshes.
+  // Review if: parents start mutating local tracked lists instead of refetching.
+  onLibraryRemoved?: (gone: boolean) => void;
   // Claude 2026-09-24: rematch pick with S/E, or episode-row Replace.
   // Reason: pre-set slot skips SeasonEpisodePicker so grab is the episode.
   replaceSlot?: { season: number; episode: number };
@@ -704,14 +714,78 @@ export const DetailPopup: Component<{
   const allowGrab = () => props.allowGrab !== false || replaceOpen();
   const ownedSeriesID = () =>
     mode() === "series" && (props.seriesID ?? 0) > 0 ? props.seriesID : undefined;
+  const ownedLibraryId = () => {
+    if (mode() === "series" && (props.seriesID ?? 0) > 0) return props.seriesID;
+    if (mode() === "adult" && (props.librarySceneId ?? 0) > 0)
+      return props.librarySceneId;
+    if ((props.ownedLibraryId ?? 0) > 0) return props.ownedLibraryId;
+    return undefined;
+  };
+  const canRemoveFromLibrary = () =>
+    !!props.canReplace && !replaceOpen() && (ownedLibraryId() ?? 0) > 0;
+  const [removeOpen, setRemoveOpen] = createSignal(false);
+  const [removeScope, setRemoveScope] = createSignal<"entire" | "seasons">(
+    "entire",
+  );
+  const [removeSeasons, setRemoveSeasons] = createSignal<number[]>([]);
+  const [removing, setRemoving] = createSignal(false);
+  const [removeError, setRemoveError] = createSignal("");
+  const openRemoveConfirm = () => {
+    setRemoveError("");
+    setRemoveScope("entire");
+    setRemoveSeasons([]);
+    setRemoveOpen(true);
+  };
   const qualityTitleKey = () => {
     const seriesID = ownedSeriesID();
     if (seriesID) return { seriesID };
     return { tmdbId: (item() as DiscoverItem).id };
   };
-  const [ownedSeasons] = createResource(ownedSeriesID, (id) =>
-    fetchSeasonStatesFor({ seriesID: id }).catch(() => []),
+  const [seasonsEpoch, setSeasonsEpoch] = createSignal(0);
+  const [ownedSeasons] = createResource(
+    () => {
+      const id = ownedSeriesID();
+      return id ? { id, epoch: seasonsEpoch() } : undefined;
+    },
+    (key) => fetchSeasonStatesFor({ seriesID: key.id }).catch(() => []),
   );
+  const toggleRemoveSeason = (n: number) => {
+    setRemoveSeasons((prev) =>
+      prev.includes(n) ? prev.filter((x) => x !== n) : [...prev, n],
+    );
+  };
+  const confirmRemoveFromLibrary = async () => {
+    const id = ownedLibraryId();
+    if (!id || removing()) return;
+    setRemoving(true);
+    setRemoveError("");
+    try {
+      if (
+        mode() === "series" &&
+        removeScope() === "seasons" &&
+        removeSeasons().length === 0
+      ) {
+        setRemoveError("Select at least one season.");
+        return;
+      }
+      const body =
+        mode() === "series"
+          ? removeScope() === "entire"
+            ? { entireSeries: true }
+            : { seasons: removeSeasons() }
+          : undefined;
+      const result = await deleteTracked(mode(), id, body);
+      if (!result.gone) {
+        setSeasonsEpoch((n) => n + 1);
+        setRemoveOpen(false);
+      }
+      props.onLibraryRemoved?.(result.gone);
+    } catch (e) {
+      setRemoveError((e as Error).message || "Remove failed");
+    } finally {
+      setRemoving(false);
+    }
+  };
   const headerPlay = () =>
     headerPlayFromSeasons(ownedSeasons.error ? [] : (ownedSeasons() ?? []));
   const headerPlaySrc = () => headerPlay()?.src || (props.playSrc ?? "").trim();
@@ -1277,7 +1351,7 @@ export const DetailPopup: Component<{
               }
             />
           </Show>
-          <Show when={props.canReplace && !replaceOpen()}>
+          <Show when={props.canReplace && !replaceOpen() && !removeOpen()}>
             <button
               type="button"
               class={HEADER_ACTION_CLASS}
@@ -1286,13 +1360,22 @@ export const DetailPopup: Component<{
               Search releases
             </button>
           </Show>
-          <Show when={props.canReplace && !replaceOpen() && props.onRematch}>
+          <Show when={props.canReplace && !replaceOpen() && !removeOpen() && props.onRematch}>
             <button
               type="button"
               class={HEADER_ACTION_CLASS}
               onClick={() => props.onRematch?.()}
             >
               Rematch
+            </button>
+          </Show>
+          <Show when={canRemoveFromLibrary() && !removeOpen()}>
+            <button
+              type="button"
+              class={`${HEADER_ACTION_CLASS} border-danger/40 text-danger`}
+              onClick={openRemoveConfirm}
+            >
+              Remove from library
             </button>
           </Show>
           <Show when={canChangePoster()}>
@@ -1313,6 +1396,78 @@ export const DetailPopup: Component<{
             >
               Cancel replace
             </button>
+          </Show>
+          <Show when={removeOpen()}>
+            <div
+              class="rounded-md border border-danger/40 bg-danger/10 px-3 py-2"
+              data-testid="remove-from-library-confirm"
+            >
+              <p class="text-xs text-danger">
+                This permanently deletes the files from disk and removes them
+                from the library. This cannot be undone. Monitoring and queued
+                automatic searches for what you remove will stop.
+              </p>
+              <Show when={mode() === "series"}>
+                <fieldset class="mt-2 space-y-1 text-xs text-fg">
+                  <legend class="sr-only">Remove scope</legend>
+                  <label class="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="remove-scope"
+                      checked={removeScope() === "entire"}
+                      onChange={() => setRemoveScope("entire")}
+                    />
+                    Entire series
+                  </label>
+                  <label class="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="remove-scope"
+                      checked={removeScope() === "seasons"}
+                      onChange={() => setRemoveScope("seasons")}
+                    />
+                    Selected seasons
+                  </label>
+                </fieldset>
+                <Show when={removeScope() === "seasons"}>
+                  <div class="mt-2 space-y-1">
+                    <For each={ownedSeasons() ?? []}>
+                      {(season) => (
+                        <label class="flex items-center gap-2 text-xs text-fg">
+                          <input
+                            type="checkbox"
+                            checked={removeSeasons().includes(season.seasonNumber)}
+                            onChange={() => toggleRemoveSeason(season.seasonNumber)}
+                          />
+                          {season.seasonNumber === 0
+                            ? "Specials"
+                            : `Season ${season.seasonNumber}`}
+                        </label>
+                      )}
+                    </For>
+                  </div>
+                </Show>
+              </Show>
+              <ErrorText>{removeError()}</ErrorText>
+              <div class="mt-2 flex flex-col gap-1.5">
+                <button
+                  type="button"
+                  class={`${HEADER_ACTION_CLASS} border-danger/40 text-danger`}
+                  disabled={removing()}
+                  onClick={() => void confirmRemoveFromLibrary()}
+                >
+                  Permanently remove
+                </button>
+                <button
+                  type="button"
+                  class={HEADER_ACTION_CLASS}
+                  disabled={removing()}
+                  onClick={() => setRemoveOpen(false)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
           </Show>
         </div>
       </div>

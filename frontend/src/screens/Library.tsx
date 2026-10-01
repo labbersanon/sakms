@@ -1180,6 +1180,7 @@ export const LibraryView: Component<{
                           : undefined
                       }
                       replaceSlot={replaceSlot() ?? undefined}
+                      ownedLibraryId={isLibraryTarget() ? item().id : undefined}
                       onRematch={
                         isLibraryTarget()
                           ? () => {
@@ -1190,6 +1191,10 @@ export const LibraryView: Component<{
                             }
                           : undefined
                       }
+                      onLibraryRemoved={(gone) => {
+                        void refresh();
+                        if (gone) closeDetail();
+                      }}
                       lead={
                         isLibraryTarget() ? (
                           <DetailRating

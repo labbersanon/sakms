@@ -65,7 +65,20 @@ func isSafeLibrarySubdir(dir, root string) bool {
 // rootFolderPath. Parents equal to the library root are left intact so a
 // file sitting directly in the root cannot take the whole library with it.
 func removeTrackedMedia(paths []string, rootFolderPath string) (changes []mode.PathChange, err error) {
+	return removeTrackedMediaKeeping(paths, rootFolderPath, nil)
+}
+
+// Claude 2026-10-01: skip RemoveAll on folders that still hold kept files.
+// Reason: seasonal series remove can share a show folder across seasons
+//
+//	(Show/S01E01.mkv next to Show/S02E01.mkv). Wiping the parent would
+//	delete the seasons we meant to keep.
+//
+// Troubleshooting: delete season 1, season 2 files vanished with the show dir.
+// Review if: episode files always live in per-season subfolders.
+func removeTrackedMediaKeeping(paths []string, rootFolderPath string, keepPaths []string) (changes []mode.PathChange, err error) {
 	paths = uniqueNonEmptyPaths(paths)
+	keepPaths = uniqueNonEmptyPaths(keepPaths)
 	dirs := make(map[string]struct{})
 	for _, path := range paths {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
@@ -78,9 +91,28 @@ func removeTrackedMedia(paths []string, rootFolderPath string) (changes []mode.P
 		}
 	}
 	for dir := range dirs {
+		if dirHoldsKeptPath(dir, keepPaths) {
+			continue
+		}
 		if err := os.RemoveAll(dir); err != nil {
 			return changes, fmt.Errorf("removing library folder %q: %w", dir, err)
 		}
 	}
 	return changes, nil
+}
+
+func dirHoldsKeptPath(dir string, keepPaths []string) bool {
+	if dir == "" || len(keepPaths) == 0 {
+		return false
+	}
+	dir = filepath.Clean(dir)
+	sep := string(os.PathSeparator)
+	prefix := dir + sep
+	for _, p := range keepPaths {
+		p = filepath.Clean(p)
+		if p == dir || strings.HasPrefix(p, prefix) {
+			return true
+		}
+	}
+	return false
 }

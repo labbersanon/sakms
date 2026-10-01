@@ -18,6 +18,7 @@ import {
   createSignal,
   createUniqueId,
   For,
+  onMount,
   Show,
 } from "solid-js";
 import type { Mode } from "../api/discover";
@@ -27,6 +28,7 @@ import { ApiError } from "../api/client";
 import {
   type AdultReviewConfirmRequest,
   type Proposal,
+  type RepickRequest,
   type RecentlyAppliedEntry,
   type UndoResult,
   applyBatchStreaming,
@@ -52,6 +54,8 @@ import {
 import { fetchNamingPreset } from "../api/settings";
 import {
   adultFileName,
+  episodeFileName,
+  movieFileName,
   type NamingPreset,
   proposedFileName,
 } from "../naming";
@@ -100,12 +104,11 @@ type RowActionId =
 const BASE_ROW_ACTIONS: { id: RowActionId; label: string }[] = [
   { id: "rename", label: "Rename" },
   // Claude 2026-08-12: "Review" is second — after Rename, before Search.
-  // Reason: Review is the constructive path for a web-identified Adult row with
-  //   no catalog scene id. Positioning matters: it must not sit adjacent to the
-  //   destructive Delete entry (same reasoning as the "Delete file" comment
-  //   below). Gating is structural (isAdultWebIdentified), not status-based, so
-  //   rowActionEnabled always returns false for it — the RowActions component's
-  //   local `enabled` function consults isAdultWebIdentified directly.
+  // Reason: Review is the constructive name-form path. Positioning matters: it
+  //   must not sit adjacent to the destructive Delete entry (same reasoning as
+  //   the "Delete file" comment below). Gating is canReviewName, not status
+  //   alone, so rowActionEnabled always returns false for it — RowActions.enabled
+  //   consults canReviewName.
   // Review if: Review becomes batchable (it is currently excluded from
   //   planActionForRow and must never be auto-selected as the default).
   // Context: autopilot-impl-adult-rename-review-alts.md §6 F1.
@@ -134,12 +137,8 @@ function rowActionEnabled(
     case "rename":
       return status === "pending";
     case "review":
-      // Structural gating is done by isAdultWebIdentified (needs the whole
-      // proposal and mode, not just status). rowActionEnabled always returns
-      // false here so the selection-seeding effect never auto-selects Review
-      // and the dropdown's generic `enabled()` call disables it. The
-      // RowActions component's local `enabled` function overrides this for
-      // the "review" id specifically, consulting isAdultWebIdentified.
+      // Always false so seeding never auto-selects Review. RowActions.enabled
+      // uses canReviewName for the dropdown option.
       return false;
     case "repick":
       return status === "pending" || status === "unmatched";
@@ -190,6 +189,27 @@ export function isAdultWebIdentified(p: Proposal, mode: Mode): boolean {
   const reason = (p.reason || "").toLowerCase();
   if (reason.includes("web-identified")) return true;
   return !!p.title;
+}
+
+// Claude 2026-10-01: Review names files via a schema form on every mode.
+// Reason: Adult already composed Studio/Title/Date; Movies/Series unmatched
+//   rows had only Search, so a typed dest name skipped Title (Year) [tmdbid]
+//   and Series SxxExx Episode Title.
+// Troubleshooting: Review missing on Movies/Series unmatched rows.
+// Review if: pending rows also get Review to edit a dest name before Apply.
+export function canReviewName(p: Proposal, mode: Mode): boolean {
+  if (mode === "adult") return isAdultWebIdentified(p, mode);
+  return (mode === "movies" || mode === "series") && p.status === "unmatched";
+}
+
+function proposalTmdbId(p: Proposal): number {
+  const n = (p as { tmdbId?: number }).tmdbId;
+  return typeof n === "number" && n > 0 ? n : 0;
+}
+
+function parseOptionalInt(raw: string): number {
+  const n = Number.parseInt(raw.trim(), 10);
+  return Number.isFinite(n) ? n : 0;
 }
 
 /** Pending alternate fold — "already in library" rows use Rename, not Review. */
@@ -287,17 +307,10 @@ const RowActions: Component<{
   onRun: (id: RowActionId) => void;
   disabled?: boolean;
 }> = (props) => {
-  // Review is Adult-only — hide the greyed-out option on Movies/Series rows.
-  const actions = () =>
-    props.mode === "adult"
-      ? rowActions(props.mode)
-      : rowActions(props.mode).filter((a) => a.id !== "review");
-  // "review" is structurally gated by isAdultWebIdentified — rowActionEnabled
-  // always returns false for it (see its "review" case above). Override here
-  // so the dropdown option is correctly enabled/disabled for the specific row.
+  const actions = () => rowActions(props.mode);
   const enabled = (id: RowActionId) =>
     id === "review"
-      ? isAdultWebIdentified(props.proposal, props.mode)
+      ? canReviewName(props.proposal, props.mode)
       : rowActionEnabled(id, props.proposal.status, props.titleMode);
   const hasAny = () => actions().some((a) => enabled(a.id));
   const selectedOk = () => {
@@ -799,6 +812,250 @@ function reviewSourceExt(proposedName: string, sourceName: string): string {
   return "";
 }
 
+const reviewFieldLabel =
+  "mb-1 block text-xs font-medium uppercase tracking-wide text-muted";
+const reviewFieldInput =
+  "w-full rounded border border-border bg-bg px-2 py-1 text-sm text-fg";
+
+// Claude 2026-10-01: Movies/Series Review overlay; fields follow each schema.
+// Reason: Movies is Title (Year) [tmdbid-N]; Series is SxxExx + episode title.
+// Troubleshooting: unmatched Movies/Series had no structured name form.
+// Review if: Review confirm becomes a single mode-aware endpoint.
+const TitleReviewDialog: Component<{
+  proposal: Proposal;
+  mode: "movies" | "series";
+  preset: NamingPreset;
+  onDone: () => void;
+  onCancel: () => void;
+}> = (props) => {
+  const p = props.proposal;
+  const [title, setTitle] = createSignal("");
+  const [year, setYear] = createSignal("");
+  const [tmdbId, setTmdbId] = createSignal("");
+  const [season, setSeason] = createSignal("");
+  const [episode, setEpisode] = createSignal("");
+  const [episodeTitle, setEpisodeTitle] = createSignal("");
+  const [confirming, setConfirming] = createSignal(false);
+  const [confirmError, setConfirmError] = createSignal("");
+
+  onMount(() => {
+    setTitle(p.title || "");
+    setYear(p.year ? String(p.year) : "");
+    const tmdb = proposalTmdbId(p);
+    setTmdbId(tmdb ? String(tmdb) : "");
+    setSeason(typeof p.seasonNumber === "number" ? String(p.seasonNumber) : "");
+    setEpisode(p.episodeNumber ? String(p.episodeNumber) : "");
+    setEpisodeTitle(p.episodeTitle || "");
+  });
+
+  const ext = () => reviewSourceExt("", p.sourceName);
+  const yearNum = () => parseOptionalInt(year());
+  const tmdbNum = () => parseOptionalInt(tmdbId());
+  const seasonNum = () => parseOptionalInt(season());
+  const episodeNum = () => parseOptionalInt(episode());
+
+  const composedName = () => {
+    if (props.mode === "movies") {
+      return movieFileName(props.preset, title(), yearNum(), tmdbNum(), ext());
+    }
+    return episodeFileName(
+      props.preset,
+      title(),
+      seasonNum(),
+      episodeNum(),
+      episodeTitle(),
+      ext(),
+    );
+  };
+
+  const canConfirm = () => {
+    if (confirming()) return false;
+    if (!title().trim() || tmdbNum() <= 0) return false;
+    if (props.mode === "series") {
+      if (season().trim() === "" || seasonNum() < 0) return false;
+      if (episodeNum() < 1) return false;
+    }
+    return true;
+  };
+
+  const handleConfirm = () => {
+    if (!canConfirm()) return;
+    setConfirming(true);
+    setConfirmError("");
+    const body: RepickRequest = {
+      title: title().trim(),
+      tmdbId: tmdbNum(),
+      year: yearNum() || undefined,
+    };
+    if (props.mode === "series") {
+      body.seasonNumber = seasonNum();
+      body.episodeNumber = episodeNum();
+      const epTitle = episodeTitle().trim();
+      if (epTitle) body.episodeTitle = epTitle;
+    }
+    void repickProposal(p.id, body)
+      .then(() => applyProposal(p.id))
+      .then(() => {
+        props.onDone();
+      })
+      .catch((e: Error) => {
+        setConfirmError(e.message);
+        setConfirming(false);
+      });
+  };
+
+  const titleLabel = () => (props.mode === "series" ? "Series" : "Title");
+
+  return (
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Review ${p.sourceName}`}
+    >
+      <div class="max-h-[80vh] w-full max-w-xl overflow-hidden rounded-xl border border-border bg-surface shadow-lg">
+        <div class="border-b border-border px-4 py-3">
+          <h3 class="text-base font-semibold text-fg">
+            Review &ldquo;{p.sourceName}&rdquo;
+          </h3>
+        </div>
+        <div class="max-h-[55vh] overflow-y-auto px-4 py-3">
+          <div class="mb-3">
+            <div class={reviewFieldLabel}>Current name</div>
+            <div class="rounded border border-border bg-bg px-2 py-1 font-mono text-sm text-fg">
+              {p.sourceName}
+            </div>
+          </div>
+          <fieldset class="mb-3 min-w-0 border-0 p-0">
+            <legend class="mb-2 text-xs font-medium uppercase tracking-wide text-muted">
+              File name
+            </legend>
+            <div class="mb-2">
+              <label class={reviewFieldLabel} for="title-review-title">
+                {titleLabel()}
+              </label>
+              <input
+                id="title-review-title"
+                class={reviewFieldInput}
+                type="text"
+                aria-label={titleLabel()}
+                value={title()}
+                onInput={(e) => setTitle(e.currentTarget.value)}
+              />
+            </div>
+            <div class="mb-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <div>
+                <label class={reviewFieldLabel} for="title-review-year">
+                  Year
+                </label>
+                <input
+                  id="title-review-year"
+                  class={reviewFieldInput}
+                  type="text"
+                  inputMode="numeric"
+                  aria-label="Year"
+                  value={year()}
+                  onInput={(e) => setYear(e.currentTarget.value)}
+                />
+              </div>
+              <div>
+                <label class={reviewFieldLabel} for="title-review-tmdb">
+                  TMDB ID
+                </label>
+                <input
+                  id="title-review-tmdb"
+                  class={reviewFieldInput}
+                  type="text"
+                  inputMode="numeric"
+                  aria-label="TMDB ID"
+                  value={tmdbId()}
+                  onInput={(e) => setTmdbId(e.currentTarget.value)}
+                />
+              </div>
+            </div>
+            <Show when={props.mode === "series"}>
+              <div class="mb-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <div>
+                  <label class={reviewFieldLabel} for="title-review-season">
+                    Season
+                  </label>
+                  <input
+                    id="title-review-season"
+                    class={reviewFieldInput}
+                    type="text"
+                    inputMode="numeric"
+                    aria-label="Season"
+                    value={season()}
+                    onInput={(e) => setSeason(e.currentTarget.value)}
+                  />
+                </div>
+                <div>
+                  <label class={reviewFieldLabel} for="title-review-episode">
+                    Episode
+                  </label>
+                  <input
+                    id="title-review-episode"
+                    class={reviewFieldInput}
+                    type="text"
+                    inputMode="numeric"
+                    aria-label="Episode"
+                    value={episode()}
+                    onInput={(e) => setEpisode(e.currentTarget.value)}
+                  />
+                </div>
+              </div>
+              <div class="mb-2">
+                <label class={reviewFieldLabel} for="title-review-episode-title">
+                  Episode title
+                </label>
+                <input
+                  id="title-review-episode-title"
+                  class={reviewFieldInput}
+                  type="text"
+                  aria-label="Episode title"
+                  value={episodeTitle()}
+                  onInput={(e) => setEpisodeTitle(e.currentTarget.value)}
+                />
+              </div>
+            </Show>
+            <div>
+              <div class={reviewFieldLabel}>Proposed name</div>
+              <div
+                class="rounded border border-border bg-bg px-2 py-1 font-mono text-sm text-fg"
+                role="status"
+                aria-label="Proposed name"
+              >
+                {composedName() || "—"}
+              </div>
+            </div>
+          </fieldset>
+          <SourcePreviewDisclosure
+            src={proposalVideoUrl(props.mode, p.id)}
+            label={p.sourceName}
+          />
+          <Show when={confirmError()}>
+            <div class="mt-2">
+              <ErrorText>{confirmError()}</ErrorText>
+            </div>
+          </Show>
+        </div>
+        <div class="flex justify-end gap-2 border-t border-border px-4 py-3">
+          <Button variant="secondary" onClick={props.onCancel}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            disabled={!canConfirm()}
+            onClick={handleConfirm}
+          >
+            {confirming() ? "Confirming…" : "Confirm"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ReviewDialog — Adult Review modal.
 //
 // Claude 2026-08-12: modal, NOT SearchTakeover.
@@ -810,7 +1067,7 @@ function reviewSourceExt(proposedName: string, sourceName: string): string {
 // Troubleshooting: dialog not focused / scroll position lost — Review is an
 //   overlay, not a takeover; the list stays mounted underneath it.
 // Context: autopilot-impl-adult-rename-review-alts.md §6 F4.
-const ReviewDialog: Component<{
+const AdultReviewDialog: Component<{
   proposal: Proposal;
   mode: Mode;
   onDone: () => void;
@@ -1046,6 +1303,34 @@ const ReviewDialog: Component<{
         </div>
       </div>
     </div>
+  );
+};
+
+const ReviewDialog: Component<{
+  proposal: Proposal;
+  mode: Mode;
+  preset: NamingPreset;
+  onDone: () => void;
+  onCancel: () => void;
+}> = (props) => {
+  if (props.mode === "movies" || props.mode === "series") {
+    return (
+      <TitleReviewDialog
+        proposal={props.proposal}
+        mode={props.mode}
+        preset={props.preset}
+        onDone={props.onDone}
+        onCancel={props.onCancel}
+      />
+    );
+  }
+  return (
+    <AdultReviewDialog
+      proposal={props.proposal}
+      mode={props.mode}
+      onDone={props.onDone}
+      onCancel={props.onCancel}
+    />
   );
 };
 
@@ -1296,12 +1581,9 @@ const RenameQueue: Component<{ mode: Mode; adultAspect: AdultOrganizeAspect }> =
           continue;
         }
         const cur = next[p.id];
-        // "review" uses isAdultWebIdentified, not rowActionEnabled — check it
-        // separately so a review selection on a row that is no longer eligible
-        // (e.g. it gained a giveBackSceneId from a re-scan) gets cleared.
         const curEnabled =
           cur === "review"
-            ? isAdultWebIdentified(p, mode)
+            ? canReviewName(p, mode)
             : cur
               ? rowActionEnabled(cur, p.status, titleMode)
               : false;
@@ -1403,10 +1685,6 @@ const RenameQueue: Component<{ mode: Mode; adultAspect: AdultOrganizeAspect }> =
     if (id === "rename") {
       void act(() => applyProposal(p.id)).then(() => setLogKey((k) => k + 1));
     } else if (id === "review") {
-      // Opens the ReviewDialog modal. Not batchable (planActionForRow returns
-      // null for "review"), so this branch fires only from a single row's Apply
-      // button. No scroll-save/restore needed — the modal is an overlay, not a
-      // full-page takeover, so the list stays mounted underneath it.
       setReviewFor(p);
     } else if (id === "repick") {
       openTakeover({ kind: "repick", proposal: p });
@@ -1781,6 +2059,7 @@ const RenameQueue: Component<{ mode: Mode; adultAspect: AdultOrganizeAspect }> =
               <ReviewDialog
                 proposal={rp()}
                 mode={props.mode}
+                preset={preset()}
                 onDone={() => {
                   batch(() => {
                     void refetch();

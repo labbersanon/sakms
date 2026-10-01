@@ -882,6 +882,8 @@ type repickProposalRequest struct {
 	// carries the full rationale.
 	SeasonNumber  *int `json:"seasonNumber,omitempty"`
 	EpisodeNumber *int `json:"episodeNumber,omitempty"`
+	// EpisodeTitle is Series-only and optional — the dest-name title segment.
+	EpisodeTitle string `json:"episodeTitle,omitempty"`
 
 	// --- Adult (stash-box / TPDB) ---
 	Box     string `json:"box,omitempty"`
@@ -1012,7 +1014,7 @@ func repickProposalHandler(propStore *proposals.Store) http.HandlerFunc {
 		var repickErr error
 		if hasSeason && hasEpisode {
 			repickErr = propStore.RepickEpisode(ctx, id, req.Title, req.TMDBID, req.Year,
-				*req.SeasonNumber, *req.EpisodeNumber)
+				*req.SeasonNumber, *req.EpisodeNumber, req.EpisodeTitle)
 		} else {
 			repickErr = propStore.Repick(ctx, id, req.Title, req.TMDBID, req.Year)
 		}

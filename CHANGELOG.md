@@ -10114,6 +10114,22 @@ status stays active.
 | `frontend/src/screens/Rename.tsx` | ReviewDialog form + composed `fileName` |
 | `frontend/src/screens/Rename.review.test.tsx` | Form seed/edit/catalog coverage |
 
+## 2026-10-01 — Movies and Series Review dest-name forms
+
+**Problem:** Only Adult Review had a structured filename form. Unmatched Movies/Series could not type Title/Year/ID or Series/Season/Episode/Episode title without Search, so a manual name skipped each mode's schema.
+**Fix:** Review is enabled for unmatched Movies and Series. Movies form is Title, Year, TMDB ID (`Title (Year) [tmdbid-N].ext`). Series form adds Season, Episode, and Episode title (`Series SxxExx Episode Title.ext`). Confirm repicks those fields (Series also writes `episode_title`) then Apply.
+**Outcome:** A manual Review confirm on every mode posts a schema-shaped dest name.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/Rename.tsx` | Movies/Series Review form; `canReviewName` |
+| `frontend/src/screens/Rename.review.test.tsx` | Movies/Series form + eligibility |
+| `internal/proposals/proposals.go` | `RepickEpisode` writes `episode_title` |
+| `internal/api/proposals.go` | `episodeTitle` on repick |
+| `internal/apidto/dto.go` | `RepickRequest.EpisodeTitle` |
+
 
 
 

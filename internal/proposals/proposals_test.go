@@ -992,7 +992,7 @@ func seedSeriesUnmatched(t *testing.T, s *Store, p Proposal) int64 {
 
 func TestRepickEpisode_NotFound(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.RepickEpisode(context.Background(), 999, "The Path", 42, 2020, 1, 3); !errors.Is(err, ErrNotFound) {
+	if err := s.RepickEpisode(context.Background(), 999, "The Path", 42, 2020, 1, 3, ""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -1008,7 +1008,7 @@ func TestRepickEpisode_SetsSeasonAndEpisode(t *testing.T) {
 		Reason:         "could not parse a season/episode from the filename",
 	})
 
-	if err := s.RepickEpisode(ctx, id, "The Path", 777, 2016, 2, 7); err != nil {
+	if err := s.RepickEpisode(ctx, id, "The Path", 777, 2016, 2, 7, "The Weight"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -1024,6 +1024,9 @@ func TestRepickEpisode_SetsSeasonAndEpisode(t *testing.T) {
 	}
 	if got.SeasonNumber != 2 || got.EpisodeNumber != 7 {
 		t.Errorf("expected the operator's slot to persist, got season=%d episode=%d", got.SeasonNumber, got.EpisodeNumber)
+	}
+	if got.EpisodeTitle != "The Weight" {
+		t.Errorf("expected the operator episode title to persist, got %q", got.EpisodeTitle)
 	}
 	if got.Reason != "" {
 		t.Errorf("expected the stale rejection reason to be cleared, got %q", got.Reason)
@@ -1045,7 +1048,7 @@ func TestRepickEpisode_AcceptsSeasonZero(t *testing.T) {
 		Reason:         "no episode information in a DVD authoring filename",
 	})
 
-	if err := s.RepickEpisode(ctx, id, "Candid Camera", 555, 1960, 0, 3); err != nil {
+	if err := s.RepickEpisode(ctx, id, "Candid Camera", 555, 1960, 0, 3, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -1080,7 +1083,7 @@ func TestRepickEpisode_ClearsExtraEpisodeNumbers(t *testing.T) {
 		ExtraEpisodeNumbers: []int{2, 3},
 	})
 
-	if err := s.RepickEpisode(ctx, id, "Right Show", 222, 2001, 4, 9); err != nil {
+	if err := s.RepickEpisode(ctx, id, "Right Show", 222, 2001, 4, 9, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 

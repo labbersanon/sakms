@@ -4,7 +4,8 @@
 //
 // Coverage (§7.12 of autopilot-impl-adult-rename-review-alts.md):
 //   - Review option appears for Adult unmatched with title + no giveBackSceneId
-//   - Review absent for: Movies row, Adult pending, Adult unmatched no-title,
+//   - Review appears for unmatched Movies/Series; disabled for pending Movies
+//   - Review absent for: Adult pending, Adult unmatched no-title,
 //     Adult unmatched with giveBackSceneId
 //   - Choosing Review + clicking Apply opens the modal
 //   - Modal shows current basename and a Studio/Title/Date form that composes
@@ -30,7 +31,7 @@ import {
   within,
 } from "@solidjs/testing-library";
 import type { AdultReviewPreview, Proposal } from "@dto";
-import { Rename, isAdultWebIdentified, planActionForRow } from "./Rename";
+import { Rename, canReviewName, isAdultWebIdentified, planActionForRow } from "./Rename";
 import { jsonResponse, noContent, asPage } from "../testing/http";
 
 // ---- Helpers ----------------------------------------------------------------
@@ -49,6 +50,33 @@ const adultProposal = (over: Partial<Proposal> = {}): Proposal => ({
   reason: "web-identified only — no catalog scene id yet; use Review to name and track it",
   draftId: "",
   ...over,
+});
+
+const movieUnmatched = (): Proposal => ({
+  id: 1,
+  status: "unmatched",
+  sourceName: "Movie.2024.mkv",
+  sourcePath: "/movies/Movie.2024.mkv",
+  rootFolderPath: "/movies",
+  title: "Movie",
+  year: 2024,
+  reason: "no match",
+  draftId: "",
+});
+
+const seriesUnmatched = (): Proposal => ({
+  id: 1,
+  status: "unmatched",
+  sourceName: "Show.S01E02.mkv",
+  sourcePath: "/series/Show.S01E02.mkv",
+  rootFolderPath: "/series",
+  title: "Show",
+  year: 2020,
+  seasonNumber: 1,
+  episodeNumber: 2,
+  episodeTitle: "Pilot",
+  reason: "no match",
+  draftId: "",
 });
 
 const defaultPreview: AdultReviewPreview = {
@@ -287,21 +315,10 @@ describe("Rename — Review option eligibility", () => {
     expect(reviewOption).toBeDisabled();
   });
 
-  it("Review option is disabled for a Movies row", async () => {
+  it("Review option is enabled for an unmatched Movies row", async () => {
     stubFetch((url) => {
       if (url.includes("/api/modes/movies/rename/proposals"))
-        return jsonResponse([
-          {
-            id: 1,
-            status: "unmatched",
-            sourceName: "Movie.2024.mkv",
-            rootFolderPath: "/movies",
-            title: "Movie",
-            year: 2024,
-            reason: "no match",
-            draftId: "",
-          } satisfies Proposal,
-        ]);
+        return jsonResponse([movieUnmatched()]);
       return jsonResponse([]);
     });
 
@@ -310,10 +327,34 @@ describe("Rename — Review option eligibility", () => {
 
     const row = screen.getByText("Movie.2024.mkv").closest("tr, [data-proposal-row]")! as HTMLElement;
     const select = within(row).getByRole("combobox");
-    // Review is Adult-only — the option is omitted on Movies/Series rows.
+    const reviewOption = within(select).getByRole("option", { name: "Review" });
+    expect(reviewOption).not.toBeDisabled();
+  });
+});
+
+describe("canReviewName", () => {
+  it("is true for unmatched movies and series", () => {
     expect(
-      within(select).queryByRole("option", { name: "Review" }),
-    ).toBeNull();
+      canReviewName(
+        { id: 1, status: "unmatched", sourceName: "a.mkv", rootFolderPath: "/m" },
+        "movies",
+      ),
+    ).toBe(true);
+    expect(
+      canReviewName(
+        { id: 1, status: "unmatched", sourceName: "a.mkv", rootFolderPath: "/s" },
+        "series",
+      ),
+    ).toBe(true);
+  });
+
+  it("is false for pending movies", () => {
+    expect(
+      canReviewName(
+        { id: 1, status: "pending", sourceName: "a.mkv", rootFolderPath: "/m", title: "A" },
+        "movies",
+      ),
+    ).toBe(false);
   });
 });
 
@@ -591,5 +632,117 @@ describe("Rename — Review not in Apply-All", () => {
     await screen.findByText(/Nothing to apply/);
     expect(screen.queryByRole("dialog", { name: "Confirm apply all" })).toBeNull();
     expect(reviewCalls(calls)).toHaveLength(0);
+  });
+});
+
+describe("Rename — Movies Review form", () => {
+  it("composes Title (Year) [tmdbid] and posts repick then apply", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/repick")) return jsonResponse({ ...movieUnmatched(), status: "pending" });
+      if (url.includes("/apply")) return jsonResponse({ ...movieUnmatched(), status: "applied" });
+      if (url.includes("/rename/proposals")) return jsonResponse([movieUnmatched()]);
+      return jsonResponse([]);
+    });
+
+    render(() => <Rename />);
+    await screen.findByText("Movie.2024.mkv");
+    const row = screen.getByText("Movie.2024.mkv").closest("tr, [data-proposal-row]")! as HTMLElement;
+    fireEvent.change(within(row).getByRole("combobox"), { target: { value: "review" } });
+    fireEvent.click(within(row).getByRole("button", { name: /Apply selected action/ }));
+
+    const dialog = await screen.findByRole("dialog", { name: /Review/ });
+    await within(dialog).findByText("Current name");
+    fireEvent.input(within(dialog).getByRole("textbox", { name: /^title$/i }), {
+      target: { value: "Other Movie" },
+    });
+    fireEvent.input(within(dialog).getByRole("textbox", { name: /^year$/i }), {
+      target: { value: "2025" },
+    });
+    fireEvent.input(within(dialog).getByRole("textbox", { name: /^tmdb id$/i }), {
+      target: { value: "99" },
+    });
+    await waitFor(() =>
+      expect(within(dialog).getByRole("status", { name: /proposed name/i })).toHaveTextContent(
+        "Other Movie (2025) [tmdbid-99].mkv",
+      ),
+    );
+    const confirmBtn = within(dialog).getByRole("button", { name: /confirm/i });
+    await waitFor(() => expect(confirmBtn).not.toBeDisabled());
+    fireEvent.click(confirmBtn);
+
+    await waitFor(() => {
+      const repick = calls.filter((c) => c.url.includes("/repick") && c.method === "POST");
+      const apply = calls.filter((c) => c.url.endsWith("/apply") && c.method === "POST");
+      expect(repick).toHaveLength(1);
+      expect(repick[0]!.body).toEqual({
+        title: "Other Movie",
+        tmdbId: 99,
+        year: 2025,
+      });
+      expect(apply).toHaveLength(1);
+    });
+  });
+});
+
+describe("Rename — Series Review form", () => {
+  it("composes Series SxxExx Episode Title and posts repick then apply", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/repick")) return jsonResponse({ ...seriesUnmatched(), status: "pending" });
+      if (url.includes("/apply")) return jsonResponse({ ...seriesUnmatched(), status: "applied" });
+      if (url.includes("/api/modes/series/rename/proposals"))
+        return jsonResponse([seriesUnmatched()]);
+      return jsonResponse([]);
+    });
+
+    render(() => <Rename />);
+    fireEvent.click(await screen.findByText("Series"));
+    await screen.findByText("Show.S01E02.mkv");
+    const row = screen.getByText("Show.S01E02.mkv").closest("tr, [data-proposal-row]")! as HTMLElement;
+    fireEvent.change(within(row).getByRole("combobox"), { target: { value: "review" } });
+    fireEvent.click(within(row).getByRole("button", { name: /Apply selected action/ }));
+
+    const dialog = await screen.findByRole("dialog", { name: /Review/ });
+    await within(dialog).findByText("Current name");
+    fireEvent.input(within(dialog).getByRole("textbox", { name: /^series$/i }), {
+      target: { value: "Looney Tunes" },
+    });
+    fireEvent.input(within(dialog).getByRole("textbox", { name: /^year$/i }), {
+      target: { value: "1940" },
+    });
+    fireEvent.input(within(dialog).getByRole("textbox", { name: /^tmdb id$/i }), {
+      target: { value: "55" },
+    });
+    fireEvent.input(within(dialog).getByRole("textbox", { name: /^season$/i }), {
+      target: { value: "1947" },
+    });
+    fireEvent.input(within(dialog).getByRole("textbox", { name: /^episode$/i }), {
+      target: { value: "5" },
+    });
+    fireEvent.input(within(dialog).getByRole("textbox", { name: /^episode title$/i }), {
+      target: { value: "A Hare Grows in Manhattan" },
+    });
+    await waitFor(() =>
+      expect(within(dialog).getByRole("status", { name: /proposed name/i })).toHaveTextContent(
+        "Looney Tunes S1947E05 A Hare Grows in Manhattan.mkv",
+      ),
+    );
+    const confirmBtn = within(dialog).getByRole("button", { name: /confirm/i });
+    await waitFor(() => expect(confirmBtn).not.toBeDisabled());
+    fireEvent.click(confirmBtn);
+
+    await waitFor(() => {
+      const repick = calls.filter((c) => c.url.includes("/repick") && c.method === "POST");
+      const apply = calls.filter((c) => c.url.endsWith("/apply") && c.method === "POST");
+      expect(repick).toHaveLength(1);
+      expect(repick[0]!.body).toEqual({
+        title: "Looney Tunes",
+        tmdbId: 55,
+        year: 1940,
+        seasonNumber: 1947,
+        episodeNumber: 5,
+        episodeTitle: "A Hare Grows in Manhattan",
+      });
+      expect(apply).toHaveLength(1);
+    });
   });
 });

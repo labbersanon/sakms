@@ -811,17 +811,23 @@ func (s *Store) Repick(ctx context.Context, id int64, title string, tmdbID, year
 // value comes from marshalExtraEpisodes(nil) rather than a literal so it stays
 // in lockstep with ReplacePending's own encoding — "" (not "[]", not NULL),
 // which is what scanProposal's non-empty guard expects.
-func (s *Store) RepickEpisode(ctx context.Context, id int64, title string, tmdbID, year, season, episode int) error {
+func (s *Store) RepickEpisode(ctx context.Context, id int64, title string, tmdbID, year, season, episode int, episodeTitle string) error {
 	extra, err := marshalExtraEpisodes(nil)
 	if err != nil {
 		return fmt.Errorf("clearing extra episode numbers for proposal %d: %w", id, err)
 	}
+	// Claude 2026-10-01: persist episode_title on manual Review/repick.
+	// Reason: Series dest names are Series SxxExx Episode Title; a slot-only
+	//   write left Apply to fetch TMDB and dropped the operator's title.
+	// Troubleshooting: Review form previewed a cartoon name, Apply wrote SxxExx.ext.
+	// Review if: Apply prefers p.EpisodeTitle over SeasonDetails when both exist.
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE proposals SET title = ?, tmdb_id = ?, year = ?,
 			season_number = ?, episode_number = ?, extra_episode_numbers = ?,
+			episode_title = ?,
 			status = ?, reason = ''
 		WHERE id = ?
-	`, title, tmdbID, year, season, episode, extra, string(Pending), id)
+	`, title, tmdbID, year, season, episode, extra, episodeTitle, string(Pending), id)
 	if err != nil {
 		return fmt.Errorf("re-picking episode for proposal %d: %w", id, err)
 	}

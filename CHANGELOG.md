@@ -10019,5 +10019,20 @@ status stays active.
 | `internal/rename/rename.go` | Year-season parse tries show-folder TVDB before filename web match |
 | `internal/library/year_season.go` | `SplitYearSeasonMarker` for title-before vs title-after SyyyyExx |
 
+## 2026-10-01 — Year-season parent: strong-token SearchSeries fallback
+
+**Problem:** The Toons↔Tunes extra query was Looney-specific. Other misspelled shorts folders would still miss TVDB if the full-title search returned nothing.
+**Fix:** Search the folder title first. If that yields no unique pre-1970 overlap hit, query each strong title token (length ≥ 4, not the whole title). The first token with exactly one hit wins; 2+ hits at the full-title step or on a token abstain.
+**Outcome:** `Looney Toons` can still resolve via the token `looney`; Laurel & Hardy-style folders get the same fallback without a franchise alias list.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/rename/catalog_show.go` | `strongFolderTokens` replaces Toons↔Tunes `showFolderSearchQueries` |
+| `internal/rename/catalog_nest.go` | Full-title search, then per-token fallback |
+| `internal/rename/catalog.go` | Comment: token fallback, not Toons alias |
+| `internal/rename/rename.go` | Comment: token fallback, not Toons alias |
+
 
 

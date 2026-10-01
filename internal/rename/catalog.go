@@ -137,9 +137,9 @@ func catalogEpisodeAtPath(ctx context.Context, sess *mode.Session, libStore *lib
 		//
 		// Claude 2026-10-01: Looney Toons folder + discarded Tooney nfo.
 		// Reason: exact title-key required "looneytoons" == "looneytunes";
-		//   web-authority then minted a series per cartoon (A Hare Grows in
-		//   Manhattan). Overlap + Toons/Tunes search aliases parent to TVDB
-		//   7266; corroborate fills the episode title; stray web cards retire.
+		//   web-authority then minted a series per cartoon. Overlap + unique
+		//   pre-1970 TVDB parent (full title, then strong-token fallback)
+		//   attaches the file; stray web cards retire.
 		// Review if: the kids folder is renamed to Looney Tunes.
 		if !library.IsYearSeason(season) {
 			return false, nil

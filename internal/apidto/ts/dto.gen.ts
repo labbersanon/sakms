@@ -220,12 +220,15 @@ export interface DiscoverItem {
 /**
  * SeriesSearchItem is one Rename SearchTakeover hit from TVDB-backed series
  * search (GET /api/modes/series/tvdb-search). TmdbID is resolved via TMDB's
- * tvdb_id cross-reference for repick/move commit. For kind=episode, Title is
- * the episode name and SeriesTitle is the parent show; SeasonNumber and
- * EpisodeNumber carry the slot for a one-click commit without step 2.
+ * tvdb_id cross-reference for repick/move commit, or AnthologyTMDBID when
+ * TMDB has no row. TvdbID is the real TheTVDB series id so repick can persist
+ * it — AnthologyTMDBID is a hash and cannot be reversed. For kind=episode,
+ * Title is the episode name and SeriesTitle is the parent show; SeasonNumber
+ * and EpisodeNumber carry the slot for a one-click commit without step 2.
  */
 export interface SeriesSearchItem {
   tmdbId: number /* int */;
+  tvdbId?: number /* int */;
   title: string;
   seriesTitle?: string;
   releaseDate?: string;
@@ -1352,6 +1355,12 @@ export interface Proposal {
  */
 export interface RepickRequest {
   tmdbId?: number /* int */;
+  /**
+   * TVDBID is Series-only. Required when TMDBID is a synthetic anthology
+   * id (negative): ApplyLibrarySeries keys TheTVDB catalog on this column,
+   * and AnthologyTMDBID cannot be reversed to recover it.
+   */
+  tvdbId?: number /* int */;
   title: string;
   year?: number /* int */;
   /**

@@ -689,3 +689,31 @@ func TestRepick_MoviesWithSeasonEpisode(t *testing.T) {
 		t.Fatalf("expected 400 for season/episode on a movies proposal, got %d", resp.StatusCode)
 	}
 }
+
+func TestRepick_AnthologyTMDBIDRequiresTVDBID(t *testing.T) {
+	srv, id, _, _ := newManualSlotServer(t, "Night.Owl.mkv")
+
+	resp := postRepick(t, srv, id, `{"tmdbId":-12345,"title":"Night Owl","year":2018}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for anthology tmdbId without tvdbId, got %d", resp.StatusCode)
+	}
+}
+
+func TestRepick_AnthologyTMDBIDPersistsTVDBID(t *testing.T) {
+	srv, id, _, _ := newManualSlotServer(t, "Night.Owl.mkv")
+
+	resp := postRepick(t, srv, id, `{"tmdbId":-12345,"tvdbId":7266,"title":"Night Owl","year":2018}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 for anthology repick, got %d: %s", resp.StatusCode, body)
+	}
+	var got proposals.Proposal
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decoding repick response: %v", err)
+	}
+	if got.Status != proposals.Pending || got.TMDBID != -12345 || got.TVDBID != 7266 || got.Title != "Night Owl" {
+		t.Fatalf("unexpected anthology repick: %+v", got)
+	}
+}

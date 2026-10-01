@@ -206,11 +206,14 @@ type DiscoverItem struct {
 
 // SeriesSearchItem is one Rename SearchTakeover hit from TVDB-backed series
 // search (GET /api/modes/series/tvdb-search). TmdbID is resolved via TMDB's
-// tvdb_id cross-reference for repick/move commit. For kind=episode, Title is
-// the episode name and SeriesTitle is the parent show; SeasonNumber and
-// EpisodeNumber carry the slot for a one-click commit without step 2.
+// tvdb_id cross-reference for repick/move commit, or AnthologyTMDBID when
+// TMDB has no row. TvdbID is the real TheTVDB series id so repick can persist
+// it — AnthologyTMDBID is a hash and cannot be reversed. For kind=episode,
+// Title is the episode name and SeriesTitle is the parent show; SeasonNumber
+// and EpisodeNumber carry the slot for a one-click commit without step 2.
 type SeriesSearchItem struct {
 	TmdbID        int    `json:"tmdbId"`
+	TvdbID        int    `json:"tvdbId,omitempty"`
 	Title         string `json:"title"`
 	SeriesTitle   string `json:"seriesTitle,omitempty"`
 	ReleaseDate   string `json:"releaseDate,omitempty"`
@@ -1383,7 +1386,11 @@ type Proposal struct {
 // the result's release date when present). Mirrors internal/api's
 // repickProposalRequest.
 type RepickRequest struct {
-	TMDBID int    `json:"tmdbId,omitempty"`
+	TMDBID int `json:"tmdbId,omitempty"`
+	// TVDBID is Series-only. Required when TMDBID is a synthetic anthology
+	// id (negative): ApplyLibrarySeries keys TheTVDB catalog on this column,
+	// and AnthologyTMDBID cannot be reversed to recover it.
+	TVDBID int    `json:"tvdbId,omitempty"`
 	Title  string `json:"title"`
 	Year   int    `json:"year,omitempty"`
 	// SeasonNumber/EpisodeNumber are OPTIONAL and Series-only: the operator's

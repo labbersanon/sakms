@@ -739,6 +739,49 @@ func TestCatalogEpisodeAtPath_YearSeasonMisspelledToonsFolder(t *testing.T) {
 	}
 }
 
+func TestCatalogEpisodeAtPath_YearSeasonTokenFallback(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	seasonDir := filepath.Join(root, "Looney Toons", "Season 1947")
+	if err := os.MkdirAll(seasonDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(seasonDir, "A Hare Grows In Manhattan S1947E05.mp4")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tvdbClient, _ := fakeTVDBAnthologyServer(t, []fakeTVDBAnthologyShow{{
+		ID: 7266, Name: "Looney Tunes", Year: "1930",
+		SearchQueries: []string{"looney"},
+		Catalog: []fakeTVDBEpisode{
+			{ID: 5, SeriesID: 7266, Name: "A Hare Grows in Manhattan", Number: 5, SeasonNumber: 1947, Aired: "1947-03-22"},
+		},
+	}})
+	libStore := newTestLibraryStore(t)
+	ok, err := catalogEpisodeAtPath(ctx, &mode.Session{Mode: mode.Series, TVDB: tvdbClient}, libStore, video, root, []string{root})
+	if err != nil || !ok {
+		t.Fatalf("catalog ok=%v err=%v — full-title miss must fall back to token looney", ok, err)
+	}
+	parent, err := libStore.GetSeriesByTMDBID(ctx, anthologyTMDBID(7266))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parent.Title != "Looney Tunes" {
+		t.Fatalf("parent = %+v", parent)
+	}
+}
+
+func TestUniqueShowFolderTVDBParent_TokenAmbiguousAbstains(t *testing.T) {
+	tvdbClient, _ := fakeTVDBAnthologyServer(t, []fakeTVDBAnthologyShow{
+		{ID: 7266, Name: "Looney Tunes", Year: "1930", SearchQueries: []string{"looney"}},
+		{ID: 7999, Name: "Looney Melodies", Year: "1932", SearchQueries: []string{"looney"}},
+	})
+	sess := &mode.Session{Mode: mode.Series, TVDB: tvdbClient}
+	if _, ok := uniqueShowFolderTVDBParent(context.Background(), sess, "Looney Toons"); ok {
+		t.Fatal("two pre-1970 looney hits on the token fallback must abstain")
+	}
+}
+
 func TestScanLibrarySeries_YearSeasonUsesShowFolderNotEpisodeTitle(t *testing.T) {
 	root := t.TempDir()
 	seasonDir := filepath.Join(root, "Looney Toons", "Season 1947")

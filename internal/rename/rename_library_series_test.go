@@ -2700,11 +2700,12 @@ func anthologyScanCatalog() []fakeTVDBEpisode {
 // fakeTVDBAnthologyShow is one show fakeTVDBAnthologyServer returns from
 // GET /v4/search, plus the catalog it serves for that show's episode listing.
 type fakeTVDBAnthologyShow struct {
-	ID           int
-	Name         string
-	Year         string // "YYYY"; TheTVDB v4 returns year as a string
-	Catalog      []fakeTVDBEpisode
-	EpisodesFail bool // answer GET .../episodes/{type} with a 500 (case J)
+	ID            int
+	Name          string
+	Year          string // "YYYY"; TheTVDB v4 returns year as a string
+	Catalog       []fakeTVDBEpisode
+	EpisodesFail  bool     // answer GET .../episodes/{type} with a 500 (case J)
+	SearchQueries []string // if non-empty, GET /v4/search returns this show only for these queries
 }
 
 // fakeTVDBAnthologyCounts carries the two request counters §8.3 needs. They
@@ -2747,8 +2748,12 @@ func fakeTVDBAnthologyServer(t *testing.T, shows []fakeTVDBAnthologyShow) (*tvdb
 	})
 	mux.HandleFunc("GET /v4/search", func(w http.ResponseWriter, r *http.Request) {
 		counts.Total.Add(1)
+		query := r.URL.Query().Get("query")
 		items := make([]map[string]string, 0, len(shows))
 		for _, s := range shows {
+			if !fakeTVDBSearchQueryMatches(s, query) {
+				continue
+			}
 			items = append(items, map[string]string{
 				"tvdb_id": strconv.Itoa(s.ID), "name": s.Name, "year": s.Year,
 			})
@@ -2793,6 +2798,18 @@ func fakeTVDBAnthologyServer(t *testing.T, shows []fakeTVDBAnthologyShow) (*tvdb
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return tvdb.New(tvdb.Config{BaseURL: srv.URL, APIKey: "test-key"}, srv.Client()), counts
+}
+
+func fakeTVDBSearchQueryMatches(s fakeTVDBAnthologyShow, query string) bool {
+	if len(s.SearchQueries) == 0 {
+		return true
+	}
+	for _, q := range s.SearchQueries {
+		if strings.EqualFold(q, query) {
+			return true
+		}
+	}
+	return false
 }
 
 // fatalTMDBSeriesServer fails the test on ANY request. ScanLibrarySeries

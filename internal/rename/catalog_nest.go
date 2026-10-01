@@ -59,7 +59,9 @@ func episodeTitleKey(s string) string {
 
 // Claude 2026-09-24: only a series that premiered before 1970 can parent a short.
 // Reason: Night Owls (2023) and Tribute (1992) share a title token with a
-//   theatrical short; they must never absorb other files.
+//
+//	theatrical short; they must never absorb other files.
+//
 // Troubleshooting: a 2023 card steals 1930 shorts after Save.
 // Review if: the parent-year cutoff moves off 1970.
 const nestParentPremiereBefore = 1970
@@ -228,9 +230,11 @@ func ensureTVDBParent(ctx context.Context, libStore *library.Store, all []librar
 
 // Claude 2026-09-24: B2 — tracked pre-1970 first, then SearchSeries.
 // Reason: SearchEpisodes seeds series named like the query, so "Night Owls"
-//   never finds Laurel & Hardy. Tracked anthologies are the first parent
-//   source; an untracked parent is created only from a unique pre-1970
-//   SearchSeries hit whose catalog has exactly one exact-key episode.
+//
+//	never finds Laurel & Hardy. Tracked anthologies are the first parent
+//	source; an untracked parent is created only from a unique pre-1970
+//	SearchSeries hit whose catalog has exactly one exact-key episode.
+//
 // Troubleshooting: shorts stay their own cards when the anthology is untracked.
 // Review if: TVDB adds a global episode-title search.
 func findTVDBEpisodeNest(ctx context.Context, sess *mode.Session, libStore *library.Store, title string, folderYear int, foundRoot string, allowSearchCreate bool) (library.Series, int, int, string, string, bool) {
@@ -318,7 +322,9 @@ func searchCreateEpisodeParent(ctx context.Context, sess *mode.Session, libStore
 
 // Claude 2026-10-01: parent title match is overlap, not compact-key equality.
 // Reason: kids folder "Looney Toons" never equaled TVDB "Looney Tunes"
-//   (looneytoons vs looneytunes), so each short web-matched as its own series.
+//
+//	(looneytoons vs looneytunes), so each short web-matched as its own series.
+//
 // Troubleshooting: A Hare Grows in Manhattan is a Library card, not Looney Tunes.
 // Review if: the on-disk folder is renamed to Looney Tunes.
 func findParentByShowFolder(ctx context.Context, sess *mode.Session, libStore *library.Store, showFolder, foundRoot string) (library.Series, bool) {
@@ -356,37 +362,53 @@ func findParentByShowFolder(ctx context.Context, sess *mode.Session, libStore *l
 const tvdbYearSeasonReasonPrefix = "tvdb year-season match:"
 
 // uniqueShowFolderTVDBParent is a unique pre-1970 TVDB series for the on-disk
-// show folder. Token overlap plus Toons↔Tunes alias queries let "Looney Toons"
-// resolve to Looney Tunes (7266) instead of each short becoming its own series.
+// show folder. Full-title SearchSeries first; if that returns no agreeing hit,
+// each strong folder token is queried. Two or more hits at either step abstain.
 func uniqueShowFolderTVDBParent(ctx context.Context, sess *mode.Session, showFolder string) (tvdb.Result, bool) {
 	title := titleFromShowFolder(showFolder)
 	if sess == nil || sess.TVDB == nil || title == "" || genericEpisodeTitleKey(episodeTitleKey(title)) {
 		return tvdb.Result{}, false
 	}
-	seen := map[int]struct{}{}
-	var hits []tvdb.Result
-	gotAny := false
-	for _, q := range showFolderSearchQueries(title) {
-		results, err := sess.TVDB.SearchSeries(ctx, q)
-		if err != nil {
-			continue
-		}
-		gotAny = true
-		for _, r := range results {
-			if r.TVDBID <= 0 || !parentPremiereOK(r.Year) || !showTitlesAgree(r.Name, title) {
-				continue
-			}
-			if _, ok := seen[r.TVDBID]; ok {
-				continue
-			}
-			seen[r.TVDBID] = struct{}{}
-			hits = append(hits, r)
-		}
-	}
-	if !gotAny || len(hits) != 1 {
+	hits, ok := searchShowFolderTVDB(ctx, sess, title, title)
+	if !ok {
 		return tvdb.Result{}, false
 	}
-	return hits[0], true
+	if len(hits) == 1 {
+		return hits[0], true
+	}
+	if len(hits) > 1 {
+		return tvdb.Result{}, false
+	}
+	for _, tok := range strongFolderTokens(title) {
+		tokenHits, tokOK := searchShowFolderTVDB(ctx, sess, title, tok)
+		if !tokOK {
+			return tvdb.Result{}, false
+		}
+		if len(tokenHits) == 1 {
+			return tokenHits[0], true
+		}
+	}
+	return tvdb.Result{}, false
+}
+
+func searchShowFolderTVDB(ctx context.Context, sess *mode.Session, folderTitle, query string) ([]tvdb.Result, bool) {
+	results, err := sess.TVDB.SearchSeries(ctx, query)
+	if err != nil {
+		return nil, false
+	}
+	seen := map[int]struct{}{}
+	var hits []tvdb.Result
+	for _, r := range results {
+		if r.TVDBID <= 0 || !parentPremiereOK(r.Year) || !showTitlesAgree(r.Name, folderTitle) {
+			continue
+		}
+		if _, ok := seen[r.TVDBID]; ok {
+			continue
+		}
+		seen[r.TVDBID] = struct{}{}
+		hits = append(hits, r)
+	}
+	return hits, true
 }
 
 func yearSeasonTitleHint(filename, showFolder string) string {

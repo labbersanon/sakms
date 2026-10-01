@@ -35,16 +35,16 @@ func TestShowTitlesAgree_ToonsTunes(t *testing.T) {
 	}
 }
 
-func TestShowFolderSearchQueries_ToonsAlias(t *testing.T) {
-	got := showFolderSearchQueries("Looney Toons")
-	want := map[string]bool{"Looney Toons": true, "Looney Tunes": true}
-	if len(got) != 2 {
+func TestStrongFolderTokens(t *testing.T) {
+	got := strongFolderTokens("Looney Toons")
+	if len(got) != 2 || got[0] != "looney" || got[1] != "toons" {
 		t.Fatalf("got %v", got)
 	}
-	for _, q := range got {
-		if !want[q] {
-			t.Fatalf("unexpected query %q in %v", q, got)
-		}
+	if tok := strongFolderTokens("Popeye"); len(tok) != 0 {
+		t.Fatalf("single-word title must not re-query itself, got %v", tok)
+	}
+	if tok := strongFolderTokens("Up"); len(tok) != 0 {
+		t.Fatalf("short tokens are not strong, got %v", tok)
 	}
 }
 

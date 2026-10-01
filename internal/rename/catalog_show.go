@@ -3,7 +3,7 @@ package rename
 import (
 	"context"
 	"path/filepath"
-	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/labbersanon/sakms/internal/library"
@@ -20,7 +20,8 @@ import (
 // Claude 2026-09-23: discard a tvshow.nfo that names a different series.
 // Reason: kids Looney Toons shipped The Tooney and Russo Show's TVDB id.
 // Review if: nfo title is empty but ids are still wrong — then folder search
-//   must win, not the ids.
+//
+//	must win, not the ids.
 func seriesSidecarAgrees(hint nfo.SeriesNFO, showFolder string) bool {
 	title := strings.TrimSpace(hint.Title)
 	folder := strings.TrimSpace(showFolder)
@@ -42,36 +43,28 @@ func showTitlesAgree(a, b string) bool {
 	return HasTitleTokenOverlap(a, b) || HasTitleTokenOverlap(b, a)
 }
 
-// Claude 2026-10-01: also search Toons↔Tunes so TVDB can see Looney Tunes.
-// Reason: kids folder is spelled Looney Toons; TVDB series is Looney Tunes.
-//   SearchSeries("Looney Toons") can miss 7266; the alias query finds it.
-// Troubleshooting: year-season shorts catalog as their own 1947 "series".
-// Review if: the on-disk folder is renamed to Looney Tunes.
-var (
-	toonsWordRe = regexp.MustCompile(`(?i)\btoons\b`)
-	tunesWordRe = regexp.MustCompile(`(?i)\btunes\b`)
-)
-
-func showFolderSearchQueries(title string) []string {
+// Claude 2026-10-01: strong tokens as SearchSeries fallback, not a franchise alias.
+// Reason: Toons↔Tunes was Looney-only. Folder "Looney Toons" can miss TVDB
+//
+//	"Looney Tunes" on the full-title query; each titleTokens entry of length
+//	>= 4 (HasTitleTokenOverlap's strong bar) is a second query. Unique
+//	pre-1970 overlap still required — 0 or 2+ hits abstain.
+//
+// Troubleshooting: year-season shorts catalog as their own title+year series.
+// Review if: titleTokens' length-2/3 keep rule changes the strong-token set.
+func strongFolderTokens(title string) []string {
 	title = strings.TrimSpace(title)
 	if title == "" {
 		return nil
 	}
-	out := []string{title}
-	add := func(s string) {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			return
+	var out []string
+	for tok := range titleTokens(title) {
+		if len(tok) < 4 || strings.EqualFold(tok, title) {
+			continue
 		}
-		for _, e := range out {
-			if strings.EqualFold(e, s) {
-				return
-			}
-		}
-		out = append(out, s)
+		out = append(out, tok)
 	}
-	add(toonsWordRe.ReplaceAllString(title, "Tunes"))
-	add(tunesWordRe.ReplaceAllString(title, "Toons"))
+	sort.Strings(out)
 	return out
 }
 
@@ -114,7 +107,8 @@ func readSeriesSidecarNested(videoPath, root string) nfo.SeriesNFO {
 //
 // Claude 2026-09-23: do not treat anthology synthetic ids as missing.
 // Reason: Laurel & Hardy (1919) tvshow.nfo stores tmdb -1498833576 / tvdb
-//   73910. FindTVByTVDBID(73910) previously returned the 1966 cartoon.
+//  73910. FindTVByTVDBID(73910) previously returned the 1966 cartoon.
+//
 // Review if: a real positive TMDB TV id exists for the 1919 shorts series.
 func catalogShowTMDBID(ctx context.Context, sess *mode.Session, hint nfo.SeriesNFO, videoPath string) int {
 	if hint.TMDBID != 0 {

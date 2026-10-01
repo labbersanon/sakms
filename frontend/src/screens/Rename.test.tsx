@@ -495,6 +495,39 @@ describe("Rename — Series Re-pick (auto-search → use a new tmdb match)", () 
   });
 });
 
+describe("Rename — Search prefills the suggested term, not the filename", () => {
+  it("auto-searches the cleaned filename, not sourceName or the current title", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/api/modes/movies/rename/proposals"))
+        return jsonResponse([
+          proposal({
+            id: 8,
+            sourceName: "Some.Movie.2021.1080p.mkv",
+            title: "Wrong Catalog Title",
+            year: 1999,
+          }),
+        ]);
+      if (url.includes("/tmdb-search"))
+        return jsonResponse([
+          tmdbItem({ id: 550, title: "Some Movie", releaseDate: "2021-01-01" }),
+        ]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Rename />);
+    await runRowAction("Some.Movie.2021.1080p.mkv", "repick");
+
+    const box = await screen.findByLabelText("Catalog search query");
+    expect((box as HTMLInputElement).value).toBe("Some Movie");
+    expect(await screen.findByLabelText("Use Some Movie")).toBeInTheDocument();
+    const search = calls.map((c) => c.url).find((u) => u.includes("/tmdb-search"));
+    expect(search).toContain("q=Some%20Movie");
+    expect(search).not.toContain("Wrong");
+    expect(search).not.toContain("1080p");
+    expect(search).not.toContain(".mkv");
+  });
+});
+
 describe("Rename — Adult Re-pick (scene-search → catalog match)", () => {
   it("posts box/sceneId to /repick when an adult scene is chosen", async () => {
     const calls = stubFetch((url, init) => {

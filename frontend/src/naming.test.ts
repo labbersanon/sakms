@@ -72,6 +72,36 @@ describe("proposedFileName", () => {
       ),
     ).toBe("Looney Tunes S1947E05 A Hare Grows in Manhattan.mp4");
   });
+
+  it("formats a show-level series pick as Title (Year).ext", () => {
+    expect(
+      proposedFileName(
+        "series",
+        "jellyfin",
+        proposal({
+          title: "Night Owl",
+          year: 2018,
+          sourceName: "Night.Owl.mkv",
+        }),
+      ),
+    ).toBe("Night Owl (2018).mkv");
+  });
+
+  it("treats a missing seasonNumber as Specials when episode is set", () => {
+    expect(
+      proposedFileName(
+        "series",
+        "jellyfin",
+        proposal({
+          title: "Laurel & Hardy",
+          year: 1921,
+          episodeNumber: 12,
+          episodeTitle: "Night Owls",
+          sourceName: "Night.Owls.mkv",
+        }),
+      ),
+    ).toBe("Laurel & Hardy S00E12 Night Owls.mkv");
+  });
 });
 
 describe("adultFileName", () => {

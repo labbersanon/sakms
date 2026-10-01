@@ -123,16 +123,24 @@ export function proposedFileName(
     return movieFileName(preset, p.title, p.year ?? 0, wire.tmdbId ?? 0, ext);
   }
   if (mode === "series") {
-    if (p.seasonNumber == null || p.episodeNumber == null) return "";
-    const nums = [p.episodeNumber, ...(p.extraEpisodeNumbers ?? [])];
-    return episodeRangeFileName(
-      preset,
-      p.title,
-      p.seasonNumber,
-      nums,
-      p.episodeTitle ?? "",
-      ext,
-    );
+    // Claude 2026-10-01: show-level title pick and Specials (season 0).
+    // Reason: Search title-tile commit writes no slot; season 0 is omitempty
+    //   so Specials arrive as episode-only. Both used to preview as blank.
+    // Troubleshooting: after picking Night Owl / Laurel & Hardy, Proposed name is —.
+    // Review if: list JSON always sends seasonNumber, including 0.
+    const episode = p.episodeNumber;
+    if (episode != null && episode >= 1) {
+      const nums = [episode, ...(p.extraEpisodeNumbers ?? [])];
+      return episodeRangeFileName(
+        preset,
+        p.title,
+        p.seasonNumber ?? 0,
+        nums,
+        p.episodeTitle ?? "",
+        ext,
+      );
+    }
+    return movieFileName(preset, p.title, p.year ?? 0, wire.tmdbId ?? 0, ext);
   }
   return adultFileName(p.studio ?? "", p.title, p.date ?? "", p.phash ?? "", ext);
 }

@@ -749,6 +749,32 @@ describe("Rename — mode-specific columns", () => {
     expect(screen.getByText("5")).toBeInTheDocument();
   });
 
+  it("Series proposed name after a title-only pick is Title (Year).ext", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/rename/proposals"))
+        return jsonResponse([]);
+      if (url.includes("/api/modes/series/rename/proposals"))
+        return jsonResponse([
+          proposal({
+            id: 8,
+            sourceName: "Night.Owl.mkv",
+            title: "Night Owl",
+            year: 2018,
+          }),
+        ]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Rename />);
+    fireEvent.click(await screen.findByText("Series"));
+    const row = (await screen.findByText("Current name")).closest(
+      "[data-proposal-row]",
+    )! as HTMLElement;
+    expect(within(row).getByText("Night.Owl.mkv")).toBeInTheDocument();
+    expect(within(row).getByText("Proposed name")).toBeInTheDocument();
+    expect(within(row).getByText("Night Owl (2018).mkv")).toBeInTheDocument();
+  });
+
   it('Series renders a range (e.g. "1-2") in the Episode column for a logical-episode-split proposal', async () => {
     stubFetch((url) => {
       if (url.includes("/api/modes/movies/rename/proposals"))

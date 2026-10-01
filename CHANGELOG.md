@@ -10086,5 +10086,21 @@ status stays active.
 | `internal/api/discover.go` | tmdb-search id/year; tvdb-search id/year/series |
 | `internal/tvdb/search_episodes.go` | `SearchEpisodesIn` for a known parent |
 
+## 2026-10-01 — Adult Rename search Advanced performer/title/studio/year
+
+**Problem:** Adult Rename Search had a single query box and no Advanced panel, so a scene could not be looked up by actress/actor, studio, or year.
+**Fix:** Advanced on Adult search adds Actress/actor, Title, Studio, and Year. `GET /api/modes/adult/scene-search` accepts `performer`, `studio`, and `year`; `q` is optional when performer or studio is set. A performer query resolves the name to an id and lists that person's scenes (candidates have no performer names to post-filter).
+**Outcome:** Operators can find an Adult scene by performer, title, studio, and year without relying on a unique scene title.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/SearchTakeover.tsx` | Adult Advanced fields; passes performer/studio/year |
+| `frontend/src/api/rename.ts` | Optional adult scene-search params |
+| `internal/api/adult_scene_search.go` | Optional `q`; performer/studio/year → filtered list |
+| `internal/identify/boxlookup.go` | `ListSceneCandidatesFiltered` performer/studio/year paths |
+
+
 
 

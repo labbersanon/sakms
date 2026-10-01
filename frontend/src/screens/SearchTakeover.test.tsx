@@ -1440,7 +1440,7 @@ describe("SearchTakeover — Advanced search", () => {
     expect(screen.getByLabelText("TMDB ID")).toBeInTheDocument();
   });
 
-  it("does not show Advanced in Adult search", () => {
+  it("shows Actress/actor, Title, Studio, and Year in Adult Advanced", () => {
     render(() => (
       <SearchTakeover
         heading="Re-pick"
@@ -1452,7 +1452,71 @@ describe("SearchTakeover — Advanced search", () => {
         onCancel={vi.fn()}
       />
     ));
-    expect(screen.queryByText("Advanced")).toBeNull();
+    expect(screen.getByText("Advanced")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Actress / actor")).toBeNull();
+    fireEvent.click(screen.getByText("Advanced"));
+    expect(screen.getByLabelText("Actress / actor")).toBeInTheDocument();
+    expect(screen.getByLabelText("Title")).toBeInTheDocument();
+    expect(screen.getByLabelText("Studio")).toBeInTheDocument();
+    expect(screen.getByLabelText("Year")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Series")).toBeNull();
+    expect(screen.queryByLabelText("TMDB ID")).toBeNull();
+  });
+
+  it("sends performer, studio, year, and title on an advanced Adult search", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("/scene-search")) {
+        return jsonResponse({
+          items: [
+            {
+              box: "stashdb",
+              sceneId: "sc1",
+              title: "Gaping Anal",
+              studio: "Tushy",
+              date: "2022-09-05",
+            },
+          ],
+        });
+      }
+      return jsonResponse({ items: [] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick"
+        searchMode="adult"
+        initialQuery=""
+        autoSearch={false}
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText("Advanced"));
+    fireEvent.input(screen.getByLabelText("Actress / actor"), {
+      target: { value: "Riley Reid" },
+    });
+    fireEvent.input(screen.getByLabelText("Title"), {
+      target: { value: "Gaping Anal" },
+    });
+    fireEvent.input(screen.getByLabelText("Studio"), {
+      target: { value: "Tushy" },
+    });
+    fireEvent.input(screen.getByLabelText("Year"), {
+      target: { value: "2022" },
+    });
+    fireEvent.click(screen.getByText("Search"));
+
+    expect(await screen.findByLabelText("Use Gaping Anal")).toBeInTheDocument();
+    const sceneCall = fetchMock.mock.calls
+      .map(([u]) => String(u))
+      .find((u) => u.includes("/scene-search"));
+    expect(sceneCall).toContain("q=Gaping%20Anal");
+    expect(sceneCall).toContain("performer=Riley%20Reid");
+    expect(sceneCall).toContain("studio=Tushy");
+    expect(sceneCall).toContain("year=2022");
   });
 
   it("sends year, series, and TVDB id on an advanced TVDB search", async () => {

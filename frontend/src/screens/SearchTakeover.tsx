@@ -93,7 +93,7 @@ import type {
   SeriesSearchItem,
 } from "@dto";
 import { type Mode, proxyImage, tmdbPoster } from "../api/discover";
-import { adultSceneSearch, adultSceneResolve, tmdbSearch, tvdbSearch, type CatalogSearchOpts } from "../api/rename";
+import { adultSceneSearch, adultSceneResolve, tmdbSearch, tvdbSearch, type AdultSearchOpts, type CatalogSearchOpts } from "../api/rename";
 import { SectionLockedError } from "../api/client";
 import { ADULT_CONTENT_SECTION, sectionLabel } from "../api/sectionLock";
 import { Button, ErrorText, Muted, yearOf, inputClass, labelClass } from "../components/ui";
@@ -210,10 +210,20 @@ type AdvancedFields = {
   series: string;
   year: string;
   id: string;
+  performer: string;
+  studio: string;
 };
 
 function emptyAdvanced(): AdvancedFields {
-  return { on: false, title: "", series: "", year: "", id: "" };
+  return {
+    on: false,
+    title: "",
+    series: "",
+    year: "",
+    id: "",
+    performer: "",
+    studio: "",
+  };
 }
 
 const EMPTY_ADVANCED: AdvancedFields = emptyAdvanced();
@@ -240,6 +250,23 @@ function catalogOpts(adv: AdvancedFields): CatalogSearchOpts | undefined {
     year: year || undefined,
     id: id || undefined,
     series: series || undefined,
+  };
+}
+
+function adultOpts(adv: AdvancedFields): AdultSearchOpts | undefined {
+  if (!adv.on) {
+    return undefined;
+  }
+  const year = parsePositiveInt(adv.year);
+  const performer = adv.performer.trim();
+  const studio = adv.studio.trim();
+  if (!year && !performer && !studio) {
+    return undefined;
+  }
+  return {
+    year: year || undefined,
+    performer: performer || undefined,
+    studio: studio || undefined,
   };
 }
 
@@ -345,6 +372,8 @@ export const SearchTakeover: Component<{
   const [advSeries, setAdvSeries] = createSignal("");
   const [advYear, setAdvYear] = createSignal("");
   const [advId, setAdvId] = createSignal("");
+  const [advPerformer, setAdvPerformer] = createSignal("");
+  const [advStudio, setAdvStudio] = createSignal("");
   const [submittedAdv, setSubmittedAdv] = createSignal<AdvancedFields>(EMPTY_ADVANCED);
 
   const [results] = createResource(
@@ -359,9 +388,6 @@ export const SearchTakeover: Component<{
     // query still RUNS the fetcher. This guard is what makes autoSearch={false}
     // issue zero network calls on mount while the resource still resolves.
     if (props.searchMode === "adult") {
-      if (!q.trim()) {
-        return { kind: "adult", items: [] };
-      }
       if (isAdultResolveURL(q)) {
         const res = await adultSceneResolve(q.trim());
         if (!res.item) {
@@ -372,7 +398,12 @@ export const SearchTakeover: Component<{
           items: [res.item],
         };
       }
-      const res = await adultSceneSearch(q);
+      const title = adv.on && adv.title.trim() ? adv.title.trim() : q.trim();
+      const opts = adultOpts(adv);
+      if (!title && !opts?.performer && !opts?.studio) {
+        return { kind: "adult", items: [] };
+      }
+      const res = await adultSceneSearch(title, opts);
       return { kind: "adult", items: res.items, errors: res.errors };
     }
     if (props.searchMode === "series" && seriesDatabase === "tvdb") {
@@ -641,6 +672,8 @@ export const SearchTakeover: Component<{
                   series: advSeries(),
                   year: advYear(),
                   id: advId(),
+                  performer: advPerformer(),
+                  studio: advStudio(),
                 }
               : EMPTY_ADVANCED,
           );
@@ -676,25 +709,36 @@ export const SearchTakeover: Component<{
         />
         <Button type="submit">Search</Button>
         {/* Claude 2026-10-01: Advanced is a disclosure, not a second search page.
-            Reason: title/series/year/id are opt-in; autoSearch and Cancel-is-
-              a-no-op still use only the main query until Search is clicked.
-            Troubleshooting: TVDB shorts need a parent series or id, not one box.
-            Review if: Movies/Series search grows a dedicated query DSL. */}
-        <Show when={props.searchMode !== "adult"}>
-          <Button
-            aria-expanded={advancedOpen()}
-            aria-controls="rename-search-advanced"
-            onClick={() => setAdvancedOpen((open) => !open)}
-          >
-            Advanced
-          </Button>
-        </Show>
+            Reason: title/series/year/id (and Adult performer/studio) are opt-in;
+              autoSearch and Cancel-is-a-no-op still use only the main query
+              until Search is clicked.
+            Troubleshooting: TVDB shorts need a parent series or id; Adult
+              scenes need actress/actor or studio when the title is generic.
+            Review if: Movies/Series/Adult search grows a dedicated query DSL. */}
+        <Button
+          aria-expanded={advancedOpen()}
+          aria-controls="rename-search-advanced"
+          onClick={() => setAdvancedOpen((open) => !open)}
+        >
+          Advanced
+        </Button>
       </form>
-      <Show when={advancedOpen() && props.searchMode !== "adult"}>
+      <Show when={advancedOpen()}>
         <div
           id="rename-search-advanced"
           class="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4"
         >
+          <Show when={props.searchMode === "adult"}>
+            <label class="block">
+              <span class={labelClass}>Actress / actor</span>
+              <input
+                class={`${inputClass} mt-1`}
+                value={advPerformer()}
+                onInput={(e) => setAdvPerformer(e.currentTarget.value)}
+                aria-label="Actress / actor"
+              />
+            </label>
+          </Show>
           <label class="block">
             <span class={labelClass}>Title</span>
             <input
@@ -715,6 +759,17 @@ export const SearchTakeover: Component<{
               />
             </label>
           </Show>
+          <Show when={props.searchMode === "adult"}>
+            <label class="block">
+              <span class={labelClass}>Studio</span>
+              <input
+                class={`${inputClass} mt-1`}
+                value={advStudio()}
+                onInput={(e) => setAdvStudio(e.currentTarget.value)}
+                aria-label="Studio"
+              />
+            </label>
+          </Show>
           <label class="block">
             <span class={labelClass}>Year</span>
             <input
@@ -725,24 +780,26 @@ export const SearchTakeover: Component<{
               aria-label="Year"
             />
           </label>
-          <label class="block">
-            <span class={labelClass}>
-              {props.searchMode === "series" && seriesDatabase() === "tvdb"
-                ? "TVDB ID"
-                : "TMDB ID"}
-            </span>
-            <input
-              class={`${inputClass} mt-1`}
-              value={advId()}
-              onInput={(e) => setAdvId(e.currentTarget.value)}
-              inputMode="numeric"
-              aria-label={
-                props.searchMode === "series" && seriesDatabase() === "tvdb"
+          <Show when={props.searchMode !== "adult"}>
+            <label class="block">
+              <span class={labelClass}>
+                {props.searchMode === "series" && seriesDatabase() === "tvdb"
                   ? "TVDB ID"
-                  : "TMDB ID"
-              }
-            />
-          </label>
+                  : "TMDB ID"}
+              </span>
+              <input
+                class={`${inputClass} mt-1`}
+                value={advId()}
+                onInput={(e) => setAdvId(e.currentTarget.value)}
+                inputMode="numeric"
+                aria-label={
+                  props.searchMode === "series" && seriesDatabase() === "tvdb"
+                    ? "TVDB ID"
+                    : "TMDB ID"
+                }
+              />
+            </label>
+          </Show>
         </div>
       </Show>
 

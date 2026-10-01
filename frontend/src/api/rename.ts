@@ -167,10 +167,23 @@ export function moveProposalMode(
   });
 }
 
+export type AdultSearchOpts = {
+  performer?: string;
+  studio?: string;
+  year?: number;
+};
+
 export function adultSceneSearch(
   query: string,
+  opts?: AdultSearchOpts,
 ): Promise<AdultSceneSearchResponse> {
-  return api(`/api/modes/adult/scene-search?q=${encodeURIComponent(query)}`);
+  return api(
+    `/api/modes/adult/scene-search?${catalogSearchParams(query, {
+      performer: opts?.performer,
+      studio: opts?.studio,
+      year: opts?.year,
+    })}`,
+  );
 }
 
 export function adultSceneResolve(

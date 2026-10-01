@@ -2,6 +2,7 @@ package identify
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -499,6 +500,149 @@ func TestListSceneCandidates_DeduplicatesByBoxAndSceneID(t *testing.T) {
 	}
 	if items[1].SceneID != "other" {
 		t.Fatalf("expected second unique scene, got %+v", items[1])
+	}
+}
+
+func TestListSceneCandidatesFiltered_PerformerResolvesThenListsScenes(t *testing.T) {
+	var sawSearchScene bool
+	b := newBoxSearcherMultiFakes(t, map[string]http.HandlerFunc{
+		"stashdb": func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			s := string(body)
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case strings.Contains(s, "searchPerformer"):
+				_, _ = w.Write([]byte(`{"data":{"searchPerformer":[{"id":"p1","name":"Riley Reid"}]}}`))
+			case strings.Contains(s, "queryScenes"):
+				_, _ = w.Write([]byte(`{"data":{"queryScenes":{"scenes":[
+					{"id":"sc1","title":"Keep Scene","release_date":"2022-09-05","studio":{"name":"Tushy","parent":null},"duration":1800},
+					{"id":"sc2","title":"Wrong Year","release_date":"2021-01-01","studio":{"name":"Tushy","parent":null}},
+					{"id":"sc3","title":"Wrong Studio","release_date":"2022-02-02","studio":{"name":"Vixen","parent":null}}
+				]}}}`))
+			case strings.Contains(s, "searchScene"):
+				sawSearchScene = true
+				_, _ = w.Write([]byte(`{"data":{"searchScene":[]}}`))
+			default:
+				_, _ = w.Write([]byte(`{"data":{}}`))
+			}
+		},
+	}, nil)
+
+	items, softErrs := b.ListSceneCandidatesFiltered(context.Background(), SceneCandidateFilter{
+		Performer: "Riley Reid",
+		Studio:    "Tushy",
+		Year:      2022,
+	}, []DatabaseRef{{Name: "stashdb"}})
+	if sawSearchScene {
+		t.Fatal("performer search must QueryScenesByPerformer, not SearchScene")
+	}
+	if len(softErrs) != 0 {
+		t.Fatalf("expected no soft errors, got %v", softErrs)
+	}
+	if len(items) != 1 || items[0].SceneID != "sc1" || items[0].Title != "Keep Scene" {
+		t.Fatalf("expected the performer+studio+year match, got %+v", items)
+	}
+}
+
+func TestListSceneCandidatesFiltered_TitleSearchFiltersStudioAndYear(t *testing.T) {
+	var tpdbSite string
+	b := newBoxSearcherMultiFakes(t, map[string]http.HandlerFunc{
+		"stashdb": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"searchScene":[
+				{"id":"keep","title":"Some Title","release_date":"2022-03-03","studio":{"name":"Tushy","parent":null}},
+				{"id":"studio-miss","title":"Some Title","release_date":"2022-03-03","studio":{"name":"Vixen","parent":null}},
+				{"id":"year-miss","title":"Some Title","release_date":"2021-03-03","studio":{"name":"Tushy","parent":null}}
+			]}}`))
+		},
+	}, func(w http.ResponseWriter, r *http.Request) {
+		tpdbSite = r.URL.Query().Get("site")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	})
+
+	items, softErrs := b.ListSceneCandidatesFiltered(context.Background(), SceneCandidateFilter{
+		Title:  "Some Title",
+		Studio: "Tushy",
+		Year:   2022,
+	}, []DatabaseRef{{Name: "stashdb"}})
+	if len(softErrs) != 0 {
+		t.Fatalf("expected no soft errors, got %v", softErrs)
+	}
+	if tpdbSite != "Tushy" {
+		t.Fatalf("TPDB title search should pass studio as site, got %q", tpdbSite)
+	}
+	if len(items) != 1 || items[0].SceneID != "keep" {
+		t.Fatalf("expected studio+year post-filter to keep one stash-box hit, got %+v", items)
+	}
+}
+
+func TestListSceneCandidatesFiltered_StudioOnlyUsesFindStudio(t *testing.T) {
+	var sawSearchScene bool
+	b := newBoxSearcherMultiFakes(t, map[string]http.HandlerFunc{
+		"stashdb": func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			s := string(body)
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case strings.Contains(s, "findStudio"):
+				_, _ = w.Write([]byte(`{"data":{"findStudio":{"id":"st1","name":"Tushy"}}}`))
+			case strings.Contains(s, "queryScenes"):
+				_, _ = w.Write([]byte(`{"data":{"queryScenes":{"scenes":[
+					{"id":"sc1","title":"Studio Scene","release_date":"2020-01-01","studio":{"name":"Tushy","parent":null}}
+				]}}}`))
+			case strings.Contains(s, "searchScene"):
+				sawSearchScene = true
+				_, _ = w.Write([]byte(`{"data":{"searchScene":[]}}`))
+			default:
+				_, _ = w.Write([]byte(`{"data":{}}`))
+			}
+		},
+	}, nil)
+
+	items, softErrs := b.ListSceneCandidatesFiltered(context.Background(), SceneCandidateFilter{
+		Studio: "Tushy",
+	}, []DatabaseRef{{Name: "stashdb"}})
+	if sawSearchScene {
+		t.Fatal("studio-only search must FindStudio, not SearchScene")
+	}
+	if len(softErrs) != 0 {
+		t.Fatalf("expected no soft errors, got %v", softErrs)
+	}
+	if len(items) != 1 || items[0].SceneID != "sc1" {
+		t.Fatalf("expected studio-catalog scenes, got %+v", items)
+	}
+}
+
+func TestListSceneCandidatesFiltered_PerformerTitlePostFilter(t *testing.T) {
+	b := newBoxSearcherMultiFakes(t, map[string]http.HandlerFunc{
+		"stashdb": func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			s := string(body)
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case strings.Contains(s, "searchPerformer"):
+				_, _ = w.Write([]byte(`{"data":{"searchPerformer":[{"id":"p1","name":"Riley Reid"}]}}`))
+			case strings.Contains(s, "queryScenes"):
+				_, _ = w.Write([]byte(`{"data":{"queryScenes":{"scenes":[
+					{"id":"keep","title":"Gaping Anal","release_date":"2022-09-05","studio":{"name":"Tushy","parent":null}},
+					{"id":"drop","title":"Unrelated Clip","release_date":"2022-09-06","studio":{"name":"Tushy","parent":null}}
+				]}}}`))
+			default:
+				_, _ = w.Write([]byte(`{"data":{}}`))
+			}
+		},
+	}, nil)
+
+	items, softErrs := b.ListSceneCandidatesFiltered(context.Background(), SceneCandidateFilter{
+		Performer: "Riley Reid",
+		Title:     "Gaping",
+	}, []DatabaseRef{{Name: "stashdb"}})
+	if len(softErrs) != 0 {
+		t.Fatalf("expected no soft errors, got %v", softErrs)
+	}
+	if len(items) != 1 || items[0].SceneID != "keep" {
+		t.Fatalf("expected title post-filter on performer scenes, got %+v", items)
 	}
 }
 

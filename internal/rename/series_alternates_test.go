@@ -1052,3 +1052,109 @@ func TestApplyLibrarySeries_SharedPrimaryIsNeverDemoted(t *testing.T) {
 		t.Errorf("E02 gained %d alternate rows, want 0 — a single-episode proposal writes rows only for its own slot", len(e2Alts))
 	}
 }
+
+// TestApplyLibrarySeries_MissingSourceRecoversPlacedAlternate is the Phineas
+// S02E08 retry: the incoming mp4 is already gone (a prior fold moved it) and
+// the dest season folder already holds the quality-token alternate. Without
+// recovery, probe of the missing source is empty, dest becomes the literal
+// "- alternate" name, and moveUnique ENOENTs.
+//
+// THE discriminating assertion is the alternate ROW path matching the
+// already-placed token dest — not merely "Apply returned nil". A retry that
+// minted "... - alternate.mp4" (or left no row) would still be a green
+// error-only check.
+func TestApplyLibrarySeries_MissingSourceRecoversPlacedAlternate(t *testing.T) {
+	ctx := context.Background()
+	f := newSeriesAltFixture(t, ctx)
+
+	if err := f.libStore.UpsertEpisodeCatalog(ctx, f.series.ID, 1, 1, "Don't Even Blink", ""); err != nil {
+		t.Fatalf("UpsertEpisodeCatalog: %v", err)
+	}
+	primaryPath := writeFile(t, wantOrdinaryName(f.seasonDir, 1, "Don't Even Blink", ".mp4"), "existing-primary")
+	wantAlt := wantAlternateName(f.seasonDir, []int{1}, "Don't Even Blink", probeLow, ".mp4")
+	writeFile(t, wantAlt, "already-placed-orphan")
+
+	ep1, err := f.libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: f.series.ID, SeasonNumber: 1, EpisodeNumber: 1, FilePath: primaryPath, QualityTier: "high",
+	})
+	if err != nil {
+		t.Fatalf("UpsertEpisode: %v", err)
+	}
+
+	missing := filepath.Join(f.base, "incoming", "08-09 Don't Even Blink, Chez Platypus.mp4")
+	if err := os.MkdirAll(filepath.Dir(missing), 0o755); err != nil {
+		t.Fatalf("mkdir incoming: %v", err)
+	}
+	prober := mapProber{primaryPath: probeHigh, wantAlt: probeLow}
+
+	p := f.proposal(missing, 1)
+	p.EpisodeTitle = "Don't Even Blink"
+	gotID, _, err := ApplyLibrarySeries(ctx, f.libStore, nil, nil, p, naming.Jellyfin, "high", prober)
+	if err != nil {
+		t.Fatalf("ApplyLibrarySeries: %v", err)
+	}
+	if gotID != ep1.ID {
+		t.Errorf("episode id = %d, want the occupied slot's %d", gotID, ep1.ID)
+	}
+
+	row, err := f.libStore.GetEpisode(ctx, f.series.ID, 1, 1)
+	if err != nil {
+		t.Fatalf("GetEpisode: %v", err)
+	}
+	if row.FilePath != primaryPath {
+		t.Errorf("library_episodes.file_path = %q, want the untouched primary %q", row.FilePath, primaryPath)
+	}
+	if got := fileContent(t, primaryPath); got != "existing-primary" {
+		t.Errorf("primary holds %q, want %q — recovery must not promote", got, "existing-primary")
+	}
+
+	primaries, alternates := episodeFileRows(t, ctx, f.libStore, ep1.ID)
+	if len(primaries) != 1 || len(alternates) != 1 {
+		t.Fatalf("got %d primary + %d alternate rows, want exactly 1 + 1", len(primaries), len(alternates))
+	}
+	if alternates[0].FilePath != wantAlt {
+		t.Errorf("alternate row = %q, want the already-placed token dest %q", alternates[0].FilePath, wantAlt)
+	}
+	if got := fileContent(t, wantAlt); got != "already-placed-orphan" {
+		t.Errorf("token dest holds %q, want the recovered orphan %q", got, "already-placed-orphan")
+	}
+
+	emptyAlt := filepath.Join(f.seasonDir, naming.EpisodeAlternateFileName(
+		naming.Jellyfin, altTestTitle, 1, []int{1}, "Don't Even Blink", "", "", "", ".mp4"))
+	if _, err := os.Stat(emptyAlt); err == nil {
+		t.Errorf("empty-token dest %q was created — recovery should have skipped the move", emptyAlt)
+	}
+}
+
+// TestApplyLibrarySeries_MissingSourceWithoutPlacedAlternateErrors is the
+// other half of the Phineas retry: source gone AND seasonDir has no
+// stem+" - "*+ext file. Apply must fail with "is gone", not a raw rename
+// ENOENT against the empty-token dest.
+func TestApplyLibrarySeries_MissingSourceWithoutPlacedAlternateErrors(t *testing.T) {
+	ctx := context.Background()
+	f := newSeriesAltFixture(t, ctx)
+
+	primaryPath := writeFile(t, wantOrdinaryName(f.seasonDir, 1, "", ".mp4"), "existing-primary")
+	if _, err := f.libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: f.series.ID, SeasonNumber: 1, EpisodeNumber: 1, FilePath: primaryPath, QualityTier: "high",
+	}); err != nil {
+		t.Fatalf("UpsertEpisode: %v", err)
+	}
+
+	missing := filepath.Join(f.base, "incoming", "gone.mp4")
+	if err := os.MkdirAll(filepath.Dir(missing), 0o755); err != nil {
+		t.Fatalf("mkdir incoming: %v", err)
+	}
+	prober := mapProber{primaryPath: probeHigh}
+
+	_, _, err := ApplyLibrarySeries(ctx, f.libStore, nil, nil, f.proposal(missing, 1), naming.Jellyfin, "high", prober)
+	if err == nil {
+		t.Fatal("ApplyLibrarySeries err = nil, want a source-gone error")
+	}
+	if !strings.Contains(err.Error(), "is gone") {
+		t.Errorf("error %q does not say the source is gone", err)
+	}
+	if strings.Contains(err.Error(), "no such file or directory") {
+		t.Errorf("error %q is still a raw rename ENOENT — recovery should fail closed with its own message", err)
+	}
+}

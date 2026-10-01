@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
@@ -144,6 +145,32 @@ func applyLibrarySeriesAlternate(
 		return 0, nil, false, fmt.Errorf("creating %q: %w", seasonDir, err)
 	}
 
+	// Claude 2026-10-01: recover an already-placed Series alternate when the
+	//   incoming source is gone.
+	// Reason: a successful first fold moves the file to EpisodeAlternateFileName
+	//   (quality tokens). A retry probes the missing source, computes the
+	//   empty-token "- alternate" dest, and os.Rename ENOENTs.
+	// Troubleshooting: Phineas and Ferb S02E08 dual-file Apply: source mp4
+	//   already at "... Don't Even Blink - 384p AV1 0.5Mbps.mp4"; retry named
+	//   "... - alternate.mp4" and failed "no such file or directory".
+	// Review if: Apply stops leaving Pending rows after a successful fold, or
+	//   moveUnique becomes idempotent across dest-name drift.
+	ext := filepath.Ext(sourcePath)
+	stem := naming.EpisodeRangeFileName(preset, p.Title, p.SeasonNumber, episodeNumbers, episodeTitle, "")
+	alreadyPlaced := ""
+	if !fileExists(sourcePath) {
+		emptyAlt := filepath.Join(seasonDir, naming.EpisodeAlternateFileName(preset, p.Title, p.SeasonNumber, episodeNumbers, episodeTitle, "", "", "", ext))
+		if fileExists(emptyAlt) {
+			alreadyPlaced = emptyAlt
+		} else if recovered := placedSeriesAlternate(seasonDir, stem, ext); recovered != "" {
+			alreadyPlaced = recovered
+		} else {
+			return 0, nil, false, fmt.Errorf("placing alternate %q: source %q is gone and no already-placed alternate matching %s - *%s is in %q",
+				emptyAlt, sourcePath, stem, ext, seasonDir)
+		}
+		sourcePath = alreadyPlaced
+	}
+
 	orphanMeta := probeFileMeta(ctx, prober, sourcePath, settingsTier)
 	primaryPath := existing.FilePath
 	if primaryPath == "" {
@@ -262,11 +289,21 @@ func applyLibrarySeriesAlternate(
 		quality.ResolutionLabel(orphanMeta.Height), quality.CodecLabel(orphanMeta.Codec),
 		quality.BitrateLabel(orphanMeta.BitRate), filepath.Ext(sourcePath))
 	altDest := filepath.Join(seasonDir, altName)
-	movedOrphan, ch, moveErr := moveUnique(sourcePath, altDest)
-	if moveErr != nil {
-		return 0, changes, promoted, fmt.Errorf("placing alternate %q: %w", altDest, moveErr)
+	var movedOrphan string
+	if alreadyPlaced != "" {
+		// Already on disk under a token dest (or the empty-token fallback).
+		// Do not re-rename: UniquePath would mint dest (1) when the computed
+		// name and the recovered name differ only by tokens.
+		movedOrphan = alreadyPlaced
+	} else {
+		var ch []mode.PathChange
+		var moveErr error
+		movedOrphan, ch, moveErr = moveUnique(sourcePath, altDest)
+		if moveErr != nil {
+			return 0, changes, promoted, fmt.Errorf("placing alternate %q: %w", altDest, moveErr)
+		}
+		changes = append(changes, ch...)
 	}
-	changes = append(changes, ch...)
 
 	// Refresh the primary row's probe labels if we have them.
 	if primaryPath != "" {
@@ -327,4 +364,46 @@ func fileExists(path string) bool {
 	}
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// placedSeriesAlternate finds an already-landed alternate in seasonDir whose
+// name is EpisodeRangeFileName stem + " - " + tokens + ext. The primary
+// (stem+ext, no " - ") never matches. When more than one file matches, the
+// newest mtime wins — that is the file a just-failed retry most likely moved.
+func placedSeriesAlternate(seasonDir, stem, ext string) string {
+	if seasonDir == "" || stem == "" {
+		return ""
+	}
+	entries, err := os.ReadDir(seasonDir)
+	if err != nil {
+		return ""
+	}
+	prefix := stem + " - "
+	extLower := strings.ToLower(ext)
+	var bestName string
+	var bestTime int64
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		if extLower != "" && !strings.HasSuffix(strings.ToLower(name), extLower) {
+			continue
+		}
+		mtime := int64(0)
+		if info, err := e.Info(); err == nil {
+			mtime = info.ModTime().UnixNano()
+		}
+		if bestName == "" || mtime >= bestTime {
+			bestName = name
+			bestTime = mtime
+		}
+	}
+	if bestName == "" {
+		return ""
+	}
+	return filepath.Join(seasonDir, bestName)
 }

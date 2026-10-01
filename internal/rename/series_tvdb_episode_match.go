@@ -839,6 +839,7 @@ func tvdbAnthologyPass(
 			q.Year = pin.year
 			q.SeasonNumber = m.season
 			q.EpisodeNumber = m.episode
+			q.EpisodeTitle = m.name
 			// ExtraEpisodeNumbers stays nil: a title match resolves exactly one
 			// slot.
 			q.RootFolderPath = targetRoot

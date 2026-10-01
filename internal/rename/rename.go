@@ -2186,6 +2186,15 @@ func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, tmdbClient
 				airDate = ep.Aired
 			}
 		}
+		// Claude 2026-10-01: Scan-time episode title fills dest names.
+		// Reason: year-season/anthology already corroborated the TVDB name
+		//   at Scan; Apply used to omit it when SeasonDetails(1947) and the
+		//   catalog fetch missed, producing "Show S1947E05.ext".
+		// Troubleshooting: Looney Tunes Rename drops cartoon names.
+		// Review if: ordinary TMDB Scan also sets Proposal.EpisodeTitle.
+		if title == "" && episodeNumber == p.EpisodeNumber {
+			title = p.EpisodeTitle
+		}
 		return title, airDate, nil
 	}
 

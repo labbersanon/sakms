@@ -56,6 +56,22 @@ describe("proposedFileName", () => {
       ),
     ).toBe("");
   });
+
+  it("formats a series target name with the Scan-time episode title", () => {
+    expect(
+      proposedFileName(
+        "series",
+        "jellyfin",
+        proposal({
+          title: "Looney Tunes",
+          seasonNumber: 1947,
+          episodeNumber: 5,
+          episodeTitle: "A Hare Grows in Manhattan",
+          sourceName: "A Hare Grows In Manhattan S1947E05 - H.265.mp4",
+        }),
+      ),
+    ).toBe("Looney Tunes S1947E05 A Hare Grows in Manhattan.mp4");
+  });
 });
 
 describe("adultFileName", () => {

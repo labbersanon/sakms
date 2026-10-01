@@ -116,6 +116,13 @@ type Proposal struct {
 	// not the semantics.
 	SeasonNumber  int `json:"seasonNumber,omitempty"`
 	EpisodeNumber int `json:"episodeNumber,omitempty"`
+	// Claude 2026-10-01: Scan-time episode title for Jellyfin dest names.
+	// Reason: year-season/anthology matches already know the TVDB episode
+	//   name (Reason quoted it) but dest preview and Apply both treated
+	//   title as empty → "Show S1947E05.ext" with the cartoon name dropped.
+	// Troubleshooting: Looney Tunes Rename omits episode names.
+	// Review if: ordinary TMDB SxxExx Scan also fills this from SeasonDetails.
+	EpisodeTitle string `json:"episodeTitle,omitempty"`
 	// ExtraEpisodeNumbers holds any ADDITIONAL episode numbers bundled into
 	// the same file as EpisodeNumber (logical episode-splitting — see
 	// library.ParseEpisodeNumbers) — e.g. a "S01E01-E02" file produces
@@ -301,7 +308,7 @@ func (s *Store) ReplacePending(ctx context.Context, m mode.Mode, wf Workflow, fr
 						foreign_id=?, item_type=?, candidates_json=?, studio=?,
 						scene_date=?, phash=?, duration_seconds=?, give_back_box=?,
 						give_back_scene_id=?, extra_episode_numbers=?, genres=?,
-						"cast"=?, phash_similarity=?
+						"cast"=?, phash_similarity=?, episode_title=?
 					WHERE id=?
 				`, string(p.Status), p.SourceName, p.RootFolderPath,
 					p.Title, p.TVDBID, p.TMDBID, p.SeasonNumber, p.EpisodeNumber,
@@ -309,7 +316,7 @@ func (s *Store) ReplacePending(ctx context.Context, m mode.Mode, wf Workflow, fr
 					p.ForeignID, p.ItemType, string(candidatesJSON), p.Studio,
 					p.Date, p.PHash, p.DurationSeconds, p.GiveBackBox,
 					p.GiveBackSceneID, extraEpisodesJSON, genresJSON,
-					castJSON, p.PHashSimilarity, ex.id); err != nil {
+					castJSON, p.PHashSimilarity, p.EpisodeTitle, ex.id); err != nil {
 					return nil, fmt.Errorf("updating proposal for %q: %w", p.SourceName, err)
 				}
 				p.ID = ex.id
@@ -333,14 +340,14 @@ func (s *Store) ReplacePending(ctx context.Context, m mode.Mode, wf Workflow, fr
 				title, tvdb_id, tmdb_id, season_number, episode_number, year, quality_profile_id, reason, tracked_id,
 				foreign_id, item_type, candidates_json, studio, scene_date,
 				phash, duration_seconds, give_back_box, give_back_scene_id, extra_episode_numbers,
-				genres, "cast", phash_similarity
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				genres, "cast", phash_similarity, episode_title
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			RETURNING id, created_at
 		`, string(p.Mode), string(p.Workflow), string(p.Status), p.SourceName, p.SourcePath, p.RootFolderPath,
 			p.Title, p.TVDBID, p.TMDBID, p.SeasonNumber, p.EpisodeNumber, p.Year, p.QualityProfileID, p.Reason, p.TrackedID,
 			p.ForeignID, p.ItemType, string(candidatesJSON), p.Studio, p.Date,
 			p.PHash, p.DurationSeconds, p.GiveBackBox, p.GiveBackSceneID, extraEpisodesJSON,
-			genresJSON, castJSON, p.PHashSimilarity)
+			genresJSON, castJSON, p.PHashSimilarity, p.EpisodeTitle)
 		if err := row.Scan(&p.ID, &p.CreatedAt); err != nil {
 			return nil, fmt.Errorf("inserting proposal for %q: %w", p.SourceName, err)
 		}
@@ -396,7 +403,8 @@ func (s *Store) List(ctx context.Context, m mode.Mode, wf Workflow) ([]Proposal,
 		       draft_id, COALESCE(draft_submitted_at, ''),
 		       phash, duration_seconds, give_back_box, give_back_scene_id, COALESCE(fingerprint_submitted_at, ''),
 		       created_at, COALESCE(applied_at, ''), COALESCE(extra_episode_numbers, ''),
-		       COALESCE(genres, '[]'), COALESCE("cast", '[]'), phash_similarity
+		       COALESCE(genres, '[]'), COALESCE("cast", '[]'), phash_similarity,
+		       COALESCE(episode_title, '')
 		FROM proposals WHERE mode = ? AND workflow = ? ORDER BY id DESC
 	`, string(m), string(wf))
 	if err != nil {
@@ -488,7 +496,8 @@ func (s *Store) ListPage(ctx context.Context, m mode.Mode, wf Workflow, limit, o
 		       draft_id, COALESCE(draft_submitted_at, ''),
 		       phash, duration_seconds, give_back_box, give_back_scene_id, COALESCE(fingerprint_submitted_at, ''),
 		       created_at, COALESCE(applied_at, ''), COALESCE(extra_episode_numbers, ''),
-		       COALESCE(genres, '[]'), COALESCE("cast", '[]'), phash_similarity
+		       COALESCE(genres, '[]'), COALESCE("cast", '[]'), phash_similarity,
+		       COALESCE(episode_title, '')
 		FROM proposals
 		WHERE mode = ? AND workflow = ? AND status IN (?, ?)
 		ORDER BY id DESC
@@ -541,7 +550,8 @@ func (s *Store) Get(ctx context.Context, id int64) (*Proposal, error) {
 		       draft_id, COALESCE(draft_submitted_at, ''),
 		       phash, duration_seconds, give_back_box, give_back_scene_id, COALESCE(fingerprint_submitted_at, ''),
 		       created_at, COALESCE(applied_at, ''), COALESCE(extra_episode_numbers, ''),
-		       COALESCE(genres, '[]'), COALESCE("cast", '[]'), phash_similarity
+		       COALESCE(genres, '[]'), COALESCE("cast", '[]'), phash_similarity,
+		       COALESCE(episode_title, '')
 		FROM proposals WHERE id = ?
 	`, id)
 	p, err := scanProposal(row)
@@ -576,7 +586,8 @@ func (s *Store) GetLiveBySourcePath(ctx context.Context, m mode.Mode, wf Workflo
 		       draft_id, COALESCE(draft_submitted_at, ''),
 		       phash, duration_seconds, give_back_box, give_back_scene_id, COALESCE(fingerprint_submitted_at, ''),
 		       created_at, COALESCE(applied_at, ''), COALESCE(extra_episode_numbers, ''),
-		       COALESCE(genres, '[]'), COALESCE("cast", '[]'), phash_similarity
+		       COALESCE(genres, '[]'), COALESCE("cast", '[]'), phash_similarity,
+		       COALESCE(episode_title, '')
 		FROM proposals
 		WHERE mode = ? AND workflow = ? AND source_path = ? AND status IN (?, ?)
 		LIMIT 1
@@ -606,8 +617,10 @@ func (s *Store) MarkApplied(ctx context.Context, id int64, trackedID int) error 
 
 // Claude 2026-09-24: InsertApplied writes one Applied row without touching the live queue.
 // Reason: nest identification is a Library write, not a Scan ReplacePending.
-//   Undo needs a real proposal id and an archive entry; ReplacePending would
-//   wipe Pending/Unmatched siblings.
+//
+//	Undo needs a real proposal id and an archive entry; ReplacePending would
+//	wipe Pending/Unmatched siblings.
+//
 // Troubleshooting: nest undo missing from Recently Applied.
 // Review if: nest identification starts as Pending instead of Applied.
 func (s *Store) InsertApplied(ctx context.Context, p Proposal) (Proposal, error) {
@@ -638,14 +651,14 @@ func (s *Store) InsertApplied(ctx context.Context, p Proposal) (Proposal, error)
 			title, tvdb_id, tmdb_id, season_number, episode_number, year, quality_profile_id, reason, tracked_id,
 			foreign_id, item_type, candidates_json, studio, scene_date,
 			phash, duration_seconds, give_back_box, give_back_scene_id, extra_episode_numbers,
-			genres, "cast", phash_similarity, applied_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, sakms_now())
+			genres, "cast", phash_similarity, episode_title, applied_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, sakms_now())
 		RETURNING id, created_at, applied_at
 	`, string(p.Mode), string(p.Workflow), string(p.Status), p.SourceName, p.SourcePath, p.RootFolderPath,
 		p.Title, p.TVDBID, p.TMDBID, p.SeasonNumber, p.EpisodeNumber, p.Year, p.QualityProfileID, p.Reason, p.TrackedID,
 		p.ForeignID, p.ItemType, string(candidatesJSON), p.Studio, p.Date,
 		p.PHash, p.DurationSeconds, p.GiveBackBox, p.GiveBackSceneID, extraEpisodesJSON,
-		genresJSON, castJSON, p.PHashSimilarity)
+		genresJSON, castJSON, p.PHashSimilarity, p.EpisodeTitle)
 	if err := row.Scan(&p.ID, &p.CreatedAt, &p.AppliedAt); err != nil {
 		return Proposal{}, fmt.Errorf("inserting applied proposal for %q: %w", p.SourceName, err)
 	}
@@ -714,7 +727,7 @@ func (s *Store) RestoreSnapshot(ctx context.Context, p Proposal) error {
 			foreign_id = ?, item_type = ?, candidates_json = ?, studio = ?,
 			scene_date = ?, phash = ?, duration_seconds = ?, give_back_box = ?,
 			give_back_scene_id = ?, extra_episode_numbers = ?, genres = ?, "cast" = ?,
-			phash_similarity = ?, draft_id = ?, draft_submitted_at = ?,
+			phash_similarity = ?, episode_title = ?, draft_id = ?, draft_submitted_at = ?,
 			fingerprint_submitted_at = ?, applied_at = ?
 		WHERE id = ?
 	`, string(p.Status), p.SourceName, p.SourcePath, p.RootFolderPath,
@@ -723,7 +736,7 @@ func (s *Store) RestoreSnapshot(ctx context.Context, p Proposal) error {
 		p.ForeignID, p.ItemType, string(candidatesJSON), p.Studio,
 		p.Date, p.PHash, p.DurationSeconds, p.GiveBackBox,
 		p.GiveBackSceneID, extraEpisodesJSON, genresJSON, castJSON,
-		p.PHashSimilarity, p.DraftID, nullable(p.DraftSubmittedAt),
+		p.PHashSimilarity, p.EpisodeTitle, p.DraftID, nullable(p.DraftSubmittedAt),
 		nullable(p.FingerprintSubmittedAt), nullable(p.AppliedAt), p.ID)
 	if err != nil {
 		return fmt.Errorf("restoring proposal %d: %w", p.ID, err)
@@ -1031,7 +1044,7 @@ func scanProposal(row rowScanner) (Proposal, error) {
 		&p.DraftID, &p.DraftSubmittedAt,
 		&p.PHash, &p.DurationSeconds, &p.GiveBackBox, &p.GiveBackSceneID, &p.FingerprintSubmittedAt,
 		&p.CreatedAt, &p.AppliedAt, &extraEpisodesJSON,
-		&genresJSON, &castJSON, &p.PHashSimilarity); err != nil {
+		&genresJSON, &castJSON, &p.PHashSimilarity, &p.EpisodeTitle); err != nil {
 		return Proposal{}, err
 	}
 	p.Mode, p.Workflow, p.Status = mode.Mode(m), Workflow(wf), Status(status)

@@ -10034,5 +10034,26 @@ status stays active.
 | `internal/rename/catalog.go` | Comment: token fallback, not Toons alias |
 | `internal/rename/rename.go` | Comment: token fallback, not Toons alias |
 
+## 2026-10-01 — Year-season rename keeps TVDB episode titles
+
+**Problem:** Looney Tunes (and other year-season shorts) matched the parent show, but Rename dest names were `Looney Tunes S1947E05.ext` with the cartoon name omitted. Scan already had the TVDB title in Reason only.
+**Fix:** Persist `episode_title` on the proposal. Year-season, anthology, and episode-title matches copy the corroborated name onto it. Dest preview, Import dest, pending catalog, and Apply use that title when library/TMDB/TVDB still have none.
+**Outcome:** Proposed and applied names include the episode title (`Looney Tunes S1947E05 A Hare Grows in Manhattan.mp4`).
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/db/migrations/0037_proposal_episode_title.sql` | `proposals.episode_title` |
+| `internal/proposals/proposals.go` | Persist/round-trip `EpisodeTitle` |
+| `internal/apidto/dto.go` | `Proposal.episodeTitle` |
+| `internal/rename/catalog_nest.go` | Year-season proposal sets `EpisodeTitle` |
+| `internal/rename/series_tvdb_episode_match.go` | Anthology match sets `EpisodeTitle` |
+| `internal/rename/series_episode_title_match.go` | Title-match sets `EpisodeTitle` |
+| `internal/rename/catalog_pending.go` | Catalog Pending with episode title |
+| `internal/rename/rename.go` | Apply dest/library fill from `p.EpisodeTitle` |
+| `internal/rename/import.go` | `ImportDestPath` interpolates episode title |
+| `frontend/src/naming.ts` | Proposed series name uses `episodeTitle` |
+
 
 

@@ -310,7 +310,7 @@ func ImportDestPath(p proposals.Proposal, preset naming.Preset) string {
 		}
 		seriesFolder := naming.SeriesFolderName(preset, p.Title, p.Year, p.TMDBID)
 		seasonDir := filepath.Join(p.RootFolderPath, seriesFolder, naming.SeasonDirName(p.SeasonNumber))
-		return filepath.Join(seasonDir, naming.EpisodeRangeFileName(preset, p.Title, p.SeasonNumber, eps, "", filepath.Ext(p.SourcePath)))
+		return filepath.Join(seasonDir, naming.EpisodeRangeFileName(preset, p.Title, p.SeasonNumber, eps, p.EpisodeTitle, filepath.Ext(p.SourcePath)))
 	case mode.Adult:
 		if p.GiveBackBox == "" || p.GiveBackSceneID == "" {
 			return ""

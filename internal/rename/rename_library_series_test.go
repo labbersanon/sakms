@@ -1671,6 +1671,50 @@ func TestApplyLibrarySeries_NilTVDBClientDegradesToBareEpisodeName(t *testing.T)
 	}
 }
 
+// TestApplyLibrarySeries_ProposalEpisodeTitleUsedWhenCatalogMisses: a
+// year-season proposal already carries the TVDB cartoon name from Scan.
+// Apply must put that name in the Jellyfin dest even when TheTVDB client is
+// nil — the Looney Tunes omission was dest names built from Title+SxxExx only.
+func TestApplyLibrarySeries_ProposalEpisodeTitleUsedWhenCatalogMisses(t *testing.T) {
+	base := t.TempDir()
+	destRoot := filepath.Join(base, "TV")
+	if err := os.MkdirAll(destRoot, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	sourcePath := filepath.Join(base, "A Hare Grows In Manhattan S1947E05 - H.265.mp4")
+	if err := os.WriteFile(sourcePath, []byte("fake video data"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	syntheticID := anthologyTMDBID(7266)
+	p := proposals.Proposal{
+		ID: 1, Status: proposals.Pending, Title: "Looney Tunes", Year: 1930,
+		TMDBID: syntheticID, TVDBID: 7266, EpisodeTitle: "A Hare Grows in Manhattan",
+		SeasonNumber: 1947, EpisodeNumber: 5, SourcePath: sourcePath, RootFolderPath: destRoot,
+	}
+	if _, _, err := ApplyLibrarySeries(ctx, libStore, nil, nil, p, naming.Jellyfin, "", nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wantDest := filepath.Join(destRoot, "Looney Tunes (1930)", "Season 1947", "Looney Tunes S1947E05 A Hare Grows in Manhattan.mp4")
+	if _, err := os.Stat(wantDest); err != nil {
+		t.Errorf("expected the file relocated to %q, got %v", wantDest, err)
+	}
+	series, err := libStore.GetSeriesByTMDBID(ctx, syntheticID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ep, err := libStore.GetEpisode(ctx, series.ID, 1947, 5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ep.Title != "A Hare Grows in Manhattan" {
+		t.Errorf("library_episodes.title = %q, want the Scan-time cartoon name", ep.Title)
+	}
+}
+
 // TestApplyLibrarySeries_TVDBFetchFailureStillApplies is P2, and it is the
 // single most likely rule to be got wrong: internal/tvdb's SeriesEpisodes is
 // deliberately fail-CLOSED, but this call site is deliberately fail-SOFT. The

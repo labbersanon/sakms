@@ -178,7 +178,7 @@ describe("Requests", () => {
           mode: "series",
           title: "Queued Show",
           tmdbId: 2,
-          status: "Pending",
+          status: "Scheduled",
         }),
       ],
     });
@@ -191,7 +191,7 @@ describe("Requests", () => {
     expect(screen.getByText("Queued Show")).toBeInTheDocument();
     expect(screen.queryByText("Owned Movie")).not.toBeInTheDocument();
 
-    fireEvent.input(search, { target: { value: "pending" } });
+    fireEvent.input(search, { target: { value: "scheduled" } });
     expect(screen.getByText("Queued Show")).toBeInTheDocument();
     expect(screen.queryByText("Owned Movie")).not.toBeInTheDocument();
 

@@ -159,12 +159,11 @@ func applyLibrarySeriesAlternate(
 	stem := naming.EpisodeRangeFileName(preset, p.Title, p.SeasonNumber, episodeNumbers, episodeTitle, "")
 	alreadyPlaced := ""
 	if !fileExists(sourcePath) {
-		emptyAlt := filepath.Join(seasonDir, naming.EpisodeAlternateFileName(preset, p.Title, p.SeasonNumber, episodeNumbers, episodeTitle, "", "", "", ext))
-		if fileExists(emptyAlt) {
-			alreadyPlaced = emptyAlt
-		} else if recovered := placedSeriesAlternate(seasonDir, stem, ext); recovered != "" {
-			alreadyPlaced = recovered
-		} else {
+		// Covers both the quality-token dest and the empty-token
+		// "... - alternate.ext" fallback — both are stem + " - " + ...
+		alreadyPlaced = placedSeriesAlternate(seasonDir, stem, ext)
+		if alreadyPlaced == "" {
+			emptyAlt := filepath.Join(seasonDir, naming.EpisodeAlternateFileName(preset, p.Title, p.SeasonNumber, episodeNumbers, episodeTitle, "", "", "", ext))
 			return 0, nil, false, fmt.Errorf("placing alternate %q: source %q is gone and no already-placed alternate matching %s - *%s is in %q",
 				emptyAlt, sourcePath, stem, ext, seasonDir)
 		}

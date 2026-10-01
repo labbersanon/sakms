@@ -185,9 +185,12 @@ export function searchQueries(name: string): string[] {
   add(stripped);
   add(base);
   const person = commaPersonRe.exec(stripped);
-  if (person) {
-    add(person[1].trim());
-    add(`${person[1].trim()} ${person[3].trim()} ${person[2].trim()}`);
+  const personTitle = person?.[1];
+  const personLast = person?.[2];
+  const personFirst = person?.[3];
+  if (personTitle && personLast && personFirst) {
+    add(personTitle.trim());
+    add(`${personTitle.trim()} ${personFirst.trim()} ${personLast.trim()}`);
   }
   const dash = stripped.lastIndexOf(" - ");
   if (dash > 0) {

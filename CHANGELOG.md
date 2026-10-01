@@ -10101,6 +10101,20 @@ status stays active.
 | `internal/api/adult_scene_search.go` | Optional `q`; performer/studio/year → filtered list |
 | `internal/identify/boxlookup.go` | `ListSceneCandidatesFiltered` performer/studio/year paths |
 
+## 2026-10-01 — Adult Review local name is a Studio/Title/Date form
+
+**Problem:** Adult Review's Proposed name was a free-text box, so a confirm could skip `Studio - Title (Date) [phash-HASH].ext` and get re-proposed on the next Scan.
+**Fix:** Review's local branch is a Title/Studio/Date form. The proposed basename is composed with `adultFileName`; phash and extension stay locked. Catalog match still disables the form and ignores it.
+**Outcome:** A manual Review confirm always posts a schema-shaped file name.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/Rename.tsx` | ReviewDialog form + composed `fileName` |
+| `frontend/src/screens/Rename.review.test.tsx` | Form seed/edit/catalog coverage |
+
+
 
 
 

@@ -7,9 +7,10 @@
 //   - Review absent for: Movies row, Adult pending, Adult unmatched no-title,
 //     Adult unmatched with giveBackSceneId
 //   - Choosing Review + clicking Apply opens the modal
-//   - Modal shows current basename and pre-filled editable proposed name
-//   - Editing proposed name and confirming posts the edited fileName
-//   - Catalog-match banner renders and disables input when preview has a catalog
+//   - Modal shows current basename and a Studio/Title/Date form that composes
+//     Studio - Title (Date) [phash-HASH].ext (phash and extension are locked)
+//   - Editing the form and confirming posts the composed fileName
+//   - Catalog-match banner renders and disables the form when preview has a catalog
 //   - Cancel issues no mutating request
 //   - planActionForRow returns null for a "review" selection (Apply-All skips)
 //
@@ -349,7 +350,7 @@ describe("Rename — Review modal", () => {
     expect(calls.length).toBeGreaterThanOrEqual(0); // suppress unused var warning
   });
 
-  it("shows the current basename and a pre-filled proposed name", async () => {
+  it("shows the current basename and a pre-filled Studio/Title/Date form", async () => {
     stubFetch((url) => {
       if (url.includes("/review-confirm")) return jsonResponse({});
       if (url.includes("/review")) return jsonResponse(defaultPreview);
@@ -378,13 +379,23 @@ describe("Rename — Review modal", () => {
     // Scope to `within(dialog)` to avoid ambiguity with the underlying table.
     await within(dialog).findByText("Current name");
 
-    // The proposed-name input must be present and enabled (local branch).
-    const input = within(dialog).getByRole("textbox", { name: /proposed name/i });
-    expect(input).toBeInTheDocument();
-    expect(input).not.toBeDisabled();
+    const titleInput = within(dialog).getByRole("textbox", { name: /^title$/i });
+    const studioInput = within(dialog).getByRole("textbox", { name: /^studio$/i });
+    const dateInput = within(dialog).getByRole("textbox", { name: /^date$/i });
+    expect(titleInput).not.toBeDisabled();
+    expect(studioInput).not.toBeDisabled();
+    expect(dateInput).not.toBeDisabled();
+    await waitFor(() => {
+      expect(titleInput).toHaveValue(defaultPreview.title);
+      expect(studioInput).toHaveValue(defaultPreview.studio);
+      expect(dateInput).toHaveValue(defaultPreview.date);
+    });
+    expect(within(dialog).getByRole("status", { name: /proposed name/i })).toHaveTextContent(
+      defaultPreview.proposedName,
+    );
   });
 
-  it("editing the proposed name and confirming posts the edited fileName (local branch)", async () => {
+  it("editing Studio/Title/Date and confirming posts the composed fileName (local branch)", async () => {
     const calls = stubFetch((url) => {
       if (url.includes("/review-confirm")) return noContent();
       if (url.includes("/review")) return jsonResponse(defaultPreview);
@@ -407,13 +418,22 @@ describe("Rename — Review modal", () => {
     );
 
     const dialog = await screen.findByRole("dialog", { name: /Review/ });
-    // Wait for the preview to load (input is inside Show when={preview()})
+    // Wait for the preview to load (form is inside Show when={preview()})
     await within(dialog).findByText("Current name");
-    const input = within(dialog).getByRole("textbox", { name: /proposed name/i });
-    // Set a custom name (simulating an operator edit) and wait for Solid's
-    // reactive system to process the update before clicking Confirm.
-    fireEvent.input(input, { target: { value: "My Custom Name.mkv" } });
-    // Wait for the Confirm button to be enabled (canConfirm uses fileName signal)
+    const titleInput = within(dialog).getByRole("textbox", { name: /^title$/i });
+    const studioInput = within(dialog).getByRole("textbox", { name: /^studio$/i });
+    const dateInput = within(dialog).getByRole("textbox", { name: /^date$/i });
+    await waitFor(() => expect(titleInput).toHaveValue(defaultPreview.title));
+    fireEvent.input(studioInput, { target: { value: "Other Studio" } });
+    fireEvent.input(titleInput, { target: { value: "Other Title" } });
+    fireEvent.input(dateInput, { target: { value: "2025-06-15" } });
+    await waitFor(() =>
+      expect(
+        within(dialog).getByRole("status", { name: /proposed name/i }),
+      ).toHaveTextContent(
+        "Other Studio - Other Title (2025-06-15) [phash-abcd1234].mkv",
+      ),
+    );
     const confirmBtn = within(dialog).getByRole("button", { name: /confirm/i });
     await waitFor(() => expect(confirmBtn).not.toBeDisabled());
     fireEvent.click(confirmBtn);
@@ -421,11 +441,13 @@ describe("Rename — Review modal", () => {
     await waitFor(() => {
       const rc = reviewCalls(calls);
       expect(rc).toHaveLength(1);
-      expect(rc[0]!.body).toEqual({ fileName: "My Custom Name.mkv" });
+      expect(rc[0]!.body).toEqual({
+        fileName: "Other Studio - Other Title (2025-06-15) [phash-abcd1234].mkv",
+      });
     });
   });
 
-  it("clearing the proposed name does not snap back to the preview default", async () => {
+  it("clearing Title does not snap back to the preview default", async () => {
     stubFetch((url) => {
       if (url.includes("/review")) return jsonResponse(defaultPreview);
       if (url.includes("/rename/proposals")) return jsonResponse([adultProposal()]);
@@ -448,15 +470,13 @@ describe("Rename — Review modal", () => {
 
     const dialog = await screen.findByRole("dialog", { name: /Review/ });
     await within(dialog).findByText("Current name");
-    const input = within(dialog).getByRole("textbox", {
-      name: /proposed name/i,
+    const titleInput = within(dialog).getByRole("textbox", {
+      name: /^title$/i,
     }) as HTMLInputElement;
-    await waitFor(() =>
-      expect(input.value).toBe(defaultPreview.proposedName),
-    );
+    await waitFor(() => expect(titleInput.value).toBe(defaultPreview.title));
 
-    fireEvent.input(input, { target: { value: "" } });
-    await waitFor(() => expect(input.value).toBe(""));
+    fireEvent.input(titleInput, { target: { value: "" } });
+    await waitFor(() => expect(titleInput.value).toBe(""));
     expect(
       within(dialog).getByRole("button", { name: /confirm/i }),
     ).toBeDisabled();
@@ -529,9 +549,10 @@ describe("Rename — Review modal", () => {
     // Catalog banner must appear — wait for preview to load
     await within(dialog).findByText(/Catalog match found/);
 
-    // Input is disabled on catalog branch (preview loaded, catalog match present)
-    const input = within(dialog).getByRole("textbox", { name: /proposed name/i });
-    expect(input).toBeDisabled();
+    // Form fields are disabled on catalog branch (preview loaded, catalog match present)
+    expect(within(dialog).getByRole("textbox", { name: /^title$/i })).toBeDisabled();
+    expect(within(dialog).getByRole("textbox", { name: /^studio$/i })).toBeDisabled();
+    expect(within(dialog).getByRole("textbox", { name: /^date$/i })).toBeDisabled();
 
     // Confirm button should be enabled on catalog branch (phash is non-empty,
     // isCatalogMatch is true). Wait for Solid's reactive update.

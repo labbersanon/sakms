@@ -51,6 +51,7 @@ import {
 } from "../api/organize";
 import { fetchNamingPreset } from "../api/settings";
 import {
+  adultFileName,
   type NamingPreset,
   proposedFileName,
 } from "../naming";
@@ -786,6 +787,18 @@ const RecentlyAppliedSection: Component<{
   </div>
 );
 
+// reviewSourceExt keeps Confirm's composed basename on the source container.
+// AdultFileName needs the extension; the operator must not type a different one.
+function reviewSourceExt(proposedName: string, sourceName: string): string {
+  for (const name of [proposedName, sourceName]) {
+    const slash = Math.max(name.lastIndexOf("/"), name.lastIndexOf("\\"));
+    const base = slash >= 0 ? name.slice(slash + 1) : name;
+    const dot = base.lastIndexOf(".");
+    if (dot > 0) return base.slice(dot);
+  }
+  return "";
+}
+
 // ReviewDialog — Adult Review modal.
 //
 // Claude 2026-08-12: modal, NOT SearchTakeover.
@@ -809,7 +822,9 @@ const ReviewDialog: Component<{
     ({ mode, id }) => fetchAdultReview(mode, id),
   );
 
-  const [fileName, setFileName] = createSignal("");
+  const [studio, setStudio] = createSignal("");
+  const [title, setTitle] = createSignal("");
+  const [date, setDate] = createSignal("");
   const [confirming, setConfirming] = createSignal(false);
   const [confirmError, setConfirmError] = createSignal("");
   // Claude 2026-08-12: seed proposed name once; do not re-seed from !fileName().
@@ -817,13 +832,21 @@ const ReviewDialog: Component<{
   //   field back to proposedName and blocked intentional empties / edits.
   // Troubleshooting: Confirm stayed enabled after operator cleared the name.
   // Review if: ReviewDialog remounts per open (then a flag is enough forever).
+  // Claude 2026-10-01: seed Studio/Title/Date, not a free-text basename.
+  // Reason: Adult schema is Studio - Title (Date) [phash-HASH].ext; a single
+  //   input let operators skip that shape and get re-proposed on the next Scan.
+  // Troubleshooting: Review Confirm posted "My Custom Name.mkv" with no studio,
+  //   date, or phash tag.
+  // Review if: review-confirm accepts structured studio/title/date on the wire.
   const [nameSeeded, setNameSeeded] = createSignal(false);
 
   createEffect(() => {
     if (nameSeeded()) return;
     const data = preview();
     if (!data) return;
-    setFileName(data.proposedName);
+    setStudio(data.studio);
+    setTitle(data.title);
+    setDate(data.date);
     setNameSeeded(true);
   });
 
@@ -832,16 +855,28 @@ const ReviewDialog: Component<{
     return !!(data?.catalogBox && data.catalogSceneId);
   };
 
+  const composedName = () => {
+    const data = preview();
+    if (!data) return "";
+    return adultFileName(
+      studio(),
+      title(),
+      date(),
+      data.phash,
+      reviewSourceExt(data.proposedName, p.sourceName),
+    );
+  };
+
   const canConfirm = () => {
     if (confirming()) return false;
     if (!preview()) return false;
     // Can't confirm if no phash — Confirm will fail server-side anyway, and
     // the no-phash warning already tells the operator to use Cancel.
     if (!preview()?.phash) return false;
-    // Catalog branch: no fileName needed (it is ignored).
+    // Catalog branch: composed name is ignored; catalog identity is used.
     if (isCatalogMatch()) return true;
-    // Local branch: fileName must be non-empty.
-    return fileName().trim().length > 0;
+    // Local branch: Title is the required AdultFileName stem.
+    return title().trim().length > 0;
   };
 
   const handleConfirm = () => {
@@ -852,7 +887,7 @@ const ReviewDialog: Component<{
     let body: AdultReviewConfirmRequest;
     if (isCatalogMatch()) {
       body = {
-        fileName: fileName(),
+        fileName: composedName(),
         box: data.catalogBox,
         sceneId: data.catalogSceneId,
         title: data.catalogTitle || data.title,
@@ -860,7 +895,7 @@ const ReviewDialog: Component<{
         date: data.catalogDate || data.date,
       };
     } else {
-      body = { fileName: fileName() };
+      body = { fileName: composedName() };
     }
     void confirmAdultReview(props.mode, p.id, body)
       .then(() => {
@@ -914,25 +949,72 @@ const ReviewDialog: Component<{
                     <div class="mt-1 text-muted">
                       This scene was found in the catalog (
                       {data().catalogBox}/{data().catalogSceneId}). Confirm will
-                      apply the catalog identity. The proposed name below will be
-                      ignored — the catalog name is computed automatically.
+                      apply the catalog identity. The Studio, Title, and Date
+                      fields below will be ignored — the catalog name is computed
+                      automatically.
                     </div>
                   </div>
                 </Show>
 
-                <div class="mb-3">
-                  <label class="mb-1 block text-xs font-medium uppercase tracking-wide text-muted">
-                    Proposed name
-                  </label>
-                  <input
-                    class="w-full rounded border border-border bg-bg px-2 py-1 font-mono text-sm text-fg disabled:opacity-50"
-                    type="text"
-                    aria-label="Proposed name"
-                    value={fileName()}
-                    disabled={isCatalogMatch()}
-                    onInput={(e) => setFileName(e.currentTarget.value)}
-                  />
-                </div>
+                <fieldset class="mb-3 min-w-0 border-0 p-0" disabled={isCatalogMatch()}>
+                  <legend class="mb-2 text-xs font-medium uppercase tracking-wide text-muted">
+                    File name
+                  </legend>
+                  <div class="mb-2">
+                    <label class="mb-1 block text-xs font-medium uppercase tracking-wide text-muted" for="adult-review-title">
+                      Title
+                    </label>
+                    <input
+                      id="adult-review-title"
+                      class="w-full rounded border border-border bg-bg px-2 py-1 text-sm text-fg disabled:opacity-50"
+                      type="text"
+                      aria-label="Title"
+                      value={title()}
+                      onInput={(e) => setTitle(e.currentTarget.value)}
+                    />
+                  </div>
+                  <div class="mb-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <div>
+                      <label class="mb-1 block text-xs font-medium uppercase tracking-wide text-muted" for="adult-review-studio">
+                        Studio
+                      </label>
+                      <input
+                        id="adult-review-studio"
+                        class="w-full rounded border border-border bg-bg px-2 py-1 text-sm text-fg disabled:opacity-50"
+                        type="text"
+                        aria-label="Studio"
+                        value={studio()}
+                        onInput={(e) => setStudio(e.currentTarget.value)}
+                      />
+                    </div>
+                    <div>
+                      <label class="mb-1 block text-xs font-medium uppercase tracking-wide text-muted" for="adult-review-date">
+                        Date
+                      </label>
+                      <input
+                        id="adult-review-date"
+                        class="w-full rounded border border-border bg-bg px-2 py-1 text-sm text-fg disabled:opacity-50"
+                        type="text"
+                        placeholder="YYYY-MM-DD"
+                        aria-label="Date"
+                        value={date()}
+                        onInput={(e) => setDate(e.currentTarget.value)}
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <div class="mb-1 text-xs font-medium uppercase tracking-wide text-muted">
+                      Proposed name
+                    </div>
+                    <div
+                      class="rounded border border-border bg-bg px-2 py-1 font-mono text-sm text-fg"
+                      role="status"
+                      aria-label="Proposed name"
+                    >
+                      {composedName() || "—"}
+                    </div>
+                  </div>
+                </fieldset>
 
                 <Show when={!data().phash}>
                   <div class="mb-3 rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">

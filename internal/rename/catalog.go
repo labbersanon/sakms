@@ -134,6 +134,13 @@ func catalogEpisodeAtPath(ctx context.Context, sess *mode.Session, libStore *lib
 		//   parent is the show-folder title among pre-1970 tracked / SearchSeries.
 		// Troubleshooting: year-season shorts stay untracked after Save.
 		// Review if: catalog grows a TMDB-search fallback for modern SxxExx.
+		//
+		// Claude 2026-10-01: Looney Toons folder + discarded Tooney nfo.
+		// Reason: exact title-key required "looneytoons" == "looneytunes";
+		//   web-authority then minted a series per cartoon (A Hare Grows in
+		//   Manhattan). Overlap + Toons/Tunes search aliases parent to TVDB
+		//   7266; corroborate fills the episode title; stray web cards retire.
+		// Review if: the kids folder is renamed to Looney Tunes.
 		if !library.IsYearSeason(season) {
 			return false, nil
 		}
@@ -141,16 +148,26 @@ func catalogEpisodeAtPath(ctx context.Context, sess *mode.Session, libStore *lib
 		if !ok {
 			return false, nil
 		}
-		prior, _ := libStore.GetEpisode(ctx, parent.ID, season, firstEpisode(eps))
+		epNum := firstEpisode(eps)
+		epTitle, airDate := "", ""
+		if parent.TVDBID > 0 {
+			season, epNum, epTitle, airDate = corroborateYearSeasonEpisode(ctx, sess, parent.TVDBID, season, epNum, videoPath, showFolder)
+			eps = []int{epNum}
+		}
+		stray, straySer, _ := libStore.EpisodeOwningFile(ctx, videoPath)
+		prior, _ := libStore.GetEpisode(ctx, parent.ID, season, epNum)
 		cataloged, err := upsertCatalogedEpisode(ctx, sess, libStore, catalogEpisode{
 			TMDBID: parent.TMDBID, TVDBID: parent.TVDBID, Title: parent.Title, Year: parent.Year,
 			Season: season, Episodes: eps, VideoPath: videoPath, FoundRoot: foundRoot,
-			AttachExtra: true,
+			AttachExtra: true, EpisodeTitle: epTitle, AirDate: airDate,
 		})
 		if err != nil || !cataloged {
 			return cataloged, err
 		}
-		recordNestIdentification(ctx, libStore, parent, season, firstEpisode(eps), videoPath, foundRoot, prior)
+		if stray != nil && straySer != nil {
+			retireStrayWebAuthorityShort(ctx, libStore, stray, straySer, videoPath, parent.TMDBID)
+		}
+		recordNestIdentification(ctx, libStore, parent, season, epNum, videoPath, foundRoot, prior)
 		return true, nil
 	}
 	return upsertCatalogedEpisode(ctx, sess, libStore, catalogEpisode{

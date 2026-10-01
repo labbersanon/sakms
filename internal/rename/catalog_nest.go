@@ -2,6 +2,7 @@ package rename
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -315,10 +316,14 @@ func searchCreateEpisodeParent(ctx context.Context, sess *mode.Session, libStore
 	return found.series, found.season, found.ep, found.name, found.aired, true
 }
 
+// Claude 2026-10-01: parent title match is overlap, not compact-key equality.
+// Reason: kids folder "Looney Toons" never equaled TVDB "Looney Tunes"
+//   (looneytoons vs looneytunes), so each short web-matched as its own series.
+// Troubleshooting: A Hare Grows in Manhattan is a Library card, not Looney Tunes.
+// Review if: the on-disk folder is renamed to Looney Tunes.
 func findParentByShowFolder(ctx context.Context, sess *mode.Session, libStore *library.Store, showFolder, foundRoot string) (library.Series, bool) {
 	title := titleFromShowFolder(showFolder)
-	key := episodeTitleKey(title)
-	if libStore == nil || key == "" || genericEpisodeTitleKey(key) {
+	if libStore == nil || title == "" || genericEpisodeTitleKey(episodeTitleKey(title)) {
 		return library.Series{}, false
 	}
 	all, err := libStore.ListSeries(ctx)
@@ -330,7 +335,7 @@ func findParentByShowFolder(ctx context.Context, sess *mode.Session, libStore *l
 		if !parentPremiereOK(ser.Year) {
 			continue
 		}
-		if episodeTitleKey(ser.Title) != key {
+		if !showTitlesAgree(ser.Title, title) {
 			continue
 		}
 		tracked = append(tracked, ser)
@@ -338,24 +343,154 @@ func findParentByShowFolder(ctx context.Context, sess *mode.Session, libStore *l
 	if len(tracked) == 1 {
 		return tracked[0], true
 	}
-	if len(tracked) > 1 || sess == nil || sess.TVDB == nil {
+	if len(tracked) > 1 {
 		return library.Series{}, false
 	}
-	results, err := sess.TVDB.SearchSeries(ctx, title)
-	if err != nil {
+	hit, ok := uniqueShowFolderTVDBParent(ctx, sess, showFolder)
+	if !ok {
 		return library.Series{}, false
 	}
+	return ensureTVDBParent(ctx, libStore, all, hit, foundRoot)
+}
+
+const tvdbYearSeasonReasonPrefix = "tvdb year-season match:"
+
+// uniqueShowFolderTVDBParent is a unique pre-1970 TVDB series for the on-disk
+// show folder. Token overlap plus Toons↔Tunes alias queries let "Looney Toons"
+// resolve to Looney Tunes (7266) instead of each short becoming its own series.
+func uniqueShowFolderTVDBParent(ctx context.Context, sess *mode.Session, showFolder string) (tvdb.Result, bool) {
+	title := titleFromShowFolder(showFolder)
+	if sess == nil || sess.TVDB == nil || title == "" || genericEpisodeTitleKey(episodeTitleKey(title)) {
+		return tvdb.Result{}, false
+	}
+	seen := map[int]struct{}{}
 	var hits []tvdb.Result
-	for _, r := range results {
-		if !parentPremiereOK(r.Year) || episodeTitleKey(r.Name) != key {
+	gotAny := false
+	for _, q := range showFolderSearchQueries(title) {
+		results, err := sess.TVDB.SearchSeries(ctx, q)
+		if err != nil {
 			continue
 		}
-		hits = append(hits, r)
+		gotAny = true
+		for _, r := range results {
+			if r.TVDBID <= 0 || !parentPremiereOK(r.Year) || !showTitlesAgree(r.Name, title) {
+				continue
+			}
+			if _, ok := seen[r.TVDBID]; ok {
+				continue
+			}
+			seen[r.TVDBID] = struct{}{}
+			hits = append(hits, r)
+		}
 	}
-	if len(hits) != 1 {
-		return library.Series{}, false
+	if !gotAny || len(hits) != 1 {
+		return tvdb.Result{}, false
 	}
-	return ensureTVDBParent(ctx, libStore, all, hits[0], foundRoot)
+	return hits[0], true
+}
+
+func yearSeasonTitleHint(filename, showFolder string) string {
+	base := strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename))
+	before, after, ok := library.SplitYearSeasonMarker(base)
+	if !ok {
+		return ""
+	}
+	if before != "" && !showTitlesAgree(before, showFolder) {
+		return before
+	}
+	if after != "" && !showTitlesAgree(after, showFolder) {
+		return after
+	}
+	return ""
+}
+
+func corroborateYearSeasonEpisode(ctx context.Context, sess *mode.Session, tvdbID, season, episode int, videoPath, showFolder string) (int, int, string, string) {
+	if sess == nil || sess.TVDB == nil || tvdbID <= 0 {
+		return season, episode, "", ""
+	}
+	catalog, err := sess.TVDB.SeriesEpisodes(ctx, tvdbID, tvdb.SeasonTypeOfficial)
+	if err != nil {
+		return season, episode, "", ""
+	}
+	hint := yearSeasonTitleHint(videoPath, showFolder)
+	if hint != "" {
+		if local := uniqueCatalogEpisode(catalog, episodeTitleKey(hint), season); local != nil {
+			return local.SeasonNumber, local.Number, local.Name, local.Aired
+		}
+	}
+	for i := range catalog {
+		if catalog[i].SeasonNumber == season && catalog[i].Number == episode {
+			return season, episode, catalog[i].Name, catalog[i].Aired
+		}
+	}
+	return season, episode, "", ""
+}
+
+// tryYearSeasonTVDBParent places a parsed year-season file under the show
+// folder's TVDB series (Looney Tunes) instead of web-matching the episode
+// title as its own 1947 "series".
+func tryYearSeasonTVDBParent(
+	ctx context.Context, sess *mode.Session, tracked map[episodeKey]bool,
+	generalRoot, foundRoot, videoPath string, roots []string,
+	season, episode int, extraEpisodes []int, base proposals.Proposal,
+) *proposals.Proposal {
+	if sess == nil || !library.IsYearSeason(season) {
+		return nil
+	}
+	showFolder := showFolderName(videoPath, roots)
+	hit, ok := uniqueShowFolderTVDBParent(ctx, sess, showFolder)
+	if !ok {
+		return nil
+	}
+	seasonOut, epOut, epTitle, _ := corroborateYearSeasonEpisode(ctx, sess, hit.TVDBID, season, episode, videoPath, showFolder)
+	synth := anthologyTMDBID(hit.TVDBID)
+	duplicateSlot := tracked[episodeKey{tmdbID: synth, season: seasonOut, episode: epOut}]
+	targetRoot := generalRoot
+	if sess.KidsRootPath != "" && foundRoot == sess.KidsRootPath {
+		targetRoot = foundRoot
+	}
+	p := base
+	p.Status = proposals.Pending
+	p.Title = hit.Name
+	p.TMDBID = synth
+	p.TVDBID = hit.TVDBID
+	p.Year = hit.Year
+	p.SeasonNumber = seasonOut
+	p.EpisodeNumber = epOut
+	if seasonOut == season && epOut == episode {
+		p.ExtraEpisodeNumbers = extraEpisodes
+	}
+	p.RootFolderPath = targetRoot
+	label := epTitle
+	if label == "" {
+		label = hit.Name
+	}
+	p.Reason = fmt.Sprintf("%s %q -> S%dE%d (tvdb %d)", tvdbYearSeasonReasonPrefix, label, seasonOut, epOut, hit.TVDBID)
+	if duplicateSlot {
+		acceptDuplicatePendingEpisode(&p, hit.Name, seasonOut, epOut)
+	}
+	return &p
+}
+
+func retireStrayWebAuthorityShort(ctx context.Context, libStore *library.Store, ep *library.Episode, ser *library.Series, videoPath string, parentTMDB int) {
+	if libStore == nil || ep == nil || ser == nil || videoPath == "" {
+		return
+	}
+	if ser.TMDBID == parentTMDB || ser.TMDBID >= 0 || ser.TVDBID != 0 {
+		return
+	}
+	if ep.FilePath != videoPath {
+		return
+	}
+	remaining, listErr := libStore.ListEpisodes(ctx, ser.ID)
+	if listErr != nil {
+		return
+	}
+	if len(remaining) == 1 && remaining[0].ID == ep.ID {
+		_ = libStore.DeleteSeries(ctx, ser.ID)
+		return
+	}
+	_ = libStore.DeleteEpisode(ctx, ep.ID)
 }
 
 func proposeNestedShortMove(ctx context.Context, libStore *library.Store, videoPath, foundRoot string) (proposals.Proposal, bool) {

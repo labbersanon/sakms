@@ -3,6 +3,7 @@ package rename
 import (
 	"context"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/labbersanon/sakms/internal/library"
@@ -26,7 +27,52 @@ func seriesSidecarAgrees(hint nfo.SeriesNFO, showFolder string) bool {
 	if title == "" || folder == "" {
 		return true
 	}
-	return HasTitleTokenOverlap(folder, title) || HasTitleTokenOverlap(title, folder)
+	return showTitlesAgree(folder, title)
+}
+
+// showTitlesAgree is seriesSidecarAgrees without the empty-string pass. Both
+// sides must be real titles: SearchSeries("Looney Toons") returning "Looney
+// Tunes" is a match; an empty catalog name is not.
+func showTitlesAgree(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" || b == "" {
+		return false
+	}
+	return HasTitleTokenOverlap(a, b) || HasTitleTokenOverlap(b, a)
+}
+
+// Claude 2026-10-01: also search Toons↔Tunes so TVDB can see Looney Tunes.
+// Reason: kids folder is spelled Looney Toons; TVDB series is Looney Tunes.
+//   SearchSeries("Looney Toons") can miss 7266; the alias query finds it.
+// Troubleshooting: year-season shorts catalog as their own 1947 "series".
+// Review if: the on-disk folder is renamed to Looney Tunes.
+var (
+	toonsWordRe = regexp.MustCompile(`(?i)\btoons\b`)
+	tunesWordRe = regexp.MustCompile(`(?i)\btunes\b`)
+)
+
+func showFolderSearchQueries(title string) []string {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return nil
+	}
+	out := []string{title}
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		for _, e := range out {
+			if strings.EqualFold(e, s) {
+				return
+			}
+		}
+		out = append(out, s)
+	}
+	add(toonsWordRe.ReplaceAllString(title, "Tunes"))
+	add(tunesWordRe.ReplaceAllString(title, "Toons"))
+	return out
 }
 
 func trustedSeriesSidecar(videoPath, showFolder, root string) nfo.SeriesNFO {

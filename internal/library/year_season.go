@@ -98,13 +98,31 @@ func YearSeasonFolder(name string) (year int, ok bool) {
 // StripYearSeasonMarker removes the first S1958E14 / 1958x14 token (and
 // everything after it) so the leftover is the show title.
 func StripYearSeasonMarker(name string) string {
+	before, _, ok := SplitYearSeasonMarker(name)
+	if !ok {
+		return name
+	}
+	return before
+}
+
+// Claude 2026-10-01: split before/after the year-season token.
+// Reason: "A Hare Grows In Manhattan S1947E05" puts the TVDB episode title
+//   before SyyyyExx; "Looney.Tunes.S1958E14.Fistic.Mystic" puts it after.
+// Troubleshooting: year-season shorts catalog as their own title+year series.
+// Review if: all shorts filenames put the show name before SyyyyExx.
+// SplitYearSeasonMarker returns the text before and after the first year-season
+// token.
+func SplitYearSeasonMarker(name string) (before, after string, ok bool) {
+	split := func(loc []int) (string, string, bool) {
+		return trimSeparators(name[:loc[0]]), strings.Trim(strings.TrimSpace(name[loc[1]:]), ".-_ "), true
+	}
 	if loc := yearSeasonPattern.FindStringIndex(name); loc != nil {
-		return trimSeparators(name[:loc[0]])
+		return split(loc)
 	}
 	if loc := yearAltSeasonPattern.FindStringIndex(name); loc != nil {
-		return trimSeparators(name[:loc[0]])
+		return split(loc)
 	}
-	return name
+	return "", "", false
 }
 
 // ParseEpisodeNumbersNested is the catalog/rename walker for series-style

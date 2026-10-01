@@ -10003,5 +10003,21 @@ status stays active.
 | `internal/api/tracked_remove_test.go` | Season/entire/movie retry cancellation |
 | `frontend/src/screens/discover/DetailPopup.tsx` | Confirm copy notes monitoring stops |
 
+## 2026-10-01 — Match Looney Tunes year-season shorts on TVDB
+
+**Problem:** `A Hare Grows In Manhattan S1947E05` (and other kids Looney shorts) lived as their own Library series. The cartoon is Looney Tunes S1947E05 on TVDB. The folder is spelled Looney Toons; tvshow.nfo is The Tooney and Russo Show.
+**Fix:** Year-season files with no trusted nfo resolve the show from the folder against TVDB (token overlap + Toons↔Tunes search aliases, premiere before 1970, unique hit). Episode title is corroborated from the filename against that catalog. Web-authority singleton cards for the same file are retired.
+**Outcome:** The short catalogs as Looney Tunes S1947E05 with the TVDB episode title, not as a 1947 series named after the cartoon.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/rename/catalog_show.go` | `showTitlesAgree`; Toons↔Tunes search aliases |
+| `internal/rename/catalog_nest.go` | Folder→TVDB parent; year-season proposal; stray web-authority retire |
+| `internal/rename/catalog.go` | Year-season catalog uses TVDB episode title; retires stray cards |
+| `internal/rename/rename.go` | Year-season parse tries show-folder TVDB before filename web match |
+| `internal/library/year_season.go` | `SplitYearSeasonMarker` for title-before vs title-after SyyyyExx |
+
 
 

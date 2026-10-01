@@ -680,6 +680,116 @@ func TestCatalogEpisodeAtPath_YearSeasonCreatesParent(t *testing.T) {
 	}
 }
 
+func TestCatalogEpisodeAtPath_YearSeasonMisspelledToonsFolder(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	seasonDir := filepath.Join(root, "Looney Toons", "Season 1947")
+	if err := os.MkdirAll(seasonDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Looney Toons", "tvshow.nfo"), []byte(
+		`<tvshow><uniqueid type="tvdb">465409</uniqueid><title>The Tooney and Russo Show</title></tvshow>`,
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(seasonDir, "A Hare Grows In Manhattan S1947E05 - H.265.mp4")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tvdbClient, _ := fakeTVDBAnthologyServer(t, []fakeTVDBAnthologyShow{{
+		ID: 7266, Name: "Looney Tunes", Year: "1930",
+		Catalog: []fakeTVDBEpisode{
+			{ID: 5, SeriesID: 7266, Name: "A Hare Grows in Manhattan", Number: 5, SeasonNumber: 1947, Aired: "1947-03-22"},
+		},
+	}})
+	libStore := newTestLibraryStore(t)
+	stray, err := libStore.UpsertSeries(ctx, library.Series{
+		TMDBID: WebAuthorityTMDBID("A Hare Grows in Manhattan", 1947),
+		Title:  "A Hare Grows in Manhattan", Year: 1947, RootFolderPath: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: stray.ID, SeasonNumber: 1947, EpisodeNumber: 5,
+		FilePath: video, Size: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := catalogEpisodeAtPath(ctx, &mode.Session{Mode: mode.Series, TVDB: tvdbClient}, libStore, video, root, []string{root})
+	if err != nil || !ok {
+		t.Fatalf("catalog ok=%v err=%v", ok, err)
+	}
+	parent, err := libStore.GetSeriesByTMDBID(ctx, anthologyTMDBID(7266))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parent.Title != "Looney Tunes" || parent.TVDBID != 7266 {
+		t.Fatalf("parent = %+v", parent)
+	}
+	ep, err := libStore.GetEpisode(ctx, parent.ID, 1947, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ep.Title != "A Hare Grows in Manhattan" || ep.FilePath != video {
+		t.Fatalf("episode = %+v", ep)
+	}
+	if _, err := libStore.GetSeriesByTMDBID(ctx, WebAuthorityTMDBID("A Hare Grows in Manhattan", 1947)); err == nil {
+		t.Fatal("web-authority stray series must be retired")
+	}
+}
+
+func TestScanLibrarySeries_YearSeasonUsesShowFolderNotEpisodeTitle(t *testing.T) {
+	root := t.TempDir()
+	seasonDir := filepath.Join(root, "Looney Toons", "Season 1947")
+	if err := os.MkdirAll(seasonDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(seasonDir, "A Hare Grows In Manhattan S1947E05 - H.265.mp4")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tvdbClient, _ := fakeTVDBAnthologyServer(t, []fakeTVDBAnthologyShow{{
+		ID: 7266, Name: "Looney Tunes", Year: "1930",
+		Catalog: []fakeTVDBEpisode{
+			{ID: 5, SeriesID: 7266, Name: "A Hare Grows in Manhattan", Number: 5, SeasonNumber: 1947, Aired: "1947-03-22"},
+		},
+	}})
+	sess := &mode.Session{
+		Mode: mode.Series,
+		TMDB: fakeTMDBSeriesServer(t, nil, nil),
+		TVDB: tvdbClient,
+	}
+	libStore := newTestLibraryStore(t)
+	got, err := ScanLibrarySeries(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), &fakeProber{durations: map[string]float64{video: 480}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, err := libStore.GetSeriesByTMDBID(context.Background(), anthologyTMDBID(7266))
+	if err != nil {
+		t.Fatalf("catalog parent: %v (proposals=%+v)", err, got)
+	}
+	if parent.Title != "Looney Tunes" || parent.TVDBID != 7266 {
+		t.Fatalf("parent = %+v", parent)
+	}
+	var p *proposals.Proposal
+	for i := range got {
+		if got[i].SourcePath == video {
+			p = &got[i]
+			break
+		}
+	}
+	if p == nil {
+		t.Fatalf("no proposal for %s: %+v", video, got)
+	}
+	if p.Status != proposals.Pending || p.Title != "Looney Tunes" || p.TVDBID != 7266 || p.SeasonNumber != 1947 || p.EpisodeNumber != 5 {
+		t.Fatalf("proposal = %+v", p)
+	}
+	if p.TMDBID != anthologyTMDBID(7266) {
+		t.Fatalf("want anthology TMDB, got %d", p.TMDBID)
+	}
+}
+
 func TestCatalogEpisodeAtPath_BareTitleNests(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()

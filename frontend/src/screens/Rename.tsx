@@ -59,6 +59,7 @@ import {
   type NamingPreset,
   proposedFileName,
 } from "../naming";
+import { suggestedRenameQuery } from "../searchterm";
 import {
   SourcePreviewDisclosure,
   SourcePreviewPopout,
@@ -2156,11 +2157,17 @@ const RenameQueue: Component<{ mode: Mode; adultAspect: AdultOrganizeAspect }> =
                 />
               }
               searchMode={st.kind === "repick" ? props.mode : st.target}
-              initialQuery={
-                st.kind === "repick"
-                  ? p.title || p.sourceName || ""
-                  : p.sourceName
-              }
+              // Claude 2026-10-01: prefill Scan's cleaned filename term.
+              // Reason: p.title is the catalog match being replaced; p.sourceName
+              //   is the raw file including extension and scene tags.
+              // Troubleshooting: Search box showed Some.Movie.2021.1080p.mkv
+              //   instead of "Some Movie".
+              // Review if: proposals persist a searchTerm from Scan.
+              initialQuery={suggestedRenameQuery(
+                props.mode,
+                p.sourceName,
+                p.sourcePath,
+              )}
               initialSeriesDatabase={
                 st.kind === "repick" && props.mode === "series"
                   ? p.title

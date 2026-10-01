@@ -10176,6 +10176,22 @@ status stays active.
 | `frontend/src/naming.test.ts` | Night Owl show-level; S00E12 omitempty season |
 | `frontend/src/screens/Rename.test.tsx` | Series card dest after title-only pick |
 
+## 2026-10-01 — Rename Search prefills the cleaned filename
+
+**Problem:** Rename Search still seeded the box with the raw file, including `.mkv` and scene tags.
+**Root cause:** `initialQuery` used `title || sourceName`. Unmatched rows have no title, so the query was `Night.Owl.mkv`.
+**Fix:** Prefill with `suggestedRenameQuery` (same cleaning Scan uses: strip video extension, dots, quality tags). Series drops `SxxExx` so the query is the show name.
+**Outcome:** Auto-search sends `Some Movie`, not `Some.Movie.2021.1080p.mkv`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/searchterm.ts` | filename → search term (mirrors `internal/searchterm`) |
+| `frontend/src/searchterm.test.ts` | extension, SxxExx, Adult scene-release |
+| `frontend/src/screens/Rename.tsx` | Search `initialQuery` uses suggested term |
+| `frontend/src/screens/Rename.test.tsx` | auto-search query is cleaned |
+
 
 
 

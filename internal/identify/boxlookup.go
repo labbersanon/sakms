@@ -231,17 +231,9 @@ func (b *BoxSearcher) ListSceneCandidates(ctx context.Context, title string, ord
 }
 
 // Claude 2026-10-01: Adult Rename Advanced search (performer/title/studio/year).
-// Reason: SceneCandidate has no performer names, so a title search cannot be
-//
-//	post-filtered by actress/actor; resolve SearchPerformer then list scenes.
-//
-// Troubleshooting: Adult Rename Search Advanced must find a scene by performer
-//
-//	or studio when the title is unknown or generic.
-//
-// Review if: stash-box SearchScene grows a performers selection, or TPDB
-//
-//	title search accepts a performer name.
+// Reason: SceneCandidate has no performer names; resolve SearchPerformer then list scenes.
+// Troubleshooting: Adult Rename Search Advanced by actress/actor or studio when the title is unknown.
+// Review if: stash-box SearchScene grows a performers selection, or TPDB title search accepts a performer name.
 func (b *BoxSearcher) ListSceneCandidatesFiltered(ctx context.Context, f SceneCandidateFilter, order []DatabaseRef) (items []SceneCandidate, softErrs []string) {
 	f.Title = strings.TrimSpace(f.Title)
 	f.Performer = strings.TrimSpace(f.Performer)

@@ -10192,6 +10192,20 @@ status stays active.
 | `frontend/src/screens/Rename.tsx` | Search `initialQuery` uses suggested term |
 | `frontend/src/screens/Rename.test.tsx` | auto-search query is cleaned |
 
+## 2026-10-01 — Series alternate Apply recovers an already-placed dest
+
+**Problem:** Applying a Series alternate for a file already moved (Phineas and Ferb S02E08) failed with `placing alternate "... - alternate.mp4": rename ...: no such file or directory`.
+**Root cause:** The first fold moved the source to `EpisodeAlternateFileName` with quality tokens. A retry probes the missing source, gets empty tokens, computes the literal `- alternate` dest, and `os.Rename` ENOENTs.
+**Fix:** When the source is gone, recover a season-folder file matching `EpisodeRangeFileName` + ` - ` + tokens + ext (or the empty-token dest if that is what landed). Skip the move and write `library_episode_files`. If nothing matches, fail with "source is gone" instead of a raw rename ENOENT.
+**Outcome:** Re-applying a Series alternate whose file is already at the token dest succeeds and records the existing path.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/rename/series_alternates.go` | recover already-placed alternate when source is gone |
+| `internal/rename/series_alternates_test.go` | Phineas-shaped retry; source-gone with no dest errors |
+
 
 
 

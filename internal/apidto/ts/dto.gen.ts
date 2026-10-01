@@ -1370,6 +1370,10 @@ export interface RepickRequest {
   seasonNumber?: number /* int */;
   episodeNumber?: number /* int */;
   /**
+   * EpisodeTitle is Series-only and optional — the dest-name title segment.
+   */
+  episodeTitle?: string;
+  /**
    * --- Adult (stash-box / TPDB) ---
    * Box and SceneID are required when the proposal's mode is adult.
    */

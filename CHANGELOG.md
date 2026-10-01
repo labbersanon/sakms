@@ -10101,6 +10101,36 @@ status stays active.
 | `internal/api/adult_scene_search.go` | Optional `q`; performer/studio/year → filtered list |
 | `internal/identify/boxlookup.go` | `ListSceneCandidatesFiltered` performer/studio/year paths |
 
+## 2026-10-01 — Adult Review local name is a Studio/Title/Date form
+
+**Problem:** Adult Review's Proposed name was a free-text box, so a confirm could skip `Studio - Title (Date) [phash-HASH].ext` and get re-proposed on the next Scan.
+**Fix:** Review's local branch is a Title/Studio/Date form. The proposed basename is composed with `adultFileName`; phash and extension stay locked. Catalog match still disables the form and ignores it.
+**Outcome:** A manual Review confirm always posts a schema-shaped file name.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/Rename.tsx` | ReviewDialog form + composed `fileName` |
+| `frontend/src/screens/Rename.review.test.tsx` | Form seed/edit/catalog coverage |
+
+## 2026-10-01 — Movies and Series Review dest-name forms
+
+**Problem:** Only Adult Review had a structured filename form. Unmatched Movies/Series could not type Title/Year/ID or Series/Season/Episode/Episode title without Search, so a manual name skipped each mode's schema.
+**Fix:** Review is enabled for unmatched Movies and Series. Movies form is Title, Year, TMDB ID (`Title (Year) [tmdbid-N].ext`). Series form adds Season, Episode, and Episode title (`Series SxxExx Episode Title.ext`). Confirm repicks those fields (Series also writes `episode_title`) then Apply.
+**Outcome:** A manual Review confirm on every mode posts a schema-shaped dest name.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/Rename.tsx` | Movies/Series Review form; `canReviewName` |
+| `frontend/src/screens/Rename.review.test.tsx` | Movies/Series form + eligibility |
+| `internal/proposals/proposals.go` | `RepickEpisode` writes `episode_title` |
+| `internal/api/proposals.go` | `episodeTitle` on repick |
+| `internal/apidto/dto.go` | `RepickRequest.EpisodeTitle` |
+
+
 
 
 

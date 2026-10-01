@@ -1401,6 +1401,8 @@ type RepickRequest struct {
 	// rejected outright on a Movies proposal.
 	SeasonNumber  *int `json:"seasonNumber,omitempty"`
 	EpisodeNumber *int `json:"episodeNumber,omitempty"`
+	// EpisodeTitle is Series-only and optional — the dest-name title segment.
+	EpisodeTitle string `json:"episodeTitle,omitempty"`
 
 	// --- Adult (stash-box / TPDB) ---
 	// Box and SceneID are required when the proposal's mode is adult.

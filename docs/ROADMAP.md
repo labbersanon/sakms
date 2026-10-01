@@ -2347,14 +2347,13 @@ worth building, staying single-operator:
   this entry said to move away from — were never actually built, so
   there was nothing to replace. "Requested" as a status is intentionally
   absent by design (`internal/api/requests.go`'s own comment: "a grab IS
-  the request... no approval queue"). The one real gap: "Missing" existed
-  only as a numeric annotation (`· N missing`) on In-Library series rows,
-  not a separate filterable state — shipped: a "Has Missing Episodes"
-  filter chip (Series-only, frontend-only, no backend changes) closes
-  exactly that gap. Deliberately does not overlap/merge with the
-  Calendar spec's Upcoming view (item 8, above) — same underlying missing-
-  episode data, different lens (date-organized vs. status-organized),
-  both kept as independent views.
+  the request... no approval queue"). As of 2026-10-01 the list itself is
+  outstanding-only: in-flight grabs, or series with MissingCount > 0.
+  Complete movies/series/Adult scenes are omitted. The former "Has Missing
+  Episodes" chip was removed because the filter is now the list. Deliberately
+  does not overlap/merge with the Calendar spec's Upcoming view (item 8,
+  above) — same underlying missing-episode data, different lens
+  (date-organized vs. status-organized), both kept as independent views.
 
 ### Storage & health analytics
 Identified 2026-07-24 during the same OmniMedia comparison above. Extends

@@ -1,4 +1,5 @@
 // Requests — a cross-mode request-status WORKLIST (F4), not a fourth grab view.
+// Only outstanding rows: in-flight grabs, or series still missing episodes.
 //
 // Row actions (for every status except In Library / Downloading):
 //   Grab          — one-click auto-grab (GrabDialog)
@@ -28,7 +29,6 @@ import {
   Button,
   ErrorText,
   FILTER_BAR_FIELDS_CLASS,
-  FilterChip,
   MODES,
   Muted,
   SelectField,
@@ -191,7 +191,6 @@ export const Requests: Component = () => {
   const [search, setSearch] = createSignal("");
   const [statusFilter, setStatusFilter] = createSignal<string | null>(null);
   const [modeFilter, setModeFilter] = createSignal<string | null>(null);
-  const [missingOnly, setMissingOnly] = createSignal(false);
   const [grabTarget, setGrabTarget] = createSignal<GrabTarget | null>(null);
   const [pickTarget, setPickTarget] = createSignal<GrabTarget | null>(null);
   const [detailTarget, setDetailTarget] = createSignal<DetailTarget | null>(null);
@@ -204,20 +203,25 @@ export const Requests: Component = () => {
 
   const items = () => data()?.items ?? [];
 
+  // Claude 2026-10-01: hide complete library rows even if the API still sends them.
+  // Reason: Requests is a worklist — In Library with no missing episodes is done.
+  // Review if: GET /api/requests is the only producer and already omits completes.
+  const outstanding = () =>
+    items().filter((i) => i.status !== "In Library" || i.missingCount > 0);
+
   const statuses = createMemo(() => {
-    const present = new Set(items().map((i) => i.status).filter(Boolean));
+    const present = new Set(outstanding().map((i) => i.status).filter(Boolean));
     return REQUEST_STATUS_ORDER.filter((s) => present.has(s));
   });
   const modes = createMemo(() => {
-    const present = new Set(items().map((i) => i.mode).filter(Boolean));
+    const present = new Set(outstanding().map((i) => i.mode).filter(Boolean));
     return MODES.map((m) => m.id).filter((id) => present.has(id));
   });
 
   const filtered = () =>
-    items().filter((i) => {
+    outstanding().filter((i) => {
       if (statusFilter() !== null && i.status !== statusFilter()) return false;
       if (modeFilter() !== null && i.mode !== modeFilter()) return false;
-      if (missingOnly() && i.missingCount <= 0) return false;
       return matchesQueueSearch(
         search(),
         i.title,
@@ -347,13 +351,6 @@ export const Requests: Component = () => {
                 </For>
               </SelectField>
             </div>
-            <div class="flex flex-wrap gap-1">
-              <FilterChip
-                label="Has Missing Episodes"
-                active={missingOnly}
-                onToggle={() => setMissingOnly((v) => !v)}
-              />
-            </div>
           </div>
 
           <Show when={selection.size() > 0}>
@@ -370,7 +367,13 @@ export const Requests: Component = () => {
           <Show when={!data.loading} fallback={<Muted>Loading…</Muted>}>
             <Show
               when={filtered().length > 0}
-              fallback={<Muted>No requests match this filter.</Muted>}
+              fallback={
+                <Muted>
+                  {search() || statusFilter() || modeFilter()
+                    ? "No requests match this filter."
+                    : "Nothing is missing."}
+                </Muted>
+              }
             >
               <label class="mb-2 flex items-center gap-2 text-xs text-muted">
                 <input

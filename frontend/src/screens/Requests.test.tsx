@@ -1,6 +1,6 @@
-// Requests tests: the cross-mode worklist renders one row per title and filters
-// by status chip. Mirrors this repo's Discover test conventions
-// (stubGlobal("fetch") + jsonResponse).
+// Requests tests: the cross-mode worklist renders one outstanding row per
+// title (in-flight grab or series with missing episodes) and filters by
+// status/mode/search. Mirrors Discover (stubGlobal("fetch") + jsonResponse).
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
@@ -71,7 +71,7 @@ const stubRequests = (resp: RequestStatusResponse) => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Requests", () => {
-  it("renders one row per title with its status and missing count", async () => {
+  it("renders outstanding rows with status and missing count; complete titles stay off the list", async () => {
     stubRequests({
       items: [
         item({ title: "Owned Movie", status: "In Library" }),
@@ -81,8 +81,6 @@ describe("Requests", () => {
           tmdbId: 7,
           status: "Pending",
         }),
-        // "In Library" with a count, not a "Missing" status: Missing is an
-        // annotation the backend hangs off a real status, never a status itself.
         item({
           mode: "series",
           title: "Incomplete Show",
@@ -95,22 +93,31 @@ describe("Requests", () => {
 
     render(() => <Requests />);
 
-    expect(await screen.findByText("Owned Movie")).toBeInTheDocument();
+    expect(await screen.findByText("Incomplete Show")).toBeInTheDocument();
     expect(screen.getByText("Grabbing Show")).toBeInTheDocument();
-    expect(screen.getByText("Incomplete Show")).toBeInTheDocument();
+    expect(screen.queryByText("Owned Movie")).not.toBeInTheDocument();
     expect(screen.getByText(/3 missing/)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Has Missing Episodes" }),
+    ).not.toBeInTheDocument();
   });
 
   it("filters rows by status dropdown", async () => {
     stubRequests({
       items: [
-        item({ title: "Owned Movie", status: "In Library" }),
+        item({
+          mode: "series",
+          title: "Incomplete Show",
+          tmdbId: 8,
+          status: "In Library",
+          missingCount: 3,
+        }),
         item({ title: "Queued Movie", tmdbId: 2, status: "Pending" }),
       ],
     });
 
     render(() => <Requests />);
-    await screen.findByText("Owned Movie");
+    await screen.findByText("Incomplete Show");
 
     const status = screen.getByLabelText("Status");
     // Downloading is not offered (redundant with the Downloads Queue tab).
@@ -119,20 +126,26 @@ describe("Requests", () => {
     ).not.toContain("Downloading");
 
     fireEvent.change(status, { target: { value: "Pending" } });
-    expect(screen.queryByText("Owned Movie")).not.toBeInTheDocument();
+    expect(screen.queryByText("Incomplete Show")).not.toBeInTheDocument();
     expect(screen.getByText("Queued Movie")).toBeInTheDocument();
 
     fireEvent.change(status, { target: { value: "" } });
-    expect(screen.getByText("Owned Movie")).toBeInTheDocument();
+    expect(screen.getByText("Incomplete Show")).toBeInTheDocument();
     expect(screen.getByText("Queued Movie")).toBeInTheDocument();
   });
 
   it("mode chips follow All, Movies, Series, Adult; Search sits left of Status", async () => {
     stubRequests({
       items: [
-        item({ mode: "adult", title: "A Scene", tmdbId: 0, status: "In Library" }),
-        item({ mode: "series", title: "A Show", tmdbId: 2, status: "In Library" }),
-        item({ mode: "movies", title: "A Movie", tmdbId: 3, status: "In Library" }),
+        item({ mode: "adult", title: "A Scene", tmdbId: 0, status: "Pending" }),
+        item({
+          mode: "series",
+          title: "A Show",
+          tmdbId: 2,
+          status: "In Library",
+          missingCount: 1,
+        }),
+        item({ mode: "movies", title: "A Movie", tmdbId: 3, status: "Pending" }),
       ],
     });
 
@@ -160,12 +173,12 @@ describe("Requests", () => {
   it("filters rows by search across title, status, and mode label", async () => {
     stubRequests({
       items: [
-        item({ title: "Owned Movie", status: "In Library" }),
+        item({ title: "Owned Movie", status: "Pending" }),
         item({
           mode: "series",
           title: "Queued Show",
           tmdbId: 2,
-          status: "Pending",
+          status: "Scheduled",
         }),
       ],
     });
@@ -178,7 +191,7 @@ describe("Requests", () => {
     expect(screen.getByText("Queued Show")).toBeInTheDocument();
     expect(screen.queryByText("Owned Movie")).not.toBeInTheDocument();
 
-    fireEvent.input(search, { target: { value: "pending" } });
+    fireEvent.input(search, { target: { value: "scheduled" } });
     expect(screen.getByText("Queued Show")).toBeInTheDocument();
     expect(screen.queryByText("Owned Movie")).not.toBeInTheDocument();
 
@@ -191,8 +204,7 @@ describe("Requests", () => {
     expect(screen.getByText("Queued Show")).toBeInTheDocument();
   });
 
-  // Base rows for the "Has Missing Episodes" cases: a movie and a series with
-  // nothing missing, plus one series that is missing 3 episodes.
+  // Complete titles must stay off the list; only the incomplete series remains.
   const missingRows = () => [
     item({ title: "Complete Movie", status: "In Library" }),
     item({ mode: "series", title: "Complete Show", tmdbId: 7, status: "In Library" }),
@@ -205,40 +217,19 @@ describe("Requests", () => {
     }),
   ];
 
-  it("the missing chip filters to rows with missing episodes", async () => {
+  it("complete library titles never appear; missing-episode series stay listed", async () => {
     stubRequests({ items: missingRows() });
 
     render(() => <Requests />);
-    await screen.findByText("Incomplete Show");
-
-    fireEvent.click(screen.getByRole("button", { name: "Has Missing Episodes" }));
-    expect(screen.getByText("Incomplete Show")).toBeInTheDocument();
+    expect(await screen.findByText("Incomplete Show")).toBeInTheDocument();
     expect(screen.queryByText("Complete Movie")).not.toBeInTheDocument();
     expect(screen.queryByText("Complete Show")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Has Missing Episodes" }),
+    ).not.toBeInTheDocument();
   });
 
-  it("the missing chip toggles back off, restoring every row", async () => {
-    stubRequests({ items: missingRows() });
-
-    render(() => <Requests />);
-    await screen.findByText("Incomplete Show");
-
-    const chip = () => screen.getByRole("button", { name: "Has Missing Episodes" });
-    fireEvent.click(chip());
-    expect(screen.queryByText("Complete Movie")).not.toBeInTheDocument();
-
-    // A boolean toggle, not a one-of selector: the same chip clears it (there is
-    // no "All" of its own to fall back to).
-    fireEvent.click(chip());
-    expect(screen.getByText("Complete Movie")).toBeInTheDocument();
-    expect(screen.getByText("Complete Show")).toBeInTheDocument();
-    expect(screen.getByText("Incomplete Show")).toBeInTheDocument();
-  });
-
-  it("the missing chip is an independent filter, not a fourth status", async () => {
-    // Both extra rows are reachable backend states: the In-Library pass sets
-    // MissingCount on the series row, and the grab pass then overwrites only
-    // Status — so a Pending/Pending Retry series keeps its count.
+  it("status filter still intersects outstanding rows, including In Library with missing episodes", async () => {
     stubRequests({
       items: [
         ...missingRows(),
@@ -261,13 +252,9 @@ describe("Requests", () => {
 
     render(() => <Requests />);
     await screen.findByText("Incomplete Show");
-
-    fireEvent.click(screen.getByRole("button", { name: "Has Missing Episodes" }));
     expect(screen.getByText("Grabbing Show")).toBeInTheDocument();
     expect(screen.getByText("Retrying Show")).toBeInTheDocument();
-    expect(screen.getByText("Incomplete Show")).toBeInTheDocument();
 
-    // Status dropdown intersects with the missing chip rather than replacing it.
     fireEvent.change(screen.getByLabelText("Status"), {
       target: { value: "In Library" },
     });
@@ -283,7 +270,7 @@ describe("Requests", () => {
     const calls = stubReqFetch((url) => {
       if (url.includes("/api/requests/exclude")) return noContent();
       if (url.includes("/api/requests"))
-        return jsonResponse({ items: [item({ title: "Owned Movie", tmdbId: 5 })] });
+        return jsonResponse({ items: [item({ title: "Owned Movie", tmdbId: 5, status: "Pending" })] });
       throw new Error("unexpected fetch: " + url);
     });
 
@@ -312,7 +299,7 @@ describe("Requests", () => {
     const calls = stubReqFetch((url) => {
       if (url.includes("/api/requests/exclude")) return noContent();
       if (url.includes("/api/requests"))
-        return jsonResponse({ items: [item({ title: "Owned Movie", tmdbId: 5 })] });
+        return jsonResponse({ items: [item({ title: "Owned Movie", tmdbId: 5, status: "Pending" })] });
       throw new Error("unexpected fetch: " + url);
     });
 
@@ -339,8 +326,8 @@ describe("Requests", () => {
       if (url.includes("/api/requests"))
         return jsonResponse({
           items: [
-            item({ title: "Owned Movie", tmdbId: 5 }),
-            item({ mode: "adult", title: "A Scene", tmdbId: 0 }),
+            item({ title: "Owned Movie", tmdbId: 5, status: "Pending" }),
+            item({ mode: "adult", title: "A Scene", tmdbId: 0, status: "Pending" }),
           ],
         });
       throw new Error("unexpected fetch: " + url);
@@ -601,7 +588,7 @@ describe("Requests", () => {
     const fn = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("/api/requests"))
-        return jsonResponse({ items: [item({ title: "Owned Movie", tmdbId: 42 })] });
+        return jsonResponse({ items: [item({ title: "Owned Movie", tmdbId: 42, status: "Pending" })] });
       if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
       if (url.includes("/discover/detail")) return jsonResponse({});
       if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
@@ -766,12 +753,21 @@ describe("Requests", () => {
 
   it("hides Grab/Promote on In Library rows", async () => {
     stubRequests({
-      items: [item({ title: "Owned Movie", status: "In Library", tmdbId: 1 })],
+      items: [item({ title: "Incomplete Show", mode: "series", status: "In Library", tmdbId: 1, missingCount: 3 })],
     });
     render(() => <Requests />);
-    expect(await screen.findByText("Owned Movie")).toBeInTheDocument();
+    expect(await screen.findByText("Incomplete Show")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Grab" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Promote" })).not.toBeInTheDocument();
+  });
+
+  it("shows Nothing is missing when every row is a complete library title", async () => {
+    stubRequests({
+      items: [item({ title: "Owned Movie", status: "In Library" })],
+    });
+    render(() => <Requests />);
+    expect(await screen.findByText("Nothing is missing.")).toBeInTheDocument();
+    expect(screen.queryByText("Owned Movie")).not.toBeInTheDocument();
   });
 
 });

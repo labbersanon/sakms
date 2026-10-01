@@ -20,18 +20,15 @@ var requestsModes = []mode.Mode{mode.Movies, mode.Series, mode.Adult}
 // status worklist, aggregated live on read with NO new persisted table. Three
 // sources feed it:
 //
-//   - In Library: every tracked item/series/scene (Status "In Library").
-//   - Downloading: every in-flight grab (Status queued/downloading/completed-
-//     but-not-yet-imported) → Status "Downloading". In sakms's single-operator
-//     model there is no approval queue, so "Requested" is not a real state — a
-//     grab IS the request. Collapsing it into "Downloading" is honest, not a
-//     faked stage (documented rather than inventing an empty "Requested").
-//   - Missing: Series-only, surfaced as the MissingCount ANNOTATION on a
-//     series' row (episodes TMDB knows about with no file on disk — a real
-//     library.MissingEpisodes query, not a filesystem scan). It is not a
-//     separate Status: a partially-missing tracked series stays "In Library"
-//     (or "Downloading" if also grabbing) with MissingCount=N. Movies/Adult
-//     don't track not-owned titles, so their MissingCount is always 0.
+//   - In Library: Series only, and only when MissingCount > 0 (episodes TMDB
+//     knows about with no file — library.MissingEpisodes). A complete movie,
+//     complete series, or owned Adult scene is not worklist material.
+//   - Downloading / Pending / Pending Retry / Scheduled: every in-flight grab
+//     (queued/downloading/completed-but-not-yet-imported, plus parked retry).
+//     In sakms's single-operator model there is no approval queue, so a grab
+//     IS the request. Movies/Adult reach the list only via this pass.
+//   - Missing: Series-only annotation (MissingCount) on a row that is still
+//     "In Library" (or flipped to a grab status). It is not a separate Status.
 //
 // Dedup: a title that is BOTH tracked and actively grabbing collapses to one
 // row and the grab status wins (Status → "Downloading", GrabID set), keeping
@@ -77,56 +74,37 @@ func requestsHandler(grabsStore *grabs.Store, libStore *library.Store, excludesS
 			modes = []mode.Mode{mode.Movies, mode.Series}
 		}
 
-		// Pass 1: tracked library items become "In Library" rows.
+		// Claude 2026-10-01: pass 1 only lists series with missing episodes.
+		// Reason: Requests is a worklist, not a library dump. Complete movies,
+		//   complete series, and owned Adult scenes have nothing outstanding
+		//   unless pass 2 attaches an in-flight grab.
+		// Troubleshooting: a finished title still on Requests → check MissingEpisodes
+		//   (empty FilePath rows) or an active grab for that key.
+		// Review if: Movies grow a "missing file" query equivalent to MissingEpisodes.
 		for _, m := range modes {
-			switch m {
-			case mode.Movies:
-				tracked, err := libStore.List(ctx, m)
+			if m != mode.Series {
+				continue
+			}
+			seriesList, err := libStore.ListSeries(ctx)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			for _, s := range seriesList {
+				key := requestKey(m, s.TMDBID, s.Title)
+				if excluded[key] {
+					continue
+				}
+				missing, err := libStore.MissingEpisodes(ctx, s.ID)
 				if err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
-				for _, it := range tracked {
-					key := requestKey(m, it.TMDBID, it.Title)
-					if excluded[key] {
-						continue
-					}
-					index[key] = len(items)
-					items = append(items, apidto.RequestStatusItem{Mode: string(m), Title: it.Title, TMDBID: it.TMDBID, Status: "In Library"})
+				if len(missing) == 0 {
+					continue
 				}
-			case mode.Series:
-				seriesList, err := libStore.ListSeries(ctx)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				for _, s := range seriesList {
-					key := requestKey(m, s.TMDBID, s.Title)
-					if excluded[key] {
-						continue
-					}
-					missing, err := libStore.MissingEpisodes(ctx, s.ID)
-					if err != nil {
-						http.Error(w, err.Error(), http.StatusInternalServerError)
-						return
-					}
-					index[key] = len(items)
-					items = append(items, apidto.RequestStatusItem{Mode: string(m), Title: s.Title, TMDBID: s.TMDBID, Status: "In Library", MissingCount: len(missing)})
-				}
-			case mode.Adult:
-				scenes, err := libStore.ListScenes(ctx)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				for _, sc := range scenes {
-					key := requestKey(m, 0, sc.Title)
-					if excluded[key] {
-						continue
-					}
-					index[key] = len(items)
-					items = append(items, apidto.RequestStatusItem{Mode: string(m), Title: sc.Title, Status: "In Library"})
-				}
+				index[key] = len(items)
+				items = append(items, apidto.RequestStatusItem{Mode: string(m), Title: s.Title, TMDBID: s.TMDBID, Status: "In Library", MissingCount: len(missing)})
 			}
 		}
 

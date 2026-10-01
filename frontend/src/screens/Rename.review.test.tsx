@@ -321,7 +321,6 @@ describe("Rename — Review option eligibility", () => {
 
 describe("Rename — Review modal", () => {
   it("opens the dialog when Review is selected and Apply is clicked", async () => {
-    const calls: Call[] = [];
     stubFetch((url) => {
       // More specific checks first: review-confirm and /review must precede the
       // broader /rename/proposals match, because
@@ -347,7 +346,6 @@ describe("Rename — Review modal", () => {
     );
 
     await screen.findByRole("dialog", { name: /Review/ });
-    expect(calls.length).toBeGreaterThanOrEqual(0); // suppress unused var warning
   });
 
   it("shows the current basename and a pre-filled Studio/Title/Date form", async () => {
@@ -373,10 +371,6 @@ describe("Rename — Review modal", () => {
     );
 
     const dialog = await screen.findByRole("dialog", { name: /Review/ });
-
-    // Wait for loading state to resolve — "Current name" heading only renders
-    // once the preview resource has resolved (inside Show when={preview()}).
-    // Scope to `within(dialog)` to avoid ambiguity with the underlying table.
     await within(dialog).findByText("Current name");
 
     const titleInput = within(dialog).getByRole("textbox", { name: /^title$/i });
@@ -418,7 +412,6 @@ describe("Rename — Review modal", () => {
     );
 
     const dialog = await screen.findByRole("dialog", { name: /Review/ });
-    // Wait for the preview to load (form is inside Show when={preview()})
     await within(dialog).findByText("Current name");
     const titleInput = within(dialog).getByRole("textbox", { name: /^title$/i });
     const studioInput = within(dialog).getByRole("textbox", { name: /^studio$/i });
@@ -545,17 +538,12 @@ describe("Rename — Review modal", () => {
     );
 
     const dialog = await screen.findByRole("dialog", { name: /Review/ });
-
-    // Catalog banner must appear — wait for preview to load
     await within(dialog).findByText(/Catalog match found/);
 
-    // Form fields are disabled on catalog branch (preview loaded, catalog match present)
     expect(within(dialog).getByRole("textbox", { name: /^title$/i })).toBeDisabled();
     expect(within(dialog).getByRole("textbox", { name: /^studio$/i })).toBeDisabled();
     expect(within(dialog).getByRole("textbox", { name: /^date$/i })).toBeDisabled();
 
-    // Confirm button should be enabled on catalog branch (phash is non-empty,
-    // isCatalogMatch is true). Wait for Solid's reactive update.
     const confirmBtn = within(dialog).getByRole("button", { name: /confirm/i });
     await waitFor(() => expect(confirmBtn).not.toBeDisabled());
     fireEvent.click(confirmBtn);
@@ -578,11 +566,8 @@ describe("Rename — Review modal", () => {
 
 describe("Rename — Review not in Apply-All", () => {
   it("planActionForRow returns null for review, so Apply-All skips those rows", () => {
-    // Direct unit test — no render needed.
     const p = adultProposal();
-    // "review" selected → null
     expect(planActionForRow(p, "review", false, "adult")).toBeNull();
-    // Default action is Review for web-identified rows — still excluded from Apply-All.
     expect(planActionForRow(p, "", false, "adult")).toBeNull();
   });
 
@@ -596,19 +581,15 @@ describe("Rename — Review not in Apply-All", () => {
     fireEvent.click(await screen.findByText("Adult"));
     await screen.findByText("Studio.Title.2024.mkv");
 
-    // Select Review on the only row
     const row = screen.getByText("Studio.Title.2024.mkv").closest("tr, [data-proposal-row]")! as HTMLElement;
     fireEvent.change(within(row as HTMLElement).getByRole("combobox"), {
       target: { value: "review" },
     });
 
-    // "Apply all" should report "Nothing to apply" since review is excluded
     fireEvent.click(screen.getByRole("button", { name: "Apply all" }));
 
     await screen.findByText(/Nothing to apply/);
-    // No confirm dialog — nothing was planned
     expect(screen.queryByRole("dialog", { name: "Confirm apply all" })).toBeNull();
-    // No review-confirm call either
     expect(reviewCalls(calls)).toHaveLength(0);
   });
 });

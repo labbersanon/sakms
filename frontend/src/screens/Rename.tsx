@@ -787,8 +787,8 @@ const RecentlyAppliedSection: Component<{
   </div>
 );
 
-// reviewSourceExt keeps Confirm's composed basename on the source container.
-// AdultFileName needs the extension; the operator must not type a different one.
+// Prefer proposedName's container, then sourceName. AdultFileName needs an
+// extension the operator cannot type.
 function reviewSourceExt(proposedName: string, sourceName: string): string {
   for (const name of [proposedName, sourceName]) {
     const slash = Math.max(name.lastIndexOf("/"), name.lastIndexOf("\\"));
@@ -804,7 +804,7 @@ function reviewSourceExt(proposedName: string, sourceName: string): string {
 // Claude 2026-08-12: modal, NOT SearchTakeover.
 // Reason: SearchTakeover is a full-page takeover built around a catalog
 //   search-and-pick flow with scroll-save/restore plumbing; Review is a
-//   two-field confirm with no search results list. Reusing it would drag in
+//   Studio/Title/Date confirm with no search results list. Reusing it would drag in
 //   openTakeover, the scroll-restore effect, and the TakeoverPick discriminated
 //   union for no benefit.
 // Troubleshooting: dialog not focused / scroll position lost — Review is an
@@ -817,7 +817,7 @@ const ReviewDialog: Component<{
   onCancel: () => void;
 }> = (props) => {
   const p = props.proposal;
-  const [preview, { }] = createResource(
+  const [preview] = createResource(
     () => ({ mode: props.mode, id: p.id }),
     ({ mode, id }) => fetchAdultReview(mode, id),
   );
@@ -827,16 +827,11 @@ const ReviewDialog: Component<{
   const [date, setDate] = createSignal("");
   const [confirming, setConfirming] = createSignal(false);
   const [confirmError, setConfirmError] = createSignal("");
-  // Claude 2026-08-12: seed proposed name once; do not re-seed from !fileName().
-  // Reason: clearing the input made fileName() empty, so the effect snapped the
-  //   field back to proposedName and blocked intentional empties / edits.
-  // Troubleshooting: Confirm stayed enabled after operator cleared the name.
-  // Review if: ReviewDialog remounts per open (then a flag is enough forever).
-  // Claude 2026-10-01: seed Studio/Title/Date, not a free-text basename.
-  // Reason: Adult schema is Studio - Title (Date) [phash-HASH].ext; a single
-  //   input let operators skip that shape and get re-proposed on the next Scan.
-  // Troubleshooting: Review Confirm posted "My Custom Name.mkv" with no studio,
-  //   date, or phash tag.
+  // Claude 2026-10-01: seed Studio/Title/Date once from preview; never re-seed.
+  // Reason: Adult schema is Studio - Title (Date) [phash-HASH].ext; a free-text
+  //   basename skipped that shape. Re-seeding from empty fields blocked clears.
+  // Troubleshooting: Confirm posted "My Custom Name.mkv", or snapped Title back
+  //   after the operator cleared it.
   // Review if: review-confirm accepts structured studio/title/date on the wire.
   const [nameSeeded, setNameSeeded] = createSignal(false);
 
@@ -868,14 +863,9 @@ const ReviewDialog: Component<{
   };
 
   const canConfirm = () => {
-    if (confirming()) return false;
-    if (!preview()) return false;
-    // Can't confirm if no phash — Confirm will fail server-side anyway, and
-    // the no-phash warning already tells the operator to use Cancel.
-    if (!preview()?.phash) return false;
-    // Catalog branch: composed name is ignored; catalog identity is used.
+    const data = preview();
+    if (confirming() || !data || !data.phash) return false;
     if (isCatalogMatch()) return true;
-    // Local branch: Title is the required AdultFileName stem.
     return title().trim().length > 0;
   };
 

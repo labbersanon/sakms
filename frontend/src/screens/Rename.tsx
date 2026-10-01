@@ -1096,9 +1096,9 @@ const AdultReviewDialog: Component<{
     if (nameSeeded()) return;
     const data = preview();
     if (!data) return;
-    setStudio(data.studio);
-    setTitle(data.title);
-    setDate(data.date);
+    setStudio(data.studio ?? "");
+    setTitle(data.title ?? "");
+    setDate(data.date ?? "");
     setNameSeeded(true);
   });
 
@@ -1114,7 +1114,7 @@ const AdultReviewDialog: Component<{
       studio(),
       title(),
       date(),
-      data.phash,
+      data.phash ?? "",
       reviewSourceExt(data.proposedName, p.sourceName),
     );
   };
@@ -1135,11 +1135,11 @@ const AdultReviewDialog: Component<{
     if (isCatalogMatch()) {
       body = {
         fileName: composedName(),
-        box: data.catalogBox,
-        sceneId: data.catalogSceneId,
-        title: data.catalogTitle || data.title,
-        studio: data.catalogStudio || data.studio,
-        date: data.catalogDate || data.date,
+        box: data.catalogBox ?? "",
+        sceneId: data.catalogSceneId ?? "",
+        title: data.catalogTitle || data.title || "",
+        studio: data.catalogStudio || data.studio || "",
+        date: data.catalogDate || data.date || "",
       };
     } else {
       body = { fileName: composedName() };

@@ -34,19 +34,19 @@ func requestsTestStores(t *testing.T) (*grabs.Store, *library.Store, *excludes.S
 	return grabs.New(sqlDB, secretStore), library.New(sqlDB), excludes.New(sqlDB)
 }
 
-// TestRequestsHandler_AggregatesAndDedups exercises all four behaviors at once:
-// In-Library rows (Movies/Series/Adult), Series MissingCount, a Pending row
-// for a grab with no tracked match, and the dedup where a tracked title that is
-// also actively grabbing collapses to one row with the grab status winning.
+// TestRequestsHandler_AggregatesAndDedups exercises the outstanding-only
+// worklist: a series with missing episodes, a Pending grab with no tracked
+// match, and the dedup where a tracked title that is also grabbing collapses
+// to one row with the grab status winning. Complete movies/series/scenes stay off.
 func TestRequestsHandler_AggregatesAndDedups(t *testing.T) {
 	grabsStore, libStore, excludesStore := requestsTestStores(t)
 	ctx := context.Background()
 
-	// Movie A — tracked AND actively grabbing (dedup → Downloading).
+	// Movie A — tracked AND actively grabbing (dedup → Pending).
 	if _, err := libStore.Upsert(ctx, library.Item{Mode: mode.Movies, TMDBID: 100, Title: "Movie A", FilePath: "/m/a.mkv", RootFolderPath: "/m"}); err != nil {
 		t.Fatalf("upsert movie: %v", err)
 	}
-	// Movie E — tracked only (stays In Library).
+	// Movie E — complete tracked movie; must stay off the worklist.
 	if _, err := libStore.Upsert(ctx, library.Item{Mode: mode.Movies, TMDBID: 500, Title: "Movie E", FilePath: "/m/e.mkv", RootFolderPath: "/m"}); err != nil {
 		t.Fatalf("upsert movie E: %v", err)
 	}
@@ -61,7 +61,15 @@ func TestRequestsHandler_AggregatesAndDedups(t *testing.T) {
 	if _, err := libStore.UpsertEpisode(ctx, library.Episode{SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 2, FilePath: ""}); err != nil {
 		t.Fatalf("upsert ep2: %v", err)
 	}
-	// Scene C — tracked adult scene (In Library, no TMDB id).
+	// Series Complete — every episode on disk; must stay off the worklist.
+	complete, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 201, Title: "Show Complete", RootFolderPath: "/tv"})
+	if err != nil {
+		t.Fatalf("upsert complete series: %v", err)
+	}
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{SeriesID: complete.ID, SeasonNumber: 1, EpisodeNumber: 1, FilePath: "/tv/c/s01e01.mkv"}); err != nil {
+		t.Fatalf("upsert complete ep: %v", err)
+	}
+	// Scene C — owned Adult scene; must stay off the worklist.
 	if _, err := libStore.UpsertScene(ctx, library.Scene{Box: "stashdb", SceneID: "s1", Title: "Scene C", FilePath: "/a/c.mkv", RootFolderPath: "/a"}); err != nil {
 		t.Fatalf("upsert scene: %v", err)
 	}
@@ -97,22 +105,26 @@ func TestRequestsHandler_AggregatesAndDedups(t *testing.T) {
 	for _, it := range out.Items {
 		byTitle[it.Title] = it
 	}
-	// 5 distinct rows: A (deduped), E, B, C, D.
-	if len(out.Items) != 5 {
-		t.Fatalf("expected 5 rows, got %d: %+v", len(out.Items), out.Items)
+	// Outstanding only: A (grab), B (missing episode), D (grab).
+	// Complete Movie E / Scene C stay off the worklist.
+	if len(out.Items) != 3 {
+		t.Fatalf("expected 3 rows, got %d: %+v", len(out.Items), out.Items)
 	}
 
 	if a := byTitle["Movie A"]; a.Status != "Pending" || a.GrabID != grabA.ID {
-		t.Errorf("Movie A should dedup to Pending with the grab id, got %+v", a)
+		t.Errorf("Movie A should surface as Pending with the grab id, got %+v", a)
 	}
-	if e := byTitle["Movie E"]; e.Status != "In Library" || e.GrabID != 0 {
-		t.Errorf("Movie E should stay In Library, got %+v", e)
+	if _, ok := byTitle["Movie E"]; ok {
+		t.Errorf("complete Movie E must not appear on the worklist, got %+v", out.Items)
 	}
 	if b := byTitle["Show B"]; b.Status != "In Library" || b.MissingCount != 1 {
 		t.Errorf("Show B should be In Library with MissingCount=1, got %+v", b)
 	}
-	if c := byTitle["Scene C"]; c.Mode != "adult" || c.Status != "In Library" {
-		t.Errorf("Scene C should be an In Library adult row, got %+v", c)
+	if _, ok := byTitle["Scene C"]; ok {
+		t.Errorf("owned Scene C must not appear on the worklist, got %+v", out.Items)
+	}
+	if _, ok := byTitle["Show Complete"]; ok {
+		t.Errorf("complete Show Complete must not appear on the worklist, got %+v", out.Items)
 	}
 	if d := byTitle["Movie D"]; d.Status != "Pending" || d.GrabID == 0 {
 		t.Errorf("Movie D should be a standalone Pending row, got %+v", d)
@@ -120,8 +132,9 @@ func TestRequestsHandler_AggregatesAndDedups(t *testing.T) {
 }
 
 // TestRequestsHandler_ImportedGrabNotDownloading confirms an already-imported
-// grab does not surface as Downloading (it's represented by its In-Library row
-// instead) — only in-flight statuses count.
+// grab does not surface as Downloading — only in-flight statuses count. A
+// complete movie with no active grab is omitted, so an imported grab with no
+// tracked item surfaces nothing.
 func TestRequestsHandler_ImportedGrabNotDownloading(t *testing.T) {
 	grabsStore, libStore, excludesStore := requestsTestStores(t)
 	ctx := context.Background()
@@ -222,19 +235,22 @@ func TestRequestsHandler_PendingRetrySurfacesHonestly(t *testing.T) {
 }
 
 // TestRequestsHandler_ExcludedTitlesSuppressed proves an excluded title is
-// actually skipped by the live Requests aggregation — for BOTH an In-Library row
-// (keyed by TMDB id) and a standalone Downloading grab row (keyed by title for an
-// Adult scene with no TMDB id) — while a non-excluded sibling still surfaces.
+// skipped by the live Requests aggregation — a movie grab keyed by TMDB id
+// and an Adult grab keyed by title — while a non-excluded sibling still surfaces.
 func TestRequestsHandler_ExcludedTitlesSuppressed(t *testing.T) {
 	grabsStore, libStore, excludesStore := requestsTestStores(t)
 	ctx := context.Background()
 
-	// Two tracked movies; one will be excluded by TMDB id, the other kept.
+	// Complete tracked movie (would be omitted anyway) plus a live grab that
+	// must still surface unless excluded. Exclude the movie and the scene grab.
 	if _, err := libStore.Upsert(ctx, library.Item{Mode: mode.Movies, TMDBID: 100, Title: "Excluded Movie", FilePath: "/m/x.mkv", RootFolderPath: "/m"}); err != nil {
 		t.Fatalf("upsert excluded movie: %v", err)
 	}
-	if _, err := libStore.Upsert(ctx, library.Item{Mode: mode.Movies, TMDBID: 200, Title: "Kept Movie", FilePath: "/m/k.mkv", RootFolderPath: "/m"}); err != nil {
-		t.Fatalf("upsert kept movie: %v", err)
+	if _, err := grabsStore.Create(ctx, grabs.Grab{Mode: mode.Movies, Title: "Excluded Movie", TMDBID: 100}); err != nil {
+		t.Fatalf("create excluded movie grab: %v", err)
+	}
+	if _, err := grabsStore.Create(ctx, grabs.Grab{Mode: mode.Movies, Title: "Kept Movie", TMDBID: 200}); err != nil {
+		t.Fatalf("create kept movie grab: %v", err)
 	}
 	// An Adult grab (no TMDB id) that will be excluded by title.
 	if _, err := grabsStore.Create(ctx, grabs.Grab{Mode: mode.Adult, Title: "Excluded Scene"}); err != nil {

@@ -1153,10 +1153,11 @@ type TitleDetail struct {
 // status) screens.
 
 // RequestStatusItem is one title's cross-mode status. Status is one of:
-// "In Library" (tracked), "Pending" (queued grab awaiting first search /
-// download progress — see Downloads for live transfer), "Pending Retry"
-// (auto-grab awaiting re-search), "Scheduled" (Calendar pre-release hold),
-// or rarely "Downloading" (check-import path). GrabID is set for grab-derived
+// "In Library" (tracked series that still has missing episodes), "Pending"
+// (queued grab awaiting first search / download progress — see Downloads for
+// live transfer), "Pending Retry" (auto-grab awaiting re-search), "Scheduled"
+// (Calendar pre-release hold), or rarely "Downloading" (check-import path).
+// Complete movies/series/scenes are omitted. GrabID is set for grab-derived
 // rows. MissingCount is Series-only: episodes TMDB knows about with no file
 // on disk (0 for Movies/Adult).
 type RequestStatusItem struct {

@@ -759,7 +759,7 @@ export function yearOf(date: string): number | undefined {
 
 // Claude 2026-09-15: shared filter chip, lifted from Requests' inline chip so all
 // surfaces (Library, Discover Mainstream) look and behave identically.
-// Reason: plan §2 — one toggle chip, same styling as Requests' "Has Missing Episodes".
+// Reason: plan §2 — one toggle chip, same styling as Library/Discover chips.
 // Troubleshooting: label text is caller-controlled; aria-pressed reflects active().
 // Review if: the chip design system changes (update all callers together).
 export const FilterChip: Component<{

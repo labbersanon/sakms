@@ -9954,3 +9954,20 @@ status stays active.
 | `internal/naming/naming.go` | Reject `.` / `..` path components |
 | `go.mod` | pion/dtls, pion/stun, gorilla/websocket bumps |
 
+## 2026-10-01 — Requests list is outstanding-only; drop Has Missing Episodes chip
+
+**Problem:** Requests listed every tracked movie, series, and Adult scene as "In Library", so a complete library dumped into the worklist. The "Has Missing Episodes" chip was an opt-in filter on that dump.
+**Fix:** GET `/api/requests` pass 1 only emits series with `MissingEpisodes` > 0. Movies and Adult reach the list only via an in-flight grab (pass 2). The frontend hides any leftover complete "In Library" row and removes the chip. Empty copy is "Nothing is missing."
+**Outcome:** Requests shows only titles with outstanding work (pending grab or missing episodes).
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/requests.go` | Pass 1 Series-only; skip `len(missing)==0` |
+| `internal/api/requests_test.go` | Complete movie/series/scene omitted; exclude tests use grabs |
+| `internal/apidto/dto.go` | RequestStatusItem docs: complete titles omitted |
+| `frontend/src/screens/Requests.tsx` | `outstanding()` filter; chip removed; empty copy |
+| `frontend/src/screens/Requests.test.tsx` | Complete titles hidden; chip asserted gone |
+| `docs/ROADMAP.md` | Request-status view: list is the missing filter |
+

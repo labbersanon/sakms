@@ -216,6 +216,8 @@ function emptyAdvanced(): AdvancedFields {
   return { on: false, title: "", series: "", year: "", id: "" };
 }
 
+const EMPTY_ADVANCED: AdvancedFields = emptyAdvanced();
+
 function parsePositiveInt(raw: string): number {
   const n = Number.parseInt(raw.trim(), 10);
   if (!Number.isFinite(n) || n <= 0) {
@@ -343,7 +345,7 @@ export const SearchTakeover: Component<{
   const [advSeries, setAdvSeries] = createSignal("");
   const [advYear, setAdvYear] = createSignal("");
   const [advId, setAdvId] = createSignal("");
-  const [submittedAdv, setSubmittedAdv] = createSignal<AdvancedFields>(emptyAdvanced());
+  const [submittedAdv, setSubmittedAdv] = createSignal<AdvancedFields>(EMPTY_ADVANCED);
 
   const [results] = createResource(
     () => ({
@@ -640,7 +642,7 @@ export const SearchTakeover: Component<{
                   year: advYear(),
                   id: advId(),
                 }
-              : emptyAdvanced(),
+              : EMPTY_ADVANCED,
           );
         }}
       >

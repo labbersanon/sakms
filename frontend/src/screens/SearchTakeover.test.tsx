@@ -1458,6 +1458,15 @@ describe("SearchTakeover — Advanced search", () => {
   it("sends year, series, and TVDB id on an advanced TVDB search", async () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (url.includes("/tvdb-search")) {
+        if (String(url).includes("kind=series")) {
+          return jsonResponse([
+            {
+              tmdbId: 42,
+              title: "Laurel & Hardy",
+              releaseDate: "1921-01-01",
+            },
+          ]);
+        }
         return jsonResponse([
           {
             tmdbId: 42,

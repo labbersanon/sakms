@@ -102,17 +102,17 @@ function catalogSearchParams(
   query: string,
   extra: Record<string, string | number | undefined>,
 ): string {
-  const q = new URLSearchParams();
+  const parts: string[] = [];
   if (query.trim()) {
-    q.set("q", query.trim());
+    parts.push(`q=${encodeURIComponent(query.trim())}`);
   }
   for (const [key, value] of Object.entries(extra)) {
     if (value === undefined || value === "") {
       continue;
     }
-    q.set(key, String(value));
+    parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`);
   }
-  return q.toString();
+  return parts.join("&");
 }
 
 export function tmdbSearch(

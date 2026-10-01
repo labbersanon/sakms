@@ -1412,6 +1412,102 @@ describe("SearchTakeover — Series database dropdown", () => {
     expect(tvdbCalls.some((u) => u.includes("kind=series"))).toBe(true);
     expect(tvdbCalls.some((u) => u.includes("kind=episode"))).toBe(true);
   });
+
+  it("TVDB anthology tile commits negative tmdbId plus tvdbId", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("/tvdb-search")) {
+        if (String(url).includes("kind=series")) {
+          return jsonResponse([
+            {
+              tmdbId: -12345,
+              tvdbId: 7266,
+              title: "Night Owl",
+              releaseDate: "2018-01-01",
+            },
+          ]);
+        }
+        return jsonResponse([]);
+      }
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const onCommit = commitSpy();
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick"
+        searchMode="series"
+        initialQuery="Night Owl"
+        initialSeriesDatabase="tvdb"
+        autoSearch={false}
+        onCommit={onCommit}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText("Search"));
+    fireEvent.click(await screen.findByLabelText("Use Night Owl"));
+
+    await waitFor(() => expect(onCommit).toHaveBeenCalledTimes(1));
+    expect(onCommit.mock.calls[0]![0]).toMatchObject({
+      kind: "catalog",
+      tmdbId: -12345,
+      tvdbId: 7266,
+      title: "Night Owl",
+    });
+  });
+
+  it("TVDB episode tile commits slot with tvdbId and episodeTitle", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("/tvdb-search")) {
+        if (String(url).includes("kind=episode")) {
+          return jsonResponse([
+            {
+              tmdbId: -999,
+              tvdbId: 73910,
+              title: "Duck Soup",
+              seriesTitle: "Laurel & Hardy",
+              releaseDate: "1921-01-01",
+              seasonNumber: 3,
+              episodeNumber: 1,
+            },
+          ]);
+        }
+        return jsonResponse([]);
+      }
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const onCommit = commitSpy();
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick"
+        searchMode="series"
+        initialQuery="Duck Soup"
+        initialSeriesDatabase="tvdb"
+        autoSearch={false}
+        onCommit={onCommit}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText("Search"));
+    fireEvent.click(await screen.findByLabelText("Use Duck Soup"));
+
+    await waitFor(() => expect(onCommit).toHaveBeenCalledTimes(1));
+    expect(onCommit.mock.calls[0]![0]).toMatchObject({
+      kind: "catalog",
+      tmdbId: -999,
+      tvdbId: 73910,
+      title: "Laurel & Hardy",
+      seasonNumber: 3,
+      episodeNumber: 1,
+      episodeTitle: "Duck Soup",
+    });
+  });
 });
 
 describe("SearchTakeover — Advanced search", () => {

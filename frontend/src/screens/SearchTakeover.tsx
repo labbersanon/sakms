@@ -154,6 +154,9 @@ type CatalogHit = {
   // episode search). presetSlot enables one-click commit without step 2.
   seriesTitle?: string;
   presetSlot?: { season: number; episode: number };
+  // tvdbId is the real TheTVDB series id on TVDB-backed hits. Anthology
+  // shows use a negative synthetic tmdbId that cannot be reversed.
+  tvdbId?: number;
 };
 
 type SearchResult =
@@ -171,10 +174,12 @@ export type TakeoverPick =
   | {
       kind: "catalog";
       tmdbId: number;
+      tvdbId?: number;
       title: string;
       year?: number;
       seasonNumber?: number; // present iff episodeNumber is present
       episodeNumber?: number; // always >= 1 when present
+      episodeTitle?: string;
     }
   | {
       kind: "adult";
@@ -197,6 +202,7 @@ export type TakeoverPick =
 // list shown may belong to an unrelated show. See CLAUDE.md's note on this.
 type PickedShow = {
   tmdbId: number;
+  tvdbId?: number;
   title: string;
   year?: number;
   origin: "movies" | "series";
@@ -270,6 +276,10 @@ function adultOpts(adv: AdvancedFields): AdultSearchOpts | undefined {
   };
 }
 
+// Claude 2026-10-01: carry tvdbId on TVDB hits (anthology tmdbId is negative).
+// Reason: AnthologyTMDBID is a hash; repick must persist the real TVDB id.
+// Troubleshooting: Organize Search 400 "tmdbId and title are both required".
+// Review if: TVDB search no longer emits synthetic tmdb ids.
 function tvdbItemToHit(item: SeriesSearchItem): CatalogHit {
   const presetSlot =
     item.seasonNumber != null && item.episodeNumber != null
@@ -288,6 +298,7 @@ function tvdbItemToHit(item: SeriesSearchItem): CatalogHit {
     },
     seriesTitle: item.seriesTitle,
     presetSlot,
+    tvdbId: item.tvdbId || undefined,
   };
 }
 
@@ -554,6 +565,7 @@ export const SearchTakeover: Component<{
     void commit({
       kind: "catalog",
       tmdbId: show.tmdbId,
+      tvdbId: show.tvdbId,
       title: show.title,
       year: show.year,
     });
@@ -573,8 +585,10 @@ export const SearchTakeover: Component<{
     item: DiscoverItem,
     origin: "movies" | "series",
     seriesTitle?: string,
+    tvdbId?: number,
   ): PickedShow => ({
     tmdbId: item.id,
+    tvdbId,
     title: seriesTitle ?? item.title,
     year: yearOf(item.releaseDate),
     origin,
@@ -584,19 +598,30 @@ export const SearchTakeover: Component<{
     item: DiscoverItem,
     origin: "movies" | "series",
     seriesTitle?: string,
+    tvdbId?: number,
   ) => {
     setCommitError(null);
-    setPicked(catalogShow(item, origin, seriesTitle));
+    setPicked(catalogShow(item, origin, seriesTitle, tvdbId));
   };
 
   const useCatalogItem = (
     item: DiscoverItem,
     origin: "movies" | "series",
-    opts?: { presetSlot?: { season: number; episode: number }; seriesTitle?: string },
+    opts?: {
+      presetSlot?: { season: number; episode: number };
+      seriesTitle?: string;
+      tvdbId?: number;
+      episodeTitle?: string;
+    },
   ) => {
-    const show = catalogShow(item, origin, opts?.seriesTitle);
+    const show = catalogShow(item, origin, opts?.seriesTitle, opts?.tvdbId);
     if (props.searchMode === "series" && opts?.presetSlot) {
-      commitSlot(show, opts.presetSlot.season, opts.presetSlot.episode);
+      commitSlot(
+        show,
+        opts.presetSlot.season,
+        opts.presetSlot.episode,
+        opts.episodeTitle,
+      );
       return;
     }
     // Previous Series-without-slot path (title click opened step 2 only):
@@ -623,7 +648,12 @@ export const SearchTakeover: Component<{
   //   episode >= 1  -> the literal pair, `!= null` semantics, never truthiness.
   //                    season 0 (Specials) paired with a real episode ships a
   //                    literal 0 and is NOT collapsed by the rule above.
-  const commitSlot = (show: PickedShow, season: number, episode: number) => {
+  const commitSlot = (
+    show: PickedShow,
+    season: number,
+    episode: number,
+    episodeTitle?: string,
+  ) => {
     if (episode === 0) {
       showLevelCommit(show);
       return;
@@ -631,10 +661,12 @@ export const SearchTakeover: Component<{
     void commit({
       kind: "catalog",
       tmdbId: show.tmdbId,
+      tvdbId: show.tvdbId,
       title: show.title,
       year: show.year,
       seasonNumber: season,
       episodeNumber: episode,
+      episodeTitle,
     });
   };
 
@@ -955,6 +987,10 @@ export const SearchTakeover: Component<{
                               useCatalogItem(item, hit.mode, {
                                 presetSlot: hit.presetSlot,
                                 seriesTitle: hit.seriesTitle,
+                                tvdbId: hit.tvdbId,
+                                episodeTitle: hit.presetSlot
+                                  ? item.title
+                                  : undefined,
                               })
                             }
                           >
@@ -1027,7 +1063,12 @@ export const SearchTakeover: Component<{
                               aria-label={`Assign episode for ${item.title}`}
                               disabled={busy()}
                               onClick={() =>
-                                openSeriesStep2(item, hit.mode, hit.seriesTitle)
+                                openSeriesStep2(
+                                  item,
+                                  hit.mode,
+                                  hit.seriesTitle,
+                                  hit.tvdbId,
+                                )
                               }
                             >
                               Assign episode

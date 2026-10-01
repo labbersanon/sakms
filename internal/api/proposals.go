@@ -870,7 +870,15 @@ func dismissProposalHandler(propStore *proposals.Store) http.HandlerFunc {
 }
 
 type repickProposalRequest struct {
-	TMDBID int    `json:"tmdbId,omitempty"`
+	TMDBID int `json:"tmdbId,omitempty"`
+	// Claude 2026-10-01: persist TVDB id on anthology (negative TMDB) picks.
+	// Reason: TVDB search returns AnthologyTMDBID when FindTVByTVDBID misses;
+	//   that hash is not reversible, and ApplyLibrarySeries needs the real
+	//   TVDB id to fetch episode titles / upsert library_series.tvdb_id.
+	// Troubleshooting: Organize Search "tmdbId and title are both required"
+	//   on Night Owl / Laurel & Hardy tiles.
+	// Review if: AnthologyTMDBID is replaced with a reversible encoding.
+	TVDBID int    `json:"tvdbId,omitempty"`
 	Title  string `json:"title"`
 	Year   int    `json:"year,omitempty"`
 	// SeasonNumber/EpisodeNumber are OPTIONAL and Series-only — the operator's
@@ -965,8 +973,22 @@ func repickProposalHandler(propStore *proposals.Store) http.HandlerFunc {
 			http.Error(w, "searching is only supported for movies, series, and adult rename proposals", http.StatusBadRequest)
 			return
 		}
-		if req.TMDBID <= 0 {
+		// Claude 2026-10-01: accept synthetic anthology TMDB ids (negative).
+		// Reason: TVDB search maps unmapped shows via AnthologyTMDBID; the
+		//   old `<= 0` guard treated those as "missing tmdbId".
+		// Troubleshooting: Organize Search 400 "tmdbId and title are both required"
+		//   when picking Night Owl / Laurel & Hardy / Looney Tunes from TVDB.
+		// Review if: series search no longer emits negative tmdbId.
+		if p.Mode == mode.Movies && req.TMDBID <= 0 {
 			http.Error(w, "tmdbId and title are both required", http.StatusBadRequest)
+			return
+		}
+		if p.Mode == mode.Series && req.TMDBID == 0 {
+			http.Error(w, "tmdbId and title are both required", http.StatusBadRequest)
+			return
+		}
+		if p.Mode == mode.Series && req.TMDBID < 0 && req.TVDBID <= 0 {
+			http.Error(w, "tvdbId is required for anthology (non-TMDB) series picks", http.StatusBadRequest)
 			return
 		}
 		if req.Box != "" || req.SceneID != "" {
@@ -1013,10 +1035,10 @@ func repickProposalHandler(propStore *proposals.Store) http.HandlerFunc {
 		//   at which point this branch becomes dead and must be deleted.
 		var repickErr error
 		if hasSeason && hasEpisode {
-			repickErr = propStore.RepickEpisode(ctx, id, req.Title, req.TMDBID, req.Year,
+			repickErr = propStore.RepickEpisode(ctx, id, req.Title, req.TMDBID, req.TVDBID, req.Year,
 				*req.SeasonNumber, *req.EpisodeNumber, req.EpisodeTitle)
 		} else {
-			repickErr = propStore.Repick(ctx, id, req.Title, req.TMDBID, req.Year)
+			repickErr = propStore.Repick(ctx, id, req.Title, req.TMDBID, req.TVDBID, req.Year)
 		}
 		if repickErr != nil {
 			proposalNotFoundOr500(w, repickErr)

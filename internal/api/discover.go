@@ -522,8 +522,14 @@ func tvdbSearchHandler(httpClient *http.Client, connStore *connections.Store, sc
 				if tmdbID == 0 {
 					continue
 				}
+				// Claude 2026-10-01: include TvdbID on every TVDB search hit.
+				// Reason: AnthologyTMDBID is a hash; repick cannot recover the
+				//   real TheTVDB id from a negative tmdbId alone.
+				// Troubleshooting: Organize Search 400 on Night Owl / Laurel & Hardy.
+				// Review if: AnthologyTMDBID is replaced with a reversible encoding.
 				item := apidto.SeriesSearchItem{
 					TmdbID: tmdbID,
+					TvdbID: res.TVDBID,
 					Title:  res.Name,
 				}
 				if res.Year > 0 {
@@ -580,6 +586,7 @@ func tvdbSearchHandler(httpClient *http.Client, connStore *connections.Store, sc
 				episode := hit.EpisodeNumber
 				item := apidto.SeriesSearchItem{
 					TmdbID:        info.tmdbID,
+					TvdbID:        hit.SeriesID,
 					Title:         hit.Name,
 					SeriesTitle:   info.name,
 					SeasonNumber:  &season,

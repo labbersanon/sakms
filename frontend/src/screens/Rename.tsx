@@ -1473,14 +1473,23 @@ const RenameQueue: Component<{ mode: Mode; adultAspect: AdultOrganizeAspect }> =
       return;
     }
     if (pick.kind !== "catalog") throw new Error("repick requires a catalog match");
+    // Claude 2026-10-01: forward tvdbId / episodeTitle from TVDB Search picks.
+    // Reason: anthology tmdbId is negative and not reversible; Apply needs tvdb_id.
+    // Troubleshooting: Organize Search 400 "tmdbId and title are both required".
+    // Review if: SearchTakeover catalog picks no longer carry tvdbId.
     // `!= null`, never truthiness — season 0 is Specials (unchanged semantics,
     // now enforced by TakeoverPick's shape: the pair is present or absent).
     await repickProposal(p.id, {
       tmdbId: pick.tmdbId,
+      tvdbId: pick.tvdbId,
       title: pick.title,
       year: pick.year,
       ...(pick.seasonNumber != null && pick.episodeNumber != null
-        ? { seasonNumber: pick.seasonNumber, episodeNumber: pick.episodeNumber }
+        ? {
+            seasonNumber: pick.seasonNumber,
+            episodeNumber: pick.episodeNumber,
+            episodeTitle: pick.episodeTitle,
+          }
         : {}),
     });
   };

@@ -777,11 +777,17 @@ func (s *Store) Delete(ctx context.Context, id int64) error {
 // calling this, so this method itself doesn't need a status guard). Clears
 // Reason too: whatever explained the old (wrong, or too-weak-to-auto-accept)
 // match no longer describes anything true about the row.
-func (s *Store) Repick(ctx context.Context, id int64, title string, tmdbID, year int) error {
+func (s *Store) Repick(ctx context.Context, id int64, title string, tmdbID, tvdbID, year int) error {
+	// Claude 2026-10-01: write tvdb_id on show-level re-pick.
+	// Reason: TVDB anthology picks carry a negative tmdb_id that cannot be
+	//   reversed to the real TheTVDB id; ApplyLibrarySeries needs tvdb_id.
+	// Troubleshooting: picking Laurel & Hardy / Night Owl from TVDB Search
+	//   applied with tmdb_id < 0 and tvdb_id 0, so dest names had no catalog.
+	// Review if: AnthologyTMDBID becomes reversible or TMDB always maps.
 	res, err := s.db.ExecContext(ctx, `
-		UPDATE proposals SET title = ?, tmdb_id = ?, year = ?, status = ?, reason = ''
+		UPDATE proposals SET title = ?, tmdb_id = ?, tvdb_id = ?, year = ?, status = ?, reason = ''
 		WHERE id = ?
-	`, title, tmdbID, year, string(Pending), id)
+	`, title, tmdbID, tvdbID, year, string(Pending), id)
 	if err != nil {
 		return fmt.Errorf("re-picking proposal %d: %w", id, err)
 	}
@@ -811,7 +817,7 @@ func (s *Store) Repick(ctx context.Context, id int64, title string, tmdbID, year
 // value comes from marshalExtraEpisodes(nil) rather than a literal so it stays
 // in lockstep with ReplacePending's own encoding — "" (not "[]", not NULL),
 // which is what scanProposal's non-empty guard expects.
-func (s *Store) RepickEpisode(ctx context.Context, id int64, title string, tmdbID, year, season, episode int, episodeTitle string) error {
+func (s *Store) RepickEpisode(ctx context.Context, id int64, title string, tmdbID, tvdbID, year, season, episode int, episodeTitle string) error {
 	extra, err := marshalExtraEpisodes(nil)
 	if err != nil {
 		return fmt.Errorf("clearing extra episode numbers for proposal %d: %w", id, err)
@@ -821,13 +827,18 @@ func (s *Store) RepickEpisode(ctx context.Context, id int64, title string, tmdbI
 	//   write left Apply to fetch TMDB and dropped the operator's title.
 	// Troubleshooting: Review form previewed a cartoon name, Apply wrote SxxExx.ext.
 	// Review if: Apply prefers p.EpisodeTitle over SeasonDetails when both exist.
+	//
+	// Claude 2026-10-01: also write tvdb_id (same reason as Repick).
+	// Reason: anthology one-click episode picks have tmdb_id < 0.
+	// Troubleshooting: TVDB episode tiles 400'd or applied without tvdb_id.
+	// Review if: AnthologyTMDBID becomes reversible or TMDB always maps.
 	res, err := s.db.ExecContext(ctx, `
-		UPDATE proposals SET title = ?, tmdb_id = ?, year = ?,
+		UPDATE proposals SET title = ?, tmdb_id = ?, tvdb_id = ?, year = ?,
 			season_number = ?, episode_number = ?, extra_episode_numbers = ?,
 			episode_title = ?,
 			status = ?, reason = ''
 		WHERE id = ?
-	`, title, tmdbID, year, season, episode, extra, episodeTitle, string(Pending), id)
+	`, title, tmdbID, tvdbID, year, season, episode, extra, episodeTitle, string(Pending), id)
 	if err != nil {
 		return fmt.Errorf("re-picking episode for proposal %d: %w", id, err)
 	}

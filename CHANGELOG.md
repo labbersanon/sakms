@@ -10142,6 +10142,25 @@ status stays active.
 |---|---|
 | `frontend/src/screens/Rename.tsx` | Adult Review optional preview fields defaulted |
 
+## 2026-10-01 — TVDB anthology Search picks persist tvdbId
+
+**Problem:** Organize Search TVDB tiles (Night Owl, Laurel & Hardy, Looney Tunes) posted a negative `AnthologyTMDBID` and got 400 `tmdbId and title are both required`.
+**Root cause:** `tvdbSearchMapTMDBID` returns a hashed negative TMDB id when FindTVByTVDBID misses; repick treated `TMDBID <= 0` as missing. `SeriesSearchItem` did not carry the real TVDB id, so Apply could not recover it.
+**Fix:** TVDB search includes `tvdbId`. SearchTakeover commits it. Repick accepts non-zero (including negative) series `tmdbId` when `tvdbId > 0` and writes `tvdb_id`.
+**Outcome:** Anthology TVDB picks promote to Pending with both ids so Apply can name from TheTVDB.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/apidto/dto.go` | `SeriesSearchItem.TvdbID`, `RepickRequest.TVDBID` |
+| `internal/apidto/ts/dto.gen.ts` | regenerated via `go run ./cmd/gendto` |
+| `internal/api/discover.go` | emit `tvdbId` on series and episode hits |
+| `internal/api/proposals.go` | anthology guard; pass `tvdbId` to store |
+| `internal/proposals/proposals.go` | `Repick` / `RepickEpisode` write `tvdb_id` |
+| `frontend/src/screens/SearchTakeover.tsx` | thread `tvdbId` / episode title on commit |
+| `frontend/src/screens/Rename.tsx` | forward `tvdbId` / `episodeTitle` on repick |
+
 
 
 

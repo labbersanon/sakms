@@ -763,7 +763,7 @@ func TestStoreDelete_RowIsGoneFromHistoryView(t *testing.T) {
 
 func TestRepick_NotFound(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.Repick(context.Background(), 999, "New Title", 42, 2020); !errors.Is(err, ErrNotFound) {
+	if err := s.Repick(context.Background(), 999, "New Title", 42, 0, 2020); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -780,7 +780,7 @@ func TestRepick_OverwritesFieldsAndPromotesToPending(t *testing.T) {
 	}
 	id := saved[0].ID
 
-	if err := s.Repick(ctx, id, "The Real Movie", 777, 2019); err != nil {
+	if err := s.Repick(ctx, id, "The Real Movie", 777, 0, 2019); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -796,6 +796,32 @@ func TestRepick_OverwritesFieldsAndPromotesToPending(t *testing.T) {
 	}
 	if got.Reason != "" {
 		t.Errorf("expected the stale rejection reason to be cleared, got %q", got.Reason)
+	}
+}
+
+func TestRepick_PersistsAnthologyTVDBID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	id := seedSeriesUnmatched(t, s, Proposal{
+		Status:         Unmatched,
+		SourceName:     "Night.Owl.mkv",
+		SourcePath:     "/media/Series/Night.Owl.mkv",
+		RootFolderPath: "/media/Series",
+		Reason:         "no TMDB match",
+	})
+	synth := -12345
+	if err := s.Repick(ctx, id, "Night Owl", synth, 7266, 2018); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got, err := s.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.TMDBID != synth || got.TVDBID != 7266 || got.Title != "Night Owl" {
+		t.Errorf("got tmdb=%d tvdb=%d title=%q, want tmdb=%d tvdb=7266 title=Night Owl", got.TMDBID, got.TVDBID, got.Title, synth)
+	}
+	if got.Status != Pending {
+		t.Errorf("expected Pending, got %q", got.Status)
 	}
 }
 
@@ -965,7 +991,7 @@ func TestRepick_AlreadyPendingStaysPending(t *testing.T) {
 	}
 	id := saved[0].ID
 
-	if err := s.Repick(ctx, id, "Correct Movie", 2, 2021); err != nil {
+	if err := s.Repick(ctx, id, "Correct Movie", 2, 0, 2021); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -992,7 +1018,7 @@ func seedSeriesUnmatched(t *testing.T, s *Store, p Proposal) int64 {
 
 func TestRepickEpisode_NotFound(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.RepickEpisode(context.Background(), 999, "The Path", 42, 2020, 1, 3, ""); !errors.Is(err, ErrNotFound) {
+	if err := s.RepickEpisode(context.Background(), 999, "The Path", 42, 0, 2020, 1, 3, ""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -1008,7 +1034,7 @@ func TestRepickEpisode_SetsSeasonAndEpisode(t *testing.T) {
 		Reason:         "could not parse a season/episode from the filename",
 	})
 
-	if err := s.RepickEpisode(ctx, id, "The Path", 777, 2016, 2, 7, "The Weight"); err != nil {
+	if err := s.RepickEpisode(ctx, id, "The Path", 777, 0, 2016, 2, 7, "The Weight"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -1048,7 +1074,7 @@ func TestRepickEpisode_AcceptsSeasonZero(t *testing.T) {
 		Reason:         "no episode information in a DVD authoring filename",
 	})
 
-	if err := s.RepickEpisode(ctx, id, "Candid Camera", 555, 1960, 0, 3, ""); err != nil {
+	if err := s.RepickEpisode(ctx, id, "Candid Camera", 555, 0, 1960, 0, 3, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -1083,7 +1109,7 @@ func TestRepickEpisode_ClearsExtraEpisodeNumbers(t *testing.T) {
 		ExtraEpisodeNumbers: []int{2, 3},
 	})
 
-	if err := s.RepickEpisode(ctx, id, "Right Show", 222, 2001, 4, 9, ""); err != nil {
+	if err := s.RepickEpisode(ctx, id, "Right Show", 222, 0, 2001, 4, 9, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 

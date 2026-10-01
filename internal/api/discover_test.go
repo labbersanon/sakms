@@ -1463,6 +1463,9 @@ func TestTvdbSearchHandler_EpisodeKind(t *testing.T) {
 	if items[0]["tmdbId"] != float64(42) || items[0]["seriesTitle"] != "Laurel & Hardy" {
 		t.Fatalf("unexpected first item: %+v", items[0])
 	}
+	if items[0]["tvdbId"] != float64(73910) {
+		t.Fatalf("expected tvdbId 73910, got %+v", items[0])
+	}
 	if items[0]["seasonNumber"] != float64(3) || items[0]["episodeNumber"] != float64(1) {
 		t.Fatalf("unexpected first slot: %+v", items[0])
 	}
@@ -1570,6 +1573,9 @@ func TestTvdbSearchHandler_SeriesKind_NoTMDBMappingUsesAnthologyID(t *testing.T)
 	if len(items) != 1 || items[0]["tmdbId"] != want || items[0]["title"] != "Looney Tunes" {
 		t.Fatalf("unexpected items: %+v (want tmdbId %v)", items, want)
 	}
+	if items[0]["tvdbId"] != float64(7266) {
+		t.Fatalf("expected tvdbId 7266, got %+v", items[0])
+	}
 }
 
 func TestTvdbSearchHandler_EpisodeKind_LibrarySeedWhenSearchSeriesEmpty(t *testing.T) {
@@ -1644,6 +1650,9 @@ func TestTvdbSearchHandler_EpisodeKind_LibrarySeedWhenSearchSeriesEmpty(t *testi
 	if items[0]["tmdbId"] != float64(synth) || items[0]["title"] != "Duck Soup" {
 		t.Fatalf("unexpected first item: %+v", items[0])
 	}
+	if items[0]["tvdbId"] != float64(73910) {
+		t.Fatalf("expected tvdbId 73910, got %+v", items[0])
+	}
 	if items[0]["seriesTitle"] != "Laurel & Hardy" {
 		t.Fatalf("unexpected seriesTitle: %+v", items[0])
 	}
@@ -1699,6 +1708,9 @@ func TestTvdbSearchHandler_IDLookup(t *testing.T) {
 	want := float64(rename.AnthologyTMDBID(7266))
 	if len(items) != 1 || items[0]["title"] != "Looney Tunes" || items[0]["tmdbId"] != want {
 		t.Fatalf("unexpected items: %+v (want tmdbId %v)", items, want)
+	}
+	if items[0]["tvdbId"] != float64(7266) {
+		t.Fatalf("expected tvdbId 7266, got %+v", items[0])
 	}
 }
 

@@ -52,8 +52,8 @@ var repickFrozenSetClausePattern = regexp.MustCompile(`(?is)UPDATE\s+proposals\s
 // method's UPDATE, including a reorder, must update this golden deliberately
 // (and, per AC3, must not happen as a side effect of this feature).
 var repickGoldenColumns = map[string][]string{
-	"Repick":        {"title", "tmdb_id", "year", "status", "reason"},
-	"RepickEpisode": {"title", "tmdb_id", "year", "season_number", "episode_number", "extra_episode_numbers", "episode_title", "status", "reason"},
+	"Repick":        {"title", "tmdb_id", "tvdb_id", "year", "status", "reason"},
+	"RepickEpisode": {"title", "tmdb_id", "tvdb_id", "year", "season_number", "episode_number", "extra_episode_numbers", "episode_title", "status", "reason"},
 }
 
 // TestRepickStoreMethodsUnchanged is AC3(a): AST-parse proposals.go, locate

@@ -10130,6 +10130,18 @@ status stays active.
 | `internal/api/proposals.go` | `episodeTitle` on repick |
 | `internal/apidto/dto.go` | `RepickRequest.EpisodeTitle` |
 
+## 2026-10-01 — Adult Review preview fields default to empty strings
+
+**Problem:** `pnpm build` (`tsc --noEmit`) failed on Adult Review seed/compose: `AdultReviewPreview.studio/title/date/phash` are optional, and setters/`adultFileName` require `string`.
+**Fix:** Seed and compose with `?? ""` so missing preview fields are empty strings, not `undefined`.
+**Outcome:** Frontend typecheck passes; Docker image can build.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/Rename.tsx` | Adult Review optional preview fields defaulted |
+
 
 
 

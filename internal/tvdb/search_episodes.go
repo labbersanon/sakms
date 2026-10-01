@@ -84,6 +84,29 @@ func (c *Client) SearchEpisodesWithSeeds(ctx context.Context, query string, extr
 	return out, nil
 }
 
+// SearchEpisodesIn scans only the given series catalogs for an episode title.
+// It does not call SearchSeries. Use this when the parent is already known
+// (TVDB id or an Advanced "Series" field).
+func (c *Client) SearchEpisodesIn(ctx context.Context, query string, series []Result) ([]EpisodeHit, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return []EpisodeHit{}, nil
+	}
+	out := []EpisodeHit{}
+	seen := make(map[int]bool)
+	for _, s := range series {
+		if s.TVDBID <= 0 {
+			continue
+		}
+		hits, err := c.matchEpisodesInSeries(ctx, query, s.TVDBID, seen)
+		if err != nil {
+			return nil, fmt.Errorf("tvdb: episode search series %d: %w", s.TVDBID, err)
+		}
+		out = append(out, hits...)
+	}
+	return out, nil
+}
+
 func (c *Client) matchEpisodesInSeries(ctx context.Context, query string, seriesID int, seen map[int]bool) ([]EpisodeHit, error) {
 	episodes, err := c.SeriesEpisodes(ctx, seriesID, SeasonTypeOfficial)
 	if err != nil {

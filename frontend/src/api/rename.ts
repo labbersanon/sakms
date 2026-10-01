@@ -92,18 +92,54 @@ export function deleteBatch(
 
 export { applyBatchStreaming };
 
-export function tmdbSearch(mode: Mode, query: string): Promise<DiscoverItem[]> {
+export type CatalogSearchOpts = {
+  year?: number;
+  id?: number;
+  series?: string;
+};
+
+function catalogSearchParams(
+  query: string,
+  extra: Record<string, string | number | undefined>,
+): string {
+  const q = new URLSearchParams();
+  if (query.trim()) {
+    q.set("q", query.trim());
+  }
+  for (const [key, value] of Object.entries(extra)) {
+    if (value === undefined || value === "") {
+      continue;
+    }
+    q.set(key, String(value));
+  }
+  return q.toString();
+}
+
+export function tmdbSearch(
+  mode: Mode,
+  query: string,
+  opts?: CatalogSearchOpts,
+): Promise<DiscoverItem[]> {
   return api<DiscoverItem[]>(
-    `/api/modes/${mode}/tmdb-search?q=${encodeURIComponent(query)}`,
+    `/api/modes/${mode}/tmdb-search?${catalogSearchParams(query, {
+      year: opts?.year,
+      id: opts?.id,
+    })}`,
   );
 }
 
 export function tvdbSearch(
   query: string,
   kind: "series" | "episode",
+  opts?: CatalogSearchOpts,
 ): Promise<SeriesSearchItem[]> {
   return api<SeriesSearchItem[]>(
-    `/api/modes/series/tvdb-search?q=${encodeURIComponent(query)}&kind=${kind}`,
+    `/api/modes/series/tvdb-search?${catalogSearchParams(query, {
+      kind,
+      year: opts?.year,
+      id: opts?.id,
+      series: opts?.series,
+    })}`,
   );
 }
 

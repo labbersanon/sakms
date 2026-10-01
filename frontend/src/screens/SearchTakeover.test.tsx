@@ -1414,6 +1414,149 @@ describe("SearchTakeover — Series database dropdown", () => {
   });
 });
 
+describe("SearchTakeover — Advanced search", () => {
+  it("hides Title/Series/Year/ID until Advanced is opened", () => {
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick"
+        searchMode="series"
+        initialQuery="A Show"
+        autoSearch={false}
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    expect(screen.getByText("Advanced")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Title")).toBeNull();
+    expect(screen.queryByLabelText("Series")).toBeNull();
+    expect(screen.queryByLabelText("Year")).toBeNull();
+    expect(screen.queryByLabelText("TMDB ID")).toBeNull();
+    fireEvent.click(screen.getByText("Advanced"));
+    expect(screen.getByLabelText("Title")).toBeInTheDocument();
+    expect(screen.getByLabelText("Series")).toBeInTheDocument();
+    expect(screen.getByLabelText("Year")).toBeInTheDocument();
+    expect(screen.getByLabelText("TMDB ID")).toBeInTheDocument();
+  });
+
+  it("does not show Advanced in Adult search", () => {
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick"
+        searchMode="adult"
+        initialQuery=""
+        autoSearch={false}
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+    expect(screen.queryByText("Advanced")).toBeNull();
+  });
+
+  it("sends year, series, and TVDB id on an advanced TVDB search", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("/tvdb-search")) {
+        return jsonResponse([
+          {
+            tmdbId: 42,
+            title: "Duck Soup",
+            seriesTitle: "Laurel & Hardy",
+            releaseDate: "1921-01-01",
+            seasonNumber: 3,
+            episodeNumber: 1,
+          },
+        ]);
+      }
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick"
+        searchMode="series"
+        initialQuery=""
+        initialSeriesDatabase="tvdb"
+        autoSearch={false}
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText("Advanced"));
+    fireEvent.input(screen.getByLabelText("Title"), {
+      target: { value: "Duck Soup" },
+    });
+    fireEvent.input(screen.getByLabelText("Series"), {
+      target: { value: "Laurel & Hardy" },
+    });
+    fireEvent.input(screen.getByLabelText("Year"), {
+      target: { value: "1921" },
+    });
+    fireEvent.input(screen.getByLabelText("TVDB ID"), {
+      target: { value: "73910" },
+    });
+    fireEvent.click(screen.getByText("Search"));
+
+    expect(await screen.findByLabelText("Use Duck Soup")).toBeInTheDocument();
+    const tvdbCalls = fetchMock.mock.calls
+      .map(([u]) => String(u))
+      .filter((u) => u.includes("/tvdb-search"));
+    expect(tvdbCalls.length).toBeGreaterThan(0);
+    expect(tvdbCalls.every((u) => u.includes("year=1921"))).toBe(true);
+    expect(tvdbCalls.every((u) => u.includes("id=73910"))).toBe(true);
+    expect(tvdbCalls.some((u) => u.includes("series=Laurel"))).toBe(true);
+  });
+
+  it("omits Series and uses TMDB ID in Movies advanced search", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("/tmdb-search")) {
+        return jsonResponse([
+          {
+            id: 550,
+            title: "Fight Club",
+            posterPath: "",
+            overview: "",
+            releaseDate: "1999-10-15",
+            voteAverage: 0,
+            mediaType: "movie",
+          },
+        ]);
+      }
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick"
+        searchMode="movies"
+        initialQuery=""
+        autoSearch={false}
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText("Advanced"));
+    expect(screen.queryByLabelText("Series")).toBeNull();
+    fireEvent.input(screen.getByLabelText("TMDB ID"), {
+      target: { value: "550" },
+    });
+    fireEvent.click(screen.getByText("Search"));
+
+    expect(await screen.findByLabelText("Use Fight Club")).toBeInTheDocument();
+    const tmdbCall = fetchMock.mock.calls
+      .map(([u]) => String(u))
+      .find((u) => u.includes("/tmdb-search"));
+    expect(tmdbCall).toContain("id=550");
+  });
+});
+
 describe("SearchTakeover — Adult URL resolve", () => {
   it("calls scene-resolve for a pasted URL and shows one result", async () => {
     const fetchMock = vi.fn(async (url: string) => {

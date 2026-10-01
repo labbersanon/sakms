@@ -1648,3 +1648,258 @@ func TestTvdbSearchHandler_EpisodeKind_LibrarySeedWhenSearchSeriesEmpty(t *testi
 		t.Fatalf("unexpected seriesTitle: %+v", items[0])
 	}
 }
+
+func TestTvdbSearchHandler_IDLookup(t *testing.T) {
+	tvdbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v4/login":
+			fmt.Fprint(w, `{"status":"success","data":{"token":"tok"}}`)
+		case r.URL.Path == "/v4/series/7266":
+			fmt.Fprint(w, `{"status":"success","data":{"name":"Looney Tunes","year":"1930"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer tvdbSrv.Close()
+
+	tmdbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/find/") {
+			fmt.Fprint(w, `{"tv_results":[]}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer tmdbSrv.Close()
+
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	ctx := context.Background()
+	overrideFixedURL(t, "tmdb", tmdbSrv.URL)
+	overrideFixedURL(t, "tvdb", tvdbSrv.URL)
+	if err := connStore.Upsert(ctx, "tmdb", tmdbSrv.URL, "key"); err != nil {
+		t.Fatal(err)
+	}
+	if err := connStore.Upsert(ctx, "tvdb", tvdbSrv.URL, "key"); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/series/tvdb-search?id=7266&kind=series")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var items []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		t.Fatal(err)
+	}
+	want := float64(rename.AnthologyTMDBID(7266))
+	if len(items) != 1 || items[0]["title"] != "Looney Tunes" || items[0]["tmdbId"] != want {
+		t.Fatalf("unexpected items: %+v (want tmdbId %v)", items, want)
+	}
+}
+
+func TestTvdbSearchHandler_YearFiltersSeries(t *testing.T) {
+	tvdbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v4/login":
+			fmt.Fprint(w, `{"status":"success","data":{"token":"tok"}}`)
+		case r.URL.Path == "/v4/search":
+			fmt.Fprint(w, `{"status":"success","data":[
+				{"tvdb_id":"7266","name":"Looney Tunes","year":"1930"},
+				{"tvdb_id":"99","name":"Looney Tunes","year":"1966"}
+			]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer tvdbSrv.Close()
+
+	tmdbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/find/") {
+			fmt.Fprint(w, `{"tv_results":[{"id":1}]}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer tmdbSrv.Close()
+
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	ctx := context.Background()
+	overrideFixedURL(t, "tmdb", tmdbSrv.URL)
+	overrideFixedURL(t, "tvdb", tvdbSrv.URL)
+	if err := connStore.Upsert(ctx, "tmdb", tmdbSrv.URL, "key"); err != nil {
+		t.Fatal(err)
+	}
+	if err := connStore.Upsert(ctx, "tvdb", tvdbSrv.URL, "key"); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/series/tvdb-search?q=Looney+Tunes&kind=series&year=1930")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var items []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0]["releaseDate"] != "1930-01-01" {
+		t.Fatalf("unexpected items: %+v", items)
+	}
+}
+
+func TestTvdbSearchHandler_SeriesNameSeedsEpisodeSearch(t *testing.T) {
+	var searchQuery string
+	tvdbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v4/login":
+			fmt.Fprint(w, `{"status":"success","data":{"token":"tok"}}`)
+		case r.URL.Path == "/v4/search":
+			searchQuery = r.URL.Query().Get("query")
+			fmt.Fprint(w, `{"status":"success","data":[{"tvdb_id":"73910","name":"Laurel & Hardy","year":"1921"}]}`)
+		case r.URL.Path == "/v4/series/73910/episodes/official":
+			switch r.URL.Query().Get("page") {
+			case "0":
+				fmt.Fprint(w, `{"status":"success","data":{"episodes":[
+					{"id":1001,"seriesId":73910,"name":"Duck Soup","seasonNumber":3,"number":1}
+				]}}`)
+			default:
+				fmt.Fprint(w, `{"status":"success","data":{"episodes":[]}}`)
+			}
+		case r.URL.Path == "/v4/series/73910":
+			fmt.Fprint(w, `{"status":"success","data":{"name":"Laurel & Hardy","year":"1921"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer tvdbSrv.Close()
+
+	tmdbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/find/") {
+			fmt.Fprint(w, `{"tv_results":[{"id":42}]}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer tmdbSrv.Close()
+
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	ctx := context.Background()
+	overrideFixedURL(t, "tmdb", tmdbSrv.URL)
+	overrideFixedURL(t, "tvdb", tvdbSrv.URL)
+	if err := connStore.Upsert(ctx, "tmdb", tmdbSrv.URL, "key"); err != nil {
+		t.Fatal(err)
+	}
+	if err := connStore.Upsert(ctx, "tvdb", tvdbSrv.URL, "key"); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/series/tvdb-search?q=Duck+Soup&kind=episode&series=" + url.QueryEscape("Laurel & Hardy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if searchQuery != "Laurel & Hardy" {
+		t.Fatalf("SearchSeries query = %q, want parent series name", searchQuery)
+	}
+	var items []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0]["title"] != "Duck Soup" {
+		t.Fatalf("unexpected items: %+v", items)
+	}
+}
+
+func TestTmdbSearchHandler_YearFiltersResults(t *testing.T) {
+	tmdb.ResetDefaultCache()
+	t.Cleanup(tmdb.ResetDefaultCache)
+	tmdbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/search/tv") {
+			fmt.Fprint(w, `{"results":[
+				{"id":1,"name":"Show 2008","first_air_date":"2008-01-20"},
+				{"id":2,"name":"Show 2019","first_air_date":"2019-01-01"}
+			]}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer tmdbSrv.Close()
+
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	ctx := context.Background()
+	overrideFixedURL(t, "tmdb", tmdbSrv.URL)
+	if err := connStore.Upsert(ctx, "tmdb", tmdbSrv.URL, "key"); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/series/tmdb-search?q=Show&year=2008")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var items []tmdb.Item
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != 1 {
+		t.Fatalf("unexpected items: %+v", items)
+	}
+}
+
+func TestTmdbSearchHandler_IDLookup(t *testing.T) {
+	tmdb.ResetDefaultCache()
+	t.Cleanup(tmdb.ResetDefaultCache)
+	tmdbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/tv/1396" {
+			fmt.Fprint(w, `{"id":1396,"name":"Breaking Bad","poster_path":"/x.jpg"}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer tmdbSrv.Close()
+
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	ctx := context.Background()
+	overrideFixedURL(t, "tmdb", tmdbSrv.URL)
+	if err := connStore.Upsert(ctx, "tmdb", tmdbSrv.URL, "key"); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/modes/series/tmdb-search?id=1396")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var items []tmdb.Item
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != 1396 || items[0].Title != "Breaking Bad" {
+		t.Fatalf("unexpected items: %+v", items)
+	}
+}

@@ -10071,5 +10071,20 @@ status stays active.
 | `internal/api/handler.go` | Pass `libStore` into tvdb-search |
 | `internal/rename/series_tvdb_episode_match.go` | Export `AnthologyTMDBID` |
 
+## 2026-10-01 — Rename search Advanced title/series/year/ID
+
+**Problem:** Rename Search had a single query box, so a TVDB episode title could not be scoped to a parent show, year, or catalog id.
+**Fix:** An Advanced disclosure on Movies/Series search adds Title, Series (Series mode), Year, and TMDB/TVDB ID. The APIs accept `year`, `id`, and `series` without changing Discover's tmdb-search callers.
+**Outcome:** Operators can look up Looney Tunes by TVDB id 7266, year 1930, or Series + Title (Duck Soup under Laurel & Hardy).
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/SearchTakeover.tsx` | Advanced disclosure; passes year/id/series |
+| `frontend/src/api/rename.ts` | Optional catalog search params |
+| `internal/api/discover.go` | tmdb-search id/year; tvdb-search id/year/series |
+| `internal/tvdb/search_episodes.go` | `SearchEpisodesIn` for a known parent |
+
 
 

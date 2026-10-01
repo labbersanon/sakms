@@ -76,3 +76,14 @@ func TestStripYearSeasonMarker(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestSplitYearSeasonMarker(t *testing.T) {
+	before, after, ok := SplitYearSeasonMarker("A Hare Grows In Manhattan S1947E05 - H.265.mp4")
+	if !ok || before != "A Hare Grows In Manhattan" {
+		t.Fatalf("manhattan before=%q after=%q ok=%v", before, after, ok)
+	}
+	before, after, ok = SplitYearSeasonMarker("Looney.Tunes.S1958E14.Fistic.Mystic.mkv")
+	if !ok || before != "Looney.Tunes" || after != "Fistic.Mystic.mkv" {
+		t.Fatalf("fistic before=%q after=%q ok=%v", before, after, ok)
+	}
+}

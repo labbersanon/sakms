@@ -1264,6 +1264,18 @@ func proposeOneEpisodeLibrary(
 		}
 	}
 
+	// Claude 2026-10-01: year-season files use the show folder on TVDB first.
+	// Reason: StripEpisodeMarkerLoose of "A Hare Grows In Manhattan S1947E05"
+	//   is the cartoon title, so TMDB/web minted a 1947 series instead of
+	//   Looney Tunes S1947E05 (TVDB 7266). Folder is spelled Looney Toons.
+	// Troubleshooting: kids shorts appear as their own Library cards.
+	// Review if: the on-disk folder is renamed to Looney Tunes.
+	if library.IsYearSeason(season) {
+		if got := tryYearSeasonTVDBParent(ctx, sess, tracked, generalRoot, foundRoot, videoPath, roots, season, episode, extraEpisodes, p); got != nil {
+			return *got, false
+		}
+	}
+
 	sig := ExtractFileSignals(ctx, name, videoPath, prober)
 	// Claude 2026-08-06: loose title seed for GuessTitle/bravePhase2Series and the seriesGate, computed once
 	// Reason: code-reviewer HIGH finding — once ParseEpisodeNumbersLoose lets

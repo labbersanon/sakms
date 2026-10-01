@@ -1,14 +1,18 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/connections"
+	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/purge"
@@ -22,7 +26,7 @@ import (
 // Reason: operator-confirmed permanent file+row delete, same disk contract as Purge.
 // Troubleshooting: nested Modal would close both overlays on one backdrop click.
 // Review if: Purge Apply becomes a wrapper around purge.RemoveOwned.
-func deleteTrackedHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, libStore *library.Store) http.HandlerFunc {
+func deleteTrackedHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, libStore *library.Store, grabsStore *grabs.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		switch m {
@@ -53,6 +57,7 @@ func deleteTrackedHandler(httpClient *http.Client, connStore *connections.Store,
 			return
 		}
 
+		tmdbID := trackedTMDBID(ctx, libStore, m, id)
 		changes, gone, err := purge.RemoveOwned(ctx, libStore, m, id, purge.RemoveSpec{
 			EntireSeries: req.EntireSeries,
 			Seasons:      req.Seasons,
@@ -69,7 +74,64 @@ func deleteTrackedHandler(httpClient *http.Client, connStore *connections.Store,
 			}
 			return
 		}
+		// Claude 2026-10-01: delete also un-monitors, same as flipping a season off.
+		// Reason: leftover pending_retry grabs kept the title on Requests / Monitored.
+		// Troubleshooting: remove a show, air-date retries still re-search it.
+		// Review if: in-flight operator grabs should be cancelled too (they are not).
+		unmonitorAfterLibraryRemove(ctx, grabsStore, m, tmdbID, req.Seasons, gone)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(apidto.RemoveTrackedResponse{Gone: gone})
+	}
+}
+
+func trackedTMDBID(ctx context.Context, libStore *library.Store, m mode.Mode, id int64) int {
+	switch m {
+	case mode.Movies:
+		item, err := libStore.Get(ctx, id)
+		if err != nil {
+			return 0
+		}
+		return item.TMDBID
+	case mode.Series:
+		series, err := libStore.GetSeries(ctx, id)
+		if err != nil {
+			return 0
+		}
+		return series.TMDBID
+	default:
+		return 0
+	}
+}
+
+func unmonitorAfterLibraryRemove(ctx context.Context, grabsStore *grabs.Store, m mode.Mode, tmdbID int, seasons []int, gone bool) {
+	if grabsStore == nil || tmdbID <= 0 {
+		return
+	}
+	switch m {
+	case mode.Movies:
+		cancelQualityWatchRetries(ctx, grabsStore, mode.Movies, tmdbID)
+	case mode.Series:
+		if gone {
+			cancelQualityWatchRetries(ctx, grabsStore, mode.Series, tmdbID)
+		}
+		want := map[int]bool{}
+		for _, n := range seasons {
+			want[n] = true
+		}
+		if gone {
+			list, err := grabsStore.List(ctx, mode.Series)
+			if err != nil {
+				log.Printf("remove-from-library: listing series grabs for un-monitor: %v", err)
+				return
+			}
+			for _, g := range list {
+				if g.TMDBID == tmdbID {
+					want[g.SeasonNumber] = true
+				}
+			}
+		}
+		if len(want) > 0 {
+			cancelAirDateRetriesForSeasons(ctx, grabsStore, tmdbID, want, time.Now())
+		}
 	}
 }

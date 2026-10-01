@@ -9989,4 +9989,19 @@ status stays active.
 | `frontend/src/screens/discover/DetailPopup.tsx` | Inline permanent-remove confirm; series season picker |
 | `frontend/src/api/trackedRemove.ts` | DELETE client |
 
+## 2026-10-01 — Remove from library also un-monitors
+
+**Problem:** Deleting a title left queued air-date and upgrade-watch retries, so it stayed on Requests and kept being searched.
+**Fix:** After a successful DELETE, cancel never-dispatched monitor retries the same way un-monitoring a season does. Entire movie/series also cancels upgrade-watch retries. In-flight operator grabs are left alone.
+**Outcome:** Removed titles and seasons are unmonitored; queued automatic searches stop.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/tracked_remove.go` | `unmonitorAfterLibraryRemove` after a successful delete |
+| `internal/api/tracked_remove_test.go` | Season/entire/movie retry cancellation |
+| `frontend/src/screens/discover/DetailPopup.tsx` | Confirm copy notes monitoring stops |
+
+
 

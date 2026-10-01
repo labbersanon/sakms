@@ -1404,7 +1404,8 @@ export const DetailPopup: Component<{
             >
               <p class="text-xs text-danger">
                 This permanently deletes the files from disk and removes them
-                from the library. This cannot be undone.
+                from the library. This cannot be undone. Monitoring and queued
+                automatic searches for what you remove will stop.
               </p>
               <Show when={mode() === "series"}>
                 <fieldset class="mt-2 space-y-1 text-xs text-fg">

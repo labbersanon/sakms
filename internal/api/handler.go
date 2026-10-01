@@ -186,7 +186,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// Reason: DELETE the library row after confirmed file wipe; Series may send seasons.
 	// Troubleshooting: nested confirm Modal closed this popup too.
 	// Review if: a trash/undo path is added (there is none today).
-	mux.HandleFunc("DELETE /api/modes/{mode}/tracked/{id}", deleteTrackedHandler(httpClient, connStore, scStore, settingsStore, libStore))
+	mux.HandleFunc("DELETE /api/modes/{mode}/tracked/{id}", deleteTrackedHandler(httpClient, connStore, scStore, settingsStore, libStore, grabsStore))
 	// Claude 2026-09-24: Series-only play head. Literal `series` so Movies/Adult
 	//   cannot hit it; {id} is library_series.id, {episodeId} must belong to it.
 	// Reason: Resume Show and episode bars need a write the seasons GET can read.

@@ -1504,6 +1504,7 @@ export const MainstreamDiscover: Component<{
                 : undefined
             }
             replaceSlot={replaceSlot() ?? undefined}
+            ownedLibraryId={ownedDetail()?.item.id}
             onRematch={
               ownedDetail()
                 ? () => {
@@ -1514,6 +1515,10 @@ export const MainstreamDiscover: Component<{
                   }
                 : undefined
             }
+            onLibraryRemoved={(gone) => {
+              setReloadToken((n) => n + 1);
+              if (gone) closeDetail();
+            }}
             onClose={closeDetail}
             onSelectRecommendation={(next) => {
               setOwnedDetail(null);

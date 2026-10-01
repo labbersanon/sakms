@@ -9971,3 +9971,22 @@ status stays active.
 | `frontend/src/screens/Requests.test.tsx` | Complete titles hidden; chip asserted gone |
 | `docs/ROADMAP.md` | Request-status view: list is the missing filter |
 
+## 2026-10-01 — Remove from library in owned detail popups
+
+**Problem:** Owned titles on Discover and Library had Rematch and Search releases, but no way to delete the files and drop the library row from the detail popup.
+**Fix:** DELETE `/api/modes/{mode}/tracked/{id}` permanently deletes on-disk files (same `removeTrackedMedia` contract as Purge) then the library row. Movies and Adult ignore the body. Series requires `entireSeries` XOR `seasons`. Seasonal delete keeps a shared show folder when another season still uses it, and drops the series row if no episodes remain. Confirm UI is inline in DetailPopup (not a nested Modal) and warns that the remove is permanent.
+**Outcome:** Owned movie, series, and Adult detail popups can remove the title; series can delete selected seasons or the whole show.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/purge/purge_owned.go` | `RemoveOwned` for movies/series/adult |
+| `internal/purge/purge_remove.go` | `removeTrackedMediaKeeping` so seasonal delete does not wipe kept files |
+| `internal/library/library_series.go` | `ClearSeasonMonitored` |
+| `internal/api/tracked_remove.go` | DELETE `/api/modes/{mode}/tracked/{id}` |
+| `internal/apidto/dto.go` | `RemoveTrackedRequest` / `RemoveTrackedResponse` |
+| `frontend/src/screens/discover/DetailPopup.tsx` | Inline permanent-remove confirm; series season picker |
+| `frontend/src/api/trackedRemove.ts` | DELETE client |
+
+

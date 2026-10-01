@@ -191,6 +191,7 @@ const AdultDiscoverDetail: Component<{
   owned: TrackedItem | null;
   onClose: () => void;
   onRematch?: () => void;
+  onLibraryRemoved?: (gone: boolean) => void;
 }> = (props) => {
   const lookup = useAdultOwnedLookup();
   const catalogItem = () =>
@@ -224,6 +225,7 @@ const AdultDiscoverDetail: Component<{
         if (id) lookup?.setPoster(id, url);
       }}
       onRematch={props.onRematch}
+      onLibraryRemoved={props.onLibraryRemoved}
       onClose={props.onClose}
     />
   );
@@ -1409,6 +1411,10 @@ export const AdultDiscover: Component<{
                   }
                 : undefined
             }
+            onLibraryRemoved={(gone) => {
+              setReloadToken((n) => n + 1);
+              if (gone) closeDetail();
+            }}
             onClose={closeDetail}
           />
         )}

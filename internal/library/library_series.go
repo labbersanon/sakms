@@ -775,6 +775,23 @@ func (s *Store) SetSeasonMonitored(ctx context.Context, seriesID int64, seasonNu
 	return nil
 }
 
+// Claude 2026-10-01: drop one season's monitor row after a seasonal library remove.
+// Reason: ListSeasonStates UNIONs library_season_monitored; leftover flags would
+//
+//	show a phantom empty season after its episodes were deleted.
+//
+// Troubleshooting: remove season 1, season list still showed Season 1 with 0 eps.
+// Review if: seasonal remove starts rewriting monitor flags instead of deleting them.
+func (s *Store) ClearSeasonMonitored(ctx context.Context, seriesID int64, seasonNumber int) error {
+	_, err := s.db.ExecContext(ctx, `
+		DELETE FROM library_season_monitored WHERE series_id = ? AND season_number = ?
+	`, seriesID, seasonNumber)
+	if err != nil {
+		return fmt.Errorf("clearing season %d monitored for series %d: %w", seasonNumber, seriesID, err)
+	}
+	return nil
+}
+
 // ListSeasonStates returns one row per season of seriesID, ascending — the
 // per-season monitoring UI's read.
 //

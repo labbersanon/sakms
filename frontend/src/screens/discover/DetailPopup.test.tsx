@@ -2235,3 +2235,102 @@ describe("DetailPopup — owned Rematch and Replace", () => {
     expect(await screen.findByRole("button", { name: "Replace" })).toBeInTheDocument();
   });
 });
+
+describe("DetailPopup — remove from library", () => {
+  it("hides Remove from library on catalog detail", async () => {
+    stubFetch((url) => {
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      if (url.includes("/discover/detail")) return jsonResponse(emptyDetail());
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => (
+      <DetailPopup
+        target={{ mode: "movies", item: movie({ id: 42 }) }}
+        allowGrab={false}
+        onClose={() => {}}
+      />
+    ));
+    await screen.findByText("Hero Movie");
+    expect(
+      screen.queryByRole("button", { name: "Remove from library" }),
+    ).toBeNull();
+  });
+
+  it("confirms a permanent movie remove and notifies the parent", async () => {
+    const calls = stubFetch((url, init) => {
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      if (url.includes("/discover/detail")) return jsonResponse(emptyDetail());
+      if (url.includes("/tracked/9") && (init?.method ?? "GET") === "DELETE") {
+        return jsonResponse({ gone: true });
+      }
+      throw new Error("unexpected fetch: " + url);
+    });
+    let gone: boolean | undefined;
+    render(() => (
+      <DetailPopup
+        target={{ mode: "movies", item: movie({ id: 42, title: "Inception" }) }}
+        allowGrab={false}
+        canReplace
+        ownedLibraryId={9}
+        onLibraryRemoved={(g) => {
+          gone = g;
+        }}
+        onClose={() => {}}
+      />
+    ));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Remove from library" }),
+    );
+    expect(await screen.findByTestId("remove-from-library-confirm")).toBeInTheDocument();
+    expect(
+      screen.getByText(/permanently deletes the files from disk/i),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Permanently remove" }));
+    await waitFor(() => expect(gone).toBe(true));
+    const del = calls.find((c) => c.method === "DELETE");
+    expect(del?.url).toBe("/api/modes/movies/tracked/9");
+  });
+
+  it("lets a series confirm delete selected seasons", async () => {
+    const calls = stubFetch((url, init) => {
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      if (url.includes("/discover/detail")) return jsonResponse(emptyDetail());
+      if (url.includes("/library/") && /\/seasons$/.test(url)) {
+        return jsonResponse([
+          { seasonNumber: 1, episodeCount: 2, missingCount: 0, monitored: true, episodes: [] },
+          { seasonNumber: 2, episodeCount: 2, missingCount: 0, monitored: true, episodes: [] },
+        ]);
+      }
+      if (url.includes("/tracked/77") && (init?.method ?? "GET") === "DELETE") {
+        return jsonResponse({ gone: false });
+      }
+      throw new Error("unexpected fetch: " + url);
+    });
+    let gone: boolean | undefined;
+    render(() => (
+      <DetailPopup
+        target={{
+          mode: "series",
+          item: movie({ id: 1396, title: "Breaking Bad", mediaType: "tv" }),
+        }}
+        allowGrab={false}
+        canReplace
+        seriesID={77}
+        onLibraryRemoved={(g) => {
+          gone = g;
+        }}
+        onClose={() => {}}
+      />
+    ));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Remove from library" }),
+    );
+    fireEvent.click(await screen.findByLabelText("Selected seasons"));
+    fireEvent.click(await screen.findByLabelText("Season 1"));
+    fireEvent.click(screen.getByRole("button", { name: "Permanently remove" }));
+    await waitFor(() => expect(gone).toBe(false));
+    const del = calls.find((c) => c.method === "DELETE");
+    expect(del?.url).toBe("/api/modes/series/tracked/77");
+    expect(del?.body).toEqual({ seasons: [1] });
+  });
+});

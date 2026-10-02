@@ -130,12 +130,9 @@ const stubRawFetch = (opts: { series?: Proposal[]; movies?: Proposal[] }) => {
       if (url.includes("/api/modes/movies/tmdb-search"))
         return jsonResponse(opts.movies?.length ? [tmdbResult] : []);
       if (url.includes("/tmdb-search")) return jsonResponse([tmdbResult]);
-      // Unmatched Series with no title auto-searches TVDB (series + episode).
-      // kind=series stays empty so findByLabelText sees one tile. Episode hits
-      // omit season/episode so there is no presetSlot: Assign episode stays
-      // visible (a preset slot one-click commits and hides that control).
+      // Unmatched Series with no title auto-searches TVDB show names.
+      // Episode title / SxxExx is the step-2 filter, not a step-1 tile.
       if (url.includes("/tvdb-search")) {
-        if (String(url).includes("kind=series")) return jsonResponse([]);
         return jsonResponse([
           {
             tmdbId: tmdbResult.id,

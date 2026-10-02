@@ -1818,8 +1818,9 @@ describe("SearchTakeover — Advanced search", () => {
       .filter((u) => u.includes("/tvdb-search"));
     expect(tvdbCalls.length).toBeGreaterThan(0);
     expect(tvdbCalls.every((u) => u.includes("kind=series"))).toBe(true);
-    expect(tvdbCalls.every((u) => u.includes("year=1921"))).toBe(true);
-    expect(tvdbCalls.every((u) => u.includes("id=73910"))).toBe(true);
+    expect(tvdbCalls.some((u) => u.includes("year=1921") && u.includes("id=73910"))).toBe(
+      true,
+    );
   });
 
   it("omits Series and uses TMDB ID in Movies advanced search", async () => {

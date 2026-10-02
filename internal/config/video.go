@@ -10,6 +10,12 @@ import (
 // Troubleshooting: Non-video rows in Organize Rename/Dedup — gate with IsVideoExt/IsVideoFile, not ExcludedDirNames
 // Review if: Jellyfin MimeTypes._videoFileExtensions diverges from this set
 // Related files: internal/library/library.go, internal/library/library_series.go, internal/dedup/dedup.go, internal/rename/*
+//
+// Claude 2026-10-02: .iso/.img stay in VideoExts (Jellyfin parity) but are
+//   not resolvable library videos — Organize Discs is the only ISO path.
+// Reason: loose Golden/Animaniacs ISOs were showing up as Rename rows.
+// Troubleshooting: ISO in Rename — ResolveVideoFile must skip IsDiscImage.
+// Review if: VIDEO_TS folders become a third disc source.
 
 // VideoExts are extensions treated as playable video files — mirrors Jellyfin
 // MediaBrowser.Model/Net/MimeTypes._videoFileExtensions (case-insensitive).
@@ -37,4 +43,16 @@ func IsVideoExt(ext string) bool {
 // IsVideoFile reports whether path's extension is an allowlisted video format.
 func IsVideoFile(path string) bool {
 	return IsVideoExt(filepath.Ext(path))
+}
+
+// IsDiscImage reports whether path is a DVD image (.iso / .img). These are
+// in VideoExts for Jellyfin parity but are not Rename/Dedup/Import videos.
+func IsDiscImage(path string) bool {
+	e := strings.ToLower(filepath.Ext(path))
+	return e == ".iso" || e == ".img"
+}
+
+// IsLibraryVideoFile is a playable library video: VideoExts minus disc images.
+func IsLibraryVideoFile(path string) bool {
+	return IsVideoFile(path) && !IsDiscImage(path)
 }

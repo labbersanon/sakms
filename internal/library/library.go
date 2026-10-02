@@ -618,7 +618,7 @@ func ResolveVideoFile(path string) (string, error) {
 		return "", fmt.Errorf("stat %s: %w", path, err)
 	}
 	if !info.IsDir() {
-		if !config.IsVideoFile(path) {
+		if !config.IsLibraryVideoFile(path) {
 			return "", fmt.Errorf("not a video file: %s", path)
 		}
 		return path, nil
@@ -631,7 +631,11 @@ func ResolveVideoFile(path string) (string, error) {
 	var best string
 	var bestSize int64
 	for _, e := range entries {
-		if e.IsDir() || !config.IsVideoExt(filepath.Ext(e.Name())) {
+		// Claude 2026-10-02: skip .iso/.img even though VideoExts includes them.
+		// Reason: disc images are Organize Discs only; Rename must not list them.
+		// Troubleshooting: ISO still in Rename — IsLibraryVideoFile must be the gate.
+		// Review if: VIDEO_TS folders become a third disc source.
+		if e.IsDir() || !config.IsLibraryVideoFile(e.Name()) {
 			continue
 		}
 		fi, err := e.Info()

@@ -1,4 +1,4 @@
-// Organize groups Rename / Clean-up / Dedup / Browse / Import under a single
+// Organize groups Rename / Clean-up / Dedup / Browse / Import / Discs under a single
 // sidebar entry. Rename/Clean-up/Dedup are staged review queues; Browse is a
 // confirm-then-mutate file manager; Import identifies videos and MOVES them
 // into the library root. Workflow switching lives in the sidebar
@@ -27,6 +27,7 @@ import { Purge } from "./Purge";
 import { Dedup } from "./Dedup";
 import { Browse } from "./Browse";
 import { Import } from "./Import";
+import { Discs } from "./Discs";
 import {
   type OrganizeTabId,
   isOrganizeTabId,
@@ -72,6 +73,9 @@ export const Organize: Component = () => {
         </Show>
         <Show when={tab() === "import"}>
           <Import />
+        </Show>
+        <Show when={tab() === "discs"}>
+          <Discs />
         </Show>
       </ScreenTabsContext.Provider>
     </div>

@@ -2463,6 +2463,106 @@ export interface OrganizeBrowseOpResponse {
   results: OrganizeBrowseOpItem[];
 }
 /**
+ * Claude 2026-10-02: Organize Browse DVD unpack (ISO/IMG → MPEG-2 MKV).
+ * Reason: confirm-then-mutate like rename/delete; work is minutes-long so
+ * 	POST starts a job and GET polls status. Prefix stays /api/organize/.
+ * Troubleshooting: SL-9 — these literals must stay under /api/organize/.
+ * Review if: Usenet finalize grows the same unpack.
+ */
+export interface OrganizeDiscUnpackRequest {
+  path: string;
+  mode?: string;
+  tmdbId?: number /* int */;
+  title?: string;
+  year?: number /* int */;
+  items?: OrganizeDiscUnpackItem[];
+}
+/**
+ * OrganizeDiscUnpackItem is one selected title/chapter to extract and import.
+ * Conflict is replace | keep_both when ExistingPath is set.
+ */
+export interface OrganizeDiscUnpackItem {
+  name: string;
+  seasonNumber?: number /* int */;
+  episodeNumber?: number /* int */;
+  episodeTitle?: string;
+  conflict?: string;
+}
+/**
+ * OrganizeDiscIdentifyRequest is POST /api/organize/discs/identify.
+ */
+export interface OrganizeDiscIdentifyRequest {
+  path: string;
+}
+/**
+ * OrganizeDiscExistingEpisode is a library episode that already has a file.
+ */
+export interface OrganizeDiscExistingEpisode {
+  season: number /* int */;
+  episode: number /* int */;
+  title?: string;
+  path: string;
+}
+/**
+ * OrganizeDiscHit is a TMDB movie or series match for the disc volume.
+ */
+export interface OrganizeDiscHit {
+  mode: string;
+  tmdbId: number /* int */;
+  title: string;
+  year?: number /* int */;
+  existingPath?: string;
+  existingTitle?: string;
+  episodes?: OrganizeDiscExistingEpisode[];
+  suggestions?: OrganizeDiscSuggestion[];
+}
+/**
+ * OrganizeDiscSuggestion is a unique duration (or later title) match.
+ */
+export interface OrganizeDiscSuggestion {
+  name: string;
+  season: number /* int */;
+  episode: number /* int */;
+  title?: string;
+}
+/**
+ * OrganizeDiscWork is one planned extract row (title or chapter).
+ */
+export interface OrganizeDiscWork {
+  name: string;
+  title: number /* int */;
+  chapter?: number /* int */;
+  durationS: number /* float64 */;
+  role: string;
+  episodeTitle?: string;
+}
+/**
+ * OrganizeDiscIdentifyResponse is POST /api/organize/discs/identify.
+ */
+export interface OrganizeDiscIdentifyResponse {
+  path: string;
+  volume: string;
+  queries?: string[];
+  works: OrganizeDiscWork[];
+  hits: OrganizeDiscHit[];
+}
+/**
+ * OrganizeDiscUnpackStatus is POST/GET /api/organize/discs/extract
+ * (Browse /unpack-disc is a leftover alias). Status is idle | probing |
+ * extracting | done | error.
+ */
+export interface OrganizeDiscUnpackStatus {
+  path: string;
+  status: string;
+  volume?: string;
+  done: number /* int */;
+  total: number /* int */;
+  outputs?: string[];
+  error?: string;
+  deletedSource?: boolean;
+  tracked?: boolean;
+}
+/**
  * OrganizeBrowseProbe is ffprobe output for a video file on GET
  * /api/organize/browse/stat. Omitted when the path is not a video or probe
  * failed (see ProbeError on the parent).

@@ -27,15 +27,21 @@ import {
   createSignal,
   onCleanup,
 } from "solid-js";
-import type { OrganizeBrowseEntry, OrganizeBrowseOpItem } from "@dto";
+import type {
+  OrganizeBrowseEntry,
+  OrganizeBrowseOpItem,
+  OrganizeDiscUnpackStatus,
+} from "@dto";
 import {
   browseVideoUrl,
   deleteOrganizeBrowse,
   fetchOrganizeBrowse,
   fetchOrganizeBrowseStat,
   fetchOrganizeBrowseTracked,
+  fetchOrganizeDiscUnpack,
   moveOrganizeBrowse,
   renameOrganizeBrowse,
+  startOrganizeDiscUnpack,
 } from "../api/organizeBrowse";
 import { isAdultBrowsablePath } from "../api/settings";
 import { SourcePreviewVideo } from "../components/SourcePreview";
@@ -49,7 +55,23 @@ import ArrowUp from "lucide-solid/icons/arrow-up";
 type Dialog =
   | { kind: "rename"; path: string; name: string }
   | { kind: "move" }
-  | { kind: "delete" };
+  | { kind: "delete" }
+  | { kind: "unpack"; path: string; name: string };
+
+// Claude 2026-10-02: Unpack disc is ISO/IMG only (Phase 4 library-first).
+// Reason: IFO map must be read before the image is deleted; .mkv keeps tags.
+// Troubleshooting: button disabled — selection is not .iso/.img.
+// Review if: VIDEO_TS folders become a third source type.
+function isDiscImageName(name: string): boolean {
+  return /\.(iso|img)$/i.test(name);
+}
+
+// Claude 2026-10-02: Browse unpack UI retired — use Organize → Discs.
+// Reason: identify-after-select + existing-title conflict popup do not fit
+//   Browse confirm-then-mutate. Handlers stay so the API alias still works.
+// Troubleshooting: operators looking for Unpack disc — open ?tab=discs.
+// Review if: Browse grows a one-click extract that already identified.
+const browseUnpackEnabled = false;
 
 type MenuState = { x: number; y: number; path: string };
 
@@ -111,6 +133,9 @@ export const Browse: Component = () => {
   const [menu, setMenu] = createSignal<MenuState | null>(null);
   const [preview, setPreview] = createSignal<OrganizeBrowseEntry | null>(null);
   const [dialog, setDialog] = createSignal<Dialog | null>(null);
+  const [unpackStatus, setUnpackStatus] = createSignal<OrganizeDiscUnpackStatus | null>(
+    null,
+  );
   const [renameTo, setRenameTo] = createSignal("");
   const [destDir, setDestDir] = createSignal("");
   const [busy, setBusy] = createSignal(false);
@@ -246,6 +271,16 @@ export const Browse: Component = () => {
     setDialog({ kind: "move" });
   };
   const openDelete = () => setDialog({ kind: "delete" });
+  const discSelected = createMemo(() => {
+    const e = selectedEntries()[0];
+    return oneSelected() && !!e && !e.isDir && isDiscImageName(e.name);
+  });
+  const openUnpack = () => {
+    const e = selectedEntries()[0];
+    if (!e || !isDiscImageName(e.name)) return;
+    setUnpackStatus(null);
+    setDialog({ kind: "unpack", path: e.path, name: e.name });
+  };
 
   const onRowContext = (ev: MouseEvent, e: OrganizeBrowseEntry) => {
     ev.preventDefault();
@@ -306,6 +341,33 @@ export const Browse: Component = () => {
     }
   };
 
+  const runUnpack = async (p: string) => {
+    setBusy(true);
+    setError("");
+    try {
+      await startOrganizeDiscUnpack(p);
+      for (;;) {
+        const st = await fetchOrganizeDiscUnpack(p);
+        setUnpackStatus(st);
+        if (st.status === "done") {
+          setDialog(null);
+          break;
+        }
+        if (st.status === "error") {
+          setError(st.error || "Unpack failed");
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      setRefresh((n) => n + 1);
+      setLogKey((n) => n + 1);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const crumbs = createMemo(() => {
     const current = currentPath();
     const out = [{ label: "Files", path: "" }];
@@ -323,8 +385,13 @@ export const Browse: Component = () => {
       <h2 class="mb-1 text-lg font-semibold text-fg">Browse</h2>
       <Muted class="mb-4">
         Rename, move, or delete under /media, /downloads
-        {adultEnabled() ? ", and /adult" : ""}. Tracked library titles stay
-        in sync with the filesystem. Right-click a row for Properties, Copy
+        {adultEnabled() ? ", and /adult" : ""}.{" "}
+        {/* Claude 2026-10-02: "Unpack a DVD ISO into MPEG-2 MKV files, then
+            delete the image." moved to Organize → Discs.
+            Reason: ISOs are manual import only; identify after select.
+            Review if: Browse grows a one-click extract. */}
+        Tracked library titles stay in
+        sync with the filesystem. Right-click a row for Properties, Copy
         path, or Play/preview.
       </Muted>
 
@@ -362,6 +429,15 @@ export const Browse: Component = () => {
         >
           Delete
         </Button>
+        <Show when={browseUnpackEnabled}>
+          <Button
+            variant="secondary"
+            disabled={!discSelected() || busy()}
+            onClick={openUnpack}
+          >
+            Unpack disc
+          </Button>
+        </Show>
         <Button
           variant="secondary"
           disabled={!oneSelected() || busy()}
@@ -651,6 +727,13 @@ export const Browse: Component = () => {
               disabled={selectedCount() === 0 || busy()}
               onSelect={openDelete}
             />
+            <Show when={browseUnpackEnabled && menuEntry() && isDiscImageName(menuEntry()!.name)}>
+              <MenuItem
+                label="Unpack disc"
+                disabled={!discSelected() || busy()}
+                onSelect={openUnpack}
+              />
+            </Show>
             <MenuItem label="Copy path" onSelect={() => void copyPath(m().path)} />
             <Show when={menuEntry()?.playable}>
               <MenuItem
@@ -795,6 +878,47 @@ export const Browse: Component = () => {
               }}
             >
               Delete
+            </Button>
+          </div>
+        </Modal>
+      </Show>
+
+      <Show when={browseUnpackEnabled && dialog()?.kind === "unpack"}>
+        <Modal title="Unpack disc" onClose={() => !busy() && setDialog(null)}>
+          <p class="text-sm text-fg">
+            Extract MPEG-2 titles from this DVD into MKV files named from the
+            disc volume, then delete the ISO. Episode names are not on the
+            disc — assign those later in Rename. This can take a long time.
+          </p>
+          <p class="mt-2 font-mono text-xs text-muted">
+            {(() => {
+              const d = dialog();
+              return d?.kind === "unpack" ? d.path : "";
+            })()}
+          </p>
+          <Show when={unpackStatus()}>
+            {(st) => (
+              <p class="mt-2 text-sm text-muted">
+                {st().status === "extracting"
+                  ? `Extracting ${st().done}/${st().total || "?"}`
+                  : st().status}
+              </p>
+            )}
+          </Show>
+          <div class="mt-4 flex justify-end gap-2">
+            <Button variant="secondary" disabled={busy()} onClick={() => setDialog(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              disabled={busy()}
+              onClick={() => {
+                const d = dialog();
+                if (d?.kind !== "unpack") return;
+                void runUnpack(d.path);
+              }}
+            >
+              Unpack
             </Button>
           </div>
         </Modal>

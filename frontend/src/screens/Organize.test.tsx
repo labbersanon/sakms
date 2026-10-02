@@ -120,6 +120,14 @@ describe("Organize — query tab", () => {
     expect(screen.queryByText("No proposals yet — click Scan.")).toBeNull();
   });
 
+  it("?tab=discs shows the disc import screen", async () => {
+    stubFetch();
+    renderOrganize("/organize?tab=discs");
+    expect(await screen.findByText("Discs")).toBeInTheDocument();
+    expect(screen.getByText(/Pick one DVD ISO/)).toBeInTheDocument();
+    expect(screen.queryByText("No proposals yet — click Scan.")).toBeNull();
+  });
+
   it("opens the persisted tab when ?tab= missing", async () => {
     localStorage.setItem(ORGANIZE_TAB_KEY, "dedup");
     stubFetch();

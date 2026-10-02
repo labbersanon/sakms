@@ -4,6 +4,7 @@ import type {
   OrganizeBrowseResponse,
   OrganizeBrowseStat,
   OrganizeBrowseTrackedResponse,
+  OrganizeDiscUnpackStatus,
 } from "@dto";
 
 export function fetchOrganizeBrowse(path: string): Promise<OrganizeBrowseResponse> {
@@ -59,4 +60,21 @@ export function deleteOrganizeBrowse(
     method: "POST",
     body: JSON.stringify({ paths }),
   });
+}
+
+export function startOrganizeDiscUnpack(
+  path: string,
+): Promise<OrganizeDiscUnpackStatus> {
+  return api<OrganizeDiscUnpackStatus>("/api/organize/browse/unpack-disc", {
+    method: "POST",
+    body: JSON.stringify({ path }),
+  });
+}
+
+export function fetchOrganizeDiscUnpack(
+  path: string,
+): Promise<OrganizeDiscUnpackStatus> {
+  return api<OrganizeDiscUnpackStatus>(
+    `/api/organize/browse/unpack-disc?path=${encodeURIComponent(path)}`,
+  );
 }

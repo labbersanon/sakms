@@ -319,6 +319,31 @@ func TestScanLibrary_SilentlyOmitsNonVideo(t *testing.T) {
 	}
 }
 
+func TestScanLibrary_SilentlyOmitsDiscImages(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "looneytnsgldnv5d1.iso"), []byte("iso"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "bonus.img"), []byte("img"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seedMovieRelease(t, root, "Real.Movie.2020")
+
+	sess := &mode.Session{Mode: mode.Movies, TMDB: fakeTMDBSearch(t, map[string]string{
+		"Real Movie 2020": `{"results":[{"id":99,"title":"Real Movie","overview":"...","release_date":"2020-01-01"}]}`,
+	})}
+	got, err := ScanLibrary(context.Background(), sess, newTestLibraryStore(t), root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected only the real video, got %d: %+v", len(got), got)
+	}
+	if filepath.Ext(got[0].SourcePath) != ".mkv" {
+		t.Errorf("SourcePath should be video file, got %q", got[0].SourcePath)
+	}
+}
+
 func TestScanLibrary_BravePhase2_JoJoDancerYearTrust(t *testing.T) {
 	root := t.TempDir()
 	// Filename year 2007 is wrong; Brave+ground must recover 1986 film.

@@ -2513,6 +2513,99 @@ type OrganizeBrowseOpResponse struct {
 	Results []OrganizeBrowseOpItem `json:"results"`
 }
 
+// Claude 2026-10-02: Organize Browse DVD unpack (ISO/IMG → MPEG-2 MKV).
+// Reason: confirm-then-mutate like rename/delete; work is minutes-long so
+//
+//	POST starts a job and GET polls status. Prefix stays /api/organize/.
+//
+// Troubleshooting: SL-9 — these literals must stay under /api/organize/.
+// Review if: Usenet finalize grows the same unpack.
+type OrganizeDiscUnpackRequest struct {
+	Path   string                   `json:"path"`
+	Mode   string                   `json:"mode,omitempty"`
+	TMDBID int                      `json:"tmdbId,omitempty"`
+	Title  string                   `json:"title,omitempty"`
+	Year   int                      `json:"year,omitempty"`
+	Items  []OrganizeDiscUnpackItem `json:"items,omitempty"`
+}
+
+// OrganizeDiscUnpackItem is one selected title/chapter to extract and import.
+// Conflict is replace | keep_both when ExistingPath is set.
+type OrganizeDiscUnpackItem struct {
+	Name          string `json:"name"`
+	SeasonNumber  int    `json:"seasonNumber,omitempty"`
+	EpisodeNumber int    `json:"episodeNumber,omitempty"`
+	EpisodeTitle  string `json:"episodeTitle,omitempty"`
+	Conflict      string `json:"conflict,omitempty"`
+}
+
+// OrganizeDiscIdentifyRequest is POST /api/organize/discs/identify.
+type OrganizeDiscIdentifyRequest struct {
+	Path string `json:"path"`
+}
+
+// OrganizeDiscExistingEpisode is a library episode that already has a file.
+type OrganizeDiscExistingEpisode struct {
+	Season  int    `json:"season"`
+	Episode int    `json:"episode"`
+	Title   string `json:"title,omitempty"`
+	Path    string `json:"path"`
+}
+
+// OrganizeDiscHit is a TMDB movie or series match for the disc volume.
+type OrganizeDiscHit struct {
+	Mode          string                        `json:"mode"`
+	TMDBID        int                           `json:"tmdbId"`
+	Title         string                        `json:"title"`
+	Year          int                           `json:"year,omitempty"`
+	ExistingPath  string                        `json:"existingPath,omitempty"`
+	ExistingTitle string                        `json:"existingTitle,omitempty"`
+	Episodes      []OrganizeDiscExistingEpisode `json:"episodes,omitempty"`
+	Suggestions   []OrganizeDiscSuggestion      `json:"suggestions,omitempty"`
+}
+
+// OrganizeDiscSuggestion is a unique duration (or later title) match.
+type OrganizeDiscSuggestion struct {
+	Name    string `json:"name"`
+	Season  int    `json:"season"`
+	Episode int    `json:"episode"`
+	Title   string `json:"title,omitempty"`
+}
+
+// OrganizeDiscWork is one planned extract row (title or chapter).
+type OrganizeDiscWork struct {
+	Name         string  `json:"name"`
+	Title        int     `json:"title"`
+	Chapter      int     `json:"chapter,omitempty"`
+	DurationS    float64 `json:"durationS"`
+	Role         string  `json:"role"`
+	EpisodeTitle string  `json:"episodeTitle,omitempty"`
+}
+
+// OrganizeDiscIdentifyResponse is POST /api/organize/discs/identify.
+type OrganizeDiscIdentifyResponse struct {
+	Path    string             `json:"path"`
+	Volume  string             `json:"volume"`
+	Queries []string           `json:"queries,omitempty"`
+	Works   []OrganizeDiscWork `json:"works"`
+	Hits    []OrganizeDiscHit  `json:"hits"`
+}
+
+// OrganizeDiscUnpackStatus is POST/GET /api/organize/discs/extract
+// (Browse /unpack-disc is a leftover alias). Status is idle | probing |
+// extracting | done | error.
+type OrganizeDiscUnpackStatus struct {
+	Path          string   `json:"path"`
+	Status        string   `json:"status"`
+	Volume        string   `json:"volume,omitempty"`
+	Done          int      `json:"done"`
+	Total         int      `json:"total"`
+	Outputs       []string `json:"outputs,omitempty"`
+	Error         string   `json:"error,omitempty"`
+	DeletedSource bool     `json:"deletedSource,omitempty"`
+	Tracked       bool     `json:"tracked,omitempty"`
+}
+
 // Claude 2026-08-27: Organize Browse properties (stat) + in-pane preview.
 // Reason: the tab is a file manager — every row needs filesystem details,
 //   tracked library titles, and (for video) a probe; Play streams only after

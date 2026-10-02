@@ -10387,7 +10387,89 @@ status stays active.
 | `internal/rename/rename_library_series_test.go` | P3 split; empty/placeholder Apply; Scan title match |
 | `internal/rename/series_episode_title_match_test.go` | unique TVDB search |
 
+## 2026-10-02 — Unpack DVD ISO to MPEG-2 MKV from Organize Browse
 
+**Problem:** Library DVD ISOs (Looney Golden, Animaniacs, FathersLLDVD) import as one video file. Organize cannot name VIDEO_TS / play-all titles.
+**Root cause:** The IFO title/chapter map lives only on the disc image. Demuxing without persisting it loses episode order and volume identity.
+**Fix:** Organize Browse Unpack disc: probe titles via ffmpeg `dvdvideo`, write `{stem}.disc.json`, extract feature MKVs (`-c copy`) named `{VOLUME} - tNN.mkv`, delete the ISO only after every planned output exists. Play-all + short titles → per-title shorts; one long high-chapter title → chapter split; typical movie → one file. Extras skipped. Library ForgetPath on the ISO. No Usenet hook and no episode naming in this PR.
+**Outcome:** Select an `.iso` in Browse → Unpack disc. Files land beside the ISO; assign names later in Rename.
 
+### Files changed
 
+| File | Change |
+|---|---|
+| `internal/disc/*` | probe, roles, extract, sidecar, delete-on-success |
+| `internal/api/organize_disc.go` | POST start + GET poll under `/api/organize/browse/unpack-disc` |
+| `frontend/src/screens/Browse.tsx` | Unpack disc button, confirm, progress |
+| `frontend/src/api/organizeBrowse.ts` | start/fetch unpack |
+
+## 2026-10-02 — Organize Discs tab: identify after ISO pick, existing titles unchecked
+
+**Problem:** Browse Unpack disc extracted without catalog ID and without asking what to do with a title that already exists. ISOs are manual import, not a file-manager action.
+**Root cause:** Unpack lived on Browse as confirm-then-mutate. Identification never ran. Existing movie/episode rows stayed selected.
+**Fix:** New Organize → Discs tab. Pick a folder, pick one `.iso`/`.img`, then identify (IFO map + TMDB from volume queries). Existing library movies/episodes start unchecked. Checking an occupied row opens Replace old / Keep both / Cancel. Extract posts selected names + conflict; replace deletes the old file and ForgetPath. Browse Unpack disc UI is hidden (API alias kept).
+**Outcome:** `?tab=discs` — select ISO → identify → existing rows off → conflict popup on re-select → Extract selected.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/Discs.tsx` | folder → ISO radio → identify → works table + conflict modal |
+| `frontend/src/api/discs.ts` | identify + extract poll |
+| `frontend/src/screens/organizeTabs.ts` | `discs` workflow |
+| `frontend/src/screens/Browse.tsx` | Unpack disc UI gated off |
+| `internal/api/organize_discs.go` | POST `/api/organize/discs/identify`; existing fill + replace |
+| `internal/disc/inspect.go` | probe + sidecar, no extract |
+| `internal/disc/queries.go` | TMDB queries from volume/filename |
+
+## 2026-10-02 — Rename does not list DVD ISOs
+
+**Problem:** Loose `.iso`/`.img` files (Golden, Animaniacs) appeared as Organize Rename rows. Disc images are Organize → Discs only.
+**Root cause:** `VideoExts` includes `.iso`/`.img` for Jellyfin parity, and `ResolveVideoFile` treated them as playable library videos.
+**Fix:** `IsLibraryVideoFile` is VideoExts minus disc images. Movies/Series resolve gates use that, so Rename (and Import/Dedup resolve) silently omit ISOs. A folder that also has an `.mkv` still proposes the MKV.
+**Outcome:** Scan Rename no longer lists disc images.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/config/video.go` | `IsDiscImage`, `IsLibraryVideoFile` |
+| `internal/library/library.go` | `ResolveVideoFile` skips disc images |
+| `internal/library/library_series.go` | `ResolveEpisodeVideoFiles` skips disc images |
+| `internal/rename/rename_library_test.go` | ISO/IMG omitted from Movies scan |
+
+## 2026-10-02 — Disc extract names and moves unique TMDB matches
+
+**Problem:** Split MKVs stayed `{VOLUME} - tNN.mkv` beside the ISO. Operators still had to Rename. Unique-length shorts were not pre-assigned.
+**Root cause:** v1 stopped after extract. IFO has duration, not episode names. Relocate/Upsert was not wired.
+**Fix:** Phase 5b: identify attaches suggestions only when one work and one TMDB episode share a duration no other pair has (±25s). No count pairing, no `03,01` parse. Existing suggested episodes stay unchecked. Phase 5a: assigned rows RelocateMovie/RelocateEpisode + library upsert into the show/movie root (Kids root if the ISO sits under it). Unassigned rows stay beside the ISO. ISO is deleted only after assigned outputs land.
+**Outcome:** Unique-duration shorts pre-fill S/E. Extract moves those into the library dest.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/disc/match.go` | unique duration matching |
+| `internal/api/organize_discs.go` | suggestions on identify; import after extract |
+| `internal/api/organize_disc.go` | SkipDelete until import succeeds |
+| `frontend/src/screens/Discs.tsx` | apply suggestions; send episodeTitle |
+
+## 2026-10-02 — Disc lookup names shorts when the ISO has none
+
+**Problem:** Golden Collection shorts are all ~7 minutes, so unique-duration matching never fills S/E. IFO/ffmpeg has order and length, not cartoon names. OVID and DVDID do not name titles.
+**Root cause:** Identify only searched TMDB with the volume label. No disc TOC source was wired.
+**Fix:** If probe tags are missing or just the volume label, identify looks up Wikipedia Disc N tables (volume kept, disc number used as the section). SearXNG/Brave only find a wikipedia.org/wiki URL when API search misses. Names apply only when TOC length equals the planned extract count. Unique TMDB title match (not airdate order) overlays duration suggestions. Discs UI shows the cartoon name on each row.
+**Outcome:** Identify on Golden Vol 5 Disc 1 can name titles 2–16 from Wikipedia and pre-assign S/E when TMDB has that episode title.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/disc/wiki.go` | parse Disc N wikitables from wikitext |
+| `internal/disc/lookup.go` | Wikipedia API + SearXNG URL fallback; sidecar TOC |
+| `internal/disc/match.go` | unique title match |
+| `internal/disc/queries.go` | WikiQuery / DiscNumber |
+| `internal/api/organize_discs.go` | lookup on identify; title suggestions |
+| `internal/apidto/dto.go` | OrganizeDiscWork.episodeTitle |
+| `frontend/src/screens/Discs.tsx` | show episodeTitle on rows |
 

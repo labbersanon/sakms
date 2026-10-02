@@ -263,3 +263,57 @@ func TestImportGrabContent_SeriesUpgradeKeepsSharedOldFile(t *testing.T) {
 		t.Fatalf("E02 path = %q, want shared %q", ep2.FilePath, shared)
 	}
 }
+
+// TestImportGrabContent_SeriesSeasonDirDualImportsBothEpisodes: a file under
+// Season 2 named "06-07 Title, Other Title.mp4" must import as E06 and E07
+// sharing one dest path. ParseEpisodeNumbers (SxxExx-only) cannot see this;
+// Import must use ParseEpisodeNumbersLoose.
+func TestImportGrabContent_SeriesSeasonDirDualImportsBothEpisodes(t *testing.T) {
+	_, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	ctx := context.Background()
+
+	staging := t.TempDir()
+	root := t.TempDir()
+	srcDir := filepath.Join(staging, "Phineas and Ferb", "Season 2")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(srcDir, "06-07 Day of the Living Gelatin, Elementary My Dear Stacy.mp4")
+	if err := os.WriteFile(src, []byte("dual-ep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	g := &grabs.Grab{
+		Mode: mode.Series, Title: "Phineas and Ferb", TMDBID: 1877,
+		RootFolderPath: root,
+	}
+	changes, err := importGrabContent(ctx, libStore, g, src, "web", settingsStore, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("importGrabContent: %v", err)
+	}
+	if len(changes) == 0 {
+		t.Fatal("expected the Season-dir dual to import; Loose parse missed it")
+	}
+
+	series, err := libStore.GetSeriesByTMDBID(ctx, 1877)
+	if err != nil {
+		t.Fatalf("series: %v", err)
+	}
+	ep6, err := libStore.GetEpisode(ctx, series.ID, 2, 6)
+	if err != nil {
+		t.Fatalf("E06: %v", err)
+	}
+	ep7, err := libStore.GetEpisode(ctx, series.ID, 2, 7)
+	if err != nil {
+		t.Fatalf("E07: %v", err)
+	}
+	if ep6.FilePath == "" || ep6.FilePath != ep7.FilePath {
+		t.Fatalf("E06/E07 paths = %q / %q, want the same dest", ep6.FilePath, ep7.FilePath)
+	}
+	if !strings.Contains(filepath.Base(ep6.FilePath), "E06") || !strings.Contains(filepath.Base(ep6.FilePath), "E07") {
+		t.Fatalf("dest name %q should be a dual range", filepath.Base(ep6.FilePath))
+	}
+	if _, err := os.Stat(ep6.FilePath); err != nil {
+		t.Fatalf("dest missing: %v", err)
+	}
+}

@@ -1110,7 +1110,7 @@ func ParseEpisodeFilename(name string) (season, episode int, ok bool) {
 	return season, episodes[0], true
 }
 
-// Claude 2026-08-06: rename-path-only loose fallback to the parent directory
+// Claude 2026-08-06: loose fallback to the parent directory
 // Reason: 34 real "The Path" library rows (diagnosis
 //   .omc/artifacts/series-parse-failures-20260806.psv) have an opaque hash
 //   basename with zero recognizable content, while the immediate parent
@@ -1121,18 +1121,16 @@ func ParseEpisodeFilename(name string) (season, episode int, ok bool) {
 //   reason for a hash-named file whose parent folder is a normal release name.
 // Review if: ParseEpisodeNumbers' regex block (episodePattern/altEpisodePattern
 //   and friends) changes shape — this must keep calling it unmodified, never
-//   duplicate its logic, so the other three non-rename call sites
-//   (import.go, releasematch.go, dedup_phash_primary.go) stay provably
-//   unaffected (see .omc/plans/autopilot-impl.md §2.1's containment proof).
+//   duplicate its logic. releasematch.go stays on ParseEpisodeNumbers(title)
+//   because release titles have no Season folder.
 
-// ParseEpisodeNumbersLoose is ParseEpisodeNumbers' rename-path-only sibling:
+// ParseEpisodeNumbersLoose is ParseEpisodeNumbers' parent-aware sibling:
 // it tries basename with the unmodified strict parser first, and only when
 // that fails, tries parentDir's own basename (i.e. the immediate containing
-// directory's name, NOT the full path) with the SAME strict parser. Callers
-// pass filepath.Dir(sourcePath) as parentDir. This is pure delegation — zero
-// duplicated regex logic, and ParseEpisodeNumbers itself is untouched, so
-// every other caller of ParseEpisodeNumbers is provably unaffected by this
-// function's existence.
+// directory's name, NOT the full path) with the SAME strict parser, then
+// year-season and Season-dir NN-NN. Callers pass filepath.Dir(sourcePath)
+// as parentDir. Rename, Import, and Dedup orphans use this. ParseEpisodeNumbers
+// itself stays SxxExx so releasematch cannot fan out a pack title.
 func ParseEpisodeNumbersLoose(basename, parentDir string) (season int, episodes []int, ok bool) {
 	if season, episodes, ok = ParseEpisodeNumbers(basename); ok {
 		return season, episodes, ok
@@ -1140,24 +1138,24 @@ func ParseEpisodeNumbersLoose(basename, parentDir string) (season int, episodes 
 	if season, episodes, ok = ParseEpisodeNumbers(filepath.Base(parentDir)); ok {
 		return season, episodes, ok
 	}
-	// Claude 2026-09-23: year-as-season after sequential SxxExx, rename-only.
+	// Claude 2026-09-23: year-as-season after sequential SxxExx.
 	// Reason: S1958E14 is a shorts season, not S19. ParseEpisodeNumbers stays
-	//   two-digit so import/releasematch are unchanged.
-	// Review if: year-season is accepted on Dedup — it must not be.
+	//   two-digit so releasematch cannot treat S1958E14 as season 19.
+	// Review if: year-season should stay out of Import — Import now uses Loose.
 	if season, episodes, ok = ParseYearSeasonNumbers(basename); ok {
 		return season, episodes, ok
 	}
 	if season, episodes, ok = ParseYearSeasonNumbers(filepath.Base(parentDir)); ok {
 		return season, episodes, ok
 	}
-	// Claude 2026-10-01: Season NN + leading NN-NN pair, rename-only.
+	// Claude 2026-10-01: Season NN + leading NN-NN pair.
 	// Reason: Phineas duals are "06-07 Title, Other Title.mp4" under
-	//   Season 2 — no SxxExx — so Scan left them Unmatched and Search
-	//   had to pick the show by hand.
+	//   Season 2 — no SxxExx. Rename, Import, and Dedup orphans call Loose.
+	//   ParseEpisodeNumbers stays SxxExx so releasematch titles cannot fan out.
 	// Troubleshooting: 06-07 Day of the Living Gelatin stayed unmatched
 	//   with "could not determine season/episode".
 	// Review if: ParseEpisodeNumbers itself learns this shape (it must
-	//   not — Dedup/import stay on SxxExx).
+	//   not — releasematch has no parent dir).
 	return parseSeasonDirEpisodePair(basename, parentDir)
 }
 
@@ -1183,9 +1181,10 @@ func parseSeasonDirNumber(name string) (int, bool) {
 	return n, true
 }
 
-// parseSeasonDirEpisodePair is rename-only: parent is Season NN / Specials
-// and the basename starts with an adjacent NN-NN pair (Disney duals).
-// Exactly two episodes — "01-12" is refused so a pack name cannot fan out.
+// parseSeasonDirEpisodePair: parent is Season NN / Specials and the basename
+// starts with an adjacent NN-NN pair (Disney duals). Exactly two episodes —
+// "01-12" is refused so a pack name cannot fan out. Reached only via Loose
+// (Rename / Import / Dedup orphans), never via ParseEpisodeNumbers.
 func parseSeasonDirEpisodePair(basename, parentDir string) (int, []int, bool) {
 	season, ok := parseSeasonDirNumber(filepath.Base(parentDir))
 	if !ok {

@@ -13,6 +13,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/library"
@@ -691,5 +692,42 @@ func TestScanLibraryPHash_PrunesStaleOrphanCacheAfterFileRemoved(t *testing.T) {
 	}
 	if cached.PHash != "" {
 		t.Errorf("expected the orphan_phashes row for the removed file to be pruned, got %+v", cached)
+	}
+}
+
+// TestScanLibrarySeriesPHash_SeasonDirDualOrphanLabeledAsSplit: an untracked
+// Season 2 / 06-07 dual plus a second copy must group as S02E06-E07, not
+// S00E00. ParseEpisodeNumbers cannot see this shape; orphans use Loose.
+func TestScanLibrarySeriesPHash_SeasonDirDualOrphanLabeledAsSplit(t *testing.T) {
+	dir := t.TempDir()
+	dual := writeVideoFile(t, filepath.Join(dir, "Phineas and Ferb", "Season 2"),
+		"06-07 Day of the Living Gelatin, Elementary My Dear Stacy.mp4", 100)
+	extra := writeVideoFile(t, dir, "Phineas.S02E06-E07.REPACK.mp4", 100)
+
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	sess := &mode.Session{Mode: mode.Series}
+	prober := &fakeProber{byPath: map[string]*mediainfo.Probe{
+		dual:  {CodecName: "h264", Width: 1280, Height: 720, BitRate: 3000},
+		extra: {CodecName: "h265", Width: 1920, Height: 1080, BitRate: 8000},
+	}}
+	hasher := matchingPHasher(dual, extra)
+
+	got, err := ScanLibrarySeriesPHash(ctx, sess, libStore, dir, prober, hasher, 2, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || len(got[0].Candidates) != 2 {
+		t.Fatalf("expected one dual-file group, got %+v", got)
+	}
+	p := got[0]
+	if p.SeasonNumber != 2 || p.EpisodeNumber != 6 {
+		t.Errorf("slot = S%02dE%02d, want S02E06", p.SeasonNumber, p.EpisodeNumber)
+	}
+	if len(p.ExtraEpisodeNumbers) != 1 || p.ExtraEpisodeNumbers[0] != 7 {
+		t.Errorf("ExtraEpisodeNumbers = %v, want [7]", p.ExtraEpisodeNumbers)
+	}
+	if !strings.Contains(p.SourceName, "S02E06-E07") {
+		t.Errorf("SourceName = %q, want S02E06-E07", p.SourceName)
 	}
 }

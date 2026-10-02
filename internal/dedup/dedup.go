@@ -549,27 +549,35 @@ func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, p proposal
 		return 0, changes, fmt.Errorf("recording series %q: %w", p.Title, err)
 	}
 
-	title, airDate := "", ""
-	if existing, err := libStore.GetEpisode(ctx, series.ID, p.SeasonNumber, p.EpisodeNumber); err == nil {
-		title, airDate = existing.Title, existing.AirDate
-	} else if !errors.Is(err, library.ErrNotFound) {
-		return 0, changes, fmt.Errorf("checking existing episode metadata: %w", err)
-	}
-
 	// Persist the winner's phash + file identity so the next Scan finds it
 	// cached and skips re-decoding this file. winner.PHash was computed at Scan
 	// time (attachPHashesSeries) and rode through candidates_json; a stat
 	// failure just leaves the identity empty, self-invalidating on the next Scan.
 	winnerSize, winnerMTime, _ := fileIdentity(winner.Path)
-	ep, err := libStore.UpsertEpisode(ctx, library.Episode{
-		SeriesID: series.ID, SeasonNumber: p.SeasonNumber, EpisodeNumber: p.EpisodeNumber,
-		Title: title, AirDate: airDate, FilePath: winner.Path,
-		// Reuses winnerSize from the fileIdentity stat above — zero new I/O.
-		Size: winnerSize, QualityTier: tier,
-		PHash: winner.PHash, PHashFileSize: winnerSize, PHashFileMTime: winnerMTime,
-	})
+	// Claude 2026-10-01: untracked split winners upsert every bundled episode.
+	// Reason: Season-dir NN-NN orphans now parse as two numbers; writing only
+	//   EpisodeNumber left E07 untracked so CountEpisodesByFilePath stayed 1.
+	// Troubleshooting: Apply of a Phineas dual only created S02E06.
+	// Review if: Dedup Apply grows a relocate step (Rename already fans out).
+	allNums := append([]int{p.EpisodeNumber}, p.ExtraEpisodeNumbers...)
+	toUpsert := make([]library.Episode, 0, len(allNums))
+	for _, n := range allNums {
+		title, airDate := "", ""
+		if existing, err := libStore.GetEpisode(ctx, series.ID, p.SeasonNumber, n); err == nil {
+			title, airDate = existing.Title, existing.AirDate
+		} else if !errors.Is(err, library.ErrNotFound) {
+			return 0, changes, fmt.Errorf("checking existing episode metadata: %w", err)
+		}
+		toUpsert = append(toUpsert, library.Episode{
+			SeriesID: series.ID, SeasonNumber: p.SeasonNumber, EpisodeNumber: n,
+			Title: title, AirDate: airDate, FilePath: winner.Path,
+			Size: winnerSize, QualityTier: tier,
+			PHash: winner.PHash, PHashFileSize: winnerSize, PHashFileMTime: winnerMTime,
+		})
+	}
+	upserted, err := libStore.UpsertEpisodes(ctx, toUpsert)
 	if err != nil {
 		return 0, changes, fmt.Errorf("registering surviving copy %q: %w", p.Title, err)
 	}
-	return ep.ID, changes, nil
+	return upserted[0].ID, changes, nil
 }

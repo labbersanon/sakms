@@ -3,6 +3,7 @@ package dedup
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/library"
@@ -337,5 +338,59 @@ func TestApplyLibrarySeries_RejectsFewerThanTwoCandidates(t *testing.T) {
 	p := proposals.Proposal{Status: proposals.Pending, Candidates: []proposals.Candidate{{Path: "/a.mkv"}}}
 	if _, _, err := ApplyLibrarySeries(context.Background(), libStore, p, nil, nil, false, ""); err == nil {
 		t.Fatal("expected ApplyLibrarySeries to refuse a proposal with fewer than 2 candidates")
+	}
+}
+
+// TestApplyLibrarySeries_UntrackedSeasonDirDualUpsertsBothEpisodes: applying
+// an orphan-won dual must write E06 and E07 on the same path so the shared-
+// file delete guard sees refCount > 1.
+func TestApplyLibrarySeries_UntrackedSeasonDirDualUpsertsBothEpisodes(t *testing.T) {
+	dir := t.TempDir()
+	winnerPath := writeVideoFile(t, filepath.Join(dir, "Phineas and Ferb", "Season 2"),
+		"06-07 Day of the Living Gelatin, Elementary My Dear Stacy.mp4", 10)
+	loserPath := writeVideoFile(t, dir, "loser.mp4", 10)
+
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	p := proposals.Proposal{
+		ID: 1, Status: proposals.Pending, Title: "Phineas and Ferb", TMDBID: 1877,
+		SeasonNumber: 2, EpisodeNumber: 6, ExtraEpisodeNumbers: []int{7},
+		RootFolderPath: dir,
+		Candidates: []proposals.Candidate{
+			{Label: "winner", Path: winnerPath, Winner: true},
+			{Label: "loser", Path: loserPath},
+		},
+	}
+	id, _, err := ApplyLibrarySeries(ctx, libStore, p, nil, nil, false, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if id == 0 {
+		t.Fatal("expected a nonzero episode id")
+	}
+	series, err := libStore.GetSeriesByTMDBID(ctx, 1877)
+	if err != nil {
+		t.Fatalf("series: %v", err)
+	}
+	ep6, err := libStore.GetEpisode(ctx, series.ID, 2, 6)
+	if err != nil {
+		t.Fatalf("E06: %v", err)
+	}
+	ep7, err := libStore.GetEpisode(ctx, series.ID, 2, 7)
+	if err != nil {
+		t.Fatalf("E07: %v", err)
+	}
+	if ep6.FilePath != winnerPath || ep7.FilePath != winnerPath {
+		t.Fatalf("paths = %q / %q, want both %q", ep6.FilePath, ep7.FilePath, winnerPath)
+	}
+	n, err := libStore.CountEpisodesByFilePath(ctx, winnerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("CountEpisodesByFilePath = %d, want 2", n)
+	}
+	if _, err := os.Stat(loserPath); !os.IsNotExist(err) {
+		t.Error("expected the losing copy to be deleted")
 	}
 }

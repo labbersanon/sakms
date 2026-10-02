@@ -2521,11 +2521,68 @@ type OrganizeBrowseOpResponse struct {
 // Troubleshooting: SL-9 — these literals must stay under /api/organize/.
 // Review if: Usenet finalize grows the same unpack.
 type OrganizeDiscUnpackRequest struct {
+	Path   string                   `json:"path"`
+	Mode   string                   `json:"mode,omitempty"`
+	TMDBID int                      `json:"tmdbId,omitempty"`
+	Title  string                   `json:"title,omitempty"`
+	Year   int                      `json:"year,omitempty"`
+	Items  []OrganizeDiscUnpackItem `json:"items,omitempty"`
+}
+
+// OrganizeDiscUnpackItem is one selected title/chapter to extract and import.
+// Conflict is replace | keep_both when ExistingPath is set.
+type OrganizeDiscUnpackItem struct {
+	Name          string `json:"name"`
+	SeasonNumber  int    `json:"seasonNumber,omitempty"`
+	EpisodeNumber int    `json:"episodeNumber,omitempty"`
+	Conflict      string `json:"conflict,omitempty"`
+}
+
+// OrganizeDiscIdentifyRequest is POST /api/organize/discs/identify.
+type OrganizeDiscIdentifyRequest struct {
 	Path string `json:"path"`
 }
 
-// OrganizeDiscUnpackStatus is POST/GET /api/organize/browse/unpack-disc.
-// Status is idle | probing | extracting | done | error.
+// OrganizeDiscExistingEpisode is a library episode that already has a file.
+type OrganizeDiscExistingEpisode struct {
+	Season  int    `json:"season"`
+	Episode int    `json:"episode"`
+	Title   string `json:"title,omitempty"`
+	Path    string `json:"path"`
+}
+
+// OrganizeDiscHit is a TMDB movie or series match for the disc volume.
+type OrganizeDiscHit struct {
+	Mode          string                        `json:"mode"`
+	TMDBID        int                           `json:"tmdbId"`
+	Title         string                        `json:"title"`
+	Year          int                           `json:"year,omitempty"`
+	ExistingPath  string                        `json:"existingPath,omitempty"`
+	ExistingTitle string                        `json:"existingTitle,omitempty"`
+	Episodes      []OrganizeDiscExistingEpisode `json:"episodes,omitempty"`
+}
+
+// OrganizeDiscWork is one planned extract row (title or chapter).
+type OrganizeDiscWork struct {
+	Name      string  `json:"name"`
+	Title     int     `json:"title"`
+	Chapter   int     `json:"chapter,omitempty"`
+	DurationS float64 `json:"durationS"`
+	Role      string  `json:"role"`
+}
+
+// OrganizeDiscIdentifyResponse is POST /api/organize/discs/identify.
+type OrganizeDiscIdentifyResponse struct {
+	Path    string             `json:"path"`
+	Volume  string             `json:"volume"`
+	Queries []string           `json:"queries,omitempty"`
+	Works   []OrganizeDiscWork `json:"works"`
+	Hits    []OrganizeDiscHit  `json:"hits"`
+}
+
+// OrganizeDiscUnpackStatus is POST/GET /api/organize/discs/extract
+// (Browse /unpack-disc is a leftover alias). Status is idle | probing |
+// extracting | done | error.
 type OrganizeDiscUnpackStatus struct {
 	Path          string   `json:"path"`
 	Status        string   `json:"status"`

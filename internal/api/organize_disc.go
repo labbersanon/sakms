@@ -115,15 +115,27 @@ func organizeDiscUnpackStartHandler(libStore *library.Store) http.HandlerFunc {
 		liveDisc = job
 		discJobMu.Unlock()
 
-		go runDiscUnpack(job, libStore, src)
+		go runDiscUnpack(job, libStore, src, req)
 		writeJSONStatus(w, http.StatusAccepted, snapshotDiscJob())
 	}
 }
 
-func runDiscUnpack(job *discJob, libStore *library.Store, src string) {
+func runDiscUnpack(job *discJob, libStore *library.Store, src string, req apidto.OrganizeDiscUnpackRequest) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 	defer cancel()
+	if libStore != nil && req.TMDBID > 0 {
+		hit := &apidto.OrganizeDiscHit{Mode: req.Mode, TMDBID: req.TMDBID, Title: req.Title}
+		fillDiscExisting(ctx, libStore, hit)
+		if err := applyDiscConflicts(ctx, libStore, req.Items, hit); err != nil {
+			job.mu.Lock()
+			job.Status = "error"
+			job.Error = err.Error()
+			job.mu.Unlock()
+			return
+		}
+	}
 	res, err := unpackDiscFn(ctx, src, disc.Options{
+		OnlyNames: discOnlyNames(req.Items),
 		OnProgress: func(done, total int) {
 			job.mu.Lock()
 			job.Status = "extracting"
@@ -139,7 +151,7 @@ func runDiscUnpack(job *discJob, libStore *library.Store, src string) {
 		job.Error = err.Error()
 		fail := false
 		organizeevents.Log(context.Background(), organizeevents.Event{
-			Workflow: "browse", Kind: organizeevents.KindDiscUnpack, OK: &fail,
+			Workflow: "discs", Kind: organizeevents.KindDiscUnpack, OK: &fail,
 			Message: "unpack failed " + src + ": " + err.Error(),
 		})
 		return
@@ -160,7 +172,7 @@ func runDiscUnpack(job *discJob, libStore *library.Store, src string) {
 	}
 	ok := true
 	organizeevents.Log(context.Background(), organizeevents.Event{
-		Workflow: "browse", Kind: organizeevents.KindDiscUnpack, OK: &ok,
+		Workflow: "discs", Kind: organizeevents.KindDiscUnpack, OK: &ok,
 		Message: "unpacked " + src + " → " + strings.Join(res.Outputs, ", "),
 	})
 }

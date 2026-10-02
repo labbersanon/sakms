@@ -42,9 +42,10 @@ const (
 	KindFileRename = "file_rename"
 	KindFileMove   = "file_move"
 	KindFileDelete = "file_delete"
-	// Claude 2026-10-02: DVD ISO unpack from Organize Browse.
-	// Reason: Browse activity log is queried WHERE workflow=browse.
-	// Troubleshooting: unpack missing from the log — kind must be this value.
+	// Claude 2026-10-02: DVD ISO unpack from Organize Discs.
+	// Reason: activity log is queried WHERE workflow=discs (Discs tab).
+	// Troubleshooting: unpack missing from the log — kind must be this value
+	//   and Append workflow must be "discs".
 	// Review if: Usenet disc unpack logs under a downloads workflow instead.
 	KindDiscUnpack = "disc_unpack"
 )

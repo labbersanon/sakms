@@ -252,36 +252,47 @@ describe("Browse", () => {
     expect(screen.getByRole("menuitem", { name: "Delete" })).toBeEnabled();
   });
 
-  it("unpacks a selected ISO after confirm and polls until done", async () => {
-    const fetchFn = stubBrowse();
+  // Claude 2026-10-02: Browse unpack retired — ISOs are Organize → Discs.
+  // Reason: identify-after-select + existing conflict popup live on Discs.
+  // Troubleshooting: this used to POST /api/organize/browse/unpack-disc.
+  // Review if: Browse grows a one-click extract.
+  // it("unpacks a selected ISO after confirm and polls until done", async () => {
+  //   const fetchFn = stubBrowse();
+  //   await openMedia();
+  //   expect(screen.getByRole("button", { name: "Unpack disc" })).toBeDisabled();
+  //   fireEvent.click(screen.getByLabelText("Select show.iso"));
+  //   expect(screen.getByRole("button", { name: "Unpack disc" })).toBeEnabled();
+  //   fireEvent.click(screen.getByRole("button", { name: "Unpack disc" }));
+  //   expect(
+  //     await screen.findByText(/Extract MPEG-2 titles from this DVD/),
+  //   ).toBeInTheDocument();
+  //   fireEvent.click(screen.getByRole("button", { name: "Unpack" }));
+  //   await waitFor(() => {
+  //     expect(
+  //       fetchFn.mock.calls.some(
+  //         (c) =>
+  //           String((c[1] as RequestInit | undefined)?.method || "GET").toUpperCase() ===
+  //             "POST" && String(c[0]).includes("/api/organize/browse/unpack-disc"),
+  //       ),
+  //     ).toBe(true);
+  //   });
+  //   await waitFor(() => {
+  //     expect(
+  //       fetchFn.mock.calls.some(
+  //         (c) =>
+  //           String(c[0]).includes("/api/organize/browse/unpack-disc") &&
+  //           String((c[1] as RequestInit | undefined)?.method || "GET").toUpperCase() ===
+  //             "GET",
+  //       ),
+  //     ).toBe(true);
+  //   });
+  // });
+
+  it("does not offer Unpack disc — ISOs go to Organize Discs", async () => {
+    stubBrowse();
     await openMedia();
-    expect(screen.getByRole("button", { name: "Unpack disc" })).toBeDisabled();
     fireEvent.click(screen.getByLabelText("Select show.iso"));
-    expect(screen.getByRole("button", { name: "Unpack disc" })).toBeEnabled();
-    fireEvent.click(screen.getByRole("button", { name: "Unpack disc" }));
-    expect(
-      await screen.findByText(/Extract MPEG-2 titles from this DVD/),
-    ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Unpack" }));
-    await waitFor(() => {
-      expect(
-        fetchFn.mock.calls.some(
-          (c) =>
-            String((c[1] as RequestInit | undefined)?.method || "GET").toUpperCase() ===
-              "POST" && String(c[0]).includes("/api/organize/browse/unpack-disc"),
-        ),
-      ).toBe(true);
-    });
-    await waitFor(() => {
-      expect(
-        fetchFn.mock.calls.some(
-          (c) =>
-            String(c[0]).includes("/api/organize/browse/unpack-disc") &&
-            String((c[1] as RequestInit | undefined)?.method || "GET").toUpperCase() ===
-              "GET",
-        ),
-      ).toBe(true);
-    });
+    expect(screen.queryByRole("button", { name: "Unpack disc" })).not.toBeInTheDocument();
   });
 
   it("hides /adult when Adult mode is off and leaves it if the toggle turns off mid-browse", async () => {

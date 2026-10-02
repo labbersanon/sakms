@@ -24,6 +24,11 @@ export const ORGANIZE_WORKFLOWS = [
   // Troubleshooting: invalid tab still falls back to rename.
   // Review if: nested paths replace query params.
   { id: "import", label: "Import" },
+  // Claude 2026-10-02: Discs tab — manual ISO identify then extract.
+  // Reason: ISOs are not Browse-auto and not dump-folder Import.
+  // Troubleshooting: invalid tab still falls back to rename.
+  // Review if: nested paths replace query params.
+  { id: "discs", label: "Discs" },
 ] as const;
 
 export type OrganizeTabId = (typeof ORGANIZE_WORKFLOWS)[number]["id"];

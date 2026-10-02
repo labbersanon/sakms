@@ -8,9 +8,11 @@ import (
 )
 
 // Options control Unpack. SkipDelete is for tests that must keep the source.
+// OnlyNames, when set, extracts only those PlanWorks names (t02, t01c07).
 type Options struct {
 	OnProgress func(done, total int)
 	SkipDelete bool
+	OnlyNames  []string
 }
 
 // Unpack probes src, writes a sidecar, extracts feature MKVs next to the
@@ -40,6 +42,19 @@ func Unpack(ctx context.Context, src string, opts Options) (*Result, error) {
 	}
 	titles = AssignRoles(titles)
 	works := PlanWorks(titles)
+	if len(opts.OnlyNames) > 0 {
+		allow := map[string]bool{}
+		for _, n := range opts.OnlyNames {
+			allow[n] = true
+		}
+		filtered := works[:0]
+		for _, w := range works {
+			if allow[w.Name] {
+				filtered = append(filtered, w)
+			}
+		}
+		works = filtered
+	}
 	if len(works) == 0 {
 		return nil, ErrNoFeatures
 	}

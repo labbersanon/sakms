@@ -5,7 +5,11 @@ import { api } from "./client";
 import type { OrganizeEvent, Proposal, ProposalPage } from "@dto";
 import type { Mode } from "./discover";
 
-export type OrganizeWorkflow = "rename" | "dedup" | "purge" | "browse";
+// Claude 2026-10-02: discs is an Organize activity-log workflow.
+// Reason: ISO extract logs under workflow=discs (not browse).
+// Troubleshooting: Discs activity log empty — fetchOrganizeEvents("discs").
+// Review if: Import grows an activity log and needs the same union member.
+export type OrganizeWorkflow = "rename" | "dedup" | "purge" | "browse" | "discs";
 
 export type { AdultOrganizeAspect } from "./aspect";
 export { adultAspectQuery } from "./aspect";

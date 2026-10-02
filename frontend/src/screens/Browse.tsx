@@ -66,6 +66,13 @@ function isDiscImageName(name: string): boolean {
   return /\.(iso|img)$/i.test(name);
 }
 
+// Claude 2026-10-02: Browse unpack UI retired — use Organize → Discs.
+// Reason: identify-after-select + existing-title conflict popup do not fit
+//   Browse confirm-then-mutate. Handlers stay so the API alias still works.
+// Troubleshooting: operators looking for Unpack disc — open ?tab=discs.
+// Review if: Browse grows a one-click extract that already identified.
+const browseUnpackEnabled = false;
+
 type MenuState = { x: number; y: number; path: string };
 
 const dtClass = "text-[11px] uppercase tracking-wide text-muted";
@@ -378,8 +385,12 @@ export const Browse: Component = () => {
       <h2 class="mb-1 text-lg font-semibold text-fg">Browse</h2>
       <Muted class="mb-4">
         Rename, move, or delete under /media, /downloads
-        {adultEnabled() ? ", and /adult" : ""}. Unpack a DVD ISO into MPEG-2
-        MKV files, then delete the image. Tracked library titles stay in
+        {adultEnabled() ? ", and /adult" : ""}.{" "}
+        {/* Claude 2026-10-02: "Unpack a DVD ISO into MPEG-2 MKV files, then
+            delete the image." moved to Organize → Discs.
+            Reason: ISOs are manual import only; identify after select.
+            Review if: Browse grows a one-click extract. */}
+        Tracked library titles stay in
         sync with the filesystem. Right-click a row for Properties, Copy
         path, or Play/preview.
       </Muted>
@@ -418,13 +429,15 @@ export const Browse: Component = () => {
         >
           Delete
         </Button>
-        <Button
-          variant="secondary"
-          disabled={!discSelected() || busy()}
-          onClick={openUnpack}
-        >
-          Unpack disc
-        </Button>
+        <Show when={browseUnpackEnabled}>
+          <Button
+            variant="secondary"
+            disabled={!discSelected() || busy()}
+            onClick={openUnpack}
+          >
+            Unpack disc
+          </Button>
+        </Show>
         <Button
           variant="secondary"
           disabled={!oneSelected() || busy()}
@@ -714,7 +727,7 @@ export const Browse: Component = () => {
               disabled={selectedCount() === 0 || busy()}
               onSelect={openDelete}
             />
-            <Show when={menuEntry() && isDiscImageName(menuEntry()!.name)}>
+            <Show when={browseUnpackEnabled && menuEntry() && isDiscImageName(menuEntry()!.name)}>
               <MenuItem
                 label="Unpack disc"
                 disabled={!discSelected() || busy()}
@@ -870,7 +883,7 @@ export const Browse: Component = () => {
         </Modal>
       </Show>
 
-      <Show when={dialog()?.kind === "unpack"}>
+      <Show when={browseUnpackEnabled && dialog()?.kind === "unpack"}>
         <Modal title="Unpack disc" onClose={() => !busy() && setDialog(null)}>
           <p class="text-sm text-fg">
             Extract MPEG-2 titles from this DVD into MKV files named from the

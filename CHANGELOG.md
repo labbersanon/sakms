@@ -10403,6 +10403,25 @@ status stays active.
 | `frontend/src/screens/Browse.tsx` | Unpack disc button, confirm, progress |
 | `frontend/src/api/organizeBrowse.ts` | start/fetch unpack |
 
+## 2026-10-02 — Organize Discs tab: identify after ISO pick, existing titles unchecked
+
+**Problem:** Browse Unpack disc extracted without catalog ID and without asking what to do with a title that already exists. ISOs are manual import, not a file-manager action.
+**Root cause:** Unpack lived on Browse as confirm-then-mutate. Identification never ran. Existing movie/episode rows stayed selected.
+**Fix:** New Organize → Discs tab. Pick a folder, pick one `.iso`/`.img`, then identify (IFO map + TMDB from volume queries). Existing library movies/episodes start unchecked. Checking an occupied row opens Replace old / Keep both / Cancel. Extract posts selected names + conflict; replace deletes the old file and ForgetPath. Browse Unpack disc UI is hidden (API alias kept).
+**Outcome:** `?tab=discs` — select ISO → identify → existing rows off → conflict popup on re-select → Extract selected.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/Discs.tsx` | folder → ISO radio → identify → works table + conflict modal |
+| `frontend/src/api/discs.ts` | identify + extract poll |
+| `frontend/src/screens/organizeTabs.ts` | `discs` workflow |
+| `frontend/src/screens/Browse.tsx` | Unpack disc UI gated off |
+| `internal/api/organize_discs.go` | POST `/api/organize/discs/identify`; existing fill + replace |
+| `internal/disc/inspect.go` | probe + sidecar, no extract |
+| `internal/disc/queries.go` | TMDB queries from volume/filename |
+
 
 
 

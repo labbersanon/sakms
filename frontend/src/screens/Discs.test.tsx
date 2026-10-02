@@ -87,6 +87,31 @@ async function openFolder() {
 }
 
 describe("Discs", () => {
+  it("shows Movies, Series, and Adult before a folder is picked", () => {
+    stubDiscs();
+    render(() => <Discs />);
+    expect(screen.getByRole("button", { name: "Movies" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Series" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Adult" })).toBeInTheDocument();
+  });
+
+  it("identifies in Series when that chip is selected", async () => {
+    const { identifyBodies } = stubDiscs({
+      identify: {
+        path: "/media/show.iso",
+        volume: "SHOW",
+        works: [{ name: "t01", title: 1, durationS: 400, role: "feature" }],
+        hits: [{ mode: "series", tmdbId: 12, title: "Looney Tunes", year: 1930 }],
+      },
+    });
+    await openFolder();
+    fireEvent.click(screen.getByRole("button", { name: "Series" }));
+    fireEvent.click(screen.getByLabelText("Select show.iso"));
+    expect(await screen.findByText("SHOW")).toBeInTheDocument();
+    expect(identifyBodies).toEqual([{ path: "/media/show.iso", mode: "series" }]);
+    expect(screen.getByLabelText("Catalog title")).toHaveDisplayValue(/Looney Tunes/);
+  });
+
   it("does not identify until an ISO is selected", async () => {
     const { identifyBodies } = stubDiscs();
     await openFolder();
@@ -99,9 +124,9 @@ describe("Discs", () => {
     await openFolder();
     fireEvent.click(screen.getByLabelText("Select show.iso"));
     expect(await screen.findByText("LOONEY_TUNES_GOLDEN_V5_D1")).toBeInTheDocument();
-    expect(identifyBodies).toEqual([{ path: "/media/show.iso" }]);
+    expect(identifyBodies).toEqual([{ path: "/media/show.iso", mode: "movies" }]);
     expect(screen.getByLabelText("Catalog title")).toHaveDisplayValue(
-      /Movie · The Matrix \(1999\) · in library/,
+      /The Matrix \(1999\) · in library/,
     );
     expect(screen.getByText(/V is volume and D is disc/)).toBeInTheDocument();
     expect(screen.getByLabelText("Select t02")).not.toBeChecked();

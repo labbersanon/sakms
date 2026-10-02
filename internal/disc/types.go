@@ -1,9 +1,9 @@
 // Package disc probes DVD ISO/IMG images and extracts MPEG-2 titles.
 //
-// Claude 2026-10-02: Organize Browse unpack for library disc images.
-// Reason: .iso already counts as video, but IFO titles/chapters are the
+// Claude 2026-10-02: Organize Discs unpack for library disc images.
+// Reason: .iso stays in VideoExts (Jellyfin) but is not a Rename video;
 //
-//	episode map; a demuxed .mpg loses that unless we persist it first.
+//	IFO titles/chapters are the episode map and must be persisted first.
 //
 // Troubleshooting: container ffmpeg must list demuxer dvdvideo (BtbN GPL).
 // Review if: Usenet finalize grows the same hook (Phase 3, not this PR).
@@ -13,6 +13,8 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+
+	"github.com/labbersanon/sakms/internal/config"
 )
 
 const (
@@ -87,8 +89,7 @@ type Result struct {
 
 // IsDiscImage reports whether path is an .iso or .img file.
 func IsDiscImage(path string) bool {
-	ext := strings.ToLower(filepath.Ext(path))
-	return ext == ".iso" || ext == ".img"
+	return config.IsDiscImage(path)
 }
 
 // SidecarPath is the JSON map next to src (stem.disc.json).

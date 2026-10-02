@@ -631,6 +631,24 @@ func TestResolveEpisodeVideoFiles_SingleFileAndSeasonPack(t *testing.T) {
 	if _, err := ResolveEpisodeVideoFiles(nonVideo); err == nil {
 		t.Fatal("expected error for non-video loose file")
 	}
+
+	iso := filepath.Join(dir, "show.iso")
+	if err := os.WriteFile(iso, []byte("iso"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveEpisodeVideoFiles(iso); err == nil {
+		t.Fatal("expected error for disc image")
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "disc.iso"), []byte("iso"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = ResolveEpisodeVideoFiles(packDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected both episode files (not the ISO), got %v", got)
+	}
 }
 
 func TestUpsertEpisode_RoundTripsPHashIdentity(t *testing.T) {

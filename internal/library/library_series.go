@@ -1440,7 +1440,7 @@ func ResolveEpisodeVideoFiles(path string) ([]string, error) {
 		return nil, fmt.Errorf("stat %s: %w", path, err)
 	}
 	if !info.IsDir() {
-		if !config.IsVideoFile(path) {
+		if !config.IsLibraryVideoFile(path) {
 			return nil, fmt.Errorf("not a video file: %s", path)
 		}
 		return []string{path}, nil
@@ -1452,7 +1452,11 @@ func ResolveEpisodeVideoFiles(path string) ([]string, error) {
 	}
 	var out []string
 	for _, e := range entries {
-		if e.IsDir() || !config.IsVideoExt(filepath.Ext(e.Name())) {
+		// Claude 2026-10-02: skip .iso/.img even though VideoExts includes them.
+		// Reason: disc images are Organize Discs only; Series Rename must not list them.
+		// Troubleshooting: ISO still in Series Rename — IsLibraryVideoFile must be the gate.
+		// Review if: VIDEO_TS folders become a third disc source.
+		if e.IsDir() || !config.IsLibraryVideoFile(e.Name()) {
 			continue
 		}
 		out = append(out, filepath.Join(path, e.Name()))

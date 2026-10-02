@@ -10422,6 +10422,22 @@ status stays active.
 | `internal/disc/inspect.go` | probe + sidecar, no extract |
 | `internal/disc/queries.go` | TMDB queries from volume/filename |
 
+## 2026-10-02 — Rename does not list DVD ISOs
+
+**Problem:** Loose `.iso`/`.img` files (Golden, Animaniacs) appeared as Organize Rename rows. Disc images are Organize → Discs only.
+**Root cause:** `VideoExts` includes `.iso`/`.img` for Jellyfin parity, and `ResolveVideoFile` treated them as playable library videos.
+**Fix:** `IsLibraryVideoFile` is VideoExts minus disc images. Movies/Series resolve gates use that, so Rename (and Import/Dedup resolve) silently omit ISOs. A folder that also has an `.mkv` still proposes the MKV.
+**Outcome:** Scan Rename no longer lists disc images.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/config/video.go` | `IsDiscImage`, `IsLibraryVideoFile` |
+| `internal/library/library.go` | `ResolveVideoFile` skips disc images |
+| `internal/library/library_series.go` | `ResolveEpisodeVideoFiles` skips disc images |
+| `internal/rename/rename_library_test.go` | ISO/IMG omitted from Movies scan |
+
 
 
 

@@ -24,4 +24,13 @@ func TestIsVideoExt_JellyfinParity(t *testing.T) {
 	if IsVideoFile("/media/trickplay/320 - 10x10") {
 		t.Error("IsVideoFile(extensionless) = true")
 	}
+	if !IsDiscImage("/media/show.ISO") || !IsDiscImage("disc.img") {
+		t.Error("IsDiscImage(.iso/.img) = false")
+	}
+	if IsDiscImage("/media/Movie.mkv") || IsLibraryVideoFile("/media/show.iso") {
+		t.Error("disc image must not be a library video")
+	}
+	if !IsLibraryVideoFile("/media/Movie.mkv") {
+		t.Error("IsLibraryVideoFile(.mkv) = false")
+	}
 }

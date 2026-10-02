@@ -288,6 +288,36 @@ func TestScanRootFolder_SkipsKnownAndSidecarFiles(t *testing.T) {
 	}
 }
 
+func TestResolveVideoFile_OmitsDiscImages(t *testing.T) {
+	dir := t.TempDir()
+	iso := filepath.Join(dir, "show.iso")
+	if err := os.WriteFile(iso, []byte("iso"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveVideoFile(iso); err == nil {
+		t.Fatal("expected error for loose ISO")
+	}
+
+	folder := filepath.Join(dir, "Movie (2020)")
+	if err := os.Mkdir(folder, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mkv := filepath.Join(folder, "Movie (2020).mkv")
+	if err := os.WriteFile(mkv, []byte("mkv"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(folder, "Movie (2020).iso"), []byte("iso-bigger-than-mkv-xxxxx"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ResolveVideoFile(folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != mkv {
+		t.Fatalf("got %q, want mkv not ISO", got)
+	}
+}
+
 func TestScanRootFolder_MissingRootGivesActionableMountMessage(t *testing.T) {
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "does-not-exist")

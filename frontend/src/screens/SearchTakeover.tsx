@@ -356,6 +356,10 @@ async function showPrefixEpisodeHits(
 //   return { showQ: title, episodeQ: title };
 // }
 
+// Claude 2026-10-01: do not seed the step-2 filter from a hash basename.
+// Reason: unmatched a3f9c2e1b7d84f0e hid every season ("no episodes match").
+// Troubleshooting: Specials row missing after picking The Path.
+// Review if: Scan always prefills a real show name into Series Search.
 function looksLikeEpisodeFilter(raw: string): boolean {
   const s = raw.trim();
   if (!s) {

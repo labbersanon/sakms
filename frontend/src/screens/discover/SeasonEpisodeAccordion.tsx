@@ -64,9 +64,18 @@ function parseSlotFilter(raw: string): { season: number; episode: number } | nul
   if (!m) {
     return null;
   }
+  // Claude 2026-10-01: guard capture groups before parseInt.
+  // Reason: noUncheckedIndexedAccess types m[1]/m[2] as string | undefined.
+  // Troubleshooting: #125 deploy failed TS2345 at parseSlotFilter.
+  // Review if: tsconfig turns off noUncheckedIndexedAccess.
+  const seasonRaw = m[1];
+  const episodeRaw = m[2];
+  if (!seasonRaw || !episodeRaw) {
+    return null;
+  }
   return {
-    season: Number.parseInt(m[1], 10),
-    episode: Number.parseInt(m[2], 10),
+    season: Number.parseInt(seasonRaw, 10),
+    episode: Number.parseInt(episodeRaw, 10),
   };
 }
 

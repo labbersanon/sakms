@@ -327,10 +327,10 @@ func TestParseEpisodeNumbers(t *testing.T) {
 	}
 }
 
-// TestParseEpisodeNumbersLoose covers the rename-path-only fallback (§2.2 of
+// TestParseEpisodeNumbersLoose covers the parent-aware fallback (§2.2 of
 // .omc/plans/autopilot-impl.md): "The Path"'s real shape is an opaque hash
 // basename inside a parent directory that is itself a complete scene-release
-// name.
+// name. Import and Dedup orphans use this same helper.
 func TestParseEpisodeNumbersLoose(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -428,7 +428,7 @@ func TestParseEpisodeNumbersLoose(t *testing.T) {
 		t.Error("ParseEpisodeNumbers must still return ok=false for the opaque hash basename — the loose fallback must not have widened the strict parser")
 	}
 	if _, _, ok := ParseEpisodeNumbers("06-07 Day of the Living Gelatin, Elementary My Dear Stacy.mp4"); ok {
-		t.Error("ParseEpisodeNumbers must still return ok=false for a Season-dir NN-NN dual — Dedup/import stay on SxxExx")
+		t.Error("ParseEpisodeNumbers must still return ok=false for a Season-dir NN-NN dual — releasematch stays on SxxExx; Import/Dedup call Loose")
 	}
 }
 

@@ -10237,6 +10237,25 @@ status stays active.
 | `internal/library/library_series.go` | `parseSeasonDirEpisodePair` on the loose rename path |
 | `internal/library/library_series_test.go` | Phineas Season 2 pair; pack names refused |
 
+## 2026-10-01 — Import and Dedup parse Season-dir NN-NN duals
+
+**Problem:** After Rename Scan learned `Season 2` + `06-07 Title, Other.mp4`, Import still used SxxExx-only `ParseEpisodeNumbers` and Dedup orphans had no season/episode, so Phineas duals imported as one slot (or were skipped) and Dedup labeled them S00E00.
+**Root cause:** #118 kept Dedup/import on `ParseEpisodeNumbers` on purpose. Those callers need the same Loose helper Rename uses; `ParseEpisodeNumbers` itself must stay SxxExx so releasematch titles cannot fan out.
+**Fix:** Import calls `ParseEpisodeNumbersLoose(basename, parentDir)`. Dedup Series orphans Loose-parse and carry `ExtraEpisodeNumbers`; Apply upserts every bundled episode on the winner path. Shared-file delete still uses `CountEpisodesByFilePath`.
+**Outcome:** `Season 2/06-07 ….mp4` imports as E06–E07 sharing one file; Dedup proposes that dual as S02E06-E07 and tracks both rows when the orphan wins.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/import.go` | Loose parse on series import |
+| `internal/api/import_organize_test.go` | Phineas Season 2 dual imports both episodes |
+| `internal/dedup/dedup_phash_primary.go` | Loose-parse orphan season/episode + extras |
+| `internal/dedup/dedup.go` | untracked split winner upserts every bundled episode |
+| `internal/dedup/dedup_phash_primary_test.go` | dual orphan labeled S02E06-E07 |
+| `internal/dedup/dedup_library_series_test.go` | Apply writes E06 and E07 |
+| `internal/library/library_series.go` | Loose is no longer rename-only |
+
 
 
 

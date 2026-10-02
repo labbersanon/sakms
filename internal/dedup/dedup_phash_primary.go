@@ -29,14 +29,15 @@ import (
 // all-pairs comparison pass. Both kinds of file go through this representation
 // before the union-find grouping step.
 type pHashFileItem struct {
-	path      string
-	label     string // filename basename — display fallback when TMDB search fails
-	trackedID int    // 0 for orphans
-	tmdbID    int    // from tracked identity or TMDB search; 0 if unknown
-	title     string // TMDB-resolved title; "" if unavailable
-	season    int    // Series only — from an already-tracked library row
-	episode   int    // Series only
-	phashVal  string // "" means computation failed; item skipped during comparison
+	path          string
+	label         string // filename basename — display fallback when TMDB search fails
+	trackedID     int    // 0 for orphans
+	tmdbID        int    // from tracked identity or TMDB search; 0 if unknown
+	title         string // TMDB-resolved title; "" if unavailable
+	season        int    // Series only — tracked row or Loose parse on an orphan
+	episode       int    // Series only — primary number
+	extraEpisodes []int  // Series only — additional numbers on a split file
+	phashVal      string // "" means computation failed; item skipped during comparison
 }
 
 // pHashUnionFind is a path-compressed union-find for connected-component
@@ -406,11 +407,25 @@ func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *l
 		if onProgress != nil {
 			onProgress(ProgressEvent{Current: current, Total: total, Name: name, Phase: "hashing"})
 		}
-		items = append(items, pHashFileItem{
+		item := pHashFileItem{
 			path:     videoPath,
 			label:    name,
 			phashVal: h,
-		})
+		}
+		// Claude 2026-10-01: Loose-parse orphan season/episode (Season-dir NN-NN).
+		// Reason: Dedup grouped by phash with season/episode only on tracked rows,
+		//   so an untracked Phineas dual labeled S00E00 and was not a known split.
+		//   ParseEpisodeNumbers stays SxxExx — releasematch has no parent dir.
+		// Troubleshooting: Season 2/06-07 Title.mp4 proposed as S00E00.
+		// Review if: Dedup starts grouping by parsed identity instead of phash.
+		if season, episodes, ok := library.ParseEpisodeNumbersLoose(name, filepath.Dir(videoPath)); ok && len(episodes) > 0 {
+			item.season = season
+			item.episode = episodes[0]
+			if len(episodes) > 1 {
+				item.extraEpisodes = episodes[1:]
+			}
+		}
+		items = append(items, item)
 	}
 
 	// Every path this scan saw keeps its cached hash — see the Movies sibling.
@@ -429,10 +444,12 @@ func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *l
 		similarity := minPairwiseSimilarity(group, phash.Frames)
 		title, tmdbID, rootPath := pHashGroupLabel(group)
 		season, episode := 0, 0
+		var extra []int
 		for _, item := range group {
 			if item.season != 0 || item.episode != 0 {
 				season = item.season
 				episode = item.episode
+				extra = item.extraEpisodes
 				break
 			}
 		}
@@ -451,13 +468,17 @@ func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *l
 		}
 		markWinner(candidates)
 		label := fmt.Sprintf("%s S%02dE%02d", title, season, episode)
+		if len(extra) > 0 {
+			label = fmt.Sprintf("%s S%02dE%02d-E%02d", title, season, episode, extra[len(extra)-1])
+		}
 		out = append(out, proposals.Proposal{
 			Mode: mode.Series, Workflow: proposals.Dedup, Status: proposals.Pending,
 			SourceName: label, Title: title, TMDBID: tmdbID, SeasonNumber: season, EpisodeNumber: episode,
-			RootFolderPath:  rootPath,
-			Candidates:      candidates,
-			PHashSimilarity: similarity,
-			Reason:          pHashGroupReason(group, len(candidates), similarity, perFrameThreshold, nil),
+			ExtraEpisodeNumbers: extra,
+			RootFolderPath:      rootPath,
+			Candidates:          candidates,
+			PHashSimilarity:     similarity,
+			Reason:              pHashGroupReason(group, len(candidates), similarity, perFrameThreshold, nil),
 		})
 	}
 	return out, nil

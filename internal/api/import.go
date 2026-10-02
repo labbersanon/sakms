@@ -366,7 +366,13 @@ func importGrabSeries(ctx context.Context, libStore *library.Store, g *grabs.Gra
 		if err := usenet.VideoLooksFinished(videoPath, 0); err != nil {
 			return changes, err
 		}
-		season, episodes, ok := library.ParseEpisodeNumbers(filepath.Base(videoPath))
+		// Claude 2026-10-01: Loose parse so Season-dir NN-NN duals import as two episodes.
+		// Reason: Phineas files are "06-07 Title, Other Title.mp4" under Season 2 —
+		//   ParseEpisodeNumbers is SxxExx-only (releasematch has no parent dir).
+		// Troubleshooting: import recorded one grab slot or skipped the file.
+		// Review if: ParseEpisodeNumbers itself learns this shape (it must not).
+		// season, episodes, ok := library.ParseEpisodeNumbers(filepath.Base(videoPath))
+		season, episodes, ok := library.ParseEpisodeNumbersLoose(filepath.Base(videoPath), filepath.Dir(videoPath))
 		if !ok {
 			season, episodes, ok = resolveImportEpisodeSlot(ctx, sess, g.TMDBID, videoPath)
 		}

@@ -13,7 +13,7 @@ import (
 //   on sequential S01E01. Kept OUT of ParseEpisodeNumbers so import and
 //   releasematch never treat S1958E14 as season 19.
 // Troubleshooting: a 1958 Looney Tunes file stays unparsed — check the
-//   1928–1999 window and that Dedup is not the caller.
+//   1928–1999 window. Dedup orphans now call Loose (year-season included).
 // Review if: a post-1999 shorts series is filed as year-seasons on purpose.
 const (
 	YearSeasonMin = 1928

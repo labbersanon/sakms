@@ -1209,6 +1209,8 @@ describe("Rename — search takeover container semantics (N1, N2, N5)", () => {
         return jsonResponse([
           tmdbItem({ id: 901, title: "Target Show", releaseDate: "2019-01-01" }),
         ]);
+      if (url.includes("/api/modes/series/discover/detail"))
+        return jsonResponse({ seasons: [] });
       if (
         url.includes("/api/proposals/72/move-mode") &&
         (init?.method ?? "").toUpperCase() === "POST"
@@ -1226,6 +1228,7 @@ describe("Rename — search takeover container semantics (N1, N2, N5)", () => {
 
     fireEvent.click(screen.getByText("Search"));
     fireEvent.click(await screen.findByLabelText("Use Target Show"));
+    fireEvent.click(await screen.findByText("Use show-level match only"));
 
     await waitFor(() =>
       expect(calls.some((c) => c.url.includes("/move-mode"))).toBe(true),
@@ -1352,6 +1355,8 @@ describe("Rename — takeover scroll restore (N4, N4b)", () => {
         return jsonResponse([
           tmdbItem({ id: 902, title: "Target Show", releaseDate: "2019-01-01" }),
         ]);
+      if (url.includes("/api/modes/series/discover/detail"))
+        return jsonResponse({ seasons: [] });
       if (
         url.includes("/api/proposals/74/move-mode") &&
         (init?.method ?? "").toUpperCase() === "POST"
@@ -1372,6 +1377,7 @@ describe("Rename — takeover scroll restore (N4, N4b)", () => {
 
     fireEvent.click(screen.getByText("Search"));
     fireEvent.click(await screen.findByLabelText("Use Target Show"));
+    fireEvent.click(await screen.findByText("Use show-level match only"));
 
     await waitFor(() =>
       expect(

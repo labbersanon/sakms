@@ -1961,7 +1961,7 @@ describe("SearchTakeover — Advanced search", () => {
       <SearchTakeover
         heading="Re-pick"
         searchMode="series"
-        initialQuery="bonus episode-handy manny-ice cream team"
+        initialQuery=""
         autoSearch={false}
         onCommit={commitSpy()}
         onDone={vi.fn()}

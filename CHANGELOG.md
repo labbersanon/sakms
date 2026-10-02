@@ -10318,7 +10318,8 @@ status stays active.
 |---|---|
 | `frontend/src/screens/SearchTakeover.tsx` | structured Advanced queries; peel agreeing show; series tile → step 2 |
 | `frontend/src/screens/SearchTakeover.test.tsx` | Advanced Series+Title; multi-hit peel; tile drills; movie click still commits |
-| `frontend/src/screens/Rename.test.tsx` | Series repick tile then show-level hatch |
+| `frontend/src/screens/Rename.test.tsx` | Series repick/move tile then show-level hatch |
+| `frontend/src/screens/Dedup.test.tsx` | Series move tile then show-level hatch |
 
 
 

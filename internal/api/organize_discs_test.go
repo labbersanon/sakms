@@ -290,3 +290,33 @@ func TestOrganizeDiscUnpack_ImportsAssignedThenDeletesISO(t *testing.T) {
 		t.Fatalf("outputs = %v", st.Outputs)
 	}
 }
+
+func TestParseDiscMode(t *testing.T) {
+	if got := parseDiscMode(""); got != "movies" {
+		t.Fatalf("empty = %q", got)
+	}
+	if got := parseDiscMode("series"); got != "series" {
+		t.Fatalf("series = %q", got)
+	}
+	if got := parseDiscMode("adult"); got != "adult" {
+		t.Fatalf("adult = %q", got)
+	}
+	if got := parseDiscMode("nope"); got != "movies" {
+		t.Fatalf("unknown = %q", got)
+	}
+}
+
+func TestDiscHasCatalog(t *testing.T) {
+	if discHasCatalog(apidto.OrganizeDiscUnpackRequest{Mode: "movies"}) {
+		t.Fatal("movies without tmdb should not import")
+	}
+	if !discHasCatalog(apidto.OrganizeDiscUnpackRequest{Mode: "movies", TMDBID: 1}) {
+		t.Fatal("movies with tmdb should import")
+	}
+	if discHasCatalog(apidto.OrganizeDiscUnpackRequest{Mode: "adult", TMDBID: 1}) {
+		t.Fatal("adult must not import on tmdb id alone")
+	}
+	if !discHasCatalog(apidto.OrganizeDiscUnpackRequest{Mode: "adult", Box: "tpdb", SceneID: "9"}) {
+		t.Fatal("adult with box+scene should import")
+	}
+}

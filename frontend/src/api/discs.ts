@@ -7,10 +7,11 @@ import type {
 
 export function identifyOrganizeDisc(
   path: string,
+  mode?: string,
 ): Promise<OrganizeDiscIdentifyResponse> {
   return api<OrganizeDiscIdentifyResponse>("/api/organize/discs/identify", {
     method: "POST",
-    body: JSON.stringify({ path }),
+    body: JSON.stringify({ path, mode }),
   });
 }
 
@@ -20,6 +21,10 @@ export function startOrganizeDiscExtract(body: {
   tmdbId?: number;
   title?: string;
   year?: number;
+  box?: string;
+  sceneId?: string;
+  studio?: string;
+  date?: string;
   items: OrganizeDiscUnpackItem[];
 }): Promise<OrganizeDiscUnpackStatus> {
   return api<OrganizeDiscUnpackStatus>("/api/organize/discs/extract", {

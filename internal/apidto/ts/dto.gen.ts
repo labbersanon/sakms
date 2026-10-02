@@ -2475,6 +2475,16 @@ export interface OrganizeDiscUnpackRequest {
   tmdbId?: number /* int */;
   title?: string;
   year?: number /* int */;
+  /**
+   * Claude 2026-10-02: Adult catalog identity on extract.
+   * Reason: ApplyLibraryAdult keys on (box, scene_id), not TMDB.
+   * Troubleshooting: Adult extract left MKVs beside the ISO — Box/SceneID empty.
+   * Review if: Adult disc titles get per-work scene assignment.
+   */
+  box?: string;
+  sceneId?: string;
+  studio?: string;
+  date?: string;
   items?: OrganizeDiscUnpackItem[];
 }
 /**
@@ -2493,6 +2503,14 @@ export interface OrganizeDiscUnpackItem {
  */
 export interface OrganizeDiscIdentifyRequest {
   path: string;
+  /**
+   * Claude 2026-10-02: operator library chip (movies | series | adult).
+   * Reason: Discs had no mode control; TMDB movies+TV were mixed in one list.
+   *   Empty defaults to movies. Adult searches TPDB/stash-box, not TMDB.
+   * Troubleshooting: Series ISO showed only movies — Mode was omitted.
+   * Review if: identify always requires Mode (drop the movies default).
+   */
+  mode?: string;
 }
 /**
  * OrganizeDiscExistingEpisode is a library episode that already has a file.
@@ -2504,7 +2522,7 @@ export interface OrganizeDiscExistingEpisode {
   path: string;
 }
 /**
- * OrganizeDiscHit is a TMDB movie or series match for the disc volume.
+ * OrganizeDiscHit is a catalog match for the disc volume (TMDB or Adult box).
  */
 export interface OrganizeDiscHit {
   mode: string;
@@ -2515,6 +2533,16 @@ export interface OrganizeDiscHit {
   existingTitle?: string;
   episodes?: OrganizeDiscExistingEpisode[];
   suggestions?: OrganizeDiscSuggestion[];
+  /**
+   * Claude 2026-10-02: Adult hit identity (box + sceneId).
+   * Reason: TMDBID is 0 for Adult; ApplyLibraryAdult refuses empty box/scene.
+   * Troubleshooting: Adult dropdown keys collided — all tmdbId were 0.
+   * Review if: OrganizeDiscHit splits into TMDB vs Adult types.
+   */
+  box?: string;
+  sceneId?: string;
+  studio?: string;
+  date?: string;
 }
 /**
  * OrganizeDiscSuggestion is a unique duration (or later title) match.

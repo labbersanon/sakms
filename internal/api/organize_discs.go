@@ -11,6 +11,11 @@ package api
 //   are in disc order. SearXNG only finds the wiki URL.
 // Troubleshooting: names omitted when TOC length ≠ feature count.
 // Review if: OVID or ffprobe starts returning per-title names.
+//
+// Claude 2026-10-02: identify honors Movies / Series / Adult.
+// Reason: Discs mixed TMDB movies+TV and had no Adult path.
+// Troubleshooting: wrong catalog — Mode omitted defaults to movies.
+// Review if: empty Mode searches both TMDB catalogs again.
 
 import (
 	"context"
@@ -27,6 +32,7 @@ import (
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/disc"
+	"github.com/labbersanon/sakms/internal/identify"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/naming"
@@ -66,6 +72,10 @@ func organizeDiscIdentifyHandler(
 			http.Error(w, "path must be an .iso or .img file", http.StatusBadRequest)
 			return
 		}
+		catalog := parseDiscMode(req.Mode)
+		if catalog == mode.Adult && denyIfAdultLocked(w, r) {
+			return
+		}
 		m, err := inspectDiscFn(r.Context(), src)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
@@ -79,7 +89,7 @@ func organizeDiscIdentifyHandler(
 		}
 		works := discWorksFromMap(m)
 		queries := disc.SearchQueries(m.Volume, src)
-		hits := identifyDiscHits(r, httpClient, connStore, scStore, settingsStore, libStore, queries, works, disc.VolumeNumber(m.Volume, src))
+		hits := identifyDiscHits(r, httpClient, connStore, scStore, settingsStore, libStore, catalog, queries, works, disc.VolumeNumber(m.Volume, src))
 		writeJSON(w, apidto.OrganizeDiscIdentifyResponse{
 			Path: src, Volume: m.Volume, Queries: queries, Works: works, Hits: hits,
 		})
@@ -162,6 +172,17 @@ func wikiURLsFromSearch(res []websearch.Result) []string {
 	return out
 }
 
+func parseDiscMode(raw string) mode.Mode {
+	switch mode.Mode(strings.TrimSpace(raw)) {
+	case mode.Series:
+		return mode.Series
+	case mode.Adult:
+		return mode.Adult
+	default:
+		return mode.Movies
+	}
+}
+
 func identifyDiscHits(
 	r *http.Request,
 	httpClient *http.Client,
@@ -169,12 +190,16 @@ func identifyDiscHits(
 	scStore *serviceconn.Store,
 	settingsStore *settings.Store,
 	libStore *library.Store,
+	catalog mode.Mode,
 	queries []string,
 	works []apidto.OrganizeDiscWork,
 	volume int,
 ) []apidto.OrganizeDiscHit {
 	if len(queries) == 0 || connStore == nil {
 		return nil
+	}
+	if catalog == mode.Adult {
+		return identifyAdultDiscHits(r, httpClient, connStore, scStore, settingsStore, libStore, queries)
 	}
 	sess, err := mode.Build(r.Context(), connStore, scStore, settingsStore, httpClient, nil, mode.Movies)
 	if err != nil || sess == nil || sess.TMDB == nil {
@@ -199,23 +224,31 @@ func identifyDiscHits(
 		}
 		hits = append(hits, hit)
 	}
+	// Claude 2026-10-02: search only the operator's library chip.
+	// Reason: Discs mixed Movie and Series hits; the chip is the mode.
+	// Troubleshooting: Series selected, movies still listed — catalog was ignored.
+	// Review if: empty Mode goes back to searching both catalogs.
 	for _, q := range queries {
-		movies, err := sess.TMDB.SearchMovies(r.Context(), q)
-		if err == nil {
-			for i, it := range movies {
-				if i >= 5 {
-					break
+		if catalog == mode.Movies {
+			movies, err := sess.TMDB.SearchMovies(r.Context(), q)
+			if err == nil {
+				for i, it := range movies {
+					if i >= 5 {
+						break
+					}
+					add(string(mode.Movies), it)
 				}
-				add(string(mode.Movies), it)
 			}
 		}
-		shows, err := sess.TMDB.SearchTV(r.Context(), q)
-		if err == nil {
-			for i, it := range shows {
-				if i >= 5 {
-					break
+		if catalog == mode.Series {
+			shows, err := sess.TMDB.SearchTV(r.Context(), q)
+			if err == nil {
+				for i, it := range shows {
+					if i >= 5 {
+						break
+					}
+					add(string(mode.Series), it)
 				}
-				add(string(mode.Series), it)
 			}
 		}
 		if len(hits) >= 12 {
@@ -234,6 +267,65 @@ func identifyDiscHits(
 	return hits
 }
 
+func identifyAdultDiscHits(
+	r *http.Request,
+	httpClient *http.Client,
+	connStore *connections.Store,
+	scStore *serviceconn.Store,
+	settingsStore *settings.Store,
+	libStore *library.Store,
+	queries []string,
+) []apidto.OrganizeDiscHit {
+	sess, err := mode.Build(r.Context(), connStore, scStore, settingsStore, httpClient, nil, mode.Adult)
+	if err != nil || sess == nil || sess.Identify == nil || sess.Identify.Boxes == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var hits []apidto.OrganizeDiscHit
+	add := func(c identify.SceneCandidate) {
+		if strings.TrimSpace(c.Box) == "" || strings.TrimSpace(c.SceneID) == "" {
+			return
+		}
+		key := c.Box + ":" + c.SceneID
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		hit := apidto.OrganizeDiscHit{
+			Mode:    string(mode.Adult),
+			Title:   c.Title,
+			Year:    yearFromDate(c.Date),
+			Box:     c.Box,
+			SceneID: c.SceneID,
+			Studio:  c.Studio,
+			Date:    c.Date,
+		}
+		if libStore != nil {
+			fillDiscExisting(r.Context(), libStore, &hit)
+		}
+		hits = append(hits, hit)
+	}
+	for _, q := range queries {
+		items, _ := sess.Identify.Boxes.ListSceneCandidates(r.Context(), q, sess.Identify.StashBoxes)
+		for _, it := range items {
+			add(it)
+			if len(hits) >= 12 {
+				return hits
+			}
+		}
+		if movie, merr := sess.Identify.Boxes.SearchTPDBMovies(r.Context(), q); merr == nil && movie != nil {
+			add(identify.SceneCandidate{
+				Box: movie.Box, SceneID: movie.SceneID, Title: movie.Title,
+				Studio: movie.Studio, Date: movie.Date,
+			})
+			if len(hits) >= 12 {
+				return hits
+			}
+		}
+	}
+	return hits
+}
+
 func fillDiscExisting(ctx context.Context, libStore *library.Store, hit *apidto.OrganizeDiscHit) {
 	switch hit.Mode {
 	case string(mode.Movies):
@@ -243,6 +335,16 @@ func fillDiscExisting(ctx context.Context, libStore *library.Store, hit *apidto.
 		}
 		hit.ExistingPath = item.FilePath
 		hit.ExistingTitle = item.Title
+	case string(mode.Adult):
+		if strings.TrimSpace(hit.Box) == "" || strings.TrimSpace(hit.SceneID) == "" {
+			return
+		}
+		sc, err := libStore.GetScene(ctx, hit.Box, hit.SceneID)
+		if err != nil || sc == nil || sc.FilePath == "" {
+			return
+		}
+		hit.ExistingPath = sc.FilePath
+		hit.ExistingTitle = sc.Title
 	case string(mode.Series):
 		series, err := libStore.GetSeriesByTMDBID(ctx, hit.TMDBID)
 		if err != nil {
@@ -283,7 +385,7 @@ func applyDiscConflicts(ctx context.Context, libStore *library.Store, items []ap
 			continue
 		}
 		path := ""
-		if hit.Mode == string(mode.Movies) {
+		if hit.Mode == string(mode.Movies) || hit.Mode == string(mode.Adult) {
 			path = hit.ExistingPath
 		}
 		if hit.Mode == string(mode.Series) && it.SeasonNumber >= 0 && it.EpisodeNumber >= 1 {
@@ -370,15 +472,20 @@ func suggestDiscSlots(ctx context.Context, client *tmdb.Client, tmdbID int, work
 // importDiscOutputsFn is swappable in tests.
 var importDiscOutputsFn = importDiscOutputs
 
+func discHasCatalog(req apidto.OrganizeDiscUnpackRequest) bool {
+	m := parseDiscMode(req.Mode)
+	if m == mode.Adult {
+		return strings.TrimSpace(req.Box) != "" && strings.TrimSpace(req.SceneID) != ""
+	}
+	return req.TMDBID > 0
+}
+
 func importDiscOutputs(ctx context.Context, deps discUnpackDeps, src string, req apidto.OrganizeDiscUnpackRequest, outputs []string) ([]string, error) {
-	if deps.settingsStore == nil || req.TMDBID <= 0 {
+	if deps.settingsStore == nil || !discHasCatalog(req) {
 		return outputs, nil
 	}
-	m := mode.Mode(strings.TrimSpace(req.Mode))
-	if m != mode.Movies && m != mode.Series {
-		return outputs, nil
-	}
-	destRoot, err := discDestRoot(ctx, deps, m, req.TMDBID, src)
+	m := parseDiscMode(req.Mode)
+	destRoot, err := discDestRoot(ctx, deps, m, req, src)
 	if err != nil {
 		return nil, err
 	}
@@ -388,9 +495,11 @@ func importDiscOutputs(ctx context.Context, deps discUnpackDeps, src string, req
 	}
 	tier := string(autoGrabTier(ctx, deps.settingsStore, m))
 	var tmdbClient *tmdb.Client
+	var sess *mode.Session
 	if deps.connStore != nil {
-		if sess, berr := mode.Build(ctx, deps.connStore, deps.scStore, deps.settingsStore, deps.httpClient, nil, m); berr == nil && sess != nil {
-			tmdbClient = sess.TMDB
+		if built, berr := mode.Build(ctx, deps.connStore, deps.scStore, deps.settingsStore, deps.httpClient, nil, m); berr == nil && built != nil {
+			sess = built
+			tmdbClient = built.TMDB
 		}
 	}
 	itemByName := map[string]apidto.OrganizeDiscUnpackItem{}
@@ -402,7 +511,7 @@ func importDiscOutputs(ctx context.Context, deps discUnpackDeps, src string, req
 	for _, path := range outputs {
 		name := discWorkNameFromOutput(path)
 		it := itemByName[name]
-		next, ierr := importOneDiscOutput(ctx, deps.libStore, tmdbClient, m, destRoot, preset, tier, req, it, path)
+		next, ierr := importOneDiscOutput(ctx, deps.libStore, sess, tmdbClient, m, destRoot, preset, tier, req, it, path)
 		if ierr != nil {
 			errs = append(errs, filepath.Base(path)+": "+ierr.Error())
 			out = append(out, path)
@@ -427,6 +536,7 @@ func discWorkNameFromOutput(path string) string {
 func importOneDiscOutput(
 	ctx context.Context,
 	libStore *library.Store,
+	sess *mode.Session,
 	tmdbClient *tmdb.Client,
 	m mode.Mode,
 	destRoot string,
@@ -443,18 +553,32 @@ func importOneDiscOutput(
 		return src, nil
 	}
 	p := proposals.Proposal{
-		Mode:           m,
-		Workflow:       proposals.Rename,
-		Status:         proposals.Pending,
-		SourcePath:     src,
-		SourceName:     filepath.Base(src),
-		RootFolderPath: destRoot,
-		Title:          req.Title,
-		TMDBID:         req.TMDBID,
-		Year:           req.Year,
-		SeasonNumber:   it.SeasonNumber,
-		EpisodeNumber:  it.EpisodeNumber,
-		EpisodeTitle:   it.EpisodeTitle,
+		Mode:            m,
+		Workflow:        proposals.Rename,
+		Status:          proposals.Pending,
+		SourcePath:      src,
+		SourceName:      filepath.Base(src),
+		RootFolderPath:  destRoot,
+		Title:           req.Title,
+		TMDBID:          req.TMDBID,
+		Year:            req.Year,
+		SeasonNumber:    it.SeasonNumber,
+		EpisodeNumber:   it.EpisodeNumber,
+		EpisodeTitle:    it.EpisodeTitle,
+		Studio:          req.Studio,
+		Date:            req.Date,
+		GiveBackBox:     req.Box,
+		GiveBackSceneID: req.SceneID,
+	}
+	if m == mode.Adult {
+		_, _, err := rename.ApplyLibraryAdult(ctx, sess, libStore, p, tier, nil)
+		if err != nil {
+			return src, err
+		}
+		if sc, gerr := libStore.GetScene(ctx, req.Box, req.SceneID); gerr == nil && sc != nil && sc.FilePath != "" {
+			return sc.FilePath, nil
+		}
+		return src, nil
 	}
 	if m == mode.Movies {
 		_, _, err := rename.ApplyLibrary(ctx, libStore, p, preset, tier, nil)
@@ -481,16 +605,26 @@ func importOneDiscOutput(
 	return ep.FilePath, nil
 }
 
-func discDestRoot(ctx context.Context, deps discUnpackDeps, m mode.Mode, tmdbID int, isoPath string) (string, error) {
-	if deps.libStore != nil && tmdbID > 0 {
+func discDestRoot(ctx context.Context, deps discUnpackDeps, m mode.Mode, req apidto.OrganizeDiscUnpackRequest, isoPath string) (string, error) {
+	if deps.libStore != nil {
 		switch m {
 		case mode.Series:
-			if s, err := deps.libStore.GetSeriesByTMDBID(ctx, tmdbID); err == nil && s != nil && strings.TrimSpace(s.RootFolderPath) != "" {
-				return s.RootFolderPath, nil
+			if req.TMDBID > 0 {
+				if s, err := deps.libStore.GetSeriesByTMDBID(ctx, req.TMDBID); err == nil && s != nil && strings.TrimSpace(s.RootFolderPath) != "" {
+					return s.RootFolderPath, nil
+				}
 			}
 		case mode.Movies:
-			if it, err := deps.libStore.GetByTMDBID(ctx, mode.Movies, tmdbID); err == nil && it != nil && strings.TrimSpace(it.RootFolderPath) != "" {
-				return it.RootFolderPath, nil
+			if req.TMDBID > 0 {
+				if it, err := deps.libStore.GetByTMDBID(ctx, mode.Movies, req.TMDBID); err == nil && it != nil && strings.TrimSpace(it.RootFolderPath) != "" {
+					return it.RootFolderPath, nil
+				}
+			}
+		case mode.Adult:
+			if strings.TrimSpace(req.Box) != "" && strings.TrimSpace(req.SceneID) != "" {
+				if sc, err := deps.libStore.GetScene(ctx, req.Box, req.SceneID); err == nil && sc != nil && strings.TrimSpace(sc.RootFolderPath) != "" {
+					return sc.RootFolderPath, nil
+				}
 			}
 		}
 	}

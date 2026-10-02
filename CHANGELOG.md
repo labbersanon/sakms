@@ -10490,3 +10490,23 @@ status stays active.
 | `frontend/src/screens/Discs.tsx` | catalog title `<select>` |
 | `frontend/src/screens/Discs.test.tsx` | dropdown pick |
 
+## 2026-10-02 — Discs screen has Movies / Series / Adult chips
+
+**Problem:** Organize → Discs had no library mode control. Catalog hits mixed TMDB movies and series, and Adult could not be chosen. Operators expected the same Movies / Series / Adult row as Import.
+**Root cause:** Identify always searched TMDB movies + TV. Mode was only a `Movie ·` / `Series ·` prefix on the catalog dropdown. Adult was never searched.
+**Fix:** Import-style chips on Discs. Identify takes `mode` (empty defaults to movies) and searches only that catalog. Adult uses TPDB/stash-box scene candidates plus a TPDB movie match. Extract sends box/sceneId for Adult and ApplyLibraryAdult into the Adult library root.
+**Outcome:** Mode is visible and selected before the ISO. Catalog title lists only that library.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/Discs.tsx` | Movies / Series / Adult chips; identify keyed on mode |
+| `frontend/src/screens/Discs.test.tsx` | chips visible; Series identify body |
+| `frontend/src/api/discs.ts` | identify `mode`; extract Adult identity |
+| `internal/apidto/dto.go` | identify Mode; hit/unpack Box SceneID Studio Date |
+| `internal/apidto/ts/dto.gen.ts` | regenerated |
+| `internal/api/organize_discs.go` | mode-scoped identify; Adult import |
+| `internal/api/organize_disc.go` | Adult lock; catalog identity not TMDB-only |
+| `internal/api/organize_discs_test.go` | parseDiscMode; discHasCatalog |
+

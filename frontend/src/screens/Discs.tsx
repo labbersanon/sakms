@@ -10,6 +10,12 @@
 //   Filename vNdM is volume N, disc M (backend ranks Volume N first).
 // Troubleshooting: wrong volume selected — check ParseEdition / dropdown value.
 // Review if: identify returns a single unique hit (dropdown still fine).
+//
+// Claude 2026-10-02: Movies / Series / Adult chips on Discs.
+// Reason: mode was only a Movie/Series prefix inside the catalog dropdown.
+//   The chip is the library; identify searches that catalog only.
+// Troubleshooting: no mode row — this block is missing or below the ISO table.
+// Review if: Adult titles get per-work scene assignment.
 
 import {
   type Component,
@@ -22,6 +28,7 @@ import {
 import type { OrganizeDiscHit, OrganizeDiscWork } from "@dto";
 import { FolderPicker } from "../components/FolderPicker";
 import { Button, ErrorText, Muted, SELECT_CLASS, labelClass } from "../components/ui";
+import type { ImportMode } from "../api/manualImport";
 import {
   fetchOrganizeDiscExtract,
   identifyOrganizeDisc,
@@ -63,13 +70,28 @@ function slotsFromHit(hit: OrganizeDiscHit | undefined): Record<string, Slot> {
   return next;
 }
 
+function hitKeyOf(h: OrganizeDiscHit): string {
+  if (h.mode === "adult") return `adult:${h.box ?? ""}:${h.sceneId ?? ""}`;
+  return `${h.mode}:${h.tmdbId}`;
+}
+
+function catalogLabel(h: OrganizeDiscHit): string {
+  const year = h.year ? ` (${h.year})` : "";
+  const lib = h.existingPath || (h.episodes ?? []).length ? " · in library" : "";
+  if (h.mode === "adult") {
+    const studio = h.studio ? ` · ${h.studio}` : "";
+    return `${h.title}${year}${studio}${lib}`;
+  }
+  return `${h.title}${year}${lib}`;
+}
+
 function existingForWork(
   hit: OrganizeDiscHit | undefined,
   _work: OrganizeDiscWork,
   slot?: Slot,
 ): { path: string; title: string } | null {
   if (!hit) return null;
-  if (hit.mode === "movies" && hit.existingPath) {
+  if ((hit.mode === "movies" || hit.mode === "adult") && hit.existingPath) {
     return { path: hit.existingPath, title: hit.existingTitle || hit.title };
   }
   if (hit.mode === "series" && slot) {
@@ -82,6 +104,7 @@ function existingForWork(
 }
 
 export const Discs: Component = () => {
+  const [mode, setMode] = createSignal<ImportMode>("movies");
   const [folder, setFolder] = createSignal("");
   const [isoPath, setIsoPath] = createSignal("");
   const [hitKey, setHitKey] = createSignal("");
@@ -111,18 +134,32 @@ export const Discs: Component = () => {
     (listing()?.entries ?? []).filter((e) => !e.isDir && isDiscName(e.name)),
   );
 
+  const pickMode = (next: ImportMode) => {
+    if (mode() === next) return;
+    setMode(next);
+    setError("");
+    setSelected(new Set<string>());
+    setConflicts({});
+    setSlots({});
+    setHitKey("");
+  };
+
   const [identified] = createResource(
-    () => isoPath(),
-    async (path) => {
+    () => {
+      const path = isoPath();
       if (!path) return null;
+      return { path, mode: mode() };
+    },
+    async (key) => {
+      if (!key) return null;
       setError("");
       setSelected(new Set<string>());
       setConflicts({});
       setSlots({});
       setHitKey("");
-      const resp = await identifyOrganizeDisc(path);
+      const resp = await identifyOrganizeDisc(key.path, key.mode);
       const first = (resp.hits ?? [])[0];
-      if (first) setHitKey(`${first.mode}:${first.tmdbId}`);
+      if (first) setHitKey(hitKeyOf(first));
       const nextSlots = slotsFromHit(first);
       setSlots(nextSlots);
       const initial = new Set<string>();
@@ -138,11 +175,11 @@ export const Discs: Component = () => {
   const works = () => identified()?.works ?? [];
   const hit = createMemo(() => {
     const key = hitKey();
-    return hits().find((h) => `${h.mode}:${h.tmdbId}` === key);
+    return hits().find((h) => hitKeyOf(h) === key);
   });
 
   const pickHit = (h: OrganizeDiscHit) => {
-    setHitKey(`${h.mode}:${h.tmdbId}`);
+    setHitKey(hitKeyOf(h));
     const nextSlots = slotsFromHit(h);
     setSlots(nextSlots);
     const next = new Set<string>();
@@ -209,10 +246,14 @@ export const Discs: Component = () => {
     try {
       await startOrganizeDiscExtract({
         path,
-        mode: h?.mode,
+        mode: h?.mode ?? mode(),
         tmdbId: h?.tmdbId,
         title: h?.title,
         year: h?.year,
+        box: h?.box,
+        sceneId: h?.sceneId,
+        studio: h?.studio,
+        date: h?.date,
         items: names.map((name) => {
           const slot = slots()[name];
           return {
@@ -250,12 +291,34 @@ export const Discs: Component = () => {
     <div>
       <h2 class="mb-1 text-lg font-semibold text-fg">Discs</h2>
       <Muted class="mb-4">
-        Pick one DVD ISO. Identification runs after you select it. When
-        the image has no title names, Wikipedia (SearXNG as a page finder)
-        fills the disc list. Unique TMDB title or duration matches are
+        Pick the library first (Movies, Series, or Adult), then one DVD
+        ISO. Identification runs after you select the ISO. When the image
+        has no title names, Wikipedia (SearXNG as a page finder) fills the
+        disc list. Unique catalog title or duration matches are
         pre-assigned. Titles that already exist in the library start
         unchecked.
       </Muted>
+
+      <div class="mb-4 flex flex-wrap gap-2">
+        <Button
+          variant={mode() === "movies" ? "primary" : "secondary"}
+          onClick={() => pickMode("movies")}
+        >
+          Movies
+        </Button>
+        <Button
+          variant={mode() === "series" ? "primary" : "secondary"}
+          onClick={() => pickMode("series")}
+        >
+          Series
+        </Button>
+        <Button
+          variant={mode() === "adult" ? "primary" : "secondary"}
+          onClick={() => pickMode("adult")}
+        >
+          Adult
+        </Button>
+      </div>
 
       <label class="mb-3 block">
         <span class="text-xs font-medium text-muted">Folder</span>
@@ -354,19 +417,13 @@ export const Discs: Component = () => {
                   value={hitKey()}
                   onChange={(e) => {
                     const key = e.currentTarget.value;
-                    const h = hits().find((x) => `${x.mode}:${x.tmdbId}` === key);
+                    const h = hits().find((x) => hitKeyOf(x) === key);
                     if (h) pickHit(h);
                   }}
                 >
                   <For each={hits()}>
                     {(h) => (
-                      <option value={`${h.mode}:${h.tmdbId}`}>
-                        {h.mode === "series" ? "Series" : "Movie"} · {h.title}
-                        {h.year ? ` (${h.year})` : ""}
-                        {h.existingPath || (h.episodes ?? []).length
-                          ? " · in library"
-                          : ""}
-                      </option>
+                      <option value={hitKeyOf(h)}>{catalogLabel(h)}</option>
                     )}
                   </For>
                 </select>

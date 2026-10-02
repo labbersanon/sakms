@@ -2521,12 +2521,20 @@ type OrganizeBrowseOpResponse struct {
 // Troubleshooting: SL-9 — these literals must stay under /api/organize/.
 // Review if: Usenet finalize grows the same unpack.
 type OrganizeDiscUnpackRequest struct {
-	Path   string                   `json:"path"`
-	Mode   string                   `json:"mode,omitempty"`
-	TMDBID int                      `json:"tmdbId,omitempty"`
-	Title  string                   `json:"title,omitempty"`
-	Year   int                      `json:"year,omitempty"`
-	Items  []OrganizeDiscUnpackItem `json:"items,omitempty"`
+	Path   string `json:"path"`
+	Mode   string `json:"mode,omitempty"`
+	TMDBID int    `json:"tmdbId,omitempty"`
+	Title  string `json:"title,omitempty"`
+	Year   int    `json:"year,omitempty"`
+	// Claude 2026-10-02: Adult catalog identity on extract.
+	// Reason: ApplyLibraryAdult keys on (box, scene_id), not TMDB.
+	// Troubleshooting: Adult extract left MKVs beside the ISO — Box/SceneID empty.
+	// Review if: Adult disc titles get per-work scene assignment.
+	Box     string                   `json:"box,omitempty"`
+	SceneID string                   `json:"sceneId,omitempty"`
+	Studio  string                   `json:"studio,omitempty"`
+	Date    string                   `json:"date,omitempty"`
+	Items   []OrganizeDiscUnpackItem `json:"items,omitempty"`
 }
 
 // OrganizeDiscUnpackItem is one selected title/chapter to extract and import.
@@ -2542,6 +2550,12 @@ type OrganizeDiscUnpackItem struct {
 // OrganizeDiscIdentifyRequest is POST /api/organize/discs/identify.
 type OrganizeDiscIdentifyRequest struct {
 	Path string `json:"path"`
+	// Claude 2026-10-02: operator library chip (movies | series | adult).
+	// Reason: Discs had no mode control; TMDB movies+TV were mixed in one list.
+	//   Empty defaults to movies. Adult searches TPDB/stash-box, not TMDB.
+	// Troubleshooting: Series ISO showed only movies — Mode was omitted.
+	// Review if: identify always requires Mode (drop the movies default).
+	Mode string `json:"mode,omitempty"`
 }
 
 // OrganizeDiscExistingEpisode is a library episode that already has a file.
@@ -2552,7 +2566,7 @@ type OrganizeDiscExistingEpisode struct {
 	Path    string `json:"path"`
 }
 
-// OrganizeDiscHit is a TMDB movie or series match for the disc volume.
+// OrganizeDiscHit is a catalog match for the disc volume (TMDB or Adult box).
 type OrganizeDiscHit struct {
 	Mode          string                        `json:"mode"`
 	TMDBID        int                           `json:"tmdbId"`
@@ -2562,6 +2576,14 @@ type OrganizeDiscHit struct {
 	ExistingTitle string                        `json:"existingTitle,omitempty"`
 	Episodes      []OrganizeDiscExistingEpisode `json:"episodes,omitempty"`
 	Suggestions   []OrganizeDiscSuggestion      `json:"suggestions,omitempty"`
+	// Claude 2026-10-02: Adult hit identity (box + sceneId).
+	// Reason: TMDBID is 0 for Adult; ApplyLibraryAdult refuses empty box/scene.
+	// Troubleshooting: Adult dropdown keys collided — all tmdbId were 0.
+	// Review if: OrganizeDiscHit splits into TMDB vs Adult types.
+	Box     string `json:"box,omitempty"`
+	SceneID string `json:"sceneId,omitempty"`
+	Studio  string `json:"studio,omitempty"`
+	Date    string `json:"date,omitempty"`
 }
 
 // OrganizeDiscSuggestion is a unique duration (or later title) match.

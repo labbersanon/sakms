@@ -13,6 +13,7 @@ import (
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/disc"
 	"github.com/labbersanon/sakms/internal/library"
+	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/organizeevents"
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
@@ -98,6 +99,9 @@ func organizeDiscUnpackStartHandler(deps discUnpackDeps) http.HandlerFunc {
 			http.Error(w, "path must be an .iso or .img file", http.StatusBadRequest)
 			return
 		}
+		if parseDiscMode(req.Mode) == mode.Adult && denyIfAdultLocked(w, r) {
+			return
+		}
 
 		discJobMu.Lock()
 		if liveDisc != nil {
@@ -136,8 +140,11 @@ func runDiscUnpack(job *discJob, deps discUnpackDeps, src string, req apidto.Org
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 	defer cancel()
 	libStore := deps.libStore
-	if libStore != nil && req.TMDBID > 0 {
-		hit := &apidto.OrganizeDiscHit{Mode: req.Mode, TMDBID: req.TMDBID, Title: req.Title}
+	if libStore != nil && discHasCatalog(req) {
+		hit := &apidto.OrganizeDiscHit{
+			Mode: req.Mode, TMDBID: req.TMDBID, Title: req.Title,
+			Box: req.Box, SceneID: req.SceneID,
+		}
 		fillDiscExisting(ctx, libStore, hit)
 		if err := applyDiscConflicts(ctx, libStore, req.Items, hit); err != nil {
 			job.mu.Lock()
@@ -147,7 +154,7 @@ func runDiscUnpack(job *discJob, deps discUnpackDeps, src string, req apidto.Org
 			return
 		}
 	}
-	skipDelete := deps.settingsStore != nil && req.TMDBID > 0
+	skipDelete := deps.settingsStore != nil && discHasCatalog(req)
 	res, err := unpackDiscFn(ctx, src, disc.Options{
 		OnlyNames:  discOnlyNames(req.Items),
 		SkipDelete: skipDelete,

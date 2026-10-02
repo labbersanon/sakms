@@ -3,7 +3,7 @@
 //   Identify after the ISO is chosen. Existing library titles start unchecked.
 //   Checking one asks replace / keep both / cancel.
 // Troubleshooting: empty hits — TMDB search used the volume queries.
-// Review if: disc-contents tables assign episodes automatically (Phase 5b).
+// Review if: IFO/ffmpeg starts exposing per-title names for 5b title match.
 
 import {
   type Component,
@@ -47,6 +47,15 @@ function formatDuration(sec: number): string {
 }
 
 type Slot = { season: number; episode: number; title?: string };
+
+function slotsFromHit(hit: OrganizeDiscHit | undefined): Record<string, Slot> {
+  const next: Record<string, Slot> = {};
+  for (const s of hit?.suggestions ?? []) {
+    if (!s.name || s.episode < 1) continue;
+    next[s.name] = { season: s.season, episode: s.episode, title: s.title };
+  }
+  return next;
+}
 
 function existingForWork(
   hit: OrganizeDiscHit | undefined,
@@ -108,9 +117,11 @@ export const Discs: Component = () => {
       const resp = await identifyOrganizeDisc(path);
       const first = (resp.hits ?? [])[0];
       if (first) setHitKey(`${first.mode}:${first.tmdbId}`);
+      const nextSlots = slotsFromHit(first);
+      setSlots(nextSlots);
       const initial = new Set<string>();
       for (const w of resp.works ?? []) {
-        if (!existingForWork(first, w)) initial.add(w.name);
+        if (!existingForWork(first, w, nextSlots[w.name])) initial.add(w.name);
       }
       setSelected(initial);
       return resp;
@@ -126,13 +137,14 @@ export const Discs: Component = () => {
 
   const pickHit = (h: OrganizeDiscHit) => {
     setHitKey(`${h.mode}:${h.tmdbId}`);
+    const nextSlots = slotsFromHit(h);
+    setSlots(nextSlots);
     const next = new Set<string>();
-    const nextConflicts: Record<string, string> = {};
     for (const w of works()) {
-      if (!existingForWork(h, w, slots()[w.name])) next.add(w.name);
+      if (!existingForWork(h, w, nextSlots[w.name])) next.add(w.name);
     }
     setSelected(next);
-    setConflicts(nextConflicts);
+    setConflicts({});
   };
 
   const trySelect = (w: OrganizeDiscWork, on: boolean) => {
@@ -201,6 +213,7 @@ export const Discs: Component = () => {
             name,
             seasonNumber: slot?.season,
             episodeNumber: slot?.episode,
+            episodeTitle: slot?.title,
             conflict: conflicts()[name],
           };
         }),
@@ -231,8 +244,9 @@ export const Discs: Component = () => {
     <div>
       <h2 class="mb-1 text-lg font-semibold text-fg">Discs</h2>
       <Muted class="mb-4">
-        Pick one DVD ISO. Identification runs after you select it. Titles
-        that already exist in the library start unchecked.
+        Pick one DVD ISO. Identification runs after you select it. A
+        unique TMDB duration match is pre-assigned. Titles that already
+        exist in the library start unchecked.
       </Muted>
 
       <label class="mb-3 block">

@@ -291,17 +291,20 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	//   unpack. Same handlers as /api/organize/discs/extract.
 	// Troubleshooting: 409 — another disc job is running; 400 — not iso/img.
 	// Review if: the Browse aliases are unused and can be commented out.
-	mux.HandleFunc("POST /api/organize/browse/unpack-disc", organizeDiscUnpackStartHandler(libStore))
+	mux.HandleFunc("POST /api/organize/browse/unpack-disc", organizeDiscUnpackStartHandler(discUnpackDeps{libStore: libStore}))
 	mux.HandleFunc("GET /api/organize/browse/unpack-disc", organizeDiscUnpackStatusHandler())
 	// Claude 2026-10-02: Organize Discs — identify after ISO pick, then extract.
 	// Reason: Browse unpack mixed file-manager with import; ISOs are
 	//   manual-import-only. Identify runs TMDB after the operator picks
 	//   one ISO. Existing library titles start unchecked; replace deletes
-	//   the old file + ForgetPath.
+	//   the old file + ForgetPath. Extract relocates assigned MKVs (Phase 5a).
 	// Troubleshooting: identify 400 — not iso/img; extract 409 — job running.
-	// Review if: extract relocates MKVs into the library dest.
+	// Review if: Usenet finalize calls the same import path.
 	mux.HandleFunc("POST /api/organize/discs/identify", organizeDiscIdentifyHandler(httpClient, connStore, scStore, settingsStore, libStore))
-	mux.HandleFunc("POST /api/organize/discs/extract", organizeDiscUnpackStartHandler(libStore))
+	mux.HandleFunc("POST /api/organize/discs/extract", organizeDiscUnpackStartHandler(discUnpackDeps{
+		libStore: libStore, settingsStore: settingsStore,
+		httpClient: httpClient, connStore: connStore, scStore: scStore,
+	}))
 	mux.HandleFunc("GET /api/organize/discs/extract", organizeDiscUnpackStatusHandler())
 	mux.HandleFunc("GET /api/organize/browse/stat", organizeBrowseStatHandler(libStore, prober))
 	mux.HandleFunc("GET /api/organize/browse/video", organizeBrowseVideoHandler())

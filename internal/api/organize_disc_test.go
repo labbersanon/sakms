@@ -27,7 +27,7 @@ func TestOrganizeDiscUnpack_RejectsNonDisc(t *testing.T) {
 	body, _ := json.Marshal(apidto.OrganizeDiscUnpackRequest{Path: mkv})
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/organize/browse/unpack-disc", bytes.NewReader(body))
-	organizeDiscUnpackStartHandler(nil)(rr, req)
+	organizeDiscUnpackStartHandler(discUnpackDeps{})(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d body %s", rr.Code, rr.Body.String())
 	}
@@ -63,7 +63,7 @@ func TestOrganizeDiscUnpack_StartsAndCompletes(t *testing.T) {
 	body, _ := json.Marshal(apidto.OrganizeDiscUnpackRequest{Path: src})
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/organize/browse/unpack-disc", bytes.NewReader(body))
-	organizeDiscUnpackStartHandler(nil)(rr, req)
+	organizeDiscUnpackStartHandler(discUnpackDeps{})(rr, req)
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("start status = %d body %s", rr.Code, rr.Body.String())
 	}
@@ -116,14 +116,14 @@ func TestOrganizeDiscUnpack_ConflictWhenBusy(t *testing.T) {
 
 	body, _ := json.Marshal(apidto.OrganizeDiscUnpackRequest{Path: a})
 	rr := httptest.NewRecorder()
-	organizeDiscUnpackStartHandler(nil)(rr, httptest.NewRequest(http.MethodPost, "/api/organize/browse/unpack-disc", bytes.NewReader(body)))
+	organizeDiscUnpackStartHandler(discUnpackDeps{})(rr, httptest.NewRequest(http.MethodPost, "/api/organize/browse/unpack-disc", bytes.NewReader(body)))
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("first start = %d", rr.Code)
 	}
 
 	body2, _ := json.Marshal(apidto.OrganizeDiscUnpackRequest{Path: b})
 	rr2 := httptest.NewRecorder()
-	organizeDiscUnpackStartHandler(nil)(rr2, httptest.NewRequest(http.MethodPost, "/api/organize/browse/unpack-disc", bytes.NewReader(body2)))
+	organizeDiscUnpackStartHandler(discUnpackDeps{})(rr2, httptest.NewRequest(http.MethodPost, "/api/organize/browse/unpack-disc", bytes.NewReader(body2)))
 	if rr2.Code != http.StatusConflict {
 		t.Fatalf("second start = %d body %s", rr2.Code, rr2.Body.String())
 	}

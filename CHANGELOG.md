@@ -10438,6 +10438,22 @@ status stays active.
 | `internal/library/library_series.go` | `ResolveEpisodeVideoFiles` skips disc images |
 | `internal/rename/rename_library_test.go` | ISO/IMG omitted from Movies scan |
 
+## 2026-10-02 — Disc extract names and moves unique TMDB matches
+
+**Problem:** Split MKVs stayed `{VOLUME} - tNN.mkv` beside the ISO. Operators still had to Rename. Unique-length shorts were not pre-assigned.
+**Root cause:** v1 stopped after extract. IFO has duration, not episode names. Relocate/Upsert was not wired.
+**Fix:** Phase 5b: identify attaches suggestions only when one work and one TMDB episode share a duration no other pair has (±25s). No count pairing, no `03,01` parse. Existing suggested episodes stay unchecked. Phase 5a: assigned rows RelocateMovie/RelocateEpisode + library upsert into the show/movie root (Kids root if the ISO sits under it). Unassigned rows stay beside the ISO. ISO is deleted only after assigned outputs land.
+**Outcome:** Unique-duration shorts pre-fill S/E. Extract moves those into the library dest.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/disc/match.go` | unique duration matching |
+| `internal/api/organize_discs.go` | suggestions on identify; import after extract |
+| `internal/api/organize_disc.go` | SkipDelete until import succeeds |
+| `frontend/src/screens/Discs.tsx` | apply suggestions; send episodeTitle |
+
 
 
 

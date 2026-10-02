@@ -2535,6 +2535,7 @@ type OrganizeDiscUnpackItem struct {
 	Name          string `json:"name"`
 	SeasonNumber  int    `json:"seasonNumber,omitempty"`
 	EpisodeNumber int    `json:"episodeNumber,omitempty"`
+	EpisodeTitle  string `json:"episodeTitle,omitempty"`
 	Conflict      string `json:"conflict,omitempty"`
 }
 
@@ -2560,6 +2561,15 @@ type OrganizeDiscHit struct {
 	ExistingPath  string                        `json:"existingPath,omitempty"`
 	ExistingTitle string                        `json:"existingTitle,omitempty"`
 	Episodes      []OrganizeDiscExistingEpisode `json:"episodes,omitempty"`
+	Suggestions   []OrganizeDiscSuggestion      `json:"suggestions,omitempty"`
+}
+
+// OrganizeDiscSuggestion is a unique duration (or later title) match.
+type OrganizeDiscSuggestion struct {
+	Name    string `json:"name"`
+	Season  int    `json:"season"`
+	Episode int    `json:"episode"`
+	Title   string `json:"title,omitempty"`
 }
 
 // OrganizeDiscWork is one planned extract row (title or chapter).

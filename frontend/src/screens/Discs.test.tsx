@@ -181,4 +181,56 @@ describe("Discs", () => {
     expect(screen.getByText("New")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Extract selected" })).toBeEnabled();
   });
+
+  it("pre-assigns a unique duration suggestion and leaves an existing episode unchecked", async () => {
+    const { extracts } = stubDiscs({
+      identify: {
+        path: "/media/show.iso",
+        volume: "SHOW",
+        works: [
+          { name: "t02", title: 2, durationS: 433, role: "feature" },
+          { name: "t03", title: 3, durationS: 400, role: "feature" },
+        ],
+        hits: [
+          {
+            mode: "series",
+            tmdbId: 12,
+            title: "Looney Tunes",
+            year: 1930,
+            episodes: [
+              {
+                season: 1,
+                episode: 4,
+                title: "Short",
+                path: "/media/tv/Looney/S01E04.mkv",
+              },
+            ],
+            suggestions: [
+              { name: "t02", season: 1, episode: 4, title: "Short" },
+            ],
+          },
+        ],
+      },
+    });
+    await openFolder();
+    fireEvent.click(screen.getByLabelText("Select show.iso"));
+    expect(await screen.findByLabelText("Select t02")).not.toBeChecked();
+    expect(screen.getByLabelText("Select t03")).toBeChecked();
+    expect(screen.getByRole("button", { name: "S01E04" })).toBeInTheDocument();
+    expect(screen.getByText(/Exists · Short/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Extract selected" }));
+    await waitFor(() => {
+      expect(extracts).toEqual([
+        {
+          path: "/media/show.iso",
+          mode: "series",
+          tmdbId: 12,
+          title: "Looney Tunes",
+          year: 1930,
+          items: [{ name: "t03" }],
+        },
+      ]);
+    });
+  });
 });

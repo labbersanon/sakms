@@ -4,14 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/labbersanon/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/disc"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/organizeevents"
+	"github.com/labbersanon/sakms/internal/serviceconn"
+	"github.com/labbersanon/sakms/internal/settings"
 )
 
 // unpackDiscFn is swappable in tests.
@@ -70,7 +74,15 @@ func organizeDiscUnpackStatusHandler() http.HandlerFunc {
 	}
 }
 
-func organizeDiscUnpackStartHandler(libStore *library.Store) http.HandlerFunc {
+type discUnpackDeps struct {
+	libStore      *library.Store
+	settingsStore *settings.Store
+	httpClient    *http.Client
+	connStore     *connections.Store
+	scStore       *serviceconn.Store
+}
+
+func organizeDiscUnpackStartHandler(deps discUnpackDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req apidto.OrganizeDiscUnpackRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -115,14 +127,15 @@ func organizeDiscUnpackStartHandler(libStore *library.Store) http.HandlerFunc {
 		liveDisc = job
 		discJobMu.Unlock()
 
-		go runDiscUnpack(job, libStore, src, req)
+		go runDiscUnpack(job, deps, src, req)
 		writeJSONStatus(w, http.StatusAccepted, snapshotDiscJob())
 	}
 }
 
-func runDiscUnpack(job *discJob, libStore *library.Store, src string, req apidto.OrganizeDiscUnpackRequest) {
+func runDiscUnpack(job *discJob, deps discUnpackDeps, src string, req apidto.OrganizeDiscUnpackRequest) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 	defer cancel()
+	libStore := deps.libStore
 	if libStore != nil && req.TMDBID > 0 {
 		hit := &apidto.OrganizeDiscHit{Mode: req.Mode, TMDBID: req.TMDBID, Title: req.Title}
 		fillDiscExisting(ctx, libStore, hit)
@@ -134,8 +147,10 @@ func runDiscUnpack(job *discJob, libStore *library.Store, src string, req apidto
 			return
 		}
 	}
+	skipDelete := deps.settingsStore != nil && req.TMDBID > 0
 	res, err := unpackDiscFn(ctx, src, disc.Options{
-		OnlyNames: discOnlyNames(req.Items),
+		OnlyNames:  discOnlyNames(req.Items),
+		SkipDelete: skipDelete,
 		OnProgress: func(done, total int) {
 			job.mu.Lock()
 			job.Status = "extracting"
@@ -144,11 +159,11 @@ func runDiscUnpack(job *discJob, libStore *library.Store, src string, req apidto
 			job.mu.Unlock()
 		},
 	})
-	job.mu.Lock()
-	defer job.mu.Unlock()
 	if err != nil {
+		job.mu.Lock()
 		job.Status = "error"
 		job.Error = err.Error()
+		job.mu.Unlock()
 		fail := false
 		organizeevents.Log(context.Background(), organizeevents.Event{
 			Workflow: "discs", Kind: organizeevents.KindDiscUnpack, OK: &fail,
@@ -156,13 +171,45 @@ func runDiscUnpack(job *discJob, libStore *library.Store, src string, req apidto
 		})
 		return
 	}
-	job.Status = "done"
+	outputs := res.Outputs
+	var importErr string
+	if skipDelete {
+		moved, ierr := importDiscOutputsFn(ctx, deps, src, req, outputs)
+		if ierr != nil {
+			importErr = ierr.Error()
+		} else {
+			outputs = moved
+			if err := os.Remove(src); err != nil && !os.IsNotExist(err) {
+				importErr = "extracted but deleting ISO failed: " + err.Error()
+			} else {
+				res.DeletedSource = true
+				if libStore != nil {
+					if _, ferr := libStore.ForgetPath(ctx, src); ferr != nil {
+						importErr = "extracted but library update failed: " + ferr.Error()
+					}
+				}
+			}
+		}
+	}
+	job.mu.Lock()
+	defer job.mu.Unlock()
 	job.Volume = res.Map.Volume
-	job.Outputs = res.Outputs
+	job.Outputs = outputs
 	job.DeletedSource = res.DeletedSource
-	job.Done = len(res.Outputs)
-	job.Total = len(res.Outputs)
-	if libStore != nil && res.DeletedSource {
+	job.Done = len(outputs)
+	job.Total = len(outputs)
+	if importErr != "" {
+		job.Status = "error"
+		job.Error = importErr
+		fail := false
+		organizeevents.Log(context.Background(), organizeevents.Event{
+			Workflow: "discs", Kind: organizeevents.KindDiscUnpack, OK: &fail,
+			Message: "import after unpack failed " + src + ": " + importErr,
+		})
+		return
+	}
+	job.Status = "done"
+	if libStore != nil && res.DeletedSource && !skipDelete {
 		tracked, ferr := libStore.ForgetPath(context.Background(), src)
 		if ferr != nil {
 			job.Error = "extracted but library update failed: " + ferr.Error()
@@ -173,6 +220,6 @@ func runDiscUnpack(job *discJob, libStore *library.Store, src string, req apidto
 	ok := true
 	organizeevents.Log(context.Background(), organizeevents.Event{
 		Workflow: "discs", Kind: organizeevents.KindDiscUnpack, OK: &ok,
-		Message: "unpacked " + src + " → " + strings.Join(res.Outputs, ", "),
+		Message: "unpacked " + src + " → " + strings.Join(outputs, ", "),
 	})
 }

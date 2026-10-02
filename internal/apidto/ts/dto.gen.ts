@@ -2485,6 +2485,7 @@ export interface OrganizeDiscUnpackItem {
   name: string;
   seasonNumber?: number /* int */;
   episodeNumber?: number /* int */;
+  episodeTitle?: string;
   conflict?: string;
 }
 /**
@@ -2513,6 +2514,16 @@ export interface OrganizeDiscHit {
   existingPath?: string;
   existingTitle?: string;
   episodes?: OrganizeDiscExistingEpisode[];
+  suggestions?: OrganizeDiscSuggestion[];
+}
+/**
+ * OrganizeDiscSuggestion is a unique duration (or later title) match.
+ */
+export interface OrganizeDiscSuggestion {
+  name: string;
+  season: number /* int */;
+  episode: number /* int */;
+  title?: string;
 }
 /**
  * OrganizeDiscWork is one planned extract row (title or chapter).

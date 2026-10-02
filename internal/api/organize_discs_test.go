@@ -13,6 +13,7 @@ import (
 
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/disc"
+	"github.com/labbersanon/sakms/internal/settings"
 )
 
 func TestOrganizeDiscIdentify_RejectsNonDisc(t *testing.T) {
@@ -116,7 +117,7 @@ func TestOrganizeDiscUnpack_PassesOnlyNames(t *testing.T) {
 		},
 	})
 	rr := httptest.NewRecorder()
-	organizeDiscUnpackStartHandler(nil)(rr, httptest.NewRequest(http.MethodPost, "/api/organize/discs/extract", bytes.NewReader(body)))
+	organizeDiscUnpackStartHandler(discUnpackDeps{})(rr, httptest.NewRequest(http.MethodPost, "/api/organize/discs/extract", bytes.NewReader(body)))
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status = %d body %s", rr.Code, rr.Body.String())
 	}
@@ -138,5 +139,94 @@ func TestOrganizeDiscUnpack_PassesOnlyNames(t *testing.T) {
 	}
 	if len(gotNames) != 1 || gotNames[0] != "t02" {
 		t.Fatalf("OnlyNames = %v", gotNames)
+	}
+}
+
+func TestDiscWorkNameFromOutput(t *testing.T) {
+	if got := discWorkNameFromOutput("/media/LOONEY_TUNES_GOLDEN - t02.mkv"); got != "t02" {
+		t.Fatalf("got %q", got)
+	}
+	if got := discWorkNameFromOutput("/media/SHOW - t01c07.mkv"); got != "t01c07" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestOrganizeDiscUnpack_ImportsAssignedThenDeletesISO(t *testing.T) {
+	resetDiscJobForTest()
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "show.iso")
+	if err := os.WriteFile(src, []byte("iso"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(tmp, "SHOW - t02.mkv")
+	dest := filepath.Join(tmp, "library", "Show S01E04.mkv")
+	withBrowsableRoot(t, tmp)
+
+	origUnpack := unpackDiscFn
+	origImport := importDiscOutputsFn
+	t.Cleanup(func() {
+		unpackDiscFn = origUnpack
+		importDiscOutputsFn = origImport
+	})
+	unpackDiscFn = func(ctx context.Context, path string, opts disc.Options) (*disc.Result, error) {
+		if !opts.SkipDelete {
+			t.Fatal("expected SkipDelete when importing")
+		}
+		if err := os.WriteFile(out, []byte("mkv"), 0o644); err != nil {
+			return nil, err
+		}
+		return &disc.Result{
+			Map:     &disc.Map{Volume: "SHOW", Source: path},
+			Outputs: []string{out},
+		}, nil
+	}
+	importDiscOutputsFn = func(ctx context.Context, deps discUnpackDeps, iso string, req apidto.OrganizeDiscUnpackRequest, outputs []string) ([]string, error) {
+		if req.TMDBID != 99 || req.Items[0].EpisodeNumber != 4 {
+			t.Fatalf("req = %+v", req)
+		}
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return nil, err
+		}
+		if err := os.Rename(outputs[0], dest); err != nil {
+			return nil, err
+		}
+		return []string{dest}, nil
+	}
+
+	body, _ := json.Marshal(apidto.OrganizeDiscUnpackRequest{
+		Path: src, Mode: "series", TMDBID: 99, Title: "Show", Year: 1990,
+		Items: []apidto.OrganizeDiscUnpackItem{
+			{Name: "t02", SeasonNumber: 1, EpisodeNumber: 4, EpisodeTitle: "Short"},
+		},
+	})
+	rr := httptest.NewRecorder()
+	organizeDiscUnpackStartHandler(discUnpackDeps{settingsStore: &settings.Store{}})(rr, httptest.NewRequest(http.MethodPost, "/api/organize/discs/extract", bytes.NewReader(body)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d body %s", rr.Code, rr.Body.String())
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	var st apidto.OrganizeDiscUnpackStatus
+	for time.Now().Before(deadline) {
+		gr := httptest.NewRecorder()
+		organizeDiscUnpackStatusHandler()(gr, httptest.NewRequest(http.MethodGet, "/api/organize/discs/extract?path="+src, nil))
+		if err := json.Unmarshal(gr.Body.Bytes(), &st); err != nil {
+			t.Fatal(err)
+		}
+		if st.Status == "done" || st.Status == "error" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if st.Status != "done" {
+		t.Fatalf("status = %+v", st)
+	}
+	if !st.DeletedSource {
+		t.Fatal("expected ISO deleted after import")
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Fatalf("ISO still on disk: %v", err)
+	}
+	if len(st.Outputs) != 1 || st.Outputs[0] != dest {
+		t.Fatalf("outputs = %v", st.Outputs)
 	}
 }

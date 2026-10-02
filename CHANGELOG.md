@@ -10206,6 +10206,23 @@ status stays active.
 | `internal/rename/series_alternates.go` | recover already-placed alternate when source is gone |
 | `internal/rename/series_alternates_test.go` | Phineas-shaped retry; source-gone with no dest errors |
 
+## 2026-10-01 — Series Search prefills the show folder, not the episode title
+
+**Problem:** Rename Search for `06-07 Day of the Living Gelatin, Elementary My Dear Stacy.mp4` showed "No results." The Search button was firing; TMDB returned `[]`.
+**Root cause:** Prefill has no `SxxExx` to strip, and the parent folder is `Season 2`, so the query was the dual-episode title. TMDB search is show-name only.
+**Fix:** When the parent is `Season NN` / `Specials`, prefill from the show folder (strip year and `[tmdbid-N]`). If TMDB movies+series are empty, fall back to TVDB `kind=episode`.
+**Outcome:** Opening Search for a Phineas dual-episode file queries `Phineas and Ferb`. Typing an episode title on TMDB still finds the episode via TVDB.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/searchterm.ts` | Season-dir → show folder; strip catalog id tags |
+| `frontend/src/searchterm.test.ts` | Phineas Season 2 / tmdbid folder |
+| `frontend/src/screens/SearchTakeover.tsx` | TMDB empty → TVDB episode fallback |
+| `frontend/src/screens/SearchTakeover.test.tsx` | Gelatin TMDB-miss uses TVDB episode |
+| `internal/searchterm/searchterm.go` | FromName strips `[tmdbid-N]` / `[tvdbid-N]` |
+
 
 
 

@@ -51,6 +51,7 @@ var (
 	creditBeforeYearRe = regexp.MustCompile(`(?i)^(.+?)\s*-\s+.+\((\d{4})\)\s*$`)
 	cqNoiseRe          = regexp.MustCompile(`(?i)\bcq\d+\b`)
 	trailingJunkRe     = regexp.MustCompile(`[\s\-]+$`)
+	catalogIdTagRe     = regexp.MustCompile(`(?i)\[(?:tmdb|tvdb)id-\d+\]`)
 )
 
 // FromName derives a search term from a raw orphaned file/folder name.
@@ -88,6 +89,13 @@ func FromName(name string) string {
 		}
 		return m
 	})
+	// Claude 2026-10-01: strip Jellyfin [tmdbid-N] / [tvdbid-N] folder tags.
+	// Reason: frontend searchterm mirrors FromName; show-folder prefills
+	//   were leaving "[tmdbid-1877]" in the TMDB query.
+	// Troubleshooting: Series Search for a Season-NN dual file must query
+	//   "Phineas and Ferb", not the episode title or the id tag.
+	// Review if: callers strip catalog id tags before FromName.
+	s = catalogIdTagRe.ReplaceAllString(s, " ")
 
 	s = noiseTokenRe.ReplaceAllString(s, " ")
 	s = cqNoiseRe.ReplaceAllString(s, " ")

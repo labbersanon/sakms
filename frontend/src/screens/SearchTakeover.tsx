@@ -487,13 +487,25 @@ export const SearchTakeover: Component<{
         tmdbSearch("movies", tmdbQ, tmdbOpts),
         tmdbSearch("series", tmdbQ, tmdbOpts),
       ]);
-      return {
-        kind: "catalog",
-        items: [
-          ...movies.map((item) => ({ mode: "movies" as const, item })),
-          ...series.map((item) => ({ mode: "series" as const, item })),
-        ],
-      };
+      const items = [
+        ...movies.map((item) => ({ mode: "movies" as const, item })),
+        ...series.map((item) => ({ mode: "series" as const, item })),
+      ];
+      // Claude 2026-10-01: TMDB empty → TVDB episode-title fallback.
+      // Reason: TMDB search is show-name only. An episode title (typed, or
+      //   left over from a dual-episode filename) returns []. TVDB kind=episode
+      //   already scans tracked catalogs for that title.
+      // Troubleshooting: Organize Search "No results" for Day of the Living
+      //   Gelatin while Traefik shows 200 + 3-byte TMDB bodies.
+      // Review if: TMDB grows an episode-title search used on this path.
+      if (items.length === 0 && tmdbQ) {
+        const episodeItems = await tvdbSearch(tmdbQ, "episode", tmdbOpts);
+        return {
+          kind: "catalog",
+          items: episodeItems.map((item) => tvdbItemToHit(item)),
+        };
+      }
+      return { kind: "catalog", items };
     }
     // Movies mode is UNCHANGED behaviourally — still exactly one call, no merge
     // and (see the render) no badge. It is wrapped in the same CatalogHit shape

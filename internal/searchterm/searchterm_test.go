@@ -188,3 +188,10 @@ func TestStripYear(t *testing.T) {
 		t.Fatalf("%q", got)
 	}
 }
+
+func TestFromName_StripsCatalogIdTag(t *testing.T) {
+	got := FromName("Phineas and Ferb (2007) [tmdbid-1877]")
+	if got != "Phineas and Ferb (2007)" {
+		t.Fatalf("FromName(show folder) = %q, want the title and year without tmdbid", got)
+	}
+}

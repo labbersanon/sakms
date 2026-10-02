@@ -71,6 +71,32 @@ describe("suggestedRenameQuery", () => {
     ).toBe("A Hare Grows In Manhattan");
   });
 
+  it("uses the show folder when the file is NN-NN under Season NN", () => {
+    expect(
+      suggestedRenameQuery(
+        "series",
+        "06-07 Day of the Living Gelatin, Elementary My Dear Stacy.mp4",
+        "/media/Media Library/Series (Kids)/Phineas and Ferb/Season 2/06-07 Day of the Living Gelatin, Elementary My Dear Stacy.mp4",
+      ),
+    ).toBe("Phineas and Ferb");
+    expect(
+      suggestedRenameQuery(
+        "series",
+        "06-07 Day of the Living Gelatin, Elementary My Dear Stacy.mp4",
+        "/media/Media Library/Series (Kids)/Phineas and Ferb (2007) [tmdbid-1877]/Season 02/file.mp4",
+      ),
+    ).toBe("Phineas and Ferb");
+  });
+
+  it("strips a leading NN-NN range when there is no show folder", () => {
+    expect(
+      suggestedRenameQuery(
+        "series",
+        "06-07 Day of the Living Gelatin.mp4",
+      ),
+    ).toBe("Day of the Living Gelatin");
+  });
+
   it("cleans an Adult scene-release name", () => {
     expect(
       suggestedRenameQuery(

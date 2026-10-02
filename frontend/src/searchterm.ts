@@ -97,6 +97,9 @@ const cqNoiseRe = /\bcq\d+\b/gi;
 const trailingJunkRe = /[\s-]+$/;
 const yearParenStripRe = /\s*\((19\d{2}|20\d{2})\)/g;
 const yearBareEndRe = /\s+\b(19\d{2}|20\d{2})\b\s*$/i;
+const catalogIdTagRe = /\[(?:tmdb|tvdb)id-\d+\]/gi;
+const seasonDirRe = /^(season\s*\d+|specials)$/i;
+const leadingEpisodeRangeRe = /^\d{1,2}-\d{1,2}\s+/;
 const commaPersonRe = /^(.+?)\s+([^,]+),\s*([^,]+)$/i;
 const episodeMarkerRe = /S(\d{1,2})E(\d{1,3})/i;
 const altEpisodeMarkerRe = /\b(\d{1,2})x(\d{1,3})\b/i;
@@ -158,6 +161,7 @@ export function fromName(name: string): string {
   }
   s = s.replace(releaseGroupRe, "");
   s = s.replace(bracketedRe, (m) => (noiseTokenOneRe.test(m) ? " " : m));
+  s = s.replace(catalogIdTagRe, " ");
   s = s.replace(noiseTokenRe, " ");
   s = s.replace(cqNoiseRe, " ");
   s = s.replace(multiSpaceRe, " ");
@@ -237,6 +241,14 @@ function stripYearSeasonMarker(name: string): string {
   return name;
 }
 
+function isSeasonDir(name: string): boolean {
+  return seasonDirRe.test(name.trim());
+}
+
+function stripLeadingEpisodeRange(name: string): string {
+  return trimSeparators(name.replace(leadingEpisodeRangeRe, ""));
+}
+
 function seriesSeed(name: string, sourcePath?: string): string {
   let seed = stripYearSeasonMarker(name);
   if (seed === name) {
@@ -245,20 +257,34 @@ function seriesSeed(name: string, sourcePath?: string): string {
   if (seed !== name) {
     return seed;
   }
-  if (!sourcePath) {
-    return name;
+  if (sourcePath) {
+    const parent = basename(dirname(sourcePath));
+    // Claude 2026-10-01: NN-NN episode files live under Season NN, not SxxExx.
+    // Reason: suggestedRenameQuery kept "06-07 Day of the Living Gelatin, …"
+    //   because the parent is "Season 2", so autoSearch queried TMDB for the
+    //   episode title and the Search button looked dead (empty []).
+    // Troubleshooting: Organize Series Search "No results" for Phineas duals.
+    // Review if: Scan starts writing a persisted show searchTerm on proposals.
+    if (isSeasonDir(parent)) {
+      const showFolder = basename(dirname(dirname(sourcePath)));
+      if (showFolder && !isSeasonDir(showFolder)) {
+        return showFolder;
+      }
+    }
+    if (parent) {
+      const fromYear = stripYearSeasonMarker(parent);
+      if (fromYear !== parent) {
+        return fromYear;
+      }
+      const fromEp = stripEpisodeMarker(parent);
+      if (fromEp !== parent) {
+        return fromEp;
+      }
+    }
   }
-  const parent = basename(dirname(sourcePath));
-  if (!parent) {
-    return name;
-  }
-  const fromYear = stripYearSeasonMarker(parent);
-  if (fromYear !== parent) {
-    return fromYear;
-  }
-  const fromEp = stripEpisodeMarker(parent);
-  if (fromEp !== parent) {
-    return fromEp;
+  const rangeStripped = stripLeadingEpisodeRange(name);
+  if (rangeStripped && rangeStripped !== name) {
+    return rangeStripped;
   }
   return name;
 }

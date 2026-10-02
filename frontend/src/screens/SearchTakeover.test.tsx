@@ -1362,6 +1362,52 @@ describe("SearchTakeover — Series database dropdown", () => {
     expect(screen.getByPlaceholderText("Series or episode name")).toBeInTheDocument();
   });
 
+  it("falls back to TVDB episode search when TMDB series+movies are empty", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("/tmdb-search")) {
+        return jsonResponse([]);
+      }
+      if (url.includes("/tvdb-search") && String(url).includes("kind=episode")) {
+        return jsonResponse([
+          {
+            tmdbId: 1877,
+            tvdbId: 12645,
+            title: "Day of the Living Gelatin",
+            seriesTitle: "Phineas and Ferb",
+            releaseDate: "2009-01-01",
+            seasonNumber: 2,
+            episodeNumber: 8,
+          },
+        ]);
+      }
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick"
+        searchMode="series"
+        initialQuery="Day of the Living Gelatin"
+        autoSearch={false}
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText("Search"));
+
+    expect(
+      await screen.findByLabelText("Use Day of the Living Gelatin"),
+    ).toBeInTheDocument();
+    const urls = fetchMock.mock.calls.map(([u]) => String(u));
+    expect(urls.some((u) => u.includes("/modes/series/tmdb-search"))).toBe(true);
+    expect(urls.some((u) => u.includes("/tvdb-search") && u.includes("kind=episode"))).toBe(
+      true,
+    );
+  });
+
   it("calls tvdb-search with kind=series and kind=episode when TVDB is selected", async () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (url.includes("/tvdb-search")) {

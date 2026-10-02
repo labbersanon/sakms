@@ -2348,6 +2348,8 @@ func fakeTMDBEpisodeTitleServer(
 			_ = json.NewEncoder(w).Encode(body)
 		case r.URL.Path == creditsPath:
 			w.Write([]byte(`{"cast":[]}`))
+		case r.URL.Path == tvPath+"/external_ids":
+			w.Write([]byte(`{"tvdb_id":0,"imdb_id":""}`))
 		case strings.HasPrefix(r.URL.Path, seasonPathPrefix):
 			var season int
 			if _, err := fmt.Sscanf(r.URL.Path, seasonPathPrefix+"%d", &season); err != nil {

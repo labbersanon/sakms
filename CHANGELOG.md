@@ -10473,3 +10473,20 @@ status stays active.
 | `internal/apidto/dto.go` | OrganizeDiscWork.episodeTitle |
 | `frontend/src/screens/Discs.tsx` | show episodeTitle on rows |
 
+## 2026-10-02 — Discs title dropdown; filename v/d is volume/disc
+
+**Problem:** Identify showed several Golden Collection volumes as chips and often picked Vol. 1. `looneytunesgoldenv5d1.iso` is volume 5, disc 1.
+**Root cause:** `\b` edition tokens missed glued `v5d1` / `V5D1`. TMDB queries also stripped Volume N.
+**Fix:** Parse compact `vNdM` as volume N, disc M. TMDB/wiki queries keep Volume N. Hits with that volume title sort first. Chips become a Catalog title dropdown with select-the-correct-title copy.
+**Outcome:** v5d1 identify prefers Vol. 5; the operator confirms in the dropdown.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/disc/queries.go` | ParseEdition; Volume N queries; VolumeTitleScore |
+| `internal/disc/queries_test.go` | glued v5d1 / Vol. 5 score |
+| `internal/api/organize_discs.go` | sort hits by filename volume |
+| `frontend/src/screens/Discs.tsx` | catalog title `<select>` |
+| `frontend/src/screens/Discs.test.tsx` | dropdown pick |
+

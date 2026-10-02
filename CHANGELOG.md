@@ -10256,6 +10256,20 @@ status stays active.
 | `internal/dedup/dedup_library_series_test.go` | Apply writes E06 and E07 |
 | `internal/library/library_series.go` | Loose is no longer rename-only |
 
+## 2026-10-01 — Season-dir N-EE codes parse as one episode
+
+**Problem:** 46 Phineas Season 1 files named `1-16 Title (HD).mp4` stayed unidentified. `1-16 Get That Bigfoot` was Unmatched; `1-47 Unfair Science Fair Redux` was ambiguous on title.
+**Root cause:** #118 only accepted adjacent `NN-NN` duals. Disney `N-EE` under `Season N` is SxxExx (`1-16` = S01E16). `1-02` must not become a phantom E01-E02 split.
+**Fix:** When the parent is `Season N` and the basename starts with `N-EE`, return that episode. Adjacent duals still apply only when the first number is not the season (`06-07` under Season 2). A leading single number (`12 Title`) under Season N is E12. Pack names stay refused.
+**Outcome:** Scan/Import/Dedup identify `Season 1/1-16 Title` as S01E16.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/library/library_series.go` | Season-dir S-EE + leading episode on Loose |
+| `internal/library/library_series_test.go` | 1-16 / 1-02 / 2-06 / leading 12 |
+
 
 
 

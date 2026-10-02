@@ -50,6 +50,9 @@ func TestScanLibrarySeries_DailyAirDatePinned(t *testing.T) {
 	if p.TMDBID != 2224 || p.SeasonNumber != 29 || p.EpisodeNumber != 47 {
 		t.Fatalf("slot = tmdb=%d S%02dE%02d", p.TMDBID, p.SeasonNumber, p.EpisodeNumber)
 	}
+	if p.EpisodeTitle != "Guest" {
+		t.Fatalf("EpisodeTitle = %q, want Guest from SeasonDetails", p.EpisodeTitle)
+	}
 }
 
 func TestScanLibrarySeries_AbsoluteAnimePinned(t *testing.T) {
@@ -90,6 +93,9 @@ func TestScanLibrarySeries_AbsoluteAnimePinned(t *testing.T) {
 	p := got[0]
 	if p.SeasonNumber != 1 || p.EpisodeNumber != 3 {
 		t.Fatalf("absolute 3 should skip specials and land S01E03, got S%02dE%02d", p.SeasonNumber, p.EpisodeNumber)
+	}
+	if p.EpisodeTitle != "Morgan" {
+		t.Fatalf("EpisodeTitle = %q, want Morgan from SeasonDetails", p.EpisodeTitle)
 	}
 }
 

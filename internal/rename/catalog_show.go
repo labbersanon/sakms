@@ -10,6 +10,7 @@ import (
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/naming"
 	"github.com/labbersanon/sakms/internal/nfo"
+	"github.com/labbersanon/sakms/internal/proposals"
 	"github.com/labbersanon/sakms/internal/tmdb"
 )
 
@@ -154,6 +155,41 @@ func rootContaining(path string, roots []string) string {
 		}
 	}
 	return best
+}
+
+// fillTMDBEpisodeTitle sets p.EpisodeTitle from SeasonDetails when ordinary
+// TMDB Scan left it empty. Dest preview is Scan-time JSON; Apply still
+// fetches titles for the relocate name and library row.
+//
+// Claude 2026-10-01: ordinary TMDB SxxExx Scan never wrote EpisodeTitle.
+// Reason: Proposed name uses p.episodeTitle, so Phineas 1-16/1-47 previewed
+//
+//	as "Show SxxExx.ext" after #120 identified the slot.
+//
+// Troubleshooting: pending rows have season/episode and empty episode_title.
+// Review if: dest preview fetches the episode name itself.
+func fillTMDBEpisodeTitle(ctx context.Context, sess *mode.Session, p *proposals.Proposal) {
+	if p == nil || strings.TrimSpace(p.EpisodeTitle) != "" {
+		return
+	}
+	if sess == nil || sess.TMDB == nil || p.TMDBID <= 0 {
+		return
+	}
+	eps, err := sess.TMDB.SeasonDetails(ctx, p.TMDBID, p.SeasonNumber)
+	if err != nil {
+		return
+	}
+	for _, ep := range eps {
+		if ep.EpisodeNumber != p.EpisodeNumber {
+			continue
+		}
+		name := strings.TrimSpace(ep.Name)
+		if isPlaceholderEpisodeName(name) {
+			return
+		}
+		p.EpisodeTitle = name
+		return
+	}
 }
 
 // seriesSeasonAcceptable is true when TMDB lists that season, or the season

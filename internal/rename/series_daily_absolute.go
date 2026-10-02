@@ -126,6 +126,7 @@ func tryDailyOrAbsoluteSeries(
 	if tracked[episodeKey{tmdbID: tmdbID, season: season, episode: episode}] {
 		acceptDuplicatePendingEpisode(&p, title, season, episode)
 	}
+	fillTMDBEpisodeTitle(ctx, sess, &p)
 	return &p
 }
 

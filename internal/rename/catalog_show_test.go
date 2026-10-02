@@ -6,6 +6,8 @@ import (
 
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/nfo"
+	"github.com/labbersanon/sakms/internal/proposals"
+	"github.com/labbersanon/sakms/internal/tmdb"
 )
 
 func TestSeriesSidecarAgrees(t *testing.T) {
@@ -63,5 +65,51 @@ func TestSeriesSeasonAcceptable_YearSeason(t *testing.T) {
 	}
 	if seriesSeasonAcceptable(nil, nil, 1, 1) {
 		t.Fatal("sequential season 1 with no client must fail")
+	}
+}
+
+func TestFillTMDBEpisodeTitle(t *testing.T) {
+	sess := &mode.Session{TMDB: fakeTMDBSeriesServer(t, nil, nil)}
+
+	p := proposals.Proposal{TMDBID: 555, SeasonNumber: 1, EpisodeNumber: 1}
+	fillTMDBEpisodeTitle(context.Background(), sess, &p)
+	if p.EpisodeTitle != "Pilot" {
+		t.Fatalf("S01E01 title = %q, want Pilot", p.EpisodeTitle)
+	}
+
+	kept := proposals.Proposal{TMDBID: 555, SeasonNumber: 1, EpisodeNumber: 1, EpisodeTitle: "Keep Me"}
+	fillTMDBEpisodeTitle(context.Background(), sess, &kept)
+	if kept.EpisodeTitle != "Keep Me" {
+		t.Fatalf("already-set title overwritten: %q", kept.EpisodeTitle)
+	}
+
+	miss := proposals.Proposal{TMDBID: 555, SeasonNumber: 1, EpisodeNumber: 16}
+	fillTMDBEpisodeTitle(context.Background(), sess, &miss)
+	if miss.EpisodeTitle != "" {
+		t.Fatalf("E16 miss should stay empty, got %q", miss.EpisodeTitle)
+	}
+
+	synth := proposals.Proposal{TMDBID: -1498833576, SeasonNumber: 1, EpisodeNumber: 1}
+	fillTMDBEpisodeTitle(context.Background(), sess, &synth)
+	if synth.EpisodeTitle != "" {
+		t.Fatalf("synthetic TMDB id must no-op, got %q", synth.EpisodeTitle)
+	}
+
+	phineas := &mode.Session{TMDB: fakeTMDBEpisodeTitleServer(t, 1877, "Phineas and Ferb", map[int][]tmdb.SeasonEpisode{
+		1: {{EpisodeNumber: 16, Name: "Get That Bigfoot!", AirDate: "2008-02-01"}},
+	}, -1, nil)}
+	slot := proposals.Proposal{TMDBID: 1877, SeasonNumber: 1, EpisodeNumber: 16}
+	fillTMDBEpisodeTitle(context.Background(), phineas, &slot)
+	if slot.EpisodeTitle != "Get That Bigfoot!" {
+		t.Fatalf("Phineas E16 title = %q", slot.EpisodeTitle)
+	}
+
+	placeholder := &mode.Session{TMDB: fakeTMDBEpisodeTitleServer(t, 1877, "Phineas and Ferb", map[int][]tmdb.SeasonEpisode{
+		1: {{EpisodeNumber: 16, Name: "Episode 16", AirDate: "2008-02-01"}},
+	}, -1, nil)}
+	blank := proposals.Proposal{TMDBID: 1877, SeasonNumber: 1, EpisodeNumber: 16}
+	fillTMDBEpisodeTitle(context.Background(), placeholder, &blank)
+	if blank.EpisodeTitle != "" {
+		t.Fatalf("placeholder Episode 16 must stay empty, got %q", blank.EpisodeTitle)
 	}
 }

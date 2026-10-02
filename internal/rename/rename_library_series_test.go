@@ -106,6 +106,9 @@ func TestScanLibrarySeries_ProducesPendingProposalForNewEpisode(t *testing.T) {
 	if p.Status != proposals.Pending || p.Title != "Show Name" || p.TMDBID != 555 || p.SeasonNumber != 1 || p.EpisodeNumber != 1 {
 		t.Errorf("unexpected proposal: %+v", p)
 	}
+	if p.EpisodeTitle != "Pilot" {
+		t.Errorf("EpisodeTitle = %q, want Pilot from SeasonDetails", p.EpisodeTitle)
+	}
 }
 
 func TestScanLibrarySeries_SeasonPackProducesOneProposalPerEpisode(t *testing.T) {
@@ -372,6 +375,9 @@ func TestScanLibrarySeries_TrackedSlotDuplicateIsPendingAlternate(t *testing.T) 
 	if p.SeasonNumber != 1 || p.EpisodeNumber != 1 {
 		t.Errorf("placement = S%02dE%02d, want S01E01", p.SeasonNumber, p.EpisodeNumber)
 	}
+	if p.EpisodeTitle != "Pilot" {
+		t.Errorf("EpisodeTitle = %q, want Pilot from SeasonDetails", p.EpisodeTitle)
+	}
 	if p.SourcePath != orphan {
 		t.Errorf("SourcePath = %q, want the orphan %q", p.SourcePath, orphan)
 	}
@@ -590,6 +596,9 @@ func TestScanLibrarySeries_NFODuplicateIsPendingAlternate(t *testing.T) {
 	}
 	if p.SeasonNumber != 1 || p.EpisodeNumber != 1 {
 		t.Errorf("placement = S%02dE%02d, want S01E01", p.SeasonNumber, p.EpisodeNumber)
+	}
+	if p.EpisodeTitle != "Pilot" {
+		t.Errorf("EpisodeTitle = %q, want Pilot from SeasonDetails", p.EpisodeTitle)
 	}
 	if p.SourcePath != orphan {
 		t.Errorf("SourcePath = %q, want the orphan %q", p.SourcePath, orphan)

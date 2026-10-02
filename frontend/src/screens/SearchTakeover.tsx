@@ -500,7 +500,11 @@ export const SearchTakeover: Component<{
   >(props.autoSearch ? (props.initialSeriesDatabase ?? "tmdb") : "tmdb");
   const [advancedOpen, setAdvancedOpen] = createSignal(false);
   const [advTitle, setAdvTitle] = createSignal("");
-  const [advSeries, setAdvSeries] = createSignal("");
+  // Claude 2026-10-01: setAdvSeries retired with the Series Advanced field.
+  // Reason: tsc TS6133 unused setter after Title/Series were hidden (#125).
+  // Troubleshooting: #125 deploy rolled back at frontend `tsc --noEmit`.
+  // Review if: Series Advanced grows a Series name field again.
+  const [advSeries] = createSignal("");
   const [advYear, setAdvYear] = createSignal("");
   const [advId, setAdvId] = createSignal("");
   const [advPerformer, setAdvPerformer] = createSignal("");

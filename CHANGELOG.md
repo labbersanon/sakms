@@ -10353,6 +10353,20 @@ status stays active.
 | `frontend/src/screens/discover/SeasonEpisodeAccordion.tsx` | title / SxxExx filter |
 | `frontend/src/screens/discover/SeasonEpisodeAccordion.test.tsx` | title and S04E07 filter |
 
+## 2026-10-01 — Unblock Series Search deploy after tsc rollback
+
+**Problem:** #125 merged but `sakms-auto-update` rolled back to `78e34a2` because frontend `tsc --noEmit` failed.
+**Root cause:** Unused `setAdvSeries` after the Series Advanced field was hidden, and `noUncheckedIndexedAccess` typed `parseSlotFilter` regex captures as `string | undefined`.
+**Fix:** Keep `advSeries` read-only (empty) for Advanced submit; guard capture groups before `parseInt`.
+**Outcome:** `pnpm exec tsc --noEmit` is clean so the show-name + step-2 filter can deploy.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/SearchTakeover.tsx` | drop unused `setAdvSeries` |
+| `frontend/src/screens/discover/SeasonEpisodeAccordion.tsx` | guard SxxExx / NxNN captures |
+
 
 
 

@@ -264,7 +264,7 @@ describe("SeasonEpisodeAccordion — submit", () => {
       screen.getByText("E7 · The Long Night").closest("button")!,
     );
 
-    expect(onSubmit).toHaveBeenCalledWith(4, 7);
+    expect(onSubmit).toHaveBeenCalledWith(4, 7, "The Long Night");
   });
 
   it("requests only the season block (?sections=seasons)", async () => {

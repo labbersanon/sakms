@@ -382,6 +382,8 @@ describe("SearchTakeover — season/episode `!= null` semantics (D-1)", () => {
     expect(pick).toHaveProperty("seasonNumber", 0);
     expect(pick).toHaveProperty("episodeNumber", 3);
     expect(pick).toHaveProperty("tmdbId", 42);
+    expect(pick).toHaveProperty("title", "A Show");
+    expect(pick).toHaveProperty("episodeTitle", "Special Three");
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
   });
 

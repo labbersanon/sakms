@@ -149,7 +149,12 @@ export const SeasonEpisodeAccordion: Component<{
   // episode === 0 means "the whole season" — the same call shape
   // SeasonEpisodePicker's single mode uses, so SearchTakeover's D-1 mapping
   // (episode 0 -> show-level commit, both slot fields omitted) is unchanged.
-  onSubmit: (season: number, episode: number) => void;
+  // Claude 2026-10-01: episode title is the third arg on a real episode row.
+  // Reason: SearchTakeover dest is Series SxxExx Episode Title; slot-only
+  //   submit left episode_title empty (Handy Manny S01E46 with no name).
+  // Troubleshooting: drill-down pick proposed "Show SxxExx.ext".
+  // Review if: accordion rows no longer carry TMDB episode names.
+  onSubmit: (season: number, episode: number, episodeTitle?: string) => void;
   // currentSlot expands the matching season on mount. It has NO equivalent on
   // SeasonEpisodePicker, whose single mode deliberately has no pre-selection
   // concept — and adding one there would modify a Non-Goal-protected file. It
@@ -297,7 +302,11 @@ export const SeasonEpisodeAccordion: Component<{
                               type="button"
                               class={ROW_CLASS}
                               onClick={() =>
-                                props.onSubmit(s.seasonNumber, ep.episodeNumber)
+                                props.onSubmit(
+                                  s.seasonNumber,
+                                  ep.episodeNumber,
+                                  ep.name || undefined,
+                                )
                               }
                             >
                               <span class="min-w-0 flex-1 truncate text-xs text-fg">

@@ -10321,6 +10321,22 @@ status stays active.
 | `frontend/src/screens/Rename.test.tsx` | Series repick/move tile then show-level hatch |
 | `frontend/src/screens/Dedup.test.tsx` | Series move tile then show-level hatch |
 
+## 2026-10-01 — Series drill-down pick keeps the episode title on dest
+
+**Problem:** After Search drilled into episodes, picking a slot wrote `Show SxxExx.ext` with an empty `episode_title` (18400 Handy Manny S01E46).
+**Root cause:** SeasonEpisodeAccordion submitted only season/episode numbers. TVDB one-click already sent `episodeTitle`; the accordion path did not.
+**Fix:** Episode rows pass TMDB `ep.name` as the third `onSubmit` arg; SearchTakeover forwards it on `RepickEpisode`. Empty `seriesTitle` no longer overrides the show name.
+**Outcome:** Drill-down commit is `title=show` + `episodeTitle=row name` (e.g. Special Three).
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/discover/SeasonEpisodeAccordion.tsx` | episode row submits name |
+| `frontend/src/screens/discover/SeasonEpisodeAccordion.test.tsx` | E7 sends The Long Night |
+| `frontend/src/screens/SearchTakeover.tsx` | forward accordion title; empty seriesTitle fallback |
+| `frontend/src/screens/SearchTakeover.test.tsx` | Specials pick keeps show + episode title |
+
 
 
 

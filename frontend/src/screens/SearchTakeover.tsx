@@ -356,6 +356,22 @@ async function showPrefixEpisodeHits(
 //   return { showQ: title, episodeQ: title };
 // }
 
+function looksLikeEpisodeFilter(raw: string): boolean {
+  const s = raw.trim();
+  if (!s) {
+    return false;
+  }
+  const compact = s.replace(/\s+/g, "");
+  if (/^S\d{1,2}E\d{1,3}$/i.test(compact) || /^\d{1,2}x\d{1,3}$/i.test(compact)) {
+    return true;
+  }
+  const hexish = s.replace(/[\s\-_.]/g, "");
+  if (/^[a-f0-9]{8,}$/i.test(hexish)) {
+    return false;
+  }
+  return /[a-z]/i.test(s);
+}
+
 function residualEpisodeFilter(query: string, showTitle: string): string {
   const q = query.trim();
   const show = showTitle.trim();
@@ -363,22 +379,26 @@ function residualEpisodeFilter(query: string, showTitle: string): string {
     return "";
   }
   const stripExt = (s: string) => s.replace(/\.[a-z0-9]{2,4}$/i, "").trim();
+  let leftover = "";
   if (!show) {
-    return stripExt(q);
+    leftover = stripExt(q);
+  } else {
+    const ql = q.toLowerCase();
+    const sl = show.toLowerCase();
+    if (ql === sl) {
+      return "";
+    }
+    if (ql.startsWith(sl)) {
+      leftover = stripExt(q.slice(show.length).replace(/^[\s\-_]+/, ""));
+    } else {
+      const idx = ql.indexOf(sl);
+      leftover =
+        idx >= 0
+          ? stripExt(q.slice(idx + show.length).replace(/^[\s\-_]+/, ""))
+          : stripExt(q);
+    }
   }
-  const ql = q.toLowerCase();
-  const sl = show.toLowerCase();
-  if (ql === sl) {
-    return "";
-  }
-  if (ql.startsWith(sl)) {
-    return stripExt(q.slice(show.length).replace(/^[\s\-_]+/, ""));
-  }
-  const idx = ql.indexOf(sl);
-  if (idx >= 0) {
-    return stripExt(q.slice(idx + show.length).replace(/^[\s\-_]+/, ""));
-  }
-  return stripExt(q);
+  return looksLikeEpisodeFilter(leftover) ? leftover : "";
 }
 
 function tvdbItemToHit(item: SeriesSearchItem): CatalogHit {

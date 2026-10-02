@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -78,7 +79,7 @@ func organizeDiscIdentifyHandler(
 		}
 		works := discWorksFromMap(m)
 		queries := disc.SearchQueries(m.Volume, src)
-		hits := identifyDiscHits(r, httpClient, connStore, scStore, settingsStore, libStore, queries, works)
+		hits := identifyDiscHits(r, httpClient, connStore, scStore, settingsStore, libStore, queries, works, disc.VolumeNumber(m.Volume, src))
 		writeJSON(w, apidto.OrganizeDiscIdentifyResponse{
 			Path: src, Volume: m.Volume, Queries: queries, Works: works, Hits: hits,
 		})
@@ -170,6 +171,7 @@ func identifyDiscHits(
 	libStore *library.Store,
 	queries []string,
 	works []apidto.OrganizeDiscWork,
+	volume int,
 ) []apidto.OrganizeDiscHit {
 	if len(queries) == 0 || connStore == nil {
 		return nil
@@ -219,6 +221,15 @@ func identifyDiscHits(
 		if len(hits) >= 12 {
 			break
 		}
+	}
+	// Claude 2026-10-02: Volume N titles first when filename has vNdM.
+	// Reason: TMDB "Golden" still returns Vol. 1–6; v5d1 means Volume 5.
+	// Troubleshooting: Vol. 1 selected — VolumeTitleScore missed "Vol. 5".
+	// Review if: TMDB search with "Volume N" is unique enough to skip sort.
+	if volume > 0 {
+		sort.SliceStable(hits, func(i, j int) bool {
+			return disc.VolumeTitleScore(hits[i].Title, volume) > disc.VolumeTitleScore(hits[j].Title, volume)
+		})
 	}
 	return hits
 }

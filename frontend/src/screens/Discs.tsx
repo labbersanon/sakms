@@ -4,6 +4,12 @@
 //   Checking one asks replace / keep both / cancel.
 // Troubleshooting: empty hits — TMDB search used the volume queries.
 // Review if: IFO/ffmpeg starts exposing per-title names (lookup skipped).
+//
+// Claude 2026-10-02: catalog hits are a dropdown, not chips.
+// Reason: TMDB returns several Golden volumes; operator must pick the title.
+//   Filename vNdM is volume N, disc M (backend ranks Volume N first).
+// Troubleshooting: wrong volume selected — check ParseEdition / dropdown value.
+// Review if: identify returns a single unique hit (dropdown still fine).
 
 import {
   type Component,
@@ -15,7 +21,7 @@ import {
 } from "solid-js";
 import type { OrganizeDiscHit, OrganizeDiscWork } from "@dto";
 import { FolderPicker } from "../components/FolderPicker";
-import { Button, ErrorText, Muted } from "../components/ui";
+import { Button, ErrorText, Muted, SELECT_CLASS, labelClass } from "../components/ui";
 import {
   fetchOrganizeDiscExtract,
   identifyOrganizeDisc,
@@ -334,23 +340,36 @@ export const Discs: Component = () => {
               when={hits().length > 0}
               fallback={<Muted class="mb-3">No catalog match. Extract still works.</Muted>}
             >
-              <div class="mb-3 flex flex-wrap gap-2">
-                <For each={hits()}>
-                  {(h) => (
-                    <Button
-                      variant={
-                        hitKey() === `${h.mode}:${h.tmdbId}` ? "primary" : "secondary"
-                      }
-                      onClick={() => pickHit(h)}
-                    >
-                      {h.mode === "series" ? "Series" : "Movie"} · {h.title}
-                      {h.year ? ` (${h.year})` : ""}
-                      {h.existingPath || (h.episodes ?? []).length
-                        ? " · in library"
-                        : ""}
-                    </Button>
-                  )}
-                </For>
+              <div class="mb-3">
+                <label class={labelClass} for="disc-catalog-title">
+                  Catalog title
+                </label>
+                <p class="mt-1 text-xs text-muted">
+                  Select the correct title. In the filename, V is volume and D
+                  is disc (v5d1 is volume 5, disc 1).
+                </p>
+                <select
+                  id="disc-catalog-title"
+                  class={`${SELECT_CLASS} mt-1 w-full max-w-2xl sm:w-full`}
+                  value={hitKey()}
+                  onChange={(e) => {
+                    const key = e.currentTarget.value;
+                    const h = hits().find((x) => `${x.mode}:${x.tmdbId}` === key);
+                    if (h) pickHit(h);
+                  }}
+                >
+                  <For each={hits()}>
+                    {(h) => (
+                      <option value={`${h.mode}:${h.tmdbId}`}>
+                        {h.mode === "series" ? "Series" : "Movie"} · {h.title}
+                        {h.year ? ` (${h.year})` : ""}
+                        {h.existingPath || (h.episodes ?? []).length
+                          ? " · in library"
+                          : ""}
+                      </option>
+                    )}
+                  </For>
+                </select>
               </div>
             </Show>
 

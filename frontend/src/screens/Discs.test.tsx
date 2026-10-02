@@ -100,7 +100,10 @@ describe("Discs", () => {
     fireEvent.click(screen.getByLabelText("Select show.iso"));
     expect(await screen.findByText("LOONEY_TUNES_GOLDEN_V5_D1")).toBeInTheDocument();
     expect(identifyBodies).toEqual([{ path: "/media/show.iso" }]);
-    expect(screen.getByText(/Movie · The Matrix \(1999\) · in library/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Catalog title")).toHaveDisplayValue(
+      /Movie · The Matrix \(1999\) · in library/,
+    );
+    expect(screen.getByText(/V is volume and D is disc/)).toBeInTheDocument();
     expect(screen.getByLabelText("Select t02")).not.toBeChecked();
     expect(screen.getByLabelText("Select t03")).not.toBeChecked();
     expect(screen.getAllByText(/Exists · The Matrix/).length).toBe(2);
@@ -164,6 +167,36 @@ describe("Discs", () => {
         },
       ]);
     });
+  });
+
+  it("picks a catalog title from the dropdown", async () => {
+    stubDiscs({
+      identify: {
+        path: "/media/show.iso",
+        volume: "LOONEY_TUNES_GOLDEN_V5D1",
+        works: [{ name: "t01", title: 1, durationS: 400, role: "feature" }],
+        hits: [
+          {
+            mode: "movies",
+            tmdbId: 5,
+            title: "Looney Tunes Golden Collection, Vol. 5",
+            year: 2007,
+          },
+          {
+            mode: "movies",
+            tmdbId: 1,
+            title: "Looney Tunes Golden Collection, Vol. 1",
+            year: 2003,
+          },
+        ],
+      },
+    });
+    await openFolder();
+    fireEvent.click(screen.getByLabelText("Select show.iso"));
+    const sel = await screen.findByLabelText("Catalog title");
+    expect(sel).toHaveDisplayValue(/Vol\. 5/);
+    fireEvent.change(sel, { target: { value: "movies:1" } });
+    expect(sel).toHaveDisplayValue(/Vol\. 1/);
   });
 
   it("pre-selects titles that are not already in the library", async () => {

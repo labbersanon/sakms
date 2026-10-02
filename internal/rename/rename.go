@@ -931,7 +931,7 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 					if id := folderIDs[key]; id > 0 {
 						pin.tmdbID = id
 						if s, ok := seriesByID[id]; ok {
-							pin.title, pin.year, pin.root = s.Title, s.Year, s.RootFolderPath
+							pin.title, pin.year, pin.root, pin.tvdbID = s.Title, s.Year, s.RootFolderPath, s.TVDBID
 						}
 					}
 				}
@@ -1401,6 +1401,9 @@ func proposeOneEpisodeLibrary(
 		if names, err := sess.TMDB.TVAggregateCredits(ctx, match.ID); err == nil {
 			p.Cast = names
 		}
+		if p.TVDBID <= 0 {
+			p.TVDBID = resolveSeriesTVDBID(ctx, sess.TMDB, match.ID, 0)
+		}
 		// Site 2's softened outcome — Status+Reason only, never Title/Year/Root.
 		if duplicateSlot {
 			acceptDuplicatePendingEpisode(&p, match.Title, season, episode)
@@ -1834,6 +1837,7 @@ func tvdbFallbackSeries(
 		candYear int
 		bestName string
 		det      tmdb.TVDetails
+		tvdbID   int
 	}
 	var weak *weakTVDBSeries
 	for i := 0; i < limit; i++ {
@@ -1935,6 +1939,7 @@ func tvdbFallbackSeries(
 			if names, err := sess.TMDB.TVAggregateCredits(ctx, tmdbID); err == nil {
 				p.Cast = names
 			}
+			p.TVDBID = best.TVDBID
 			// Site 3's softened outcome — Status+Reason only, never Title/Year/Root.
 			if duplicateSlot {
 				acceptDuplicatePendingEpisode(&p, det.Title, season, episode)
@@ -1946,7 +1951,7 @@ func tvdbFallbackSeries(
 			return accept(tmdbID, candYear, best.Name, det)
 		}
 		if weak == nil {
-			weak = &weakTVDBSeries{tmdbID: tmdbID, candYear: candYear, bestName: best.Name, det: det}
+			weak = &weakTVDBSeries{tmdbID: tmdbID, candYear: candYear, bestName: best.Name, det: det, tvdbID: best.TVDBID}
 		}
 	}
 	if weak != nil {
@@ -1988,6 +1993,7 @@ func tvdbFallbackSeries(
 		if names, err := sess.TMDB.TVAggregateCredits(ctx, weak.tmdbID); err == nil {
 			p.Cast = names
 		}
+		p.TVDBID = weak.tvdbID
 		// Site 4's softened outcome — Status+Reason only, never Title/Year/Root.
 		if duplicateSlot {
 			acceptDuplicatePendingEpisode(&p, weak.det.Title, season, episode)
@@ -2116,40 +2122,55 @@ func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, tmdbClient
 		}
 	}
 
-	// TheTVDB counterpart to tmdbByEp above, for anthology matches. Gated on
-	// the exact complement of the TMDB branch's precondition: p.TMDBID <= 0
-	// means a synthetic negative id from the anthology pass, and p.TVDBID > 0
-	// means that pass recorded a real TheTVDB series id. Both together are
-	// the only shape this fires for — an ordinary Series proposal (TMDBID > 0,
-	// TVDBID == 0) never reaches it, so no existing behaviour changes.
-	//
-	// FAIL-SOFT, deliberately — and this is the OPPOSITE of SeriesEpisodes'
-	// own fail-closed contract, which is why it is spelled out rather than
-	// left to judgement. Fail-closed is right at SCAN time, where a partial
-	// catalog would produce a confidently wrong (season, episode). Here the
-	// season and episode are ALREADY DECIDED and persisted on the proposal;
-	// the catalog is consulted only for a display title. So the error is
-	// swallowed exactly as the TMDB branch swallows serr, and the title falls
-	// through to "" — which naming.EpisodeFileName already handles by
-	// omitting the title segment entirely, i.e. today's behaviour.
-	//
-	// The fetch sits HERE, outside resolveEpisodeMeta, on purpose: the
-	// closure runs once per episode number, and its second call site is
-	// AFTER RelocateEpisodeRange. Fetching inside it would issue one request
-	// per number and move part of the network work past the file relocation
-	// the fail-soft argument above depends on happening last.
-	//
-	// The season filter is load-bearing: SeriesEpisodes returns the WHOLE
-	// show's catalog across every season in one call, so indexing by Number
-	// alone would collide episodes of the same number in different seasons.
-	// tmdbByEp needs no equivalent because SeasonDetails is already
-	// per-season.
+	// Claude 2026-10-02: TVDB titles when TMDB/library left the name empty.
+	// Reason: ordinary Series Apply used to skip TheTVDB unless TMDBID was
+	//   synthetic (anthology). Looney year-seasons and sparse TMDB seasons
+	//   then dest-named as SxxExx. Fetch only when a name or air date is
+	//   still missing/placeholder, and only when a TVDB id is known or
+	//   ExternalIDs has one.
+	// Troubleshooting: dest still bare — tvdbClient nil, ExternalIDs 0, or
+	//   official season numbers differ from the proposal.
+	// Review if: TMDB SeasonDetails starts returning cartoon names for shorts.
+	needTVDB := false
+	for _, n := range allEpisodeNumbers {
+		title, airDate := "", ""
+		if existing, gerr := libStore.GetEpisode(ctx, series.ID, p.SeasonNumber, n); gerr == nil {
+			title, airDate = existing.Title, existing.AirDate
+		}
+		if se, ok := tmdbByEp[n]; ok {
+			if isPlaceholderEpisodeName(title) && !isPlaceholderEpisodeName(se.Name) {
+				title = se.Name
+			}
+			if airDate == "" {
+				airDate = se.AirDate
+			}
+		}
+		if n == p.EpisodeNumber && isPlaceholderEpisodeName(title) {
+			title = p.EpisodeTitle
+		}
+		if isPlaceholderEpisodeName(title) || airDate == "" {
+			needTVDB = true
+			break
+		}
+	}
 	tvdbByEp := map[int]tvdb.Episode{}
-	if tvdbClient != nil && p.TVDBID > 0 && p.TMDBID <= 0 {
-		if catalog, terr := tvdbClient.SeriesEpisodes(ctx, p.TVDBID, tvdb.SeasonTypeOfficial); terr == nil {
-			for _, ep := range catalog {
-				if ep.SeasonNumber == p.SeasonNumber {
-					tvdbByEp[ep.Number] = ep
+	if needTVDB && tvdbClient != nil {
+		tvdbID := resolveSeriesTVDBID(ctx, tmdbClient, p.TMDBID, p.TVDBID)
+		if tvdbID > 0 {
+			if p.TVDBID <= 0 {
+				p.TVDBID = tvdbID
+				if _, uerr := libStore.UpsertSeries(ctx, library.Series{
+					TMDBID: p.TMDBID, TVDBID: tvdbID, Title: series.Title, Year: series.Year,
+					RootFolderPath: series.RootFolderPath, Genres: series.Genres, Cast: series.Cast,
+				}); uerr == nil {
+					series.TVDBID = tvdbID
+				}
+			}
+			if catalog, terr := tvdbClient.SeriesEpisodes(ctx, tvdbID, tvdb.SeasonTypeOfficial); terr == nil {
+				for _, ep := range catalog {
+					if ep.SeasonNumber == p.SeasonNumber {
+						tvdbByEp[ep.Number] = ep
+					}
 				}
 			}
 		}
@@ -2162,27 +2183,25 @@ func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, tmdbClient
 			return "", "", fmt.Errorf("checking existing metadata for episode %d: %w", episodeNumber, gerr)
 		}
 		if se, ok := tmdbByEp[episodeNumber]; ok {
-			if title == "" {
+			if isPlaceholderEpisodeName(title) && !isPlaceholderEpisodeName(se.Name) {
 				title = se.Name
 			}
 			if airDate == "" {
 				airDate = se.AirDate
 			}
 		}
-		// Same "only if still empty" shape as the TMDB fill above, and for
-		// the same reason: a library title always wins over a freshly-fetched
-		// one (see the never-blank note on the toUpsert loop below). tvdbByEp
-		// is empty unless the anthology gate fired, so this is inert on every
-		// ordinary Series Apply.
+		// Same "only if still empty/placeholder" shape as the TMDB fill
+		// above: a real library title always wins (never-blank on toUpsert).
+		// tvdbByEp is filled when TMDB/library left a name or air date blank.
 		if ep, ok := tvdbByEp[episodeNumber]; ok {
-			if title == "" {
+			if isPlaceholderEpisodeName(title) && !isPlaceholderEpisodeName(ep.Name) {
 				title = ep.Name
 			}
 			if airDate == "" {
 				airDate = ep.Aired
 			}
 		}
-		if title == "" && episodeNumber == p.EpisodeNumber {
+		if isPlaceholderEpisodeName(title) && episodeNumber == p.EpisodeNumber {
 			title = p.EpisodeTitle
 		}
 		return title, airDate, nil

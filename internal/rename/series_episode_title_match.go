@@ -37,6 +37,7 @@ import (
 	"github.com/labbersanon/sakms/internal/proposals"
 	"github.com/labbersanon/sakms/internal/searchterm"
 	"github.com/labbersanon/sakms/internal/tmdb"
+	"github.com/labbersanon/sakms/internal/tvdb"
 )
 
 // episodeTitleMatchReasonPrefix marks an Unmatched/Pending reason as having
@@ -66,6 +67,7 @@ const episodeTitleMatchReasonPrefix = "episode-title match:"
 // identical to the bare int it replaces.
 type pinnedShow struct {
 	tmdbID int
+	tvdbID int
 	title  string
 	year   int
 	root   string // library.Series.RootFolderPath — the LIBRARY root (§0.4)
@@ -159,6 +161,37 @@ func searchEpisodeByTitle(ctx context.Context, client *tmdb.Client, tmdbID int, 
 				res.Second = m
 				return res // early exit — uniqueness is already disproven
 			}
+		}
+	}
+	return res
+}
+
+// searchEpisodeByTitleTVDB is the TheTVDB counterpart: unique name across the
+// official catalog. Incomplete if SeriesEpisodes errors (truncated catalogs
+// cannot prove uniqueness).
+func searchEpisodeByTitleTVDB(ctx context.Context, client *tvdb.Client, tvdbID int, showTitle, basename string) episodeTitleSearch {
+	if client == nil || tvdbID <= 0 {
+		return episodeTitleSearch{}
+	}
+	catalog, err := client.SeriesEpisodes(ctx, tvdbID, tvdb.SeasonTypeOfficial)
+	if err != nil {
+		return episodeTitleSearch{Incomplete: true}
+	}
+	var res episodeTitleSearch
+	for _, ep := range catalog {
+		if !episodeTitleMatches(basename, showTitle, ep.Name) {
+			continue
+		}
+		m := &episodeTitleMatch{season: ep.SeasonNumber, episode: ep.Number, name: ep.Name, airDate: ep.Aired}
+		res.Found++
+		switch res.Found {
+		case 1:
+			res.Match = m
+			res.First = m
+		case 2:
+			res.Match = nil
+			res.Second = m
+			return res
 		}
 	}
 	return res
@@ -351,7 +384,10 @@ func tryEpisodeTitleMatchSeries(
 	// Troubleshooting: a title-matched Pending has a TMDB-sourced Title that
 	//   doesn't match the show's tracked row — confirm this guard wasn't
 	//   loosened back into a det.Title fallback.
-	if pin.tmdbID <= 0 || pin.title == "" || sess.TMDB == nil || IsJunkRenameFilename(name) {
+	if pin.tmdbID <= 0 || pin.title == "" || IsJunkRenameFilename(name) {
+		return nil
+	}
+	if sess.TMDB == nil && sess.TVDB == nil {
 		return nil
 	}
 
@@ -376,18 +412,28 @@ func tryEpisodeTitleMatchSeries(
 		return nil // unreachable today by construction — see above
 	}
 
-	res := searchEpisodeByTitle(ctx, sess.TMDB, pin.tmdbID, pin.title, name)
-
-	// Claude 2026-08-06: ENFORCE the three-outcome contract, don't merely
-	//   document it (plan §1.1) — test Incomplete, then Found >= 2, then
-	//   Match != nil, in that exact order, with an explicit default instead
-	//   of relying on "Match is non-nil here by construction."
-	// Troubleshooting: an ambiguous file lands Pending instead of Unmatched —
-	//   confirm this switch's case order was not reordered or collapsed.
+	var res episodeTitleSearch
+	if sess.TMDB != nil {
+		res = searchEpisodeByTitle(ctx, sess.TMDB, pin.tmdbID, pin.title, name)
+		if res.Incomplete {
+			return nil
+		}
+	}
+	if res.Found == 0 && sess.TVDB != nil {
+		tvdbID := pin.tvdbID
+		if tvdbID <= 0 {
+			tvdbID = resolveSeriesTVDBID(ctx, sess.TMDB, pin.tmdbID, 0)
+			pin.tvdbID = tvdbID
+		}
+		if tvdbID > 0 {
+			res = searchEpisodeByTitleTVDB(ctx, sess.TVDB, tvdbID, pin.title, name)
+			if res.Incomplete {
+				return nil
+			}
+		}
+	}
 	var match *episodeTitleMatch
 	switch {
-	case res.Incomplete, res.Found == 0:
-		return nil
 	case res.Found >= 2:
 		// Claude 2026-10-01: two unique titles in one filename are a dual.
 		// Reason: Phineas "03, 01 Interview With A Platypus, Tip of the Day"
@@ -395,8 +441,10 @@ func tryEpisodeTitleMatchSeries(
 		//   numbers are not the slot (E01 is The Lake Nose Monster).
 		// Troubleshooting: Season 2 duals with NN, NN stay unmatched.
 		// Review if: every dual uses NN-NN and this pairing is unused.
-		if dual := tryDualEpisodeTitleMatch(ctx, sess.TMDB, pin, name); dual != nil {
-			return finishEpisodeTitleMatch(ctx, sess, tracked, pin, generalRoot, foundRoot, base, dual.primary, dual.extra)
+		if sess.TMDB != nil {
+			if dual := tryDualEpisodeTitleMatch(ctx, sess.TMDB, pin, name); dual != nil {
+				return finishEpisodeTitleMatch(ctx, sess, tracked, pin, generalRoot, foundRoot, base, dual.primary, dual.extra)
+			}
 		}
 		q := base
 		q.Status = proposals.Unmatched
@@ -410,9 +458,6 @@ func tryEpisodeTitleMatchSeries(
 	case res.Match != nil:
 		match = res.Match
 	default:
-		// Cannot happen given searchEpisodeByTitle's construction (Found==1
-		// always sets Match), but this is an ACCEPTANCE path — refuse rather
-		// than assume.
 		return nil
 	}
 
@@ -546,7 +591,13 @@ func finishEpisodeTitleMatch(
 	//   the pinned row with NO exceptions — a fallback here, even a
 	//   "defensive only" one, is the same split-provenance hole §0.3 exists
 	//   to prevent, just moved from Year to Title. Do not reintroduce one.
-	det, detErr := sess.TMDB.TVDetails(ctx, pin.tmdbID)
+	var det tmdb.TVDetails
+	var detErr error
+	if sess.TMDB != nil && pin.tmdbID > 0 {
+		det, detErr = sess.TMDB.TVDetails(ctx, pin.tmdbID)
+	} else {
+		detErr = fmt.Errorf("no tmdb client")
+	}
 
 	p := base
 	p.Status = proposals.Pending
@@ -556,6 +607,11 @@ func finishEpisodeTitleMatch(
 	p.SeasonNumber = match.season
 	p.EpisodeNumber = match.episode
 	p.EpisodeTitle = match.name
+	if pin.tvdbID > 0 {
+		p.TVDBID = pin.tvdbID
+	} else {
+		p.TVDBID = resolveSeriesTVDBID(ctx, sess.TMDB, pin.tmdbID, 0)
+	}
 	if extra > 0 {
 		p.ExtraEpisodeNumbers = []int{extra}
 	}
@@ -567,8 +623,10 @@ func finishEpisodeTitleMatch(
 	if detErr == nil {
 		p.Genres = det.Genres
 	}
-	if names, err := sess.TMDB.TVAggregateCredits(ctx, pin.tmdbID); err == nil {
-		p.Cast = names
+	if sess.TMDB != nil && pin.tmdbID > 0 {
+		if names, err := sess.TMDB.TVAggregateCredits(ctx, pin.tmdbID); err == nil {
+			p.Cast = names
+		}
 	}
 	// Site 5's softened outcome — Status+Reason only, so the pin-sourced
 	// Title/Year above survive verbatim. Note this REPLACES the

@@ -257,7 +257,7 @@ func aiEpisodeMode1(
 	// RootFolderPath come from the tracked row or not at all.
 	pin := pinnedShow{tmdbID: folderIDs[key]}
 	if s, ok := seriesByID[pin.tmdbID]; ok {
-		pin.title, pin.year, pin.root = s.Title, s.Year, s.RootFolderPath
+		pin.title, pin.year, pin.root, pin.tvdbID = s.Title, s.Year, s.RootFolderPath, s.TVDBID
 	}
 
 	// foundRoot is the root the file was FOUND under, read BEFORE any rewrite —

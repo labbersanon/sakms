@@ -1,6 +1,9 @@
 package rename
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 // TestEpisodeTitleMatches is the P1-P17 predicate table — pure function tests,
 // no fake TMDB server and no fixture data needed.
@@ -296,5 +299,26 @@ func TestFilenameTitleSegments(t *testing.T) {
 	}
 	if filenameTitleSegments("Red Skelton More Funny Faces.mp4") != nil {
 		t.Fatal("single title must not split")
+	}
+}
+
+func TestSearchEpisodeByTitleTVDB_UniqueMatch(t *testing.T) {
+	client := fakeTVDBEpisodesServer(t, []fakeTVDBEpisode{
+		{ID: 1, SeriesID: 7266, Name: "A Hare Grows in Manhattan", Number: 5, SeasonNumber: 1947, Aired: "1947-03-22"},
+		{ID: 2, SeriesID: 7266, Name: "WRONG SEASON DECOY", Number: 5, SeasonNumber: 1948, Aired: "1948-01-01"},
+	})
+	res := searchEpisodeByTitleTVDB(context.Background(), client, 7266, "Looney Tunes", "A Hare Grows in Manhattan.mp4")
+	if res.Incomplete || res.Found != 1 || res.Match == nil {
+		t.Fatalf("got found=%d incomplete=%v match=%v", res.Found, res.Incomplete, res.Match)
+	}
+	if res.Match.season != 1947 || res.Match.episode != 5 || res.Match.name != "A Hare Grows in Manhattan" {
+		t.Fatalf("match = %+v, want S1947E05", res.Match)
+	}
+}
+
+func TestSearchEpisodeByTitleTVDB_NoClient(t *testing.T) {
+	res := searchEpisodeByTitleTVDB(context.Background(), nil, 7266, "Looney Tunes", "A Hare Grows in Manhattan.mp4")
+	if res.Found != 0 || res.Match != nil || res.Incomplete {
+		t.Fatalf("nil client must be a miss, got %+v", res)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/labbersanon/sakms/internal/nfo"
 	"github.com/labbersanon/sakms/internal/proposals"
 	"github.com/labbersanon/sakms/internal/tmdb"
+	"github.com/labbersanon/sakms/internal/tvdb"
 )
 
 // seriesSidecarAgrees is true when the nfo title and the on-disk show folder
@@ -168,19 +169,56 @@ func rootContaining(path string, roots []string) string {
 //
 // Troubleshooting: pending rows have season/episode and empty episode_title.
 // Review if: dest preview fetches the episode name itself.
+//
+// Claude 2026-10-02: TVDB fills when TMDB has no real episode name.
+// Reason: Looney/year-season and sparse TMDB seasons leave dest as SxxExx.
+//
+//	TVDB is used only if TMDB missed or returned a placeholder, and only
+//	when a TVDB id is already on the proposal or TMDB ExternalIDs has one.
+//
+// Troubleshooting: dest still bare — sess.TVDB nil, ExternalIDs 0, or the
+//
+//	official catalog uses different season numbers than the proposal.
+//
+// Review if: TMDB year-seasons start carrying cartoon names.
 func fillTMDBEpisodeTitle(ctx context.Context, sess *mode.Session, p *proposals.Proposal) {
 	if p == nil || strings.TrimSpace(p.EpisodeTitle) != "" {
 		return
 	}
-	if sess == nil || sess.TMDB == nil || p.TMDBID <= 0 {
+	if sess != nil && sess.TMDB != nil && p.TMDBID > 0 {
+		eps, err := sess.TMDB.SeasonDetails(ctx, p.TMDBID, p.SeasonNumber)
+		if err == nil {
+			for _, ep := range eps {
+				if ep.EpisodeNumber != p.EpisodeNumber {
+					continue
+				}
+				name := strings.TrimSpace(ep.Name)
+				if !isPlaceholderEpisodeName(name) {
+					p.EpisodeTitle = name
+					return
+				}
+				break
+			}
+		}
+	}
+	fillTVDBEpisodeTitle(ctx, sess, p)
+}
+
+func fillTVDBEpisodeTitle(ctx context.Context, sess *mode.Session, p *proposals.Proposal) {
+	if p == nil || strings.TrimSpace(p.EpisodeTitle) != "" || sess == nil || sess.TVDB == nil {
 		return
 	}
-	eps, err := sess.TMDB.SeasonDetails(ctx, p.TMDBID, p.SeasonNumber)
+	id := resolveSeriesTVDBID(ctx, sess.TMDB, p.TMDBID, p.TVDBID)
+	if id <= 0 {
+		return
+	}
+	p.TVDBID = id
+	catalog, err := sess.TVDB.SeriesEpisodes(ctx, id, tvdb.SeasonTypeOfficial)
 	if err != nil {
 		return
 	}
-	for _, ep := range eps {
-		if ep.EpisodeNumber != p.EpisodeNumber {
+	for _, ep := range catalog {
+		if ep.SeasonNumber != p.SeasonNumber || ep.Number != p.EpisodeNumber {
 			continue
 		}
 		name := strings.TrimSpace(ep.Name)
@@ -190,6 +228,21 @@ func fillTMDBEpisodeTitle(ctx context.Context, sess *mode.Session, p *proposals.
 		p.EpisodeTitle = name
 		return
 	}
+}
+
+// resolveSeriesTVDBID returns a known TVDB id, or TMDB's ExternalIDs mapping.
+func resolveSeriesTVDBID(ctx context.Context, tmdbClient *tmdb.Client, tmdbID, known int) int {
+	if known > 0 {
+		return known
+	}
+	if tmdbClient == nil || tmdbID <= 0 {
+		return 0
+	}
+	id, err := tmdbClient.ExternalIDs(ctx, tmdbID)
+	if err != nil || id <= 0 {
+		return 0
+	}
+	return id
 }
 
 // seriesSeasonAcceptable is true when TMDB lists that season, or the season

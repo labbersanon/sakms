@@ -1484,6 +1484,8 @@ describe("Dedup — Move to another mode (AC6)", () => {
         return jsonResponse([
           { id: 555, title: "New Show", releaseDate: "2020-01-01" },
         ]);
+      if (url.includes("/api/modes/series/discover/detail"))
+        return jsonResponse({ seasons: [] });
       if (
         url.includes("/api/proposals/32/move-mode") &&
         (init?.method ?? "").toUpperCase() === "POST"
@@ -1510,6 +1512,7 @@ describe("Dedup — Move to another mode (AC6)", () => {
     await screen.findByText(/Move .+ to another section/);
     fireEvent.click(screen.getByText("Search"));
     fireEvent.click(await screen.findByLabelText("Use New Show"));
+    fireEvent.click(await screen.findByText("Use show-level match only"));
 
     await waitFor(() =>
       expect(
@@ -1923,6 +1926,8 @@ describe("Dedup — takeover scroll restore (N4, N4b)", () => {
         return jsonResponse([
           { id: 999, title: "New Show", releaseDate: "2021-01-01" },
         ]);
+      if (url.includes("/api/modes/series/discover/detail"))
+        return jsonResponse({ seasons: [] });
       if (
         url.includes("/api/proposals/61/move-mode") &&
         (init?.method ?? "").toUpperCase() === "POST"
@@ -1946,6 +1951,7 @@ describe("Dedup — takeover scroll restore (N4, N4b)", () => {
 
     fireEvent.click(screen.getByText("Search"));
     fireEvent.click(await screen.findByLabelText("Use New Show"));
+    fireEvent.click(await screen.findByText("Use show-level match only"));
 
     await waitFor(() =>
       expect(

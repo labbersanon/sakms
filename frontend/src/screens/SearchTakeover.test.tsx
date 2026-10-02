@@ -155,12 +155,10 @@ const seriesFetch = (seasons: unknown[], movies: DiscoverItem[] = []) =>
 
 const commitSpy = () => vi.fn(async (_pick: TakeoverPick) => {});
 
-// pickShow is search → Assign episode (step 2). The title tile commits
-// show-level; wait on the sibling control's aria-label, not the title text
-// (that string is also in the card footer).
+// pickShow is search → series tile → episode assignment (step 2).
 const pickShow = async (title = "A Show") => {
   fireEvent.click(screen.getByText("Search"));
-  fireEvent.click(await screen.findByLabelText(`Assign episode for ${title}`));
+  fireEvent.click(await screen.findByLabelText(`Use ${title}`));
 };
 
 describe("SearchTakeover — search 403 is section-agnostic", () => {
@@ -501,7 +499,7 @@ describe("SearchTakeover — currentSlot reaches the accordion", () => {
 });
 
 describe("SearchTakeover — series title selection", () => {
-  it("clicking a series result commits the title without opening step 2", async () => {
+  it("clicking a series result opens episode assignment", async () => {
     vi.stubGlobal("fetch", seriesFetch([season4]));
     const onCommit = commitSpy();
     const onDone = vi.fn();
@@ -521,14 +519,9 @@ describe("SearchTakeover — series title selection", () => {
     fireEvent.click(screen.getByText("Search"));
     fireEvent.click(await screen.findByLabelText("Use A Show"));
 
-    await waitFor(() => expect(onCommit).toHaveBeenCalledTimes(1));
-    const pick = onCommit.mock.calls[0]![0];
-    expect(pick).toHaveProperty("tmdbId", 42);
-    expect(pick).toHaveProperty("title", "A Show");
-    expect(pick).not.toHaveProperty("seasonNumber");
-    expect(pick).not.toHaveProperty("episodeNumber");
-    expect(screen.queryByText("Use show-level match only")).toBeNull();
-    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(onCommit).not.toHaveBeenCalled();
+    expect(await screen.findByText("Use show-level match only")).toBeInTheDocument();
+    expect(onDone).not.toHaveBeenCalled();
   });
 });
 
@@ -1042,6 +1035,37 @@ describe("SearchTakeover — Series search merges the movies catalog", () => {
     expect(within(seriesTile).queryByText("Movie")).toBeNull();
   });
 
+  it("a movie-origin title click still commits show-level", async () => {
+    const fetchMock = mergeFetch([shortFilm()], [catalogItem()]);
+    vi.stubGlobal("fetch", fetchMock);
+    const onCommit = commitSpy();
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick “Some.Short.Film”"
+        searchMode="series"
+        initialQuery="A Short Film"
+        autoSearch={false}
+        onCommit={onCommit}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText("Search"));
+    fireEvent.click(await screen.findByLabelText("Use A Short Film"));
+
+    await waitFor(() => expect(onCommit).toHaveBeenCalledTimes(1));
+    const pick = onCommit.mock.calls[0]![0];
+    expect(pick).toMatchObject({
+      kind: "catalog",
+      tmdbId: 777,
+      title: "A Short Film",
+    });
+    expect(pick).not.toHaveProperty("seasonNumber");
+    expect(pick).not.toHaveProperty("episodeNumber");
+  });
+
   it("does NOT de-duplicate a title present in both catalogs — both rows render, each badged", async () => {
     // Distinct ids, same title: genuinely two different TMDB entries, which is
     // why no dedup pass is correct (matching Mainstream's own precedent).
@@ -1142,7 +1166,7 @@ describe("SearchTakeover — Series search merges the movies catalog", () => {
     fireEvent.click(screen.getByText("Search"));
     fireEvent.click(await screen.findByLabelText("Assign episode for A Short Film"));
 
-    // Assign episode, not the title tile — tile click commits show-level.
+    // Movie-origin tiles still commit on title click; Assign episode is step 2.
     expect(
       await screen.findByText("Use show-level match only"),
     ).toBeInTheDocument();
@@ -1422,6 +1446,69 @@ describe("SearchTakeover — Series database dropdown", () => {
     ).toBe(true);
   });
 
+  it("peels an agreeing show when TMDB returns multiple series for the prefix", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes("/modes/series/tmdb-search") && u.includes("handy%20manny") && !u.includes("ice")) {
+        return jsonResponse([
+          {
+            id: 1972,
+            title: "Handy Manny",
+            posterPath: "",
+            overview: "",
+            releaseDate: "2006-09-16",
+            voteAverage: 0,
+            mediaType: "tv",
+          },
+          {
+            id: 9999,
+            title: "Manny's Something",
+            posterPath: "",
+            overview: "",
+            releaseDate: "2010-01-01",
+            voteAverage: 0,
+            mediaType: "tv",
+          },
+        ]);
+      }
+      if (u.includes("/tmdb-search")) {
+        return jsonResponse([]);
+      }
+      if (u.includes("/tvdb-search") && u.includes("kind=episode") && u.includes("ice")) {
+        return jsonResponse([
+          {
+            tmdbId: 1972,
+            tvdbId: 79826,
+            title: "Ice Cream Team",
+            seriesTitle: "Handy Manny",
+            releaseDate: "2008-01-01",
+            seasonNumber: 2,
+            episodeNumber: 14,
+          },
+        ]);
+      }
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick"
+        searchMode="series"
+        initialQuery="handy manny ice cream team"
+        autoSearch={false}
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText("Search"));
+
+    expect(await screen.findByLabelText("Use Ice Cream Team")).toBeInTheDocument();
+    expect(screen.getByLabelText("Use Handy Manny")).toBeInTheDocument();
+  });
+
   it("falls back to TVDB episode search when TMDB series+movies are empty", async () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (url.includes("/tmdb-search")) {
@@ -1554,6 +1641,9 @@ describe("SearchTakeover — Series database dropdown", () => {
 
     fireEvent.click(screen.getByText("Search"));
     fireEvent.click(await screen.findByLabelText("Use Night Owl"));
+
+    expect(onCommit).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByText("Use show-level match only"));
 
     await waitFor(() => expect(onCommit).toHaveBeenCalledTimes(1));
     expect(onCommit.mock.calls[0]![0]).toMatchObject({
@@ -1829,6 +1919,81 @@ describe("SearchTakeover — Advanced search", () => {
       .map(([u]) => String(u))
       .find((u) => u.includes("/tmdb-search"));
     expect(tmdbCall).toContain("id=550");
+  });
+
+  it("Advanced Series+Title searches TMDB show and TVDB episode, never movies", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes("/modes/movies/tmdb-search")) {
+        throw new Error("movies catalog must not be queried");
+      }
+      if (u.includes("/modes/series/tmdb-search") && u.includes("Handy")) {
+        return jsonResponse([
+          {
+            id: 1972,
+            title: "Handy Manny",
+            posterPath: "",
+            overview: "",
+            releaseDate: "2006-09-16",
+            voteAverage: 0,
+            mediaType: "tv",
+          },
+        ]);
+      }
+      if (u.includes("/tvdb-search") && u.includes("kind=episode") && u.includes("Ice")) {
+        return jsonResponse([
+          {
+            tmdbId: 1972,
+            tvdbId: 79826,
+            title: "Ice Cream Team",
+            seriesTitle: "Handy Manny",
+            releaseDate: "2008-01-01",
+            seasonNumber: 2,
+            episodeNumber: 14,
+          },
+        ]);
+      }
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick"
+        searchMode="series"
+        initialQuery=""
+        autoSearch={false}
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText("Advanced"));
+    fireEvent.input(screen.getByLabelText("Title"), {
+      target: { value: "Ice cream team" },
+    });
+    fireEvent.input(screen.getByLabelText("Series"), {
+      target: { value: "Handy Manny" },
+    });
+    fireEvent.click(screen.getByText("Search"));
+
+    expect(await screen.findByLabelText("Use Ice Cream Team")).toBeInTheDocument();
+    expect(screen.getByLabelText("Use Handy Manny")).toBeInTheDocument();
+    const urls = fetchMock.mock.calls.map(([u]) => String(u));
+    expect(urls.some((u) => u.includes("/modes/movies/tmdb-search"))).toBe(false);
+    expect(
+      urls.some((u) => u.includes("/modes/series/tmdb-search") && u.includes("Handy")),
+    ).toBe(true);
+    expect(
+      urls.some(
+        (u) =>
+          u.includes("/tvdb-search") &&
+          u.includes("kind=episode") &&
+          u.includes("Ice") &&
+          u.includes("series=Handy"),
+      ),
+    ).toBe(true);
   });
 });
 

@@ -47,9 +47,48 @@
 // first) and is deliberately not re-sorted here.
 
 import { type Component, For, Show, createResource, createSignal } from "solid-js";
-import type { SeasonSummary } from "@dto";
+import type { EpisodeSummary, SeasonSummary } from "@dto";
 import { fetchTitleDetail } from "../../api/discover";
 import { Muted, yearOf } from "../../components/ui";
+
+// Claude 2026-10-01: step-2 filter is title substring or SxxExx / NxNN.
+// Reason: Series Search is show-name only; episode pick is after the show.
+// Troubleshooting: Advanced Title searched movies and skipped the show.
+// Review if: Series Search grows a real episode-title catalog query.
+function parseSlotFilter(raw: string): { season: number; episode: number } | null {
+  const compact = raw.trim().replace(/\s+/g, "");
+  if (!compact) {
+    return null;
+  }
+  const m = compact.match(/^S(\d{1,2})E(\d{1,3})$/i) || compact.match(/^(\d{1,2})x(\d{1,3})$/i);
+  if (!m) {
+    return null;
+  }
+  return {
+    season: Number.parseInt(m[1], 10),
+    episode: Number.parseInt(m[2], 10),
+  };
+}
+
+function episodeMatchesFilter(
+  filter: string,
+  seasonNumber: number,
+  ep: EpisodeSummary,
+): boolean {
+  const f = filter.trim().toLowerCase();
+  if (!f) {
+    return true;
+  }
+  const slot = parseSlotFilter(filter);
+  if (slot) {
+    return slot.season === seasonNumber && slot.episode === ep.episodeNumber;
+  }
+  const code = `s${String(seasonNumber).padStart(2, "0")}e${String(ep.episodeNumber).padStart(2, "0")}`;
+  if (code.includes(f.replace(/\s+/g, ""))) {
+    return true;
+  }
+  return (ep.name || "").toLowerCase().includes(f);
+}
 
 // seasonLabel prefers TMDB's own season name ("Specials", "Season 4") and falls
 // back to a synthesized one when TMDB has none. Duplicated from
@@ -162,6 +201,9 @@ export const SeasonEpisodeAccordion: Component<{
   // a row pre-selects nothing, it only saves the operator hunting for the
   // season their file is already matched to.
   currentSlot?: { season: number; episode: number } | null;
+  // Seeded from the show-name search leftover (filename residual). Operator-
+  // owned after mount — do not re-seed on later currentSlot changes.
+  initialEpisodeFilter?: string;
 }> = (props) => {
   // Lazily seeded from currentSlot and thereafter operator-owned. Deliberately
   // NOT an effect: re-seeding on a later currentSlot change would re-open a
@@ -169,6 +211,9 @@ export const SeasonEpisodeAccordion: Component<{
   // one step-2 mount anyway (SearchTakeover remounts on "Change show").
   const [expanded, setExpanded] = createSignal<ReadonlySet<number>>(
     props.currentSlot ? new Set([props.currentSlot.season]) : new Set(),
+  );
+  const [episodeFilter, setEpisodeFilter] = createSignal(
+    props.initialEpisodeFilter ?? "",
   );
 
   // A NEW Set every time: Solid compares signal values by reference, so
@@ -204,6 +249,27 @@ export const SeasonEpisodeAccordion: Component<{
   );
 
   const seasons = () => fetched() ?? [];
+  const filterText = () => episodeFilter().trim();
+  const visibleSeasons = () => {
+    const all = seasons();
+    const f = filterText();
+    if (!f) {
+      return all;
+    }
+    return all.filter((s) =>
+      (s.episodes ?? []).some((ep) => episodeMatchesFilter(f, s.seasonNumber, ep)),
+    );
+  };
+  const visibleEpisodes = (s: SeasonSummary): EpisodeSummary[] => {
+    const f = filterText();
+    const eps = s.episodes ?? [];
+    if (!f) {
+      return eps;
+    }
+    return eps.filter((ep) => episodeMatchesFilter(f, s.seasonNumber, ep));
+  };
+  const seasonOpen = (s: SeasonSummary) =>
+    filterText() ? true : expanded().has(s.seasonNumber);
 
   const degraded = (notice: string) => (
     <div>
@@ -237,10 +303,28 @@ export const SeasonEpisodeAccordion: Component<{
             "Couldn't load seasons from TMDB — enter a season (and optionally an episode) instead.",
           )}
         >
+          <div>
+          <input
+            class="mb-2 w-full rounded border border-border bg-bg px-2 py-1 text-xs text-fg outline-none focus:border-accent"
+            value={episodeFilter()}
+            onInput={(e) => setEpisodeFilter(e.currentTarget.value)}
+            aria-label="Filter episodes"
+            placeholder="Episode title or SxxExx"
+          />
+          <Show
+            when={visibleSeasons().length > 0}
+            fallback={
+              <Muted>
+                {filterText()
+                  ? "No episodes match that filter."
+                  : "No episode list available for this season."}
+              </Muted>
+            }
+          >
           <div class="divide-y divide-border rounded border border-border">
-            <For each={seasons()}>
+            <For each={visibleSeasons()}>
               {(s) => {
-                const open = () => expanded().has(s.seasonNumber);
+                const open = () => seasonOpen(s);
                 const year = () => yearOf(s.airDate);
                 const episodeCount = () =>
                   `${s.episodeCount} ep${s.episodeCount === 1 ? "" : "s"}`;
@@ -270,6 +354,7 @@ export const SeasonEpisodeAccordion: Component<{
                             suffix" semantic. SearchTakeover's commitSlot maps
                             it to a show-level commit (D-1); removing it removes
                             that path's only entry point from the accordion. */}
+                        <Show when={!filterText()}>
                         <button
                           type="button"
                           class={ROW_CLASS}
@@ -289,8 +374,9 @@ export const SeasonEpisodeAccordion: Component<{
                             {episodeCount()}
                           </span>
                         </button>
+                        </Show>
                         <For
-                          each={s.episodes}
+                          each={visibleEpisodes(s)}
                           fallback={
                             <Muted class="px-3 py-1.5 text-xs">
                               No episode list available for this season.
@@ -329,6 +415,8 @@ export const SeasonEpisodeAccordion: Component<{
                 );
               }}
             </For>
+          </div>
+          </Show>
           </div>
         </Show>
       </Show>

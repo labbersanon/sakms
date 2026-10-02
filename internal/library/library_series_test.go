@@ -387,6 +387,30 @@ func TestParseEpisodeNumbersLoose(t *testing.T) {
 			parentDir:  "/media/Series/Show/Season 2024",
 			wantSeason: 0, wantEps: nil, wantOK: false,
 		},
+		{
+			name:       "Phineas dual under Season 2 — leading NN-NN pair",
+			basename:   "06-07 Day of the Living Gelatin, Elementary My Dear Stacy.mp4",
+			parentDir:  "/media/Media Library/Series (Kids)/Phineas and Ferb/Season 2",
+			wantSeason: 2, wantEps: []int{6, 7}, wantOK: true,
+		},
+		{
+			name:       "Phineas dual under zero-padded Season 02",
+			basename:   "08-09 Don't Even Blink, Chez Platypus.mp4",
+			parentDir:  "/media/Media Library/Series (Kids)/Phineas and Ferb (2007) [tmdbid-1877]/Season 02",
+			wantSeason: 2, wantEps: []int{8, 9}, wantOK: true,
+		},
+		{
+			name:       "NN-NN without a Season parent stays unparsed",
+			basename:   "06-07 Day of the Living Gelatin.mp4",
+			parentDir:  "/media/Media Library/Series (Kids)/Phineas and Ferb",
+			wantSeason: 0, wantEps: nil, wantOK: false,
+		},
+		{
+			name:       "wide NN-NN pack under Season is refused",
+			basename:   "01-12 Season Pack.mkv",
+			parentDir:  "/media/Series/Show/Season 1",
+			wantSeason: 0, wantEps: nil, wantOK: false,
+		},
 	}
 	for _, c := range cases {
 		season, episodes, ok := ParseEpisodeNumbersLoose(c.basename, c.parentDir)
@@ -402,6 +426,9 @@ func TestParseEpisodeNumbersLoose(t *testing.T) {
 	// is completely untouched by this fallback's existence.
 	if _, _, ok := ParseEpisodeNumbers("2ea4ad06efe20501d944b90f3a291e6f.mp4"); ok {
 		t.Error("ParseEpisodeNumbers must still return ok=false for the opaque hash basename — the loose fallback must not have widened the strict parser")
+	}
+	if _, _, ok := ParseEpisodeNumbers("06-07 Day of the Living Gelatin, Elementary My Dear Stacy.mp4"); ok {
+		t.Error("ParseEpisodeNumbers must still return ok=false for a Season-dir NN-NN dual — Dedup/import stay on SxxExx")
 	}
 }
 

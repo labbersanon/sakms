@@ -1147,7 +1147,64 @@ func ParseEpisodeNumbersLoose(basename, parentDir string) (season int, episodes 
 	if season, episodes, ok = ParseYearSeasonNumbers(basename); ok {
 		return season, episodes, ok
 	}
-	return ParseYearSeasonNumbers(filepath.Base(parentDir))
+	if season, episodes, ok = ParseYearSeasonNumbers(filepath.Base(parentDir)); ok {
+		return season, episodes, ok
+	}
+	// Claude 2026-10-01: Season NN + leading NN-NN pair, rename-only.
+	// Reason: Phineas duals are "06-07 Title, Other Title.mp4" under
+	//   Season 2 — no SxxExx — so Scan left them Unmatched and Search
+	//   had to pick the show by hand.
+	// Troubleshooting: 06-07 Day of the Living Gelatin stayed unmatched
+	//   with "could not determine season/episode".
+	// Review if: ParseEpisodeNumbers itself learns this shape (it must
+	//   not — Dedup/import stay on SxxExx).
+	return parseSeasonDirEpisodePair(basename, parentDir)
+}
+
+var (
+	seasonDirNameRe      = regexp.MustCompile(`(?i)^season\s*(\d{1,2})$`)
+	specialsDirNameRe    = regexp.MustCompile(`(?i)^specials$`)
+	leadingEpisodePairRe = regexp.MustCompile(`^(\d{1,2})-(\d{1,2})(?:$|[\s._-])`)
+)
+
+func parseSeasonDirNumber(name string) (int, bool) {
+	name = strings.TrimSpace(name)
+	if specialsDirNameRe.MatchString(name) {
+		return 0, true
+	}
+	m := seasonDirNameRe.FindStringSubmatch(name)
+	if m == nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil || n < 0 || n > 99 {
+		return 0, false
+	}
+	return n, true
+}
+
+// parseSeasonDirEpisodePair is rename-only: parent is Season NN / Specials
+// and the basename starts with an adjacent NN-NN pair (Disney duals).
+// Exactly two episodes — "01-12" is refused so a pack name cannot fan out.
+func parseSeasonDirEpisodePair(basename, parentDir string) (int, []int, bool) {
+	season, ok := parseSeasonDirNumber(filepath.Base(parentDir))
+	if !ok {
+		return 0, nil, false
+	}
+	stem := basename
+	if ext := filepath.Ext(stem); ext != "" {
+		stem = strings.TrimSuffix(stem, ext)
+	}
+	m := leadingEpisodePairRe.FindStringSubmatch(stem)
+	if m == nil {
+		return 0, nil, false
+	}
+	first, err1 := strconv.Atoi(m[1])
+	last, err2 := strconv.Atoi(m[2])
+	if err1 != nil || err2 != nil || first < 1 || last != first+1 {
+		return 0, nil, false
+	}
+	return season, []int{first, last}, true
 }
 
 // Claude 2026-08-07: compact "eNNNN" episode-code siblings, rename-path-only (plan §1.1/§1.2)

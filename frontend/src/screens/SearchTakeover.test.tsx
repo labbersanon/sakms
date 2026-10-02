@@ -1362,6 +1362,66 @@ describe("SearchTakeover — Series database dropdown", () => {
     expect(screen.getByPlaceholderText("Series or episode name")).toBeInTheDocument();
   });
 
+  it("peels a unique show prefix when TMDB gets show plus episode title", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes("/modes/series/tmdb-search") && u.includes("q=Phineas%20and%20Ferb") && !u.includes("interview")) {
+        return jsonResponse([
+          {
+            id: 1877,
+            title: "Phineas and Ferb",
+            posterPath: "",
+            overview: "",
+            releaseDate: "2007-08-17",
+            voteAverage: 0,
+            mediaType: "tv",
+          },
+        ]);
+      }
+      if (u.includes("/tmdb-search")) {
+        return jsonResponse([]);
+      }
+      if (u.includes("/tvdb-search") && u.includes("kind=episode") && u.includes("series=Phineas")) {
+        return jsonResponse([
+          {
+            tmdbId: 1877,
+            tvdbId: 81848,
+            title: "Interview with a Platypus",
+            seriesTitle: "Phineas and Ferb",
+            releaseDate: "2009-01-01",
+            seasonNumber: 2,
+            episodeNumber: 2,
+          },
+        ]);
+      }
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(() => (
+      <SearchTakeover
+        heading="Re-pick"
+        searchMode="series"
+        initialQuery="Phineas and Ferb interview with a platypus"
+        autoSearch={false}
+        onCommit={commitSpy()}
+        onDone={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByText("Search"));
+
+    expect(
+      await screen.findByLabelText("Use Interview with a Platypus"),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Use Phineas and Ferb")).toBeInTheDocument();
+    const urls = fetchMock.mock.calls.map(([u]) => String(u));
+    expect(
+      urls.some((u) => u.includes("/tvdb-search") && u.includes("kind=episode")),
+    ).toBe(true);
+  });
+
   it("falls back to TVDB episode search when TMDB series+movies are empty", async () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (url.includes("/tmdb-search")) {

@@ -2319,6 +2319,62 @@ func TestScanLibrarySeries_EpisodeTitleMatch_UniqueMatchAccepted(t *testing.T) {
 	}
 }
 
+func TestScanLibrarySeries_EpisodeTitleMatch_CommaDualAccepted(t *testing.T) {
+	tmdb.ResetDefaultCache()
+	t.Cleanup(tmdb.ResetDefaultCache)
+
+	root := t.TempDir()
+	seasonDir := filepath.Join(root, "Phineas and Ferb", "Season 2")
+	if err := os.MkdirAll(seasonDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(seasonDir, "03, 01 Interview With A Platypus, Tip of the Day.mp4")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	client := fakeTMDBEpisodeTitleServer(t, 1877, "Phineas and Ferb", map[int][]tmdb.SeasonEpisode{
+		2: {
+			{EpisodeNumber: 1, Name: "The Lake Nose Monster", AirDate: "2009-01-01"},
+			{EpisodeNumber: 2, Name: "Interview with a Platypus", AirDate: "2009-01-02"},
+			{EpisodeNumber: 3, Name: "Tip of the Day", AirDate: "2009-01-03"},
+		},
+	}, -1, nil)
+	sess := &mode.Session{Mode: mode.Series, TMDB: client}
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	if _, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 1877, Title: "Phineas and Ferb", Year: 2007, RootFolderPath: root}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p *proposals.Proposal
+	for i := range got {
+		if got[i].SourcePath == video {
+			p = &got[i]
+			break
+		}
+	}
+	if p == nil {
+		t.Fatalf("no proposal for dual file: %+v", got)
+	}
+	if p.Status != proposals.Pending {
+		t.Fatalf("status=%v reason=%q", p.Status, p.Reason)
+	}
+	if p.SeasonNumber != 2 || p.EpisodeNumber != 2 {
+		t.Fatalf("slot = S%02dE%02d, want S02E02", p.SeasonNumber, p.EpisodeNumber)
+	}
+	if len(p.ExtraEpisodeNumbers) != 1 || p.ExtraEpisodeNumbers[0] != 3 {
+		t.Fatalf("extra = %v, want [3]", p.ExtraEpisodeNumbers)
+	}
+	if p.EpisodeTitle != "Interview with a Platypus" {
+		t.Fatalf("EpisodeTitle = %q", p.EpisodeTitle)
+	}
+}
+
 // TestScanLibrarySeries_EpisodeTitleMatch_AmbiguousRejected is case B: the
 // same episode title occupying a slot in TWO different seasons must
 // Unmatch, naming both slots, with no TMDB id assigned. The duplicate is

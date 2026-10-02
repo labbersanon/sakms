@@ -288,3 +288,13 @@ func TestIsPlaceholderEpisodeName(t *testing.T) {
 		})
 	}
 }
+
+func TestFilenameTitleSegments(t *testing.T) {
+	got := filenameTitleSegments("03, 01 Interview With A Platypus, Tip of the Day.mp4")
+	if len(got) != 2 || got[0] != "Interview With A Platypus" || got[1] != "Tip of the Day" {
+		t.Fatalf("got %#v", got)
+	}
+	if filenameTitleSegments("Red Skelton More Funny Faces.mp4") != nil {
+		t.Fatal("single title must not split")
+	}
+}

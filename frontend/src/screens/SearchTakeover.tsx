@@ -280,6 +280,48 @@ function adultOpts(adv: AdvancedFields): AdultSearchOpts | undefined {
 // Reason: AnthologyTMDBID is a hash; repick must persist the real TVDB id.
 // Troubleshooting: Organize Search 400 "tmdbId and title are both required".
 // Review if: TVDB search no longer emits synthetic tmdb ids.
+function showPrefixAgrees(prefix: string, title: string): boolean {
+  const p = prefix.trim().toLowerCase();
+  const t = title.trim().toLowerCase();
+  return t === p || t.startsWith(`${p} `) || p.startsWith(`${t} `);
+}
+
+// Claude 2026-10-01: peel a unique show prefix when TMDB gets show+episode.
+// Reason: "Phineas and Ferb interview with a platypus" returns [] from
+//   show-name search. Traefik 200 + 3-byte bodies; dest stayed S00E00.
+// Troubleshooting: Organize Search "No results" after typing the episode.
+// Review if: TMDB grows an episode-title search used on this path.
+async function showPrefixEpisodeHits(
+  q: string,
+  opts?: CatalogSearchOpts,
+): Promise<CatalogHit[] | null> {
+  const words = q.trim().split(/\s+/).filter(Boolean);
+  if (words.length < 3) {
+    return null;
+  }
+  for (let n = words.length - 1; n >= 2; n--) {
+    const prefix = words.slice(0, n).join(" ");
+    const residual = words.slice(n).join(" ");
+    if (residual.length < 3) {
+      continue;
+    }
+    const series = await tmdbSearch("series", prefix, opts);
+    if (series.length !== 1 || !showPrefixAgrees(prefix, series[0]!.title)) {
+      continue;
+    }
+    const show = series[0]!;
+    const episodes = await tvdbSearch(residual, "episode", {
+      ...opts,
+      series: show.title,
+    });
+    return [
+      { mode: "series", item: show },
+      ...episodes.map((item) => tvdbItemToHit(item)),
+    ];
+  }
+  return null;
+}
+
 function tvdbItemToHit(item: SeriesSearchItem): CatalogHit {
   const presetSlot =
     item.seasonNumber != null && item.episodeNumber != null
@@ -499,6 +541,10 @@ export const SearchTakeover: Component<{
       //   Gelatin while Traefik shows 200 + 3-byte TMDB bodies.
       // Review if: TMDB grows an episode-title search used on this path.
       if (items.length === 0 && tmdbQ) {
+        const peeled = await showPrefixEpisodeHits(tmdbQ, tmdbOpts);
+        if (peeled && peeled.length > 0) {
+          return { kind: "catalog", items: peeled };
+        }
         const episodeItems = await tvdbSearch(tmdbQ, "episode", tmdbOpts);
         return {
           kind: "catalog",

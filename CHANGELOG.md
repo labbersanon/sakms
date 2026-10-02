@@ -10288,6 +10288,23 @@ status stays active.
 | `internal/rename/rename_library_series_test.go` | Scan pending EpisodeTitle == Pilot |
 | `internal/rename/series_daily_absolute_test.go` | Guest / Morgan titles |
 
+## 2026-10-01 — Series Search peels show+episode; comma dual title-match
+
+**Problem:** Search for `Phineas and Ferb interview with a platypus` returned no TMDB results. `Season 2/03, 01 Interview With A Platypus, Tip of the Day.mp4` stayed unmatched; a show-level pick left S00E00.
+**Root cause:** TMDB search is show-name only. Title-match saw both episode titles and declined as ambiguous. `03, 01` is not E03-E01 (E01 is The Lake Nose Monster; titles are E02+E03).
+**Fix:** When TMDB series+movies are empty, peel a unique show prefix and TVDB-search the residual as an episode. Title-match accepts two unique comma titles after a leading `NN, NN` / `NN-NN` prefix as a dual.
+**Outcome:** Show+episode query lists Phineas and Interview with a Platypus S02E02. Scan of the comma dual is S02E02-E03.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/SearchTakeover.tsx` | peel unique show prefix + episode residual |
+| `frontend/src/screens/SearchTakeover.test.tsx` | Phineas + Interview with a Platypus |
+| `internal/rename/series_episode_title_match.go` | comma dual title-match |
+| `internal/rename/series_episode_title_match_test.go` | filename segments |
+| `internal/rename/rename_library_series_test.go` | Scan dual S02E02-E03 |
+
 
 
 

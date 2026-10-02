@@ -389,6 +389,15 @@ func tryEpisodeTitleMatchSeries(
 	case res.Incomplete, res.Found == 0:
 		return nil
 	case res.Found >= 2:
+		// Claude 2026-10-01: two unique titles in one filename are a dual.
+		// Reason: Phineas "03, 01 Interview With A Platypus, Tip of the Day"
+		//   matches E02 and E03, so Found>=2 left it Unmatched. The comma
+		//   numbers are not the slot (E01 is The Lake Nose Monster).
+		// Troubleshooting: Season 2 duals with NN, NN stay unmatched.
+		// Review if: every dual uses NN-NN and this pairing is unused.
+		if dual := tryDualEpisodeTitleMatch(ctx, sess.TMDB, pin, name); dual != nil {
+			return finishEpisodeTitleMatch(ctx, sess, tracked, pin, generalRoot, foundRoot, base, dual.primary, dual.extra)
+		}
 		q := base
 		q.Status = proposals.Unmatched
 		q.Reason = fmt.Sprintf(
@@ -407,6 +416,60 @@ func tryEpisodeTitleMatchSeries(
 		return nil
 	}
 
+	return finishEpisodeTitleMatch(ctx, sess, tracked, pin, generalRoot, foundRoot, base, match, 0)
+}
+
+type dualEpisodeTitleMatch struct {
+	primary *episodeTitleMatch
+	extra   int
+}
+
+var leadingNumberPairPrefixRe = regexp.MustCompile(`^\d{1,2}[-,]\s*\d{1,2}\s+`)
+
+func filenameTitleSegments(name string) []string {
+	stem := name
+	if i := strings.LastIndex(stem, "."); i > 0 {
+		stem = stem[:i]
+	}
+	stem = leadingNumberPairPrefixRe.ReplaceAllString(stem, "")
+	var out []string
+	for _, part := range strings.Split(stem, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	if len(out) != 2 {
+		return nil
+	}
+	return out
+}
+
+func tryDualEpisodeTitleMatch(ctx context.Context, client *tmdb.Client, pin pinnedShow, name string) *dualEpisodeTitleMatch {
+	parts := filenameTitleSegments(name)
+	if parts == nil {
+		return nil
+	}
+	a := searchEpisodeByTitle(ctx, client, pin.tmdbID, pin.title, parts[0])
+	b := searchEpisodeByTitle(ctx, client, pin.tmdbID, pin.title, parts[1])
+	if a.Match == nil || b.Match == nil || a.Found != 1 || b.Found != 1 {
+		return nil
+	}
+	if a.Match.season != b.Match.season || a.Match.episode == b.Match.episode {
+		return nil
+	}
+	first, second := a.Match, b.Match
+	if second.episode < first.episode {
+		first, second = second, first
+	}
+	return &dualEpisodeTitleMatch{primary: first, extra: second.episode}
+}
+
+func finishEpisodeTitleMatch(
+	ctx context.Context, sess *mode.Session, tracked map[episodeKey]bool,
+	pin pinnedShow, generalRoot, foundRoot string, base proposals.Proposal,
+	match *episodeTitleMatch, extra int,
+) *proposals.Proposal {
 	// Claude 2026-08-07: SITE 5 of 7 — tracked slot is now an alternate, not a decline (plan §5.2.4)
 	// Reason: deep-interview-sakms-series-parsing-accuracy-improvements §5.2 —
 	//   REPLACES (per the stale-comment rule, not edits) the 2026-08-06 block
@@ -493,9 +556,14 @@ func tryEpisodeTitleMatchSeries(
 	p.SeasonNumber = match.season
 	p.EpisodeNumber = match.episode
 	p.EpisodeTitle = match.name
-	// ExtraEpisodeNumbers stays nil: a title match resolves exactly one slot.
+	if extra > 0 {
+		p.ExtraEpisodeNumbers = []int{extra}
+	}
 	p.RootFolderPath = targetRoot
 	p.Reason = fmt.Sprintf("%s %q -> S%02dE%02d", episodeTitleMatchReasonPrefix, match.name, match.season, match.episode)
+	if extra > 0 {
+		p.Reason = fmt.Sprintf("%s %q -> S%02dE%02d-E%02d", episodeTitleMatchReasonPrefix, match.name, match.season, match.episode, extra)
+	}
 	if detErr == nil {
 		p.Genres = det.Genres
 	}

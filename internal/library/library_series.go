@@ -1148,9 +1148,9 @@ func ParseEpisodeNumbersLoose(basename, parentDir string) (season int, episodes 
 	if season, episodes, ok = ParseYearSeasonNumbers(filepath.Base(parentDir)); ok {
 		return season, episodes, ok
 	}
-	// Claude 2026-10-01: Season NN + leading NN-NN pair.
-	// Reason: Phineas duals are "06-07 Title, Other Title.mp4" under
-	//   Season 2 — no SxxExx. Rename, Import, and Dedup orphans call Loose.
+	// Claude 2026-10-01: Season NN + leading N-EE / NN-NN / leading episode.
+	// Reason: Phineas duals are "06-07 Title" under Season 2; Season 1 files
+	//   are "1-16 Title" (S01E16). Rename, Import, and Dedup orphans call Loose.
 	//   ParseEpisodeNumbers stays SxxExx so releasematch titles cannot fan out.
 	// Troubleshooting: 06-07 Day of the Living Gelatin stayed unmatched
 	//   with "could not determine season/episode".
@@ -1163,6 +1163,7 @@ var (
 	seasonDirNameRe      = regexp.MustCompile(`(?i)^season\s*(\d{1,2})$`)
 	specialsDirNameRe    = regexp.MustCompile(`(?i)^specials$`)
 	leadingEpisodePairRe = regexp.MustCompile(`^(\d{1,2})-(\d{1,2})(?:$|[\s._-])`)
+	seasonDirPackTitleRe = regexp.MustCompile(`(?i)(?:^|[\s._-])(?:season\s*pack|complete(?:\s+season)?|disc|disk)(?:$|[\s._-])`)
 )
 
 func parseSeasonDirNumber(name string) (int, bool) {
@@ -1181,10 +1182,17 @@ func parseSeasonDirNumber(name string) (int, bool) {
 	return n, true
 }
 
-// parseSeasonDirEpisodePair: parent is Season NN / Specials and the basename
-// starts with an adjacent NN-NN pair (Disney duals). Exactly two episodes —
-// "01-12" is refused so a pack name cannot fan out. Reached only via Loose
-// (Rename / Import / Dedup orphans), never via ParseEpisodeNumbers.
+// parseSeasonDirEpisodePair: parent is Season NN / Specials.
+//
+//	S-EE: "1-16 Title" under Season 1 — first number is the season, last is
+//	  the episode (Disney production codes). Checked before the dual rule so
+//	  "1-02 Title" is S01E02, not a phantom E01-E02 split.
+//	Dual: "06-07 Title, Other" under Season 2 — adjacent pair whose first
+//	  number is not the season folder.
+//	Leading: "12 The Chronicles of Meap" under Season 2 — a single leading
+//	  episode number when there is no NN-NN pair.
+//
+// Pack names ("01-12 Season Pack") stay unparsed. Reached only via Loose.
 func parseSeasonDirEpisodePair(basename, parentDir string) (int, []int, bool) {
 	season, ok := parseSeasonDirNumber(filepath.Base(parentDir))
 	if !ok {
@@ -1194,16 +1202,34 @@ func parseSeasonDirEpisodePair(basename, parentDir string) (int, []int, bool) {
 	if ext := filepath.Ext(stem); ext != "" {
 		stem = strings.TrimSuffix(stem, ext)
 	}
+	if seasonDirPackTitleRe.MatchString(stem) {
+		return 0, nil, false
+	}
 	m := leadingEpisodePairRe.FindStringSubmatch(stem)
-	if m == nil {
+	if m != nil {
+		first, err1 := strconv.Atoi(m[1])
+		last, err2 := strconv.Atoi(m[2])
+		if err1 != nil || err2 != nil || first < 1 || last < 1 {
+			return 0, nil, false
+		}
+		// Claude 2026-10-01: Season N / N-EE is SxxExx, not a dual.
+		// Reason: 46 Phineas Season 1 files are "1-16 Title" (S01E16).
+		//   Treating only adjacent pairs left them Unmatched; treating
+		//   1-02 as E01-E02 would invent a split.
+		// Troubleshooting: 1-16 Get That Bigfoot stayed unmatched.
+		// Review if: ParseEpisodeNumbers itself learns this shape (it must not).
+		if first == season {
+			return season, []int{last}, true
+		}
+		if last == first+1 {
+			return season, []int{first, last}, true
+		}
 		return 0, nil, false
 	}
-	first, err1 := strconv.Atoi(m[1])
-	last, err2 := strconv.Atoi(m[2])
-	if err1 != nil || err2 != nil || first < 1 || last != first+1 {
-		return 0, nil, false
+	if ep, eok := parseLeadingEpisode(stem); eok {
+		return season, []int{ep}, true
 	}
-	return season, []int{first, last}, true
+	return 0, nil, false
 }
 
 // Claude 2026-08-07: compact "eNNNN" episode-code siblings, rename-path-only (plan §1.1/§1.2)

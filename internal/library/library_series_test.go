@@ -411,6 +411,36 @@ func TestParseEpisodeNumbersLoose(t *testing.T) {
 			parentDir:  "/media/Series/Show/Season 1",
 			wantSeason: 0, wantEps: nil, wantOK: false,
 		},
+		{
+			name:       "Phineas Season 1 S-EE code — 1-16 is E16, not a dual",
+			basename:   "1-16 Get That Bigfoot Outta My Face! (HD).mp4",
+			parentDir:  "/media/Media Library/Series (Kids)/Phineas and Ferb/Season 1",
+			wantSeason: 1, wantEps: []int{16}, wantOK: true,
+		},
+		{
+			name:       "Season 1 / 1-02 is S01E02, not a phantom E01-E02 split",
+			basename:   "1-02 Flop Starz (HD).mp4",
+			parentDir:  "/media/Media Library/Series (Kids)/Phineas and Ferb/Season 1",
+			wantSeason: 1, wantEps: []int{2}, wantOK: true,
+		},
+		{
+			name:       "Season 2 / 2-06 is S02E06 (first number is the season)",
+			basename:   "2-06 Day of the Living Gelatin.mp4",
+			parentDir:  "/media/Media Library/Series (Kids)/Phineas and Ferb/Season 2",
+			wantSeason: 2, wantEps: []int{6}, wantOK: true,
+		},
+		{
+			name:       "Season 2 leading single episode number",
+			basename:   "12 The Chronicles of Meap (More Than Meaps The Eye).mp4",
+			parentDir:  "/media/Media Library/Series (Kids)/Phineas and Ferb/Season 2",
+			wantSeason: 2, wantEps: []int{12}, wantOK: true,
+		},
+		{
+			name:       "1-47 under Season 1 is E47 (disambiguates the Redux title)",
+			basename:   "1-47 Unfair Science Fair Redux (Another Story) (HD).mp4",
+			parentDir:  "/media/Media Library/Series (Kids)/Phineas and Ferb/Season 1",
+			wantSeason: 1, wantEps: []int{47}, wantOK: true,
+		},
 	}
 	for _, c := range cases {
 		season, episodes, ok := ParseEpisodeNumbersLoose(c.basename, c.parentDir)

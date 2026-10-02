@@ -1368,7 +1368,7 @@ describe("SearchTakeover — Series search merges the movies catalog", () => {
 });
 
 describe("SearchTakeover — Series database dropdown", () => {
-  it("shows Series name placeholder on TMDB and Series or episode name on TVDB", () => {
+  it("shows Series name placeholder on TMDB and TVDB", () => {
     render(() => (
       <SearchTakeover
         heading="Re-pick"
@@ -1385,7 +1385,7 @@ describe("SearchTakeover — Series database dropdown", () => {
     fireEvent.change(screen.getByLabelText("Database"), {
       target: { value: "tvdb" },
     });
-    expect(screen.getByPlaceholderText("Series or episode name")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Series name")).toBeInTheDocument();
   });
 
   it("peels a unique show prefix when TMDB gets show plus episode title", async () => {
@@ -1438,14 +1438,8 @@ describe("SearchTakeover — Series database dropdown", () => {
 
     fireEvent.click(screen.getByText("Search"));
 
-    expect(
-      await screen.findByLabelText("Use Interview with a Platypus"),
-    ).toBeInTheDocument();
-    expect(screen.getByLabelText("Use Phineas and Ferb")).toBeInTheDocument();
-    const urls = fetchMock.mock.calls.map(([u]) => String(u));
-    expect(
-      urls.some((u) => u.includes("/tvdb-search") && u.includes("kind=episode")),
-    ).toBe(true);
+    expect(await screen.findByLabelText("Use Phineas and Ferb")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Use Interview with a Platypus")).toBeNull();
   });
 
   it("peels an agreeing show when TMDB returns multiple series for the prefix", async () => {
@@ -1507,27 +1501,17 @@ describe("SearchTakeover — Series database dropdown", () => {
 
     fireEvent.click(screen.getByText("Search"));
 
-    expect(await screen.findByLabelText("Use Ice Cream Team")).toBeInTheDocument();
-    expect(screen.getByLabelText("Use Handy Manny")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Use Handy Manny")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Use Ice Cream Team")).toBeNull();
   });
 
-  it("falls back to TVDB episode search when TMDB series+movies are empty", async () => {
+  it("does not list TVDB episodes when TMDB series+movies are empty", async () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (url.includes("/tmdb-search")) {
         return jsonResponse([]);
       }
-      if (url.includes("/tvdb-search") && String(url).includes("kind=episode")) {
-        return jsonResponse([
-          {
-            tmdbId: 1877,
-            tvdbId: 12645,
-            title: "Day of the Living Gelatin",
-            seriesTitle: "Phineas and Ferb",
-            releaseDate: "2009-01-01",
-            seasonNumber: 2,
-            episodeNumber: 8,
-          },
-        ]);
+      if (url.includes("/tvdb-search")) {
+        throw new Error("tvdb episode search must not run from the box");
       }
       return jsonResponse([]);
     });
@@ -1547,17 +1531,11 @@ describe("SearchTakeover — Series database dropdown", () => {
 
     fireEvent.click(screen.getByText("Search"));
 
-    expect(
-      await screen.findByLabelText("Use Day of the Living Gelatin"),
-    ).toBeInTheDocument();
-    const urls = fetchMock.mock.calls.map(([u]) => String(u));
-    expect(urls.some((u) => u.includes("/modes/series/tmdb-search"))).toBe(true);
-    expect(urls.some((u) => u.includes("/tvdb-search") && u.includes("kind=episode"))).toBe(
-      true,
-    );
+    expect(await screen.findByText("No results.")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Use Day of the Living Gelatin")).toBeNull();
   });
 
-  it("calls tvdb-search with kind=series and kind=episode when TVDB is selected", async () => {
+  it("calls tvdb-search with kind=series only when TVDB is selected", async () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (url.includes("/tvdb-search")) {
         if (String(url).includes("kind=series")) {
@@ -1599,13 +1577,13 @@ describe("SearchTakeover — Series database dropdown", () => {
 
     fireEvent.click(screen.getByText("Search"));
 
-    expect(await screen.findByLabelText("Use Duck Soup")).toBeInTheDocument();
-    expect(screen.getByLabelText("Use Laurel & Hardy")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Use Laurel & Hardy")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Use Duck Soup")).toBeNull();
     const tvdbCalls = fetchMock.mock.calls
       .map(([u]) => String(u))
       .filter((u) => u.includes("/tvdb-search"));
     expect(tvdbCalls.some((u) => u.includes("kind=series"))).toBe(true);
-    expect(tvdbCalls.some((u) => u.includes("kind=episode"))).toBe(true);
+    expect(tvdbCalls.some((u) => u.includes("kind=episode"))).toBe(false);
   });
 
   it("TVDB anthology tile commits negative tmdbId plus tvdbId", async () => {
@@ -1656,35 +1634,15 @@ describe("SearchTakeover — Series database dropdown", () => {
     });
   });
 
-  it("TVDB episode tile commits slot with tvdbId and episodeTitle", async () => {
-    const fetchMock = vi.fn(async (url: string) => {
-      if (url.includes("/tvdb-search")) {
-        if (String(url).includes("kind=episode")) {
-          return jsonResponse([
-            {
-              tmdbId: -999,
-              tvdbId: 73910,
-              title: "Duck Soup",
-              seriesTitle: "Laurel & Hardy",
-              releaseDate: "1921-01-01",
-              seasonNumber: 3,
-              episodeNumber: 1,
-            },
-          ]);
-        }
-        return jsonResponse([]);
-      }
-      return jsonResponse([]);
-    });
-    vi.stubGlobal("fetch", fetchMock);
+  it("filters step-2 episodes by title or SxxExx after a show pick", async () => {
+    vi.stubGlobal("fetch", seriesFetch([specialsSeason, season4]));
     const onCommit = commitSpy();
 
     render(() => (
       <SearchTakeover
         heading="Re-pick"
         searchMode="series"
-        initialQuery="Duck Soup"
-        initialSeriesDatabase="tvdb"
+        initialQuery="A Show"
         autoSearch={false}
         onCommit={onCommit}
         onDone={vi.fn()}
@@ -1692,18 +1650,20 @@ describe("SearchTakeover — Series database dropdown", () => {
       />
     ));
 
-    fireEvent.click(screen.getByText("Search"));
-    fireEvent.click(await screen.findByLabelText("Use Duck Soup"));
-
+    await pickShow();
+    const filter = await screen.findByLabelText("Filter episodes");
+    fireEvent.input(filter, { target: { value: "Seven" } });
+    expect(await screen.findByText("E7 · Seven")).toBeInTheDocument();
+    expect(screen.queryByText("E3 · Special Three")).toBeNull();
+    fireEvent.input(filter, { target: { value: "S04E07" } });
+    expect(screen.getByText("E7 · Seven")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("E7 · Seven").closest("button")!);
     await waitFor(() => expect(onCommit).toHaveBeenCalledTimes(1));
     expect(onCommit.mock.calls[0]![0]).toMatchObject({
-      kind: "catalog",
-      tmdbId: -999,
-      tvdbId: 73910,
-      title: "Laurel & Hardy",
-      seasonNumber: 3,
-      episodeNumber: 1,
-      episodeTitle: "Duck Soup",
+      title: "A Show",
+      seasonNumber: 4,
+      episodeNumber: 7,
+      episodeTitle: "Seven",
     });
   });
 });
@@ -1728,8 +1688,8 @@ describe("SearchTakeover — Advanced search", () => {
     expect(screen.queryByLabelText("Year")).toBeNull();
     expect(screen.queryByLabelText("TMDB ID")).toBeNull();
     fireEvent.click(screen.getByText("Advanced"));
-    expect(screen.getByLabelText("Title")).toBeInTheDocument();
-    expect(screen.getByLabelText("Series")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Title")).toBeNull();
+    expect(screen.queryByLabelText("Series")).toBeNull();
     expect(screen.getByLabelText("Year")).toBeInTheDocument();
     expect(screen.getByLabelText("TMDB ID")).toBeInTheDocument();
   });
@@ -1813,26 +1773,14 @@ describe("SearchTakeover — Advanced search", () => {
     expect(sceneCall).toContain("year=2022");
   });
 
-  it("sends year, series, and TVDB id on an advanced TVDB search", async () => {
+  it("sends year and TVDB id on an advanced TVDB series-name search", async () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (url.includes("/tvdb-search")) {
-        if (String(url).includes("kind=series")) {
-          return jsonResponse([
-            {
-              tmdbId: 42,
-              title: "Laurel & Hardy",
-              releaseDate: "1921-01-01",
-            },
-          ]);
-        }
         return jsonResponse([
           {
             tmdbId: 42,
-            title: "Duck Soup",
-            seriesTitle: "Laurel & Hardy",
+            title: "Laurel & Hardy",
             releaseDate: "1921-01-01",
-            seasonNumber: 3,
-            episodeNumber: 1,
           },
         ]);
       }
@@ -1844,7 +1792,7 @@ describe("SearchTakeover — Advanced search", () => {
       <SearchTakeover
         heading="Re-pick"
         searchMode="series"
-        initialQuery=""
+        initialQuery="Laurel & Hardy"
         initialSeriesDatabase="tvdb"
         autoSearch={false}
         onCommit={commitSpy()}
@@ -1854,12 +1802,8 @@ describe("SearchTakeover — Advanced search", () => {
     ));
 
     fireEvent.click(screen.getByText("Advanced"));
-    fireEvent.input(screen.getByLabelText("Title"), {
-      target: { value: "Duck Soup" },
-    });
-    fireEvent.input(screen.getByLabelText("Series"), {
-      target: { value: "Laurel & Hardy" },
-    });
+    expect(screen.queryByLabelText("Title")).toBeNull();
+    expect(screen.queryByLabelText("Series")).toBeNull();
     fireEvent.input(screen.getByLabelText("Year"), {
       target: { value: "1921" },
     });
@@ -1868,14 +1812,14 @@ describe("SearchTakeover — Advanced search", () => {
     });
     fireEvent.click(screen.getByText("Search"));
 
-    expect(await screen.findByLabelText("Use Duck Soup")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Use Laurel & Hardy")).toBeInTheDocument();
     const tvdbCalls = fetchMock.mock.calls
       .map(([u]) => String(u))
       .filter((u) => u.includes("/tvdb-search"));
     expect(tvdbCalls.length).toBeGreaterThan(0);
+    expect(tvdbCalls.every((u) => u.includes("kind=series"))).toBe(true);
     expect(tvdbCalls.every((u) => u.includes("year=1921"))).toBe(true);
     expect(tvdbCalls.every((u) => u.includes("id=73910"))).toBe(true);
-    expect(tvdbCalls.some((u) => u.includes("series=Laurel"))).toBe(true);
   });
 
   it("omits Series and uses TMDB ID in Movies advanced search", async () => {
@@ -1923,47 +1867,12 @@ describe("SearchTakeover — Advanced search", () => {
     expect(tmdbCall).toContain("id=550");
   });
 
-  it("Advanced Series+Title searches TMDB show and TVDB episode, never movies", async () => {
-    const fetchMock = vi.fn(async (url: string) => {
-      const u = String(url);
-      if (u.includes("/modes/movies/tmdb-search")) {
-        throw new Error("movies catalog must not be queried");
-      }
-      if (u.includes("/modes/series/tmdb-search") && u.includes("Handy")) {
-        return jsonResponse([
-          {
-            id: 1972,
-            title: "Handy Manny",
-            posterPath: "",
-            overview: "",
-            releaseDate: "2006-09-16",
-            voteAverage: 0,
-            mediaType: "tv",
-          },
-        ]);
-      }
-      if (u.includes("/tvdb-search") && u.includes("kind=episode") && u.includes("Ice")) {
-        return jsonResponse([
-          {
-            tmdbId: 1972,
-            tvdbId: 79826,
-            title: "Ice Cream Team",
-            seriesTitle: "Handy Manny",
-            releaseDate: "2008-01-01",
-            seasonNumber: 2,
-            episodeNumber: 14,
-          },
-        ]);
-      }
-      return jsonResponse([]);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
+  it("Series Advanced has Year and TMDB ID, not Title or Series", () => {
     render(() => (
       <SearchTakeover
         heading="Re-pick"
         searchMode="series"
-        initialQuery=""
+        initialQuery="Handy Manny"
         autoSearch={false}
         onCommit={commitSpy()}
         onDone={vi.fn()}
@@ -1972,30 +1881,10 @@ describe("SearchTakeover — Advanced search", () => {
     ));
 
     fireEvent.click(screen.getByText("Advanced"));
-    fireEvent.input(screen.getByLabelText("Title"), {
-      target: { value: "Ice cream team" },
-    });
-    fireEvent.input(screen.getByLabelText("Series"), {
-      target: { value: "Handy Manny" },
-    });
-    fireEvent.click(screen.getByText("Search"));
-
-    expect(await screen.findByLabelText("Use Ice Cream Team")).toBeInTheDocument();
-    expect(screen.getByLabelText("Use Handy Manny")).toBeInTheDocument();
-    const urls = fetchMock.mock.calls.map(([u]) => String(u));
-    expect(urls.some((u) => u.includes("/modes/movies/tmdb-search"))).toBe(false);
-    expect(
-      urls.some((u) => u.includes("/modes/series/tmdb-search") && u.includes("Handy")),
-    ).toBe(true);
-    expect(
-      urls.some(
-        (u) =>
-          u.includes("/tvdb-search") &&
-          u.includes("kind=episode") &&
-          u.includes("Ice") &&
-          u.includes("series=Handy"),
-      ),
-    ).toBe(true);
+    expect(screen.queryByLabelText("Title")).toBeNull();
+    expect(screen.queryByLabelText("Series")).toBeNull();
+    expect(screen.getByLabelText("Year")).toBeInTheDocument();
+    expect(screen.getByLabelText("TMDB ID")).toBeInTheDocument();
   });
 });
 

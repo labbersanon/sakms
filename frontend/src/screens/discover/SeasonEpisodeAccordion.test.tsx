@@ -278,3 +278,40 @@ describe("SeasonEpisodeAccordion — submit", () => {
     expect(url).toContain("sections=seasons");
   });
 });
+
+describe("SeasonEpisodeAccordion — episode filter", () => {
+  it("filters by episode title and SxxExx", async () => {
+    stubSeasons([
+      season3,
+      season(),
+    ]);
+    render(() => <SeasonEpisodeAccordion tmdbId={1399} onSubmit={vi.fn()} />);
+
+    await screen.findByText("Season 4");
+    const filter = screen.getByLabelText("Filter episodes");
+    fireEvent.input(filter, { target: { value: "Long Night" } });
+    expect(screen.getByText("E7 · The Long Night")).toBeInTheDocument();
+    expect(screen.queryByText("E5 · The Dance")).toBeNull();
+    expect(screen.queryByText("Whole season")).toBeNull();
+    fireEvent.input(filter, { target: { value: "S04E07" } });
+    expect(screen.getByText("E7 · The Long Night")).toBeInTheDocument();
+    fireEvent.input(filter, { target: { value: "no such episode" } });
+    expect(screen.getByText("No episodes match that filter.")).toBeInTheDocument();
+  });
+
+  it("seeds the filter from initialEpisodeFilter", async () => {
+    stubSeasons([season()]);
+    render(() => (
+      <SeasonEpisodeAccordion
+        tmdbId={1399}
+        onSubmit={vi.fn()}
+        initialEpisodeFilter="Long Night"
+      />
+    ));
+
+    const filter = await screen.findByLabelText("Filter episodes");
+    expect((filter as HTMLInputElement).value).toBe("Long Night");
+    expect(await screen.findByText("E7 · The Long Night")).toBeInTheDocument();
+    expect(screen.queryByText("E1 · Pilot")).toBeNull();
+  });
+});

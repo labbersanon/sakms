@@ -310,40 +310,75 @@ async function showPrefixEpisodeHits(
     if (!show) {
       continue;
     }
-    const episodes = await tvdbSearch(residual, "episode", {
-      ...opts,
-      series: show.title,
-    });
-    return [
-      { mode: "series", item: show },
-      ...episodes.map((item) => tvdbItemToHit(item)),
-    ];
+    // Claude 2026-10-01: peel returns the show only — no TVDB episode tiles.
+    // Reason: episode pick is step 2 + title/SxxExx filter, not a step-1 hit.
+    // Troubleshooting: Advanced/peel episode tiles skipped the show filter.
+    // Review if: Series Search lists episodes in step 1 again.
+    // const episodes = await tvdbSearch(residual, "episode", {
+    //   ...opts,
+    //   series: show.title,
+    // });
+    // return [
+    //   { mode: "series", item: show },
+    //   ...episodes.map((item) => tvdbItemToHit(item)),
+    // ];
+    return [{ mode: "series", item: show }];
   }
   return null;
 }
 
-function advancedSeriesQueries(
-  q: string,
-  adv: AdvancedFields,
-): { showQ: string; episodeQ: string } | null {
-  if (!adv.on) {
-    return null;
+// Claude 2026-10-01: Advanced Series/Title queries retired.
+// Reason: that path searched TMDB movies for episode titles and skipped
+//   the show. Series Search is show-name only; filter after pick.
+// Troubleshooting: Advanced Title "Ice cream team" hit a movie.
+// Review if: Series Search grows a real episode-title catalog query.
+// function advancedSeriesQueries(
+//   q: string,
+//   adv: AdvancedFields,
+// ): { showQ: string; episodeQ: string } | null {
+//   if (!adv.on) {
+//     return null;
+//   }
+//   const title = adv.title.trim();
+//   const series = adv.series.trim();
+//   const box = q.trim();
+//   if (!title && !series) {
+//     return null;
+//   }
+//   if (series && title) {
+//     return { showQ: series, episodeQ: title };
+//   }
+//   if (series) {
+//     const episodeQ =
+//       box && box.toLowerCase() !== series.toLowerCase() ? box : "";
+//     return { showQ: series, episodeQ };
+//   }
+//   return { showQ: title, episodeQ: title };
+// }
+
+function residualEpisodeFilter(query: string, showTitle: string): string {
+  const q = query.trim();
+  const show = showTitle.trim();
+  if (!q) {
+    return "";
   }
-  const title = adv.title.trim();
-  const series = adv.series.trim();
-  const box = q.trim();
-  if (!title && !series) {
-    return null;
+  const stripExt = (s: string) => s.replace(/\.[a-z0-9]{2,4}$/i, "").trim();
+  if (!show) {
+    return stripExt(q);
   }
-  if (series && title) {
-    return { showQ: series, episodeQ: title };
+  const ql = q.toLowerCase();
+  const sl = show.toLowerCase();
+  if (ql === sl) {
+    return "";
   }
-  if (series) {
-    const episodeQ =
-      box && box.toLowerCase() !== series.toLowerCase() ? box : "";
-    return { showQ: series, episodeQ };
+  if (ql.startsWith(sl)) {
+    return stripExt(q.slice(show.length).replace(/^[\s\-_]+/, ""));
   }
-  return { showQ: title, episodeQ: title };
+  const idx = ql.indexOf(sl);
+  if (idx >= 0) {
+    return stripExt(q.slice(idx + show.length).replace(/^[\s\-_]+/, ""));
+  }
+  return stripExt(q);
 }
 
 function tvdbItemToHit(item: SeriesSearchItem): CatalogHit {
@@ -398,8 +433,7 @@ export const SearchTakeover: Component<{
   searchMode: Mode;
   initialQuery: string;
   // initialSeriesDatabase seeds the Series-only database dropdown (TMDB vs TVDB).
-  // TMDB searches series names; TVDB searches show names and episode titles —
-  // one field, hint follows the database choice.
+  // Both search series names only. Episode title / SxxExx is a step-2 filter.
   initialSeriesDatabase?: SeriesDatabase;
   // autoSearch true seeds `submitted` from initialQuery, reproducing
   // RepickPanel's mount-time search; false starts empty, reproducing
@@ -484,37 +518,27 @@ export const SearchTakeover: Component<{
       return { kind: "adult", items: res.items, errors: res.errors };
     }
     if (props.searchMode === "series" && seriesDatabase === "tvdb") {
-      const title =
-        adv.on && adv.title.trim() ? adv.title.trim() : q.trim();
-      const seriesName = adv.on ? adv.series.trim() : "";
+      // Claude 2026-10-01: TVDB Search is show-name only (kind=series).
+      // Reason: kind=episode from the box listed slots before the show pick;
+      //   episode title / SxxExx is the step-2 filter now.
+      // Troubleshooting: TVDB "Duck Soup" returned an episode tile, not the show.
+      // Review if: Series Search lists episodes in step 1 again.
+      const seriesQ = q.trim();
       const opts = catalogOpts(adv);
-      if (!title && !seriesName && !opts?.id) {
+      if (!seriesQ && !opts?.id) {
         return { kind: "catalog", items: [] };
       }
-      // Claude 2026-10-01: TVDB search runs kind=series and kind=episode.
-      // Reason: kind=episode alone seeds catalogs from SearchSeries(query), so
-      //   a show name matches no episode titles and an episode title matches
-      //   no series — both look like "No results."
-      // Troubleshooting: TVDB Rename Search never returns hits.
-      // Review if: the backend grows a combined kind.
-      const seriesQ = seriesName || title;
-      const [seriesItems, episodeItems] = await Promise.all([
-        seriesQ || opts?.id
-          ? tvdbSearch(seriesQ, "series", opts)
-          : Promise.resolve([]),
-        title
-          ? tvdbSearch(title, "episode", opts)
-          : Promise.resolve([]),
-      ]);
+      const seriesItems =
+        seriesQ || opts?.id ? await tvdbSearch(seriesQ, "series", opts) : [];
       return {
         kind: "catalog",
-        items: [
-          ...seriesItems.map((item) => tvdbItemToHit(item)),
-          ...episodeItems.map((item) => tvdbItemToHit(item)),
-        ],
+        items: seriesItems.map((item) => tvdbItemToHit(item)),
       };
     }
-    const tmdbQ = adv.on && adv.title.trim() ? adv.title.trim() : q.trim();
+    const tmdbQ =
+      props.searchMode !== "series" && adv.on && adv.title.trim()
+        ? adv.title.trim()
+        : q.trim();
     const tmdbOpts = catalogOpts(adv);
     if (!tmdbQ && !tmdbOpts?.id) {
       return { kind: "catalog", items: [] };
@@ -542,31 +566,11 @@ export const SearchTakeover: Component<{
     // populates `results.error`, which the render already handles. The tradeoff
     // is real and accepted: a movies-catalog failure now fails a series search.
     if (props.searchMode === "series") {
-      // Claude 2026-10-01: Advanced Series=show, Title=episode; never movies.
-      // Reason: Title "Ice cream team" hit a TMDB movie (684 bytes) and
-      //   skipped episode fallback; Handy Manny dest stayed S00E00.
-      // Troubleshooting: Advanced Title+Series still lists a movie.
-      // Review if: TMDB episode search is used on this path.
-      const structured = advancedSeriesQueries(q, adv);
-      if (structured) {
-        const seriesHits =
-          structured.showQ || tmdbOpts?.id
-            ? await tmdbSearch("series", structured.showQ, tmdbOpts)
-            : [];
-        const episodeHits = structured.episodeQ
-          ? await tvdbSearch(structured.episodeQ, "episode", {
-              ...tmdbOpts,
-              series: adv.series.trim() || undefined,
-            })
-          : [];
-        return {
-          kind: "catalog",
-          items: [
-            ...seriesHits.map((item) => ({ mode: "series" as const, item })),
-            ...episodeHits.map((item) => tvdbItemToHit(item)),
-          ],
-        };
-      }
+      // Claude 2026-10-01: Series Search is show-name only.
+      // Reason: Advanced Title searched TMDB movies and skipped the show;
+      //   episode pick is step 2 + title/SxxExx filter.
+      // Troubleshooting: Advanced Series+Title still lists a movie.
+      // Review if: TMDB grows an episode-title search used on this path.
       if (tmdbOpts?.id) {
         const series = await tmdbSearch("series", tmdbQ, tmdbOpts);
         return {
@@ -594,11 +598,15 @@ export const SearchTakeover: Component<{
         if (peeled && peeled.length > 0) {
           return { kind: "catalog", items: peeled };
         }
-        const episodeItems = await tvdbSearch(tmdbQ, "episode", tmdbOpts);
-        return {
-          kind: "catalog",
-          items: episodeItems.map((item) => tvdbItemToHit(item)),
-        };
+        // Claude 2026-10-01: do not TVDB-search the box as an episode title.
+        // Reason: that listed slots before a show pick; filter is step 2.
+        // Troubleshooting: "Day of the Living Gelatin" skipped the show.
+        // Review if: Series Search lists episodes in step 1 again.
+        // const episodeItems = await tvdbSearch(tmdbQ, "episode", tmdbOpts);
+        // return {
+        //   kind: "catalog",
+        //   items: episodeItems.map((item) => tvdbItemToHit(item)),
+        // };
       }
       return { kind: "catalog", items };
     }
@@ -842,9 +850,7 @@ export const SearchTakeover: Component<{
             props.searchMode === "adult"
               ? "Search text or paste URL"
               : props.searchMode === "series"
-                ? seriesDatabase() === "tmdb"
-                  ? "Series name"
-                  : "Series or episode name"
+                ? "Series name"
                 : undefined
           }
         />
@@ -880,6 +886,12 @@ export const SearchTakeover: Component<{
               />
             </label>
           </Show>
+          {/* Claude 2026-10-01: Series Advanced is Year + ID only.
+              Reason: Title/Series searched movies and skipped the show;
+                episode title / SxxExx is the step-2 filter after a show pick.
+              Troubleshooting: Advanced Title "Ice cream team" hit a TMDB movie.
+              Review if: Series Search grows a real episode-title catalog query. */}
+          <Show when={props.searchMode !== "series"}>
           <label class="block">
             <span class={labelClass}>Title</span>
             <input
@@ -889,7 +901,8 @@ export const SearchTakeover: Component<{
               aria-label="Title"
             />
           </label>
-          <Show when={props.searchMode === "series"}>
+          </Show>
+          {/* <Show when={props.searchMode === "series"}>
             <label class="block">
               <span class={labelClass}>Series</span>
               <input
@@ -899,7 +912,7 @@ export const SearchTakeover: Component<{
                 aria-label="Series"
               />
             </label>
-          </Show>
+          </Show> */}
           <Show when={props.searchMode === "adult"}>
             <label class="block">
               <span class={labelClass}>Studio</span>
@@ -1018,6 +1031,10 @@ export const SearchTakeover: Component<{
               <SeasonEpisodeAccordion
                 tmdbId={show().tmdbId}
                 currentSlot={props.currentSlot}
+                initialEpisodeFilter={residualEpisodeFilter(
+                  submitted(),
+                  show().title,
+                )}
                 onSubmit={(s, e, episodeTitle) =>
                   commitSlot(show(), s, e, episodeTitle)
                 }

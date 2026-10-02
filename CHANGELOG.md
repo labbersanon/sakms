@@ -10337,6 +10337,22 @@ status stays active.
 | `frontend/src/screens/SearchTakeover.tsx` | forward accordion title; empty seriesTitle fallback |
 | `frontend/src/screens/SearchTakeover.test.tsx` | Specials pick keeps show + episode title |
 
+## 2026-10-01 — Series Search is show-name only; filter episodes after pick
+
+**Problem:** Advanced Series/Title search was unusable (episode titles hit TMDB movies, TVDB episode tiles skipped the show). Operators needed a show search, then a way to find an episode.
+**Root cause:** The search box and Advanced fields tried to search shows and episodes in one step.
+**Fix:** Series Search (TMDB and TVDB) is show-name only. Advanced Series is Year + ID. After a show pick, filter the season list by episode title or SxxExx / NxNN. Leftover search text seeds the filter.
+**Outcome:** Search `Handy Manny`, pick the show, filter `Ice cream team` or `S02E14`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/SearchTakeover.tsx` | show-name search; residual seeds step-2 filter |
+| `frontend/src/screens/SearchTakeover.test.tsx` | no step-1 episode tiles; step-2 filter |
+| `frontend/src/screens/discover/SeasonEpisodeAccordion.tsx` | title / SxxExx filter |
+| `frontend/src/screens/discover/SeasonEpisodeAccordion.test.tsx` | title and S04E07 filter |
+
 
 
 

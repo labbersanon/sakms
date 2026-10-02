@@ -10454,7 +10454,22 @@ status stays active.
 | `internal/api/organize_disc.go` | SkipDelete until import succeeds |
 | `frontend/src/screens/Discs.tsx` | apply suggestions; send episodeTitle |
 
+## 2026-10-02 — Disc lookup names shorts when the ISO has none
 
+**Problem:** Golden Collection shorts are all ~7 minutes, so unique-duration matching never fills S/E. IFO/ffmpeg has order and length, not cartoon names. OVID and DVDID do not name titles.
+**Root cause:** Identify only searched TMDB with the volume label. No disc TOC source was wired.
+**Fix:** If probe tags are missing or just the volume label, identify looks up Wikipedia Disc N tables (volume kept, disc number used as the section). SearXNG/Brave only find a wikipedia.org/wiki URL when API search misses. Names apply only when TOC length equals the planned extract count. Unique TMDB title match (not airdate order) overlays duration suggestions. Discs UI shows the cartoon name on each row.
+**Outcome:** Identify on Golden Vol 5 Disc 1 can name titles 2–16 from Wikipedia and pre-assign S/E when TMDB has that episode title.
 
+### Files changed
 
+| File | Change |
+|---|---|
+| `internal/disc/wiki.go` | parse Disc N wikitables from wikitext |
+| `internal/disc/lookup.go` | Wikipedia API + SearXNG URL fallback; sidecar TOC |
+| `internal/disc/match.go` | unique title match |
+| `internal/disc/queries.go` | WikiQuery / DiscNumber |
+| `internal/api/organize_discs.go` | lookup on identify; title suggestions |
+| `internal/apidto/dto.go` | OrganizeDiscWork.episodeTitle |
+| `frontend/src/screens/Discs.tsx` | show episodeTitle on rows |
 

@@ -1,6 +1,10 @@
 package disc
 
-import "math"
+import (
+	"math"
+	"strings"
+	"unicode"
+)
 
 // Claude 2026-10-02: unique duration → TMDB episode (Phase 5b).
 // Reason: IFO has length and order, not episode names. Auto-assign only
@@ -63,4 +67,63 @@ func durationHit(discS float64, runtimeMin int) bool {
 		return false
 	}
 	return math.Abs(discS-float64(runtimeMin)*60) <= DurationSlopS
+}
+
+// MatchUniqueTitles maps work names to catalog episodes when the normalized
+// title is unique in both directions. Do not pair by disc order into the
+// series catalog — Golden shorts are not TMDB airdate order.
+func MatchUniqueTitles(workTitle map[string]string, catalog []CatalogEpisode) map[string]CatalogEpisode {
+	if len(workTitle) == 0 || len(catalog) == 0 {
+		return nil
+	}
+	workHits := map[string][]int{}
+	for name, title := range workTitle {
+		key := normTitle(title)
+		if key == "" {
+			continue
+		}
+		for i, ep := range catalog {
+			if normTitle(ep.Title) == key {
+				workHits[name] = append(workHits[name], i)
+			}
+		}
+	}
+	claimed := map[int][]string{}
+	for name, idxs := range workHits {
+		if len(idxs) != 1 {
+			continue
+		}
+		claimed[idxs[0]] = append(claimed[idxs[0]], name)
+	}
+	out := map[string]CatalogEpisode{}
+	for idx, names := range claimed {
+		if len(names) != 1 {
+			continue
+		}
+		out[names[0]] = catalog[idx]
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func normTitle(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.ReplaceAll(s, "’", "'")
+	s = strings.ReplaceAll(s, "‘", "'")
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == ' ' {
+			b.WriteRune(r)
+		}
+	}
+	s = strings.Join(strings.Fields(b.String()), " ")
+	for _, p := range []string{"the ", "a ", "an "} {
+		if strings.HasPrefix(s, p) {
+			s = strings.TrimSpace(s[len(p):])
+			break
+		}
+	}
+	return s
 }

@@ -5,6 +5,12 @@ package api
 //   one ISO. Existing movie FilePath / episode FilePath start unchecked.
 // Troubleshooting: empty hits — TMDB search used SearchQueries(volume, src).
 // Review if: Usenet finalize calls the same import path.
+//
+// Claude 2026-10-02: Wikipedia TOC names when IFO has none.
+// Reason: unique duration fails for ~7m Golden shorts; wiki Disc N tables
+//   are in disc order. SearXNG only finds the wiki URL.
+// Troubleshooting: names omitted when TOC length ≠ feature count.
+// Review if: OVID or ffprobe starts returning per-title names.
 
 import (
 	"context"
@@ -28,7 +34,11 @@ import (
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/tmdb"
+	"github.com/labbersanon/sakms/internal/websearch"
 )
+
+// lookupDiscTOCFn is Wikipedia (+ SearXNG URLs) when the image has no names.
+var lookupDiscTOCFn = disc.LookupTOC
 
 // inspectDiscFn is swappable in tests.
 var inspectDiscFn = disc.Inspect
@@ -60,6 +70,12 @@ func organizeDiscIdentifyHandler(
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
+		if len(disc.TOCForWorks(m)) == 0 {
+			works := discWorksFromMap(m)
+			extra := discWikiURLs(r.Context(), httpClient, connStore, scStore, settingsStore, m.Volume, src)
+			names := lookupDiscTOCFn(r.Context(), httpClient, m.Volume, src, len(works), extra)
+			_ = disc.AttachTOCNames(m, names)
+		}
 		works := discWorksFromMap(m)
 		queries := disc.SearchQueries(m.Volume, src)
 		hits := identifyDiscHits(r, httpClient, connStore, scStore, settingsStore, libStore, queries, works)
@@ -78,16 +94,69 @@ func discWorksFromMap(m *disc.Map) []apidto.OrganizeDiscWork {
 	for _, t := range titles {
 		byN[t.N] = t
 	}
+	toc := disc.TOCForWorks(m)
 	var out []apidto.OrganizeDiscWork
-	for _, w := range disc.PlanWorks(titles) {
+	for i, w := range disc.PlanWorks(titles) {
 		dur := byN[w.Title].DurationS
 		if w.ChapterStart > 0 && byN[w.Title].Chapters > 0 {
 			dur = byN[w.Title].DurationS / float64(byN[w.Title].Chapters)
 		}
+		epTitle := ""
+		if i < len(toc) {
+			epTitle = toc[i]
+		}
 		out = append(out, apidto.OrganizeDiscWork{
 			Name: w.Name, Title: w.Title, Chapter: w.ChapterStart,
-			DurationS: dur, Role: w.Role,
+			DurationS: dur, Role: w.Role, EpisodeTitle: epTitle,
 		})
+	}
+	return out
+}
+
+func discWikiURLs(
+	ctx context.Context,
+	httpClient *http.Client,
+	connStore *connections.Store,
+	scStore *serviceconn.Store,
+	settingsStore *settings.Store,
+	volume, src string,
+) []string {
+	if connStore == nil || httpClient == nil {
+		return nil
+	}
+	sess, err := mode.Build(ctx, connStore, scStore, settingsStore, httpClient, nil, mode.Movies)
+	if err != nil || sess == nil || sess.WebSearch == nil {
+		return nil
+	}
+	q := disc.WikiQuery(volume, src)
+	if q == "" {
+		return nil
+	}
+	res, err := sess.WebSearch.Search(ctx, q+" wikipedia", 8)
+	if err != nil {
+		return nil
+	}
+	return wikiURLsFromSearch(res)
+}
+
+func wikiURLsFromSearch(res []websearch.Result) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, r := range res {
+		u := strings.TrimSpace(r.URL)
+		if u == "" || seen[u] {
+			continue
+		}
+		low := strings.ToLower(u)
+		if !strings.Contains(low, "wikipedia.org/wiki/") {
+			continue
+		}
+		if strings.Contains(low, "/wiki/file:") || strings.Contains(low, "/wiki/special:") ||
+			strings.Contains(low, "/wiki/template:") || strings.Contains(low, "/wiki/category:") {
+			continue
+		}
+		seen[u] = true
+		out = append(out, u)
 	}
 	return out
 }
@@ -257,10 +326,20 @@ func suggestDiscSlots(ctx context.Context, client *tmdb.Client, tmdbID int, work
 		}
 	}
 	durs := map[string]float64{}
+	titles := map[string]string{}
 	for _, w := range works {
 		durs[w.Name] = w.DurationS
+		if strings.TrimSpace(w.EpisodeTitle) != "" {
+			titles[w.Name] = w.EpisodeTitle
+		}
 	}
 	slots := disc.MatchUniqueSlots(durs, catalog)
+	for name, ep := range disc.MatchUniqueTitles(titles, catalog) {
+		if slots == nil {
+			slots = map[string]disc.CatalogEpisode{}
+		}
+		slots[name] = ep
+	}
 	if len(slots) == 0 {
 		return nil
 	}

@@ -182,6 +182,29 @@ describe("Discs", () => {
     expect(screen.getByRole("button", { name: "Extract selected" })).toBeEnabled();
   });
 
+  it("shows Wikipedia disc names on extract rows", async () => {
+    stubDiscs({
+      identify: {
+        path: "/media/show.iso",
+        volume: "SHOW",
+        works: [
+          {
+            name: "t02",
+            title: 2,
+            durationS: 433,
+            role: "feature",
+            episodeTitle: "14 Carrot Rabbit",
+          },
+        ],
+        hits: [{ mode: "movies", tmdbId: 1, title: "New Film", year: 2020 }],
+      },
+    });
+    await openFolder();
+    fireEvent.click(screen.getByLabelText("Select show.iso"));
+    expect(await screen.findByText("14 Carrot Rabbit")).toBeInTheDocument();
+    expect(screen.getByLabelText("Select t02")).toBeChecked();
+  });
+
   it("pre-assigns a unique duration suggestion and leaves an existing episode unchecked", async () => {
     const { extracts } = stubDiscs({
       identify: {

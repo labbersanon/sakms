@@ -65,3 +65,30 @@ func TestMatchUniqueSlots_DoesNotPairByCount(t *testing.T) {
 		t.Fatalf("1:1 count must not assign, got %+v", got)
 	}
 }
+
+func TestMatchUniqueTitles_NamesShorts(t *testing.T) {
+	got := MatchUniqueTitles(
+		map[string]string{"t02": "14 Carrot Rabbit", "t03": "Ali Baba Bunny"},
+		[]CatalogEpisode{
+			{Season: 1, Episode: 12, Title: "Ali Baba Bunny", RuntimeMin: 7},
+			{Season: 1, Episode: 4, Title: "14 Carrot Rabbit", RuntimeMin: 7},
+			{Season: 1, Episode: 5, Title: "Other", RuntimeMin: 7},
+		},
+	)
+	if got["t02"].Episode != 4 || got["t03"].Episode != 12 {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestMatchUniqueTitles_DuplicateCatalogTitleDropped(t *testing.T) {
+	got := MatchUniqueTitles(
+		map[string]string{"t02": "Short"},
+		[]CatalogEpisode{
+			{Season: 1, Episode: 1, Title: "Short"},
+			{Season: 1, Episode: 2, Title: "Short"},
+		},
+	)
+	if len(got) != 0 {
+		t.Fatalf("duplicate catalog title must not assign, got %+v", got)
+	}
+}

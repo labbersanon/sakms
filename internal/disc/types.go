@@ -51,6 +51,7 @@ type Title struct {
 	Chapters      int     `json:"chapters"`
 	Role          string  `json:"role"`
 	SplitChapters bool    `json:"splitChapters,omitempty"`
+	Name          string  `json:"name,omitempty"`
 }
 
 // Output is one extracted MKV written next to the source image.
@@ -67,6 +68,7 @@ type Map struct {
 	Volume  string   `json:"volume"`
 	Source  string   `json:"source"`
 	Titles  []Title  `json:"titles"`
+	TOC     []string `json:"toc,omitempty"`
 	Outputs []Output `json:"outputs,omitempty"`
 	Deleted bool     `json:"deletedSource,omitempty"`
 }

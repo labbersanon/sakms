@@ -14,6 +14,7 @@ import (
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/disc"
 	"github.com/labbersanon/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/websearch"
 )
 
 func TestOrganizeDiscIdentify_RejectsNonDisc(t *testing.T) {
@@ -69,6 +70,65 @@ func TestOrganizeDiscIdentify_ReturnsWorks(t *testing.T) {
 	}
 	if len(resp.Queries) == 0 {
 		t.Fatal("expected search queries")
+	}
+}
+
+func TestOrganizeDiscIdentify_FillsWikipediaNames(t *testing.T) {
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "show.iso")
+	if err := os.WriteFile(src, []byte("iso"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withBrowsableRoot(t, tmp)
+	origInspect := inspectDiscFn
+	origLookup := lookupDiscTOCFn
+	t.Cleanup(func() {
+		inspectDiscFn = origInspect
+		lookupDiscTOCFn = origLookup
+	})
+	inspectDiscFn = func(ctx context.Context, path string) (*disc.Map, error) {
+		return &disc.Map{
+			Volume: "LOONEY_TUNES_GOLDEN_V5_D1",
+			Source: path,
+			Titles: []disc.Title{
+				{N: 1, DurationS: 6386, Chapters: 15},
+				{N: 2, DurationS: 433},
+				{N: 3, DurationS: 400},
+			},
+		}, nil
+	}
+	lookupDiscTOCFn = func(ctx context.Context, hc *http.Client, volume, iso string, want int, extra []string) []string {
+		if want != 2 {
+			t.Fatalf("want = %d", want)
+		}
+		return []string{"14 Carrot Rabbit", "Ali Baba Bunny"}
+	}
+	body, _ := json.Marshal(apidto.OrganizeDiscIdentifyRequest{Path: src})
+	rr := httptest.NewRecorder()
+	organizeDiscIdentifyHandler(nil, nil, nil, nil, nil)(rr, httptest.NewRequest(http.MethodPost, "/api/organize/discs/identify", bytes.NewReader(body)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body %s", rr.Code, rr.Body.String())
+	}
+	var resp apidto.OrganizeDiscIdentifyResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Works) != 2 {
+		t.Fatalf("works = %+v", resp.Works)
+	}
+	if resp.Works[0].EpisodeTitle != "14 Carrot Rabbit" || resp.Works[1].EpisodeTitle != "Ali Baba Bunny" {
+		t.Fatalf("names = %+v", resp.Works)
+	}
+}
+
+func TestWikiURLsFromSearch_KeepsWikipediaArticle(t *testing.T) {
+	got := wikiURLsFromSearch([]websearch.Result{
+		{URL: "https://example.com/looney"},
+		{URL: "https://en.wikipedia.org/wiki/Looney_Tunes_Golden_Collection:_Volume_5"},
+		{URL: "https://en.wikipedia.org/wiki/File:Cover.jpg"},
+	})
+	if len(got) != 1 || got[0] != "https://en.wikipedia.org/wiki/Looney_Tunes_Golden_Collection:_Volume_5" {
+		t.Fatalf("got %v", got)
 	}
 }
 

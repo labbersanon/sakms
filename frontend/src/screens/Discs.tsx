@@ -3,7 +3,7 @@
 //   Identify after the ISO is chosen. Existing library titles start unchecked.
 //   Checking one asks replace / keep both / cancel.
 // Troubleshooting: empty hits — TMDB search used the volume queries.
-// Review if: IFO/ffmpeg starts exposing per-title names for 5b title match.
+// Review if: IFO/ffmpeg starts exposing per-title names (lookup skipped).
 
 import {
   type Component,
@@ -244,9 +244,11 @@ export const Discs: Component = () => {
     <div>
       <h2 class="mb-1 text-lg font-semibold text-fg">Discs</h2>
       <Muted class="mb-4">
-        Pick one DVD ISO. Identification runs after you select it. A
-        unique TMDB duration match is pre-assigned. Titles that already
-        exist in the library start unchecked.
+        Pick one DVD ISO. Identification runs after you select it. When
+        the image has no title names, Wikipedia (SearXNG as a page finder)
+        fills the disc list. Unique TMDB title or duration matches are
+        pre-assigned. Titles that already exist in the library start
+        unchecked.
       </Muted>
 
       <label class="mb-3 block">
@@ -381,7 +383,9 @@ export const Discs: Component = () => {
                               }}
                             />
                           </td>
-                          <td class="px-2 py-1.5 text-fg">{w.name}</td>
+                          <td class="px-2 py-1.5 text-fg">
+                            {w.episodeTitle || w.name}
+                          </td>
                           <td class="px-2 py-1.5 text-muted">
                             {formatDuration(w.durationS)}
                           </td>

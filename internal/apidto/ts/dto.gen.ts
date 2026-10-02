@@ -2534,6 +2534,7 @@ export interface OrganizeDiscWork {
   chapter?: number /* int */;
   durationS: number /* float64 */;
   role: string;
+  episodeTitle?: string;
 }
 /**
  * OrganizeDiscIdentifyResponse is POST /api/organize/discs/identify.

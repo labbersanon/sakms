@@ -11,7 +11,8 @@ import (
 
 type ffprobeOut struct {
 	Format struct {
-		Duration string `json:"duration"`
+		Duration string            `json:"duration"`
+		Tags     map[string]string `json:"tags"`
 	} `json:"format"`
 	Streams []struct {
 		Duration string `json:"duration"`
@@ -80,7 +81,22 @@ func probeTitle(ctx context.Context, bin, src string, n int) (Title, error) {
 	if dur <= 0 {
 		return Title{}, fmt.Errorf("title %d has no duration", n)
 	}
-	return Title{N: n, DurationS: dur, Chapters: len(parsed.Chapters)}, nil
+	return Title{
+		N: n, DurationS: dur, Chapters: len(parsed.Chapters),
+		Name: tagTitle(parsed.Format.Tags),
+	}, nil
+}
+
+func tagTitle(tags map[string]string) string {
+	if len(tags) == 0 {
+		return ""
+	}
+	for _, k := range []string{"title", "TITLE", "Title"} {
+		if s := strings.TrimSpace(tags[k]); s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 func jsonFromMixed(b []byte) []byte {

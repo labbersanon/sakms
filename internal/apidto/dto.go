@@ -2574,11 +2574,12 @@ type OrganizeDiscSuggestion struct {
 
 // OrganizeDiscWork is one planned extract row (title or chapter).
 type OrganizeDiscWork struct {
-	Name      string  `json:"name"`
-	Title     int     `json:"title"`
-	Chapter   int     `json:"chapter,omitempty"`
-	DurationS float64 `json:"durationS"`
-	Role      string  `json:"role"`
+	Name         string  `json:"name"`
+	Title        int     `json:"title"`
+	Chapter      int     `json:"chapter,omitempty"`
+	DurationS    float64 `json:"durationS"`
+	Role         string  `json:"role"`
+	EpisodeTitle string  `json:"episodeTitle,omitempty"`
 }
 
 // OrganizeDiscIdentifyResponse is POST /api/organize/discs/identify.

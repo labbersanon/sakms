@@ -42,6 +42,11 @@ const (
 	KindFileRename = "file_rename"
 	KindFileMove   = "file_move"
 	KindFileDelete = "file_delete"
+	// Claude 2026-10-02: DVD ISO unpack from Organize Browse.
+	// Reason: Browse activity log is queried WHERE workflow=browse.
+	// Troubleshooting: unpack missing from the log — kind must be this value.
+	// Review if: Usenet disc unpack logs under a downloads workflow instead.
+	KindDiscUnpack = "disc_unpack"
 )
 
 // Event is one persisted organize activity row.

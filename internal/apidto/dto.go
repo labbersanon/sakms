@@ -2513,6 +2513,31 @@ type OrganizeBrowseOpResponse struct {
 	Results []OrganizeBrowseOpItem `json:"results"`
 }
 
+// Claude 2026-10-02: Organize Browse DVD unpack (ISO/IMG → MPEG-2 MKV).
+// Reason: confirm-then-mutate like rename/delete; work is minutes-long so
+//
+//	POST starts a job and GET polls status. Prefix stays /api/organize/.
+//
+// Troubleshooting: SL-9 — these literals must stay under /api/organize/.
+// Review if: Usenet finalize grows the same unpack.
+type OrganizeDiscUnpackRequest struct {
+	Path string `json:"path"`
+}
+
+// OrganizeDiscUnpackStatus is POST/GET /api/organize/browse/unpack-disc.
+// Status is idle | probing | extracting | done | error.
+type OrganizeDiscUnpackStatus struct {
+	Path          string   `json:"path"`
+	Status        string   `json:"status"`
+	Volume        string   `json:"volume,omitempty"`
+	Done          int      `json:"done"`
+	Total         int      `json:"total"`
+	Outputs       []string `json:"outputs,omitempty"`
+	Error         string   `json:"error,omitempty"`
+	DeletedSource bool     `json:"deletedSource,omitempty"`
+	Tracked       bool     `json:"tracked,omitempty"`
+}
+
 // Claude 2026-08-27: Organize Browse properties (stat) + in-pane preview.
 // Reason: the tab is a file manager — every row needs filesystem details,
 //   tracked library titles, and (for video) a probe; Play streams only after

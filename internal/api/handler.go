@@ -286,6 +286,13 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("POST /api/organize/browse/rename", organizeBrowseRenameHandler(libStore))
 	mux.HandleFunc("POST /api/organize/browse/move", organizeBrowseMoveHandler(libStore))
 	mux.HandleFunc("POST /api/organize/browse/delete", organizeBrowseDeleteHandler(libStore))
+	// Claude 2026-10-02: Organize Browse DVD unpack (ISO/IMG → MPEG-2 MKV).
+	// Reason: library-first disc extract; POST starts, GET polls. Same
+	//   /api/organize/ allowlist as rename/move/delete.
+	// Troubleshooting: 409 — another disc job is running; 400 — not iso/img.
+	// Review if: Usenet finalize calls the same disc.Unpack.
+	mux.HandleFunc("POST /api/organize/browse/unpack-disc", organizeDiscUnpackStartHandler(libStore))
+	mux.HandleFunc("GET /api/organize/browse/unpack-disc", organizeDiscUnpackStatusHandler())
 	mux.HandleFunc("GET /api/organize/browse/stat", organizeBrowseStatHandler(libStore, prober))
 	mux.HandleFunc("GET /api/organize/browse/video", organizeBrowseVideoHandler())
 	// Claude 2026-09-29: Organize Import — Movies/Series/Adult confirm-to-MOVE.

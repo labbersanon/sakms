@@ -36,6 +36,14 @@ const mediaKids = [
     playable: true,
   },
   { name: "Movies", path: "/media/Movies", isDir: true, tracked: true, playable: false },
+  {
+    name: "show.iso",
+    path: "/media/show.iso",
+    isDir: false,
+    size: 4096,
+    tracked: false,
+    playable: false,
+  },
 ];
 
 const under = (path: string, root: string) => path === root || path.startsWith(root + "/");
@@ -91,12 +99,31 @@ function stubBrowse() {
           .map((e) => e.name),
       });
     }
+    if (method === "GET" && url.includes("/api/organize/browse/unpack-disc")) {
+      return jsonResponse({
+        path: "/media/show.iso",
+        status: "done",
+        volume: "SHOW",
+        done: 1,
+        total: 1,
+        outputs: ["/media/SHOW - t02.mkv"],
+        deletedSource: true,
+      });
+    }
     if (method === "GET" && url.includes("/api/organize/browse")) {
       const path = new URL(url, "http://local").searchParams.get("path") || "";
       return jsonResponse({
         path,
         parent: parentFor(path),
         entries: entriesFor(path),
+      });
+    }
+    if (method === "POST" && url.includes("/api/organize/browse/unpack-disc")) {
+      return jsonResponse({
+        path: "/media/show.iso",
+        status: "extracting",
+        done: 0,
+        total: 1,
       });
     }
     if (url.includes("/api/organize/events")) return jsonResponse([]);
@@ -223,6 +250,38 @@ describe("Browse", () => {
     expect(await screen.findByRole("menuitem", { name: "Properties" })).toBeDisabled();
     expect(screen.getByRole("menuitem", { name: "Move" })).toBeEnabled();
     expect(screen.getByRole("menuitem", { name: "Delete" })).toBeEnabled();
+  });
+
+  it("unpacks a selected ISO after confirm and polls until done", async () => {
+    const fetchFn = stubBrowse();
+    await openMedia();
+    expect(screen.getByRole("button", { name: "Unpack disc" })).toBeDisabled();
+    fireEvent.click(screen.getByLabelText("Select show.iso"));
+    expect(screen.getByRole("button", { name: "Unpack disc" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Unpack disc" }));
+    expect(
+      await screen.findByText(/Extract MPEG-2 titles from this DVD/),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Unpack" }));
+    await waitFor(() => {
+      expect(
+        fetchFn.mock.calls.some(
+          (c) =>
+            String((c[1] as RequestInit | undefined)?.method || "GET").toUpperCase() ===
+              "POST" && String(c[0]).includes("/api/organize/browse/unpack-disc"),
+        ),
+      ).toBe(true);
+    });
+    await waitFor(() => {
+      expect(
+        fetchFn.mock.calls.some(
+          (c) =>
+            String(c[0]).includes("/api/organize/browse/unpack-disc") &&
+            String((c[1] as RequestInit | undefined)?.method || "GET").toUpperCase() ===
+              "GET",
+        ),
+      ).toBe(true);
+    });
   });
 
   it("hides /adult when Adult mode is off and leaves it if the toggle turns off mid-browse", async () => {

@@ -2463,6 +2463,31 @@ export interface OrganizeBrowseOpResponse {
   results: OrganizeBrowseOpItem[];
 }
 /**
+ * Claude 2026-10-02: Organize Browse DVD unpack (ISO/IMG → MPEG-2 MKV).
+ * Reason: confirm-then-mutate like rename/delete; work is minutes-long so
+ *   POST starts a job and GET polls status. Prefix stays /api/organize/.
+ * Troubleshooting: SL-9 — these literals must stay under /api/organize/.
+ * Review if: Usenet finalize grows the same unpack.
+ */
+export interface OrganizeDiscUnpackRequest {
+  path: string;
+}
+/**
+ * OrganizeDiscUnpackStatus is POST/GET /api/organize/browse/unpack-disc.
+ * Status is idle | probing | extracting | done | error.
+ */
+export interface OrganizeDiscUnpackStatus {
+  path: string;
+  status: string;
+  volume?: string;
+  done: number /* int */;
+  total: number /* int */;
+  outputs?: string[];
+  error?: string;
+  deletedSource?: boolean;
+  tracked?: boolean;
+}
+/**
  * OrganizeBrowseProbe is ffprobe output for a video file on GET
  * /api/organize/browse/stat. Omitted when the path is not a video or probe
  * failed (see ProbeError on the parent).

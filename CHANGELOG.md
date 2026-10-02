@@ -10387,6 +10387,22 @@ status stays active.
 | `internal/rename/rename_library_series_test.go` | P3 split; empty/placeholder Apply; Scan title match |
 | `internal/rename/series_episode_title_match_test.go` | unique TVDB search |
 
+## 2026-10-02 — Unpack DVD ISO to MPEG-2 MKV from Organize Browse
+
+**Problem:** Library DVD ISOs (Looney Golden, Animaniacs, FathersLLDVD) import as one video file. Organize cannot name VIDEO_TS / play-all titles.
+**Root cause:** The IFO title/chapter map lives only on the disc image. Demuxing without persisting it loses episode order and volume identity.
+**Fix:** Organize Browse Unpack disc: probe titles via ffmpeg `dvdvideo`, write `{stem}.disc.json`, extract feature MKVs (`-c copy`) named `{VOLUME} - tNN.mkv`, delete the ISO only after every planned output exists. Play-all + short titles → per-title shorts; one long high-chapter title → chapter split; typical movie → one file. Extras skipped. Library ForgetPath on the ISO. No Usenet hook and no episode naming in this PR.
+**Outcome:** Select an `.iso` in Browse → Unpack disc. Files land beside the ISO; assign names later in Rename.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/disc/*` | probe, roles, extract, sidecar, delete-on-success |
+| `internal/api/organize_disc.go` | POST start + GET poll under `/api/organize/browse/unpack-disc` |
+| `frontend/src/screens/Browse.tsx` | Unpack disc button, confirm, progress |
+| `frontend/src/api/organizeBrowse.ts` | start/fetch unpack |
+
 
 
 

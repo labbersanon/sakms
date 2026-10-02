@@ -10270,6 +10270,24 @@ status stays active.
 | `internal/library/library_series.go` | Season-dir S-EE + leading episode on Loose |
 | `internal/library/library_series_test.go` | 1-16 / 1-02 / 2-06 / leading 12 |
 
+## 2026-10-01 — Ordinary TMDB Scan fills episode titles for dest preview
+
+**Problem:** After #120 identified Phineas `1-16 Get That Bigfoot` and `1-47 Unfair Science Fair Redux`, Proposed name still showed `Show SxxExx.ext`. Pending rows had empty `episode_title`.
+**Root cause:** Title-match and year-season already set `Proposal.EpisodeTitle`. Ordinary TMDB SxxExx Scan (`acceptSeries`, NFO confirm, TVDB fallback, daily/absolute) set season/episode but never the title. Dest preview is Scan-time JSON.
+**Fix:** `fillTMDBEpisodeTitle` reads SeasonDetails for the primary number when title is still empty and TMDB id is positive. Placeholders (`Episode 16`) and synthetic anthology ids are skipped. Already-set titles are left alone.
+**Outcome:** S01E01 Scan pending carries `Pilot`. Phineas E16 fill uses the TMDB slot name.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/rename/catalog_show.go` | `fillTMDBEpisodeTitle` |
+| `internal/rename/rename.go` | NFO / acceptSeries / TVDB fallback fill |
+| `internal/rename/series_daily_absolute.go` | daily/absolute fill |
+| `internal/rename/catalog_show_test.go` | Pilot / keep / miss / synthetic / Phineas / placeholder |
+| `internal/rename/rename_library_series_test.go` | Scan pending EpisodeTitle == Pilot |
+| `internal/rename/series_daily_absolute_test.go` | Guest / Morgan titles |
+
 
 
 

@@ -30,11 +30,6 @@ func catalogPendingSeries(ctx context.Context, sess *mode.Session, libStore *lib
 		}
 		eps := []int{p.EpisodeNumber}
 		eps = append(eps, p.ExtraEpisodeNumbers...)
-		// Claude 2026-10-01: thread Scan-time episode title into Library.
-		// Reason: year-season Pending cataloged with an empty library title,
-		//   so dest names stayed "Show S1947E05.ext" even after Identify.
-		// Troubleshooting: Looney Tunes library rows have no cartoon name.
-		// Review if: ordinary TMDB Scan also sets Proposal.EpisodeTitle.
 		_, err := upsertCatalogedEpisode(ctx, sess, libStore, catalogEpisode{
 			TMDBID: p.TMDBID, TVDBID: p.TVDBID, Title: p.Title, Year: p.Year,
 			Season: p.SeasonNumber, Episodes: eps, VideoPath: p.SourcePath, FoundRoot: foundRoot,

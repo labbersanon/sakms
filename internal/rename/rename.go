@@ -1257,6 +1257,7 @@ func proposeOneEpisodeLibrary(
 				if isDuplicateSlot {
 					acceptDuplicatePendingEpisode(&p, det.Title, season, episode)
 				}
+				fillTMDBEpisodeTitle(ctx, sess, &p)
 				return p, false
 			}
 			// Season missing on the NFO's TMDB id — continue into filename search /
@@ -1404,6 +1405,7 @@ func proposeOneEpisodeLibrary(
 		if duplicateSlot {
 			acceptDuplicatePendingEpisode(&p, match.Title, season, episode)
 		}
+		fillTMDBEpisodeTitle(ctx, sess, &p)
 		return p
 	}
 	if !sig.HasAny() {
@@ -1937,6 +1939,7 @@ func tvdbFallbackSeries(
 			if duplicateSlot {
 				acceptDuplicatePendingEpisode(&p, det.Title, season, episode)
 			}
+			fillTMDBEpisodeTitle(ctx, sess, &p)
 			return &p
 		}
 		if rank == CorroborationStrong {
@@ -1989,6 +1992,7 @@ func tvdbFallbackSeries(
 		if duplicateSlot {
 			acceptDuplicatePendingEpisode(&p, weak.det.Title, season, episode)
 		}
+		fillTMDBEpisodeTitle(ctx, sess, &p)
 		return &p
 	}
 	return nil
@@ -2006,14 +2010,6 @@ func RelocateEpisode(sourcePath, destRoot, seriesTitle string, seriesYear, tmdbI
 // single-episode path's behavior (including its exact destination name) is
 // unchanged — EpisodeRangeFileName falls straight through to
 // EpisodeFileName's own rendering for fewer than 2 numbers.
-//
-// Claude 2026-08-06: episodeTitle threaded through for Jellyfin/Legacy names
-// Reason: Apply was dropping titles → "Show S01E01.ext" only; operators need
-//
-//	identifiable Jellyfin names ("Show S01E01 Pilot.ext").
-//
-// Troubleshooting: applied filenames unreadable → episodeTitle was always "".
-// Review if: proposals gain a persisted episode_title from Scan.
 func RelocateEpisodeRange(sourcePath, destRoot, seriesTitle string, seriesYear, tmdbID, seasonNumber int, episodeNumbers []int, episodeTitle string, preset naming.Preset) (string, error) {
 	seriesFolder := naming.SeriesFolderName(preset, seriesTitle, seriesYear, tmdbID)
 	seasonDir := filepath.Join(destRoot, seriesFolder, naming.SeasonDirName(seasonNumber))
@@ -2186,12 +2182,6 @@ func ApplyLibrarySeries(ctx context.Context, libStore *library.Store, tmdbClient
 				airDate = ep.Aired
 			}
 		}
-		// Claude 2026-10-01: Scan-time episode title fills dest names.
-		// Reason: year-season/anthology already corroborated the TVDB name
-		//   at Scan; Apply used to omit it when SeasonDetails(1947) and the
-		//   catalog fetch missed, producing "Show S1947E05.ext".
-		// Troubleshooting: Looney Tunes Rename drops cartoon names.
-		// Review if: ordinary TMDB Scan also sets Proposal.EpisodeTitle.
 		if title == "" && episodeNumber == p.EpisodeNumber {
 			title = p.EpisodeTitle
 		}

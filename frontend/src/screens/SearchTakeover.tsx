@@ -694,7 +694,11 @@ export const SearchTakeover: Component<{
   ): PickedShow => ({
     tmdbId: item.id,
     tvdbId,
-    title: seriesTitle ?? item.title,
+    // Claude 2026-10-01: empty seriesTitle must not win over item.title.
+    // Reason: ?? keeps "" and dest becomes " SxxExx Episode.ext".
+    // Troubleshooting: TVDB episode hits with blank seriesTitle dropped the show.
+    // Review if: TVDB episode JSON always sends a non-empty seriesTitle.
+    title: seriesTitle?.trim() || item.title,
     year: yearOf(item.releaseDate),
     origin,
   });
@@ -1014,7 +1018,9 @@ export const SearchTakeover: Component<{
               <SeasonEpisodeAccordion
                 tmdbId={show().tmdbId}
                 currentSlot={props.currentSlot}
-                onSubmit={(s, e) => commitSlot(show(), s, e)}
+                onSubmit={(s, e, episodeTitle) =>
+                  commitSlot(show(), s, e, episodeTitle)
+                }
               />
             </div>
           </div>

@@ -571,7 +571,7 @@ func importOneDiscOutput(
 		GiveBackSceneID: req.SceneID,
 	}
 	if m == mode.Adult {
-		_, _, err := rename.ApplyLibraryAdult(ctx, sess, libStore, p, tier, nil)
+		_, _, _, err := rename.ApplyLibraryAdult(ctx, sess, libStore, p, tier, nil)
 		if err != nil {
 			return src, err
 		}

@@ -10223,6 +10223,20 @@ status stays active.
 | `frontend/src/screens/SearchTakeover.test.tsx` | Gelatin TMDB-miss uses TVDB episode |
 | `internal/searchterm/searchterm.go` | FromName strips `[tmdbid-N]` / `[tvdbid-N]` |
 
+## 2026-10-01 — Season-dir NN-NN duals parse as two episodes
+
+**Problem:** Phineas files like `06-07 Day of the Living Gelatin, Elementary My Dear Stacy.mp4` stayed Unmatched (`could not determine season/episode`). Search could pick the show but Scan never saw E06–E07.
+**Root cause:** `ParseEpisodeNumbers` is SxxExx-only (Dedup/import). The rename loose parser also missed `Season 2` + leading `NN-NN`.
+**Fix:** Rename-only: when the parent is `Season NN` / `Specials` and the basename starts with an adjacent `NN-NN` pair, return those two episode numbers. Wide ranges (`01-12`) are refused.
+**Outcome:** A Series Scan places those duals as SxxEaa-Ebb Pending instead of Unmatched.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/library/library_series.go` | `parseSeasonDirEpisodePair` on the loose rename path |
+| `internal/library/library_series_test.go` | Phineas Season 2 pair; pack names refused |
+
 
 
 

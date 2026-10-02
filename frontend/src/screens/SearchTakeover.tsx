@@ -71,12 +71,10 @@
 //    logic"), so the notice stays unconditional and absence assertions stay
 //    forbidden.
 //
-// APPENDED 2026-09-26: a Series result tile click SELECTS THE TITLE (show-level
-// commit), matching Movies/Adult. Step 2 is still required for season/episode
-// assignment — it is reached from the sibling "Assign episode" control, not
-// from the title tile. Do not route the title tile back through setPicked:
-// that is the defect this note records (search worked; the title could not
-// be chosen). TVDB hits with presetSlot still one-click commit the slot.
+// APPENDED 2026-10-01: a Series result tile click DRILLS INTO EPISODES
+// (step 2). Show-level commit is the "Use show-level match only" control.
+// Movie tiles in a Series merge still commit on click. TVDB episode hits
+// with presetSlot still one-click commit the slot.
 
 import {
   type Component,
@@ -286,9 +284,11 @@ function showPrefixAgrees(prefix: string, title: string): boolean {
   return t === p || t.startsWith(`${p} `) || p.startsWith(`${t} `);
 }
 
-// Claude 2026-10-01: peel a unique show prefix when TMDB gets show+episode.
+// Claude 2026-10-01: peel an agreeing show prefix when TMDB gets show+episode.
 // Reason: "Phineas and Ferb interview with a platypus" returns [] from
 //   show-name search. Traefik 200 + 3-byte bodies; dest stayed S00E00.
+//   Handy Manny also returned multiple series (737 bytes); requiring
+//   length === 1 skipped the peel.
 // Troubleshooting: Organize Search "No results" after typing the episode.
 // Review if: TMDB grows an episode-title search used on this path.
 async function showPrefixEpisodeHits(
@@ -306,10 +306,10 @@ async function showPrefixEpisodeHits(
       continue;
     }
     const series = await tmdbSearch("series", prefix, opts);
-    if (series.length !== 1 || !showPrefixAgrees(prefix, series[0]!.title)) {
+    const show = series.find((item) => showPrefixAgrees(prefix, item.title));
+    if (!show) {
       continue;
     }
-    const show = series[0]!;
     const episodes = await tvdbSearch(residual, "episode", {
       ...opts,
       series: show.title,
@@ -320,6 +320,30 @@ async function showPrefixEpisodeHits(
     ];
   }
   return null;
+}
+
+function advancedSeriesQueries(
+  q: string,
+  adv: AdvancedFields,
+): { showQ: string; episodeQ: string } | null {
+  if (!adv.on) {
+    return null;
+  }
+  const title = adv.title.trim();
+  const series = adv.series.trim();
+  const box = q.trim();
+  if (!title && !series) {
+    return null;
+  }
+  if (series && title) {
+    return { showQ: series, episodeQ: title };
+  }
+  if (series) {
+    const episodeQ =
+      box && box.toLowerCase() !== series.toLowerCase() ? box : "";
+    return { showQ: series, episodeQ };
+  }
+  return { showQ: title, episodeQ: title };
 }
 
 function tvdbItemToHit(item: SeriesSearchItem): CatalogHit {
@@ -518,6 +542,31 @@ export const SearchTakeover: Component<{
     // populates `results.error`, which the render already handles. The tradeoff
     // is real and accepted: a movies-catalog failure now fails a series search.
     if (props.searchMode === "series") {
+      // Claude 2026-10-01: Advanced Series=show, Title=episode; never movies.
+      // Reason: Title "Ice cream team" hit a TMDB movie (684 bytes) and
+      //   skipped episode fallback; Handy Manny dest stayed S00E00.
+      // Troubleshooting: Advanced Title+Series still lists a movie.
+      // Review if: TMDB episode search is used on this path.
+      const structured = advancedSeriesQueries(q, adv);
+      if (structured) {
+        const seriesHits =
+          structured.showQ || tmdbOpts?.id
+            ? await tmdbSearch("series", structured.showQ, tmdbOpts)
+            : [];
+        const episodeHits = structured.episodeQ
+          ? await tvdbSearch(structured.episodeQ, "episode", {
+              ...tmdbOpts,
+              series: adv.series.trim() || undefined,
+            })
+          : [];
+        return {
+          kind: "catalog",
+          items: [
+            ...seriesHits.map((item) => ({ mode: "series" as const, item })),
+            ...episodeHits.map((item) => tvdbItemToHit(item)),
+          ],
+        };
+      }
       if (tmdbOpts?.id) {
         const series = await tmdbSearch("series", tmdbQ, tmdbOpts);
         return {
@@ -628,17 +677,15 @@ export const SearchTakeover: Component<{
       year: show.year,
     });
 
-  // Claude 2026-09-26: series tile click selects the title (show-level commit).
-  // Reason: Rename Search showed results but a title could not be chosen —
-  //   the click only opened step 2, and the confirm control was labeled
-  //   "Use show-level match only". Movies/Adult already committed on click.
-  // Troubleshooting: search works; clicking a result does not apply the title.
-  // Review if: series search should require a season/episode before commit.
-  // Related files: SearchTakeover.test.tsx, Rename.test.tsx, Rename.repick.test.tsx
+  // Claude 2026-10-01: series tile click opens episode assignment.
+  // Reason: Handy Manny / Phineas title clicks wrote S00E00 dest names.
+  //   Show-level is the escape hatch in step 2, not the tile.
+  // Troubleshooting: series Search applies a show with no episode.
+  // Review if: dest preview can render a show-only Series name usefully.
+  // Related files: SearchTakeover.test.tsx, Rename.test.tsx
   //
-  // Slot assignment is openSeriesStep2 ("Assign episode"). presetSlot still
-  // branches on props.searchMode, not hit.mode: a TVDB episode hit one-click
-  // commits that slot.
+  // Slot assignment is openSeriesStep2. presetSlot still branches on
+  // props.searchMode, not hit.mode: a TVDB episode hit one-click commits.
   const catalogShow = (
     item: DiscoverItem,
     origin: "movies" | "series",
@@ -682,10 +729,10 @@ export const SearchTakeover: Component<{
       );
       return;
     }
-    // Previous Series-without-slot path (title click opened step 2 only):
-    // setCommitError(null);
-    // setPicked(show);
-    // return;
+    if (props.searchMode === "series" && origin === "series") {
+      openSeriesStep2(item, origin, opts?.seriesTitle, opts?.tvdbId);
+      return;
+    }
     showLevelCommit(show);
   };
 
@@ -1008,10 +1055,10 @@ export const SearchTakeover: Component<{
                     <For each={catalogItems()}>
                       {(hit) => {
                         // `item` is the DiscoverItem; every line below reads
-                        // from it exactly as before. `hit.mode` also feeds the
-                        // badge below (Series mode only) and its
-                        // aria-describedby wiring — never used for routing,
-                        // see useCatalogItem's own comment.
+                        // from it exactly as before. `hit.mode` feeds the
+                        // badge (Series mode only), aria-describedby, and
+                        // useCatalogItem: series-origin drills into step 2;
+                        // movie-origin still commits on title click.
                         const item = hit.item;
                         const src = () => tmdbPoster(item.posterPath);
                         const y = () => yearOf(item.releaseDate);
@@ -1108,12 +1155,6 @@ export const SearchTakeover: Component<{
                               </div>
                             </div>
                           </button>
-                          {/* Claude 2026-09-26: sibling of the title tile, not nested.
-                              Reason: tile click now commits the title; episode
-                              assignment must stay reachable without a nested button.
-                              Troubleshooting: series search applied a title but
-                              could not set S/E.
-                              Review if: tile click opens step 2 again. */}
                           <Show when={props.searchMode === "series" && !hit.presetSlot}>
                             <button
                               type="button"

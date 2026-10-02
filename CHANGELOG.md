@@ -10305,6 +10305,21 @@ status stays active.
 | `internal/rename/series_episode_title_match_test.go` | filename segments |
 | `internal/rename/rename_library_series_test.go` | Scan dual S02E02-E03 |
 
+## 2026-10-01 — Advanced Series/Title and Series Search drills into episodes
+
+**Problem:** Advanced Title "Ice cream team" hit a TMDB movie and skipped episode fallback. Handy Manny peel required a unique series hit. Series result tiles committed show-level (S00E00 dest), including proposal 18400.
+**Root cause:** Advanced Title reused the box query against both TMDB catalogs. Peel required `length === 1`. Series title click was show-level commit since 2026-09-26.
+**Fix:** Advanced Series=show, Title=episode: TMDB series + TVDB episode, never movies. Peel accepts any prefix-agreeing show. Series-origin tile click opens episode assignment; show-level is the step-2 hatch. Movie tiles and TVDB `presetSlot` hits still one-click commit.
+**Outcome:** Advanced Handy Manny / Ice cream team lists the show and the episode. A series tile opens step 2 instead of writing S00E00.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/SearchTakeover.tsx` | structured Advanced queries; peel agreeing show; series tile → step 2 |
+| `frontend/src/screens/SearchTakeover.test.tsx` | Advanced Series+Title; multi-hit peel; tile drills; movie click still commits |
+| `frontend/src/screens/Rename.test.tsx` | Series repick tile then show-level hatch |
+
 
 
 

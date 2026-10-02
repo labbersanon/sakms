@@ -438,8 +438,8 @@ describe("Rename — Series Re-pick (auto-search → use a new tmdb match)", () 
   // The ONLY end-to-end repick-commit test that runs through Rename's real row
   // wiring (runRowAction -> SearchTakeover -> commitRepick), so it must survive
   // every refactor of that path rather than being replaced by a component-level
-  // render. The title tile now commits show-level (both slot fields omitted),
-  // which is the default Series title-selection path.
+  // render. The title tile opens episode assignment; show-level commit is the
+  // step-2 escape hatch (both slot fields omitted).
   it("re-points the proposal at the NEWLY chosen tmdbId, not its current one", async () => {
     const calls = stubFetch((url, init) => {
       if (url.includes("/api/modes/movies/rename/proposals"))
@@ -462,6 +462,8 @@ describe("Rename — Series Re-pick (auto-search → use a new tmdb match)", () 
         return jsonResponse([
           tmdbItem({ id: 999, title: "The Right Show", releaseDate: "2018-01-01" }),
         ]);
+      if (url.includes("/api/modes/series/discover/detail"))
+        return jsonResponse({ seasons: [] });
       if (
         url.includes("/api/proposals/12/repick") &&
         (init?.method ?? "").toUpperCase() === "POST"
@@ -474,8 +476,8 @@ describe("Rename — Series Re-pick (auto-search → use a new tmdb match)", () 
     fireEvent.click(await screen.findByText("Series"));
     await runRowAction("Wrong.Match.Show", "repick");
 
-    // Title tile click is the Series title-selection path (show-level commit).
     fireEvent.click(await screen.findByLabelText("Use The Right Show"));
+    fireEvent.click(await screen.findByText("Use show-level match only"));
 
     await waitFor(() =>
       expect(calls.some((c) => c.url.includes("/repick"))).toBe(true),

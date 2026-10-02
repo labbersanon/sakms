@@ -10367,6 +10367,26 @@ status stays active.
 | `frontend/src/screens/SearchTakeover.tsx` | drop unused `setAdvSeries` |
 | `frontend/src/screens/discover/SeasonEpisodeAccordion.tsx` | guard SxxExx / NxNN captures |
 
+## 2026-10-02 — Rename uses TheTVDB when TMDB has no episode name
+
+**Problem:** Ordinary Series dest names stayed SxxExx when TMDB had empty or placeholder episode titles, even though TheTVDB catalogs those shorts (Looney year-seasons).
+**Root cause:** Scan fill and Apply only asked TheTVDB for anthology (synthetic TMDB id). Episode-title match was TMDB-only.
+**Fix:** After a TMDB miss or placeholder, resolve the TVDB id (proposal or ExternalIDs) and fill official-catalog names. Episode-title match falls through to the same catalog on Found==0. Ordinary Apply with a real TMDB title still skips TheTVDB.
+**Outcome:** Dest and library rows get TVDB cartoon names when TMDB has none; Pilot-style TMDB titles are unchanged.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/rename/catalog_show.go` | TVDB fill after TMDB miss/placeholder; ExternalIDs resolve |
+| `internal/rename/rename.go` | persist TVDB id on accept; Apply fetches TVDB when name/air date still empty |
+| `internal/rename/series_episode_title_match.go` | unique TVDB title match after TMDB Found==0 |
+| `internal/rename/import.go` | pin.tvdbID from tracked series |
+| `internal/rename/series_ai_episode_match.go` | pin.tvdbID from tracked series |
+| `internal/rename/catalog_show_test.go` | TVDB fallback fill; known-id resolve |
+| `internal/rename/rename_library_series_test.go` | P3 split; empty/placeholder Apply; Scan title match |
+| `internal/rename/series_episode_title_match_test.go` | unique TVDB search |
+
 
 
 

@@ -113,3 +113,57 @@ func TestFillTMDBEpisodeTitle(t *testing.T) {
 		t.Fatalf("placeholder Episode 16 must stay empty, got %q", blank.EpisodeTitle)
 	}
 }
+
+func TestResolveSeriesTVDBID(t *testing.T) {
+	ctx := context.Background()
+	if got := resolveSeriesTVDBID(ctx, nil, 850, 7266); got != 7266 {
+		t.Fatalf("known id = %d", got)
+	}
+	if got := resolveSeriesTVDBID(ctx, nil, 850, 0); got != 0 {
+		t.Fatalf("nil client = %d", got)
+	}
+}
+
+func TestFillTMDBEpisodeTitle_TVDBFallback(t *testing.T) {
+	tvdbClient := fakeTVDBEpisodesServer(t, []fakeTVDBEpisode{
+		{ID: 1, SeriesID: 7266, Name: "A Hare Grows in Manhattan", Number: 5, SeasonNumber: 1947, Aired: "1947-03-22"},
+	})
+
+	placeholder := &mode.Session{
+		TMDB: fakeTMDBEpisodeTitleServer(t, 850, "Looney Tunes", map[int][]tmdb.SeasonEpisode{
+			1947: {{EpisodeNumber: 5, Name: "Episode 5", AirDate: "1947-03-22"}},
+		}, -1, nil),
+		TVDB: tvdbClient,
+	}
+	p := proposals.Proposal{TMDBID: 850, TVDBID: 7266, SeasonNumber: 1947, EpisodeNumber: 5}
+	fillTMDBEpisodeTitle(context.Background(), placeholder, &p)
+	if p.EpisodeTitle != "A Hare Grows in Manhattan" {
+		t.Fatalf("placeholder TMDB title = %q, want TVDB cartoon name", p.EpisodeTitle)
+	}
+	if p.TVDBID != 7266 {
+		t.Fatalf("TVDBID = %d, want 7266 persisted on the proposal", p.TVDBID)
+	}
+
+	miss := &mode.Session{
+		TMDB: fakeTMDBEpisodeTitleServer(t, 850, "Looney Tunes", map[int][]tmdb.SeasonEpisode{
+			1947: {{EpisodeNumber: 1, Name: "Other Short", AirDate: "1947-01-01"}},
+		}, -1, nil),
+		TVDB: tvdbClient,
+	}
+	empty := proposals.Proposal{TMDBID: 850, TVDBID: 7266, SeasonNumber: 1947, EpisodeNumber: 5}
+	fillTMDBEpisodeTitle(context.Background(), miss, &empty)
+	if empty.EpisodeTitle != "A Hare Grows in Manhattan" {
+		t.Fatalf("TMDB miss title = %q, want TVDB cartoon name", empty.EpisodeTitle)
+	}
+
+	hits, n := countingTVDBServer(t)
+	keep := &mode.Session{TMDB: fakeTMDBSeriesServer(t, nil, nil), TVDB: hits}
+	pilot := proposals.Proposal{TMDBID: 555, TVDBID: 999, SeasonNumber: 1, EpisodeNumber: 1}
+	fillTMDBEpisodeTitle(context.Background(), keep, &pilot)
+	if pilot.EpisodeTitle != "Pilot" {
+		t.Fatalf("real TMDB title overwritten: %q", pilot.EpisodeTitle)
+	}
+	if got := n.Load(); got != 0 {
+		t.Fatalf("TVDB hits = %d, want 0 when TMDB already named the slot", got)
+	}
+}

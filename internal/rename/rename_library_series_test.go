@@ -1772,25 +1772,20 @@ func TestApplyLibrarySeries_TVDBFetchFailureStillApplies(t *testing.T) {
 	}
 }
 
-// TestApplyLibrarySeries_OrdinaryProposalMakesNoTVDBRequest is P3: an ordinary
-// Series proposal must never touch TheTVDB. The gate is the exact complement of
-// the TMDB branch's precondition, so proving zero requests here proves no
-// existing Apply path changed behaviour.
-//
-// Two sub-cases, because the plain (TMDBID > 0, TVDBID == 0) proposal the plan
-// names pins only HALF the gate: with TVDBID == 0, SeriesEpisodes rejects the
-// id locally and issues no HTTP request at all, so that case would still see
-// zero requests even if the p.TMDBID <= 0 condition were deleted outright. The
-// second sub-case carries BOTH a positive TMDB id and a positive TVDB id — a
-// shape only the p.TMDBID <= 0 half can exclude — so together they pin the
-// whole gate rather than one conjunct of it.
+// TestApplyLibrarySeries_OrdinaryProposalMakesNoTVDBRequest is P3: TheTVDB
+// is not consulted when TMDB already supplied a real title and air date, or
+// when there is no TVDB id to resolve. The complementary case — TMDB empty
+// or placeholder, TVDB id known — is
+// TestApplyLibrarySeries_FetchesTVDBEpisodeTitleWhenTMDBEmpty.
 func TestApplyLibrarySeries_OrdinaryProposalMakesNoTVDBRequest(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		tvdbID int
+		name     string
+		tvdbID   int
+		useTMDB  bool
+		wantFile string
 	}{
-		{"no tvdb id (the ordinary shape)", 0},
-		{"positive tvdb id alongside a positive tmdb id", 999},
+		{"no tvdb id (the ordinary shape)", 0, false, "Show Name S01E01.mkv"},
+		{"positive tvdb id and TMDB Pilot", 999, true, "Show Name S01E01 Pilot.mkv"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			base := t.TempDir()
@@ -1809,19 +1804,127 @@ func TestApplyLibrarySeries_OrdinaryProposalMakesNoTVDBRequest(t *testing.T) {
 				ID: 1, Status: proposals.Pending, Title: "Show Name", TMDBID: 555, TVDBID: tc.tvdbID,
 				SeasonNumber: 1, EpisodeNumber: 1, SourcePath: sourcePath, RootFolderPath: destRoot,
 			}
+			var tmdbClient *tmdb.Client
+			if tc.useTMDB {
+				tmdbClient = fakeTMDBSeriesServer(t, nil, nil)
+			}
 			tvdbClient, tvdbHits := countingTVDBServer(t)
-			if _, _, err := ApplyLibrarySeries(ctx, libStore, nil, tvdbClient, p, naming.Jellyfin, "", nil); err != nil {
+			if _, _, err := ApplyLibrarySeries(ctx, libStore, tmdbClient, tvdbClient, p, naming.Jellyfin, "", nil); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if got := tvdbHits.Load(); got != 0 {
-				t.Errorf("expected zero TVDB requests for an ordinary Series proposal, got %d", got)
+				t.Errorf("expected zero TVDB requests, got %d", got)
 			}
 
-			wantDest := filepath.Join(destRoot, "Show Name [tmdbid-555]", "Season 01", "Show Name S01E01.mkv")
+			wantDest := filepath.Join(destRoot, "Show Name [tmdbid-555]", "Season 01", tc.wantFile)
 			if _, err := os.Stat(wantDest); err != nil {
 				t.Errorf("expected the file relocated to %q, got %v", wantDest, err)
 			}
 		})
+	}
+}
+
+// TestApplyLibrarySeries_FetchesTVDBEpisodeTitleWhenTMDBEmpty is the ordinary
+// Series counterpart of the anthology TVDB fill: positive TMDB id, empty
+// SeasonDetails, known TVDB id. Dest and library_episodes.title must come
+// from TheTVDB, not stay a bare SxxExx name.
+func TestApplyLibrarySeries_FetchesTVDBEpisodeTitleWhenTMDBEmpty(t *testing.T) {
+	base := t.TempDir()
+	destRoot := filepath.Join(base, "TV")
+	if err := os.MkdirAll(destRoot, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	sourcePath := filepath.Join(base, "A Hare Grows In Manhattan S1947E05.mp4")
+	if err := os.WriteFile(sourcePath, []byte("fake video data"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	p := proposals.Proposal{
+		ID: 1, Status: proposals.Pending, Title: "Looney Tunes", Year: 1930,
+		TMDBID: 850, TVDBID: 7266,
+		SeasonNumber: 1947, EpisodeNumber: 5, SourcePath: sourcePath, RootFolderPath: destRoot,
+	}
+	tmdbClient := fakeTMDBEpisodeTitleServer(t, 850, "Looney Tunes", map[int][]tmdb.SeasonEpisode{
+		1947: {{EpisodeNumber: 5, Name: "", AirDate: ""}},
+	}, -1, nil)
+	tvdbClient := fakeTVDBEpisodesServer(t, []fakeTVDBEpisode{
+		{ID: 1, SeriesID: 7266, Name: "A Hare Grows in Manhattan", Number: 5, SeasonNumber: 1947, Aired: "1947-03-22"},
+		{ID: 2, SeriesID: 7266, Name: "WRONG SEASON DECOY", Number: 5, SeasonNumber: 1948, Aired: "1948-01-01"},
+	})
+	if _, _, err := ApplyLibrarySeries(ctx, libStore, tmdbClient, tvdbClient, p, naming.Jellyfin, "", nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wantDest := filepath.Join(destRoot, "Looney Tunes (1930) [tmdbid-850]", "Season 1947", "Looney Tunes S1947E05 A Hare Grows in Manhattan.mp4")
+	if _, err := os.Stat(wantDest); err != nil {
+		t.Errorf("expected the file relocated to %q, got %v", wantDest, err)
+	}
+	series, err := libStore.GetSeriesByTMDBID(ctx, 850)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if series.TVDBID != 7266 {
+		t.Errorf("expected tvdb id 7266 persisted, got %d", series.TVDBID)
+	}
+	ep, err := libStore.GetEpisode(ctx, series.ID, 1947, 5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ep.Title != "A Hare Grows in Manhattan" {
+		t.Errorf("library_episodes.title = %q, want the TVDB cartoon name", ep.Title)
+	}
+	if ep.AirDate != "1947-03-22" {
+		t.Errorf("air date = %q, want 1947-03-22", ep.AirDate)
+	}
+}
+
+// TestApplyLibrarySeries_FetchesTVDBEpisodeTitleWhenTMDBPlaceholder is the
+// same fill as the empty-TMDB case, except SeasonDetails returned "Episode 5"
+// — a name that must not win over TheTVDB's real cartoon title.
+func TestApplyLibrarySeries_FetchesTVDBEpisodeTitleWhenTMDBPlaceholder(t *testing.T) {
+	base := t.TempDir()
+	destRoot := filepath.Join(base, "TV")
+	if err := os.MkdirAll(destRoot, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	sourcePath := filepath.Join(base, "A Hare Grows In Manhattan S1947E05.mp4")
+	if err := os.WriteFile(sourcePath, []byte("fake video data"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	p := proposals.Proposal{
+		ID: 1, Status: proposals.Pending, Title: "Looney Tunes", Year: 1930,
+		TMDBID: 850, TVDBID: 7266,
+		SeasonNumber: 1947, EpisodeNumber: 5, SourcePath: sourcePath, RootFolderPath: destRoot,
+	}
+	tmdbClient := fakeTMDBEpisodeTitleServer(t, 850, "Looney Tunes", map[int][]tmdb.SeasonEpisode{
+		1947: {{EpisodeNumber: 5, Name: "Episode 5", AirDate: "1947-03-22"}},
+	}, -1, nil)
+	tvdbClient := fakeTVDBEpisodesServer(t, []fakeTVDBEpisode{
+		{ID: 1, SeriesID: 7266, Name: "A Hare Grows in Manhattan", Number: 5, SeasonNumber: 1947, Aired: "1947-03-22"},
+	})
+	if _, _, err := ApplyLibrarySeries(ctx, libStore, tmdbClient, tvdbClient, p, naming.Jellyfin, "", nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wantDest := filepath.Join(destRoot, "Looney Tunes (1930) [tmdbid-850]", "Season 1947", "Looney Tunes S1947E05 A Hare Grows in Manhattan.mp4")
+	if _, err := os.Stat(wantDest); err != nil {
+		t.Errorf("expected the file relocated to %q, got %v", wantDest, err)
+	}
+	series, err := libStore.GetSeriesByTMDBID(ctx, 850)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ep, err := libStore.GetEpisode(ctx, series.ID, 1947, 5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ep.Title != "A Hare Grows in Manhattan" {
+		t.Errorf("library_episodes.title = %q, want TVDB over TMDB placeholder", ep.Title)
 	}
 }
 
@@ -2245,6 +2348,8 @@ func fakeTMDBEpisodeTitleServer(
 			_ = json.NewEncoder(w).Encode(body)
 		case r.URL.Path == creditsPath:
 			w.Write([]byte(`{"cast":[]}`))
+		case r.URL.Path == tvPath+"/external_ids":
+			w.Write([]byte(`{"tvdb_id":0,"imdb_id":""}`))
 		case strings.HasPrefix(r.URL.Path, seasonPathPrefix):
 			var season int
 			if _, err := fmt.Sscanf(r.URL.Path, seasonPathPrefix+"%d", &season); err != nil {
@@ -2316,6 +2421,58 @@ func TestScanLibrarySeries_EpisodeTitleMatch_UniqueMatchAccepted(t *testing.T) {
 	}
 	if !strings.HasPrefix(p.Reason, episodeTitleMatchReasonPrefix) {
 		t.Errorf("expected reason to carry %q prefix, got %q", episodeTitleMatchReasonPrefix, p.Reason)
+	}
+}
+
+// TestScanLibrarySeries_EpisodeTitleMatch_TVDBWhenTMDBMisses: TMDB has only
+// placeholder names, so Found==0; TheTVDB unique cartoon title places the file.
+func TestScanLibrarySeries_EpisodeTitleMatch_TVDBWhenTMDBMisses(t *testing.T) {
+	tmdb.ResetDefaultCache()
+	t.Cleanup(tmdb.ResetDefaultCache)
+
+	root := t.TempDir()
+	showDir := filepath.Join(root, "Looney Tunes")
+	if err := os.MkdirAll(showDir, 0o755); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(showDir, "A Hare Grows in Manhattan.mp4"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tmdbClient := fakeTMDBEpisodeTitleServer(t, 850, "Looney Tunes", map[int][]tmdb.SeasonEpisode{
+		1: {{EpisodeNumber: 1, Name: "Episode 1", AirDate: "1930-01-01"}},
+	}, -1, nil)
+	tvdbClient := fakeTVDBEpisodesServer(t, []fakeTVDBEpisode{
+		{ID: 1, SeriesID: 7266, Name: "A Hare Grows in Manhattan", Number: 5, SeasonNumber: 1947, Aired: "1947-03-22"},
+	})
+	sess := &mode.Session{Mode: mode.Series, TMDB: tmdbClient, TVDB: tvdbClient}
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	if _, err := libStore.UpsertSeries(ctx, library.Series{
+		TMDBID: 850, TVDBID: 7266, Title: "Looney Tunes", Year: 1930, RootFolderPath: root,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 proposal, got %d: %+v", len(got), got)
+	}
+	p := got[0]
+	if p.Status != proposals.Pending {
+		t.Fatalf("expected Pending, got status=%v reason=%q", p.Status, p.Reason)
+	}
+	if p.TMDBID != 850 || p.TVDBID != 7266 || p.SeasonNumber != 1947 || p.EpisodeNumber != 5 {
+		t.Errorf("got tmdb=%d tvdb=%d S%02dE%02d, want 850/7266 S1947E05", p.TMDBID, p.TVDBID, p.SeasonNumber, p.EpisodeNumber)
+	}
+	if p.EpisodeTitle != "A Hare Grows in Manhattan" {
+		t.Errorf("EpisodeTitle = %q", p.EpisodeTitle)
+	}
+	if !strings.HasPrefix(p.Reason, episodeTitleMatchReasonPrefix) {
+		t.Errorf("reason = %q, want %q prefix", p.Reason, episodeTitleMatchReasonPrefix)
 	}
 }
 

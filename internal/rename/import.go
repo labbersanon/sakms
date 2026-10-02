@@ -161,7 +161,7 @@ func ScanImportSeries(ctx context.Context, sess *mode.Session, libStore *library
 				if id := folderIDs[key]; id > 0 {
 					pin.tmdbID = id
 					if s, ok := seriesByID[id]; ok {
-						pin.title, pin.year, pin.root = s.Title, s.Year, destRoot
+						pin.title, pin.year, pin.root, pin.tvdbID = s.Title, s.Year, destRoot, s.TVDBID
 					}
 				}
 			}

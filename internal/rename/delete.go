@@ -14,9 +14,10 @@ import (
 // operation on a Rename proposal — but it is deliberately NOT a sibling in
 // shape. Those two RELOCATE a file and TRACK the result in libStore.
 // DeleteSource destroys the file and destroys the row, and touches libStore
-// not at all: a Pending/Unmatched Rename proposal is by definition a file
-// that is NOT yet tracked (tracking is what Apply does), so there is no
-// library row to clean up. Do not "helpfully" add a libStore.Delete here.
+// not at all: an *orphan* Pending/Unmatched Rename proposal is a file that
+// is NOT yet tracked (tracking is what Apply does), so there is no library
+// row to clean up. Do not "helpfully" add a libStore.Delete here. Tracked
+// hierarchy-move rows (TrackedID != 0) are refused instead.
 //
 // That "by definition" is NOT self-evident — it holds only because of an
 // invariant enforced in three other functions. Every Rename scan builds a
@@ -31,19 +32,21 @@ import (
 //	Series  rename.ScanLibrarySeries      (rename.go:628)               known built :654/:663/:749, fed to ScanRootFolder :764
 //	Adult   rename.ScanLibraryAdult       (rename_adult_library.go:37)  known built :49/:53,        fed to ScanRootFolder :56
 //
-// If that exclusion ever stopped holding, DeleteSource would os.Remove a
-// tracked file and leave its library row intact — a row pointing at nothing,
-// with no libStore.Delete to clean it up (contrast purge.ApplyLibrary, which
-// deletes the library row precisely because Purge operates ON tracked items).
+// If that exclusion ever stopped holding for orphan Scan, DeleteSource would
+// os.Remove a tracked file and leave its library row intact — a row pointing
+// at nothing, with no libStore.Delete to clean it up (contrast purge.ApplyLibrary,
+// which deletes the library row precisely because Purge operates ON tracked items).
 // That is invisible library corruption. The behavioral guard is
 // TestScanLibrary_TrackedPathsNeverBecomeRenameProposals in
-// rename_library_test.go.
+// rename_library_test.go (orphan walk) plus DeleteSource's TrackedID != 0
+// refusal for the tracked-schema relocate pass ScanLibrarySeries appends after
+// the known-map walk.
 //
 // Review if: rename.ScanLibrary / ScanLibrarySeries / ScanLibraryAdult stop
 //	feeding a `known` tracked-path set into library.ScanRootFolder — that
-//	exclusion (library.go:484) is the ONLY reason a Rename proposal's
-//	SourcePath can never be a tracked library file, and it is why this
-//	function deletes the file + proposal row and touches libStore not at all.
+//	exclusion (library.go:484) is why an *orphan* Rename proposal's
+//	SourcePath is never a tracked library file. Tracked schema-move rows set
+//	TrackedID and are refused below.
 
 // DeleteSource permanently removes p's source file from disk and then deletes
 // p's proposal row entirely. It is Rename's Delete action's whole backend.
@@ -88,6 +91,16 @@ func DeleteSource(
 	}
 	if p.SourcePath == "" {
 		return nil, fmt.Errorf("proposal %d has no source path to delete", p.ID)
+	}
+	// Claude 2026-10-02: refuse Delete on tracked library relocates.
+	// Reason: Series Scan now proposes moving already-tracked files into
+	//   preset layout (TrackedID = episode id). DeleteSource has no libStore
+	//   and would os.Remove the library file while leaving the episode row.
+	// Troubleshooting: Delete file on a hierarchy-move row errors instead of
+	//   destroying the tracked copy — Apply the move or Dismiss.
+	// Review if: DeleteSource takes libStore and untracks as Purge does.
+	if p.TrackedID != 0 {
+		return nil, fmt.Errorf("proposal %d names a tracked library file — Delete file is for untracked orphans; Apply the move or Dismiss", p.ID)
 	}
 
 	if rerr := os.Remove(p.SourcePath); rerr != nil && !os.IsNotExist(rerr) {

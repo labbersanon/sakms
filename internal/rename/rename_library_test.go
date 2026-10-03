@@ -946,11 +946,11 @@ func TestScanLibrary_TrackedPathsNeverBecomeRenameProposals(t *testing.T) {
 
 	t.Run("series", func(t *testing.T) {
 		root := t.TempDir()
-		seasonDir := filepath.Join(root, "Show Name", "Season 01")
+		seasonDir := filepath.Join(root, "Show Name (2020) [tmdbid-555]", "Season 01")
 		if err := os.MkdirAll(seasonDir, 0o755); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
-		tracked := filepath.Join(seasonDir, "Show Name - S01E01.mkv")
+		tracked := filepath.Join(seasonDir, "Show Name S01E01.mkv")
 		if err := os.WriteFile(tracked, []byte("x"), 0o644); err != nil {
 			t.Fatalf("writing tracked file: %v", err)
 		}
@@ -964,7 +964,7 @@ func TestScanLibrary_TrackedPathsNeverBecomeRenameProposals(t *testing.T) {
 			"Show Name": `{"results":[{"id":555,"name":"Show Name","first_air_date":"2020-01-01"}]}`,
 		}, nil)}
 		libStore := newTestLibraryStore(t)
-		series, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 555, Title: "Show Name", RootFolderPath: root})
+		series, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 555, Title: "Show Name", Year: 2020, RootFolderPath: root})
 		if err != nil {
 			t.Fatalf("seeding series: %v", err)
 		}

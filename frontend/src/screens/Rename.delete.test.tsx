@@ -164,6 +164,31 @@ describe("Rename — Delete file option eligibility", () => {
     }
   });
 
+  it("disables Delete file when the row is a tracked library relocate", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/rename/proposals"))
+        return jsonResponse([
+          {
+            ...proposal({
+              id: 12,
+              status: "pending",
+              sourceName: "cartoon.S1947E05.mkv",
+              sourcePath: "/kids/Messy/cartoon.S1947E05.mkv",
+            }),
+            trackedId: 99,
+          },
+        ]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => <Rename />);
+    await screen.findByText("cartoon.S1947E05.mkv");
+    const row = screen.getByText("cartoon.S1947E05.mkv").closest("tr, [data-proposal-row]")! as HTMLElement;
+    const select = within(row).getByRole("combobox");
+    const option = within(select).getByRole("option", { name: "Delete file" });
+    expect(option).toBeDisabled();
+  });
+
   it("is never the pre-selected default action for any seeded row status", async () => {
     stubFetch((url) => {
       if (url.includes("/api/modes/movies/rename/proposals"))
@@ -560,7 +585,20 @@ describe("Rename — planActionForRow guards stale/invalid selections", () => {
     expect(planActionForRow(applied, "delete", true)).toBeNull();
     expect(planActionForRow(applied, "delete", false)).toBeNull();
   });
+
+  it("returns null for Delete file on a tracked library relocate", () => {
+    const tracked = proposal({
+      id: 11,
+      status: "pending",
+      sourceName: "cartoon.S1947E05.mkv",
+    }) as Proposal & { trackedId?: number };
+    tracked.trackedId = 2804;
+    expect(planActionForRow(tracked, "delete", false)).toBeNull();
+    expect(planActionForRow(tracked, "rename", false)).toBe("apply");
+  });
 });
+
+// MUTATION TESTING NOTES (US-005 verification, not part of the suite):
 
 // MUTATION TESTING NOTES (US-005 verification, not part of the suite):
 //

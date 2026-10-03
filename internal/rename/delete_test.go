@@ -286,3 +286,22 @@ func TestDeleteSource_EmptySourcePathRejected(t *testing.T) {
 		t.Error("the empty-path guard must short-circuit before os.Remove and the row delete")
 	}
 }
+
+func TestDeleteSource_RejectsTrackedID(t *testing.T) {
+	store := newTestProposalStore(t)
+	p := seedRenameProposal(t, store, proposals.Pending)
+	p.TrackedID = 99
+	changes, err := DeleteSource(context.Background(), store, p)
+	if err == nil {
+		t.Fatal("expected DeleteSource to refuse a tracked library relocate")
+	}
+	if !strings.Contains(err.Error(), "tracked library file") {
+		t.Errorf("error = %v, want tracked-library wording", err)
+	}
+	if changes != nil {
+		t.Errorf("expected no PathChange when refused, got %+v", changes)
+	}
+	if _, statErr := os.Stat(p.SourcePath); statErr != nil {
+		t.Errorf("tracked file must still exist after a refused delete: %v", statErr)
+	}
+}

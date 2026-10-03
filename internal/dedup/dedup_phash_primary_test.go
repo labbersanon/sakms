@@ -204,9 +204,10 @@ func TestScanLibraryPHash_AC4_DissimilarFilesNotGrouped(t *testing.T) {
 	}
 }
 
-// TestScanLibraryPHash_SameTMDBDissimilarNotGrouped: Dedup is phash-only.
-// Sharing a TMDB id must not group files that are not perceptually similar.
-func TestScanLibraryPHash_SameTMDBDissimilarNotGrouped(t *testing.T) {
+// TestScanLibraryPHash_SameRowExtrasGroupDissimilarPHash: extra copies on the
+// same library row group even when phash is far outside threshold. Orphans that
+// merely share a TMDB folder do not — see SameTMDBIdentityGroupsDissimilarPHash.
+func TestScanLibraryPHash_SameRowExtrasGroupDissimilarPHash(t *testing.T) {
 	dir := t.TempDir()
 	fileA := writeVideoFile(t, filepath.Join(dir, "Copy A"), "a.mkv", 100)
 	fileB := writeVideoFile(t, filepath.Join(dir, "Copy B"), "b.mkv", 100)
@@ -236,8 +237,8 @@ func TestScanLibraryPHash_SameTMDBDissimilarNotGrouped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 0 {
-		t.Fatalf("same-title dissimilar files must not group, got %+v", got)
+	if len(got) != 1 || len(got[0].Candidates) != 2 {
+		t.Fatalf("same-row extras must group even with dissimilar phash, got %+v", got)
 	}
 }
 
@@ -495,6 +496,107 @@ func TestScanLibraryPHash_IncludesAppliedExtras(t *testing.T) {
 	}
 	if len(got) != 1 || len(got[0].Candidates) != 2 {
 		t.Fatalf("expected Dedup to propose the extra against its primary, got %+v", got)
+	}
+}
+
+func TestScanLibraryPHash_KidsRootOrphanGroupsWithTracked(t *testing.T) {
+	mainRoot := t.TempDir()
+	kidsRoot := t.TempDir()
+	trackedFile := writeVideoFile(t, filepath.Join(kidsRoot, "Some Movie (2020) [tmdbid-42]"), "Some Movie (2020) [tmdbid-42].mkv", 100)
+	orphanFile := writeVideoFile(t, kidsRoot, "Some.Movie.2020.720p.mkv", 100)
+
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	if _, err := libStore.Upsert(ctx, library.Item{
+		Mode: mode.Movies, TMDBID: 42, Title: "Some Movie", FilePath: trackedFile, RootFolderPath: kidsRoot,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess := &mode.Session{Mode: mode.Movies, KidsRootPath: kidsRoot}
+	prober := &fakeProber{byPath: map[string]*mediainfo.Probe{
+		trackedFile: {CodecName: "h264", Width: 1920, Height: 1080, BitRate: 8000},
+		orphanFile:  {CodecName: "h264", Width: 1280, Height: 720, BitRate: 3000},
+	}}
+
+	got, err := ScanLibraryPHash(ctx, sess, libStore, mainRoot, prober, matchingPHasher(trackedFile, orphanFile), 2, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || len(got[0].Candidates) != 2 {
+		t.Fatalf("expected kids-root orphan to group with the tracked copy, got %+v", got)
+	}
+}
+
+func TestScanLibrarySeriesPHash_KidsRootOrphanGroupsWithTracked(t *testing.T) {
+	mainRoot := t.TempDir()
+	kidsRoot := t.TempDir()
+	primaryFile := writeVideoFile(t, filepath.Join(kidsRoot, "Show Name (2019) [tmdbid-555]", "Season 01"), "Show Name S01E01.mkv", 100)
+	orphanFile := writeVideoFile(t, kidsRoot, "Show.Name.S01E01.720p.mkv", 100)
+
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	series, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 555, Title: "Show Name", RootFolderPath: kidsRoot})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 1, FilePath: primaryFile,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess := &mode.Session{Mode: mode.Series, KidsRootPath: kidsRoot}
+	prober := &fakeProber{byPath: map[string]*mediainfo.Probe{
+		primaryFile: {CodecName: "h264", Width: 1920, Height: 1080, BitRate: 8000},
+		orphanFile:  {CodecName: "h264", Width: 1280, Height: 720, BitRate: 3000},
+	}}
+
+	got, err := ScanLibrarySeriesPHash(ctx, sess, libStore, mainRoot, prober, matchingPHasher(primaryFile, orphanFile), 2, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || len(got[0].Candidates) != 2 {
+		t.Fatalf("expected kids-root episode orphan to group with the tracked copy, got %+v", got)
+	}
+}
+
+func TestScanLibrarySeriesPHash_SameRowExtrasGroupDissimilarPHash(t *testing.T) {
+	dir := t.TempDir()
+	primaryFile := writeVideoFile(t, filepath.Join(dir, "Show Name", "Season 01"), "Show Name - S01E01.mkv", 100)
+	alternateFile := writeVideoFile(t, filepath.Join(dir, "Show Name", "Season 01"), "Show Name - S01E01 - 720p h264.mkv", 100)
+
+	libStore := newTestLibraryStore(t)
+	ctx := context.Background()
+	series, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 555, Title: "Show Name", RootFolderPath: dir})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ep, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 1, FilePath: primaryFile,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := libStore.UpsertEpisodeFile(ctx, library.EpisodeFile{
+		EpisodeID: ep.ID, FilePath: alternateFile, IsPrimary: false,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess := &mode.Session{Mode: mode.Series}
+	prober := &fakeProber{byPath: map[string]*mediainfo.Probe{
+		primaryFile:   {CodecName: "h264", Width: 1920, Height: 1080, BitRate: 8000},
+		alternateFile: {CodecName: "h264", Width: 1280, Height: 720, BitRate: 3000},
+	}}
+	hasher := &fakePHasher{byPath: map[string]string{primaryFile: refHash, alternateFile: farHash}}
+
+	got, err := ScanLibrarySeriesPHash(ctx, sess, libStore, dir, prober, hasher, 2, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || len(got[0].Candidates) != 2 {
+		t.Fatalf("same-row episode extras must group even with dissimilar phash, got %+v", got)
 	}
 }
 

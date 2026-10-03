@@ -10589,3 +10589,28 @@ status stays active.
 | `internal/api/search_series_test.go` | unparseable series-wide grab is not imported |
 | `internal/api/import_organize_test.go` | source file remains |
 
+## 2026-10-02 — Kids Dedup walk and series hierarchy Scan
+
+**Problem:** Dedup never walked the kids library root, so kids-folder orphans were invisible. Extra copies on the same library row only grouped when phash was similar, so different encodes of the same episode were missed. Series Scan marked already-tracked files known, so a messy dump folder never got a proposal to move into Jellyfin `Show (Year) [tmdbid-N]/Season NN/Show SxxExx Title.ext`. Year-season paths (`Season 1947` / `S1947E05`) also failed schema, so a correct dest would have been re-proposed forever.
+**Root cause:** Dedup `ScanRootFolder` used only the main Series/Movies root (`_ = sess`). Grouping was phash-only (`sameID` nil). Rename schema regexes were two-digit `Season NN` / `SxxExx`.
+**Fix:** Dedup walks `KidsRootPath` like Rename. Extra copies that share a non-zero `trackedID` group even when phash differs; an orphan that only shares a TMDB folder still needs similar phash (Last Crusade). `MatchesSeriesSchema` accepts year-season `Season yyyy` + `SyyyyExx` under a tagged series folder. Series Scan proposes moving already-tracked primaries that are not schema-conformant (skip tmdbID≤0, dummy S00E00, dest==source, paths already pending this scan, files outside scan roots). Those rows set `TrackedID`; Delete file is refused so it cannot destroy a library copy.
+**Outcome:** Kids-root duplicates surface on Dedup Scan. Series Rename Scan proposes industry-standard hierarchy moves for tracked files that are still in dump folders. Apply relocates; Delete file stays orphan-only.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/dedup/dedup_phash_primary.go` | kids-root walk; pHashSameTrackedRow |
+| `internal/dedup/dedup.go` | grouping comment |
+| `internal/dedup/dedup_phash_primary_test.go` | kids orphan; same-row extras; Last Crusade unchanged |
+| `internal/naming/schema.go` | year-season MatchesSeriesSchema |
+| `internal/naming/schema_test.go` | Season 1947 / S1947E05; bare year folder; S2000E01 |
+| `internal/rename/series_schema_moves.go` | tracked non-schema hierarchy proposals |
+| `internal/rename/series_schema_moves_test.go` | move; skip schema; skip synthetic TMDB; skip outside roots |
+| `internal/rename/rename.go` | append tracked schema moves before catalog |
+| `internal/rename/delete.go` | refuse TrackedID != 0 |
+| `internal/rename/delete_test.go` | tracked relocate refused |
+| `frontend/src/screens/Rename.tsx` | disable Delete file when trackedId set |
+| `frontend/src/screens/Rename.delete.test.tsx` | tracked relocate Delete disabled |
+
+

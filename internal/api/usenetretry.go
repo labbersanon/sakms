@@ -538,6 +538,17 @@ func retryDueGrabs(ctx context.Context, deps AutoGrabDeps, build sessionBuilderF
 			log.Printf("usenet retry: skipping grab %d (%s) — its title is excluded from the worklist", g.ID, g.Title)
 			continue
 		}
+		// Claude 2026-10-02: skip unmonitored / season-less series retries.
+		// Reason: queued TPB rows 2154/2155 were season-less AHS packs; retry
+		//   would re-search the whole show. Skip, do not fail or reap — the
+		//   operator may still Promote or cancel those rows.
+		// Troubleshooting: retry log "skipping grab N — this series is tracked".
+		// Review if: un-monitor should reap queued season-less grabs (it does
+		//   not; only airDateOriginated pending_retry is reaped today).
+		if err := refuseUnmonitoredSeriesGrab(ctx, deps.LibStore, g.Mode, g.TMDBID, g.SeasonNumber, g.SeasonSpecified); err != nil {
+			log.Printf("usenet retry: skipping grab %d (%s) — %v", g.ID, g.Title, err)
+			continue
+		}
 
 		sess, err := build(ctx, g.Mode)
 		if err != nil {

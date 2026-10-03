@@ -191,9 +191,10 @@ func monitorAirDates(ctx context.Context, deps AutoGrabDeps, build sessionBuilde
 // Review if: locked decision on day-after timing is revisited.
 
 // eligibleEpisodes filters MissingEpisodes' output to the episodes this cycle
-// may search for. MissingEpisodes itself is CALLED, NEVER MODIFIED — Requests'
-// MissingCount is the other consumer and must keep seeing the unfiltered
-// result.
+// may search for. MissingEpisodes itself is CALLED, NEVER MODIFIED — catalog
+// sync still needs the unfiltered list. Requests filters at the handler via
+// monitoredMissingEpisodes (monitored seasons only; future-dated monitored
+// episodes still count).
 //
 // Three predicates, in this order:
 //

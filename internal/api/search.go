@@ -316,7 +316,7 @@ type grabRequest struct {
 // one mutating action in the search workflow — Search itself never does —
 // matching every other workflow's "Scan never mutates, exactly one
 // human-approved action does" rule.
-func grabHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store, whStore *webhooks.Store) http.HandlerFunc {
+func grabHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store, whStore *webhooks.Store, libStore *library.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		ctx := r.Context()
@@ -376,6 +376,18 @@ func grabHandler(httpClient *http.Client, connStore *connections.Store, scStore 
 		//   release_dates for the film (types 4/5/6 US entries).
 		if _, blocked, reason := gateMovieGrab(ctx, sess.TMDB, m, req.TMDBID); blocked {
 			http.Error(w, reason, http.StatusConflict)
+			return
+		}
+		// Claude 2026-10-02: Search & pick must name a monitored season.
+		// Reason: Requests row Search sent title+tmdbId with no season and
+		//   downloaded whole-show packs (AHS 2153–2157) while only S13 was
+		//   monitored. Same gate as RunAutoGrab / grabDirectEnclosure.
+		// Troubleshooting: 409 — SeasonSpecified false, or the season has no
+		//   library_season_monitored=true row. Untracked series still grab.
+		// Review if: operator Discover pick of an unmonitored season should
+		//   override (it does not today).
+		if err := refuseUnmonitoredSeriesGrab(ctx, libStore, m, req.TMDBID, req.SeasonNumber, req.SeasonSpecified); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
 

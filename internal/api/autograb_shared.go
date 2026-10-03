@@ -356,6 +356,17 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 
 	fillMissingTMDBID(ctx, sess, deps, &req)
 
+	// Claude 2026-10-02: tracked series must name a monitored season.
+	// Reason: Requests Grab with only title+tmdbId dispatched whole-show
+	//   packs for American Horror Story while only S13 was monitored.
+	// Troubleshooting: 409 / skipped retry — SeasonSpecified false or
+	//   library_season_monitored is not true for that season.
+	// Review if: an untracked series should still allow a season-less grab
+	//   (it does — GetSeriesByTMDBID not-found is allowed).
+	if err := refuseUnmonitoredSeriesGrab(ctx, deps.LibStore, req.Mode, req.TMDBID, req.Season, req.SeasonSpecified); err != nil {
+		return AutoGrabOutcome{Status: http.StatusConflict, Err: err}, err
+	}
+
 	// Claude 2026-09-16: movie-release gate — Layer 2 of CAM-prevention.
 	// Reason: a theatrical-only movie must never be searched or dispatched.
 	//   This gate runs after the toggle (which proves the operator wants unattended

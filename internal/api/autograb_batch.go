@@ -14,6 +14,7 @@ import (
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/downloader"
 	"github.com/labbersanon/sakms/internal/grabs"
+	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/prowlarr"
 	"github.com/labbersanon/sakms/internal/serviceconn"
@@ -73,7 +74,7 @@ const MaxBatchGrabItems = 20
 // /downloads; only the client's in-progress view of the run is lost. No rollback
 // of a partially-completed batch is attempted or wanted — consistent with
 // apply-batch's per-item commit model.
-func autoGrabBatchHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store, store *adultnewest.ReleaseStore) http.HandlerFunc {
+func autoGrabBatchHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store, store *adultnewest.ReleaseStore, libStore *library.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
@@ -177,7 +178,7 @@ func autoGrabBatchHandler(httpClient *http.Client, connStore *connections.Store,
 				continue
 			}
 
-			grab, fallback, itemAlreadyGrabbing, candidates, message, err := grabOneBatchItem(ctx, sess, m, store, settingsStore, nzb, grabsStore, item.Request)
+			grab, fallback, itemAlreadyGrabbing, candidates, message, err := grabOneBatchItem(ctx, sess, m, store, settingsStore, nzb, grabsStore, libStore, item.Request)
 			switch {
 			case err != nil:
 				fail(err.Error())
@@ -295,7 +296,7 @@ func rejectSeasonEpisodeOverlap(items []apidto.AutoGrabBatchItem) error {
 //
 // Claude 2026-08-11: store parameter added (A3/§6.1) for Adult release cache;
 // nil degrades to a live Prowlarr search.
-func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, store *adultnewest.ReleaseStore, settingsStore *settings.Store, nzb *usenet.Manager, grabsStore *grabs.Store, req apidto.AutoGrabRequest) (grab *apidto.Grab, fallback bool, alreadyGrabbing bool, candidates []apidto.AutoGrabCandidate, message string, err error) {
+func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, store *adultnewest.ReleaseStore, settingsStore *settings.Store, nzb *usenet.Manager, grabsStore *grabs.Store, libStore *library.Store, req apidto.AutoGrabRequest) (grab *apidto.Grab, fallback bool, alreadyGrabbing bool, candidates []apidto.AutoGrabCandidate, message string, err error) {
 	if err := resolveClientEnclosure(&req); err != nil {
 		return nil, false, false, nil, "", err
 	}
@@ -325,7 +326,7 @@ func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, stor
 	// download client, identical to the single handler's path — no Prowlarr.
 	// Also handles cache-sourced items whose enclosure was set by the feeder above.
 	if strings.TrimSpace(req.DownloadURL) != "" {
-		dto, already, _, err := grabDirectEnclosure(ctx, sess, m, settingsStore, nzb, grabsStore, req)
+		dto, already, _, err := grabDirectEnclosure(ctx, sess, m, settingsStore, nzb, grabsStore, libStore, req)
 		if err != nil {
 			return nil, false, false, nil, "", err
 		}
@@ -344,6 +345,16 @@ func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, stor
 	//   already has the gate; this covers the autoGrabSearch path only.
 	if _, blocked, reason := gateMovieGrab(ctx, sess.TMDB, m, req.TMDBID); blocked {
 		return nil, false, false, nil, "", fmt.Errorf("%s", reason)
+	}
+	// Claude 2026-10-02: batch search path must refuse unmonitored seasons.
+	// Reason: grabOneBatchItem reimplements score-and-dispatch rather than
+	//   delegating to RunAutoGrab, so the series monitor gate on RunAutoGrab
+	//   and grabDirectEnclosure would miss Discover bulk Series items.
+	// Troubleshooting: per-item Error "that season is not monitored" or
+	//   "grab a monitored season, not the whole show".
+	// Review if: grabOneBatchItem is refactored to delegate to RunAutoGrab.
+	if err := refuseUnmonitoredSeriesGrab(ctx, libStore, m, req.TMDBID, req.SeasonNumber, req.SeasonSpecified); err != nil {
+		return nil, false, false, nil, "", err
 	}
 	// ScopeAll: grabOneBatchItem is operator-initiated (TriggerOperator equivalent),
 	// never two-phase; scope scoping belongs to the drain's SearchPhases loop only.

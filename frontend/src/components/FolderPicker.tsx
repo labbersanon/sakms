@@ -1,6 +1,13 @@
 // FolderPicker — free-typed path input with subdirectory suggestions from
 // GET /api/browse for Settings path fields. Suggestions list an exact path's
 // children (drill-down on click); unknown paths return empty entries, not errors.
+//
+// Claude 2026-10-02: Up-one-directory icon on every FolderPicker.
+// Reason: Discs/Import/Settings could only type or drill down; Browse already
+//   had ArrowUp. One control here covers every picker.
+// Troubleshooting: button disabled at a browsable root — parentFolderPath
+//   returned "".
+// Review if: /api/browse starts returning Parent and this helper is unused.
 
 import {
   type Component,
@@ -10,8 +17,18 @@ import {
   Show,
 } from "solid-js";
 import type { BrowseEntry } from "@dto";
+import ArrowUp from "lucide-solid/icons/arrow-up";
 import { fetchBrowse, isAdultBrowsablePath } from "../api/settings";
 import { inputClass, useAdultEnabled } from "./ui";
+
+// parentFolderPath is the directory above path, or "" at / or a root like /media.
+export function parentFolderPath(path: string): string {
+  const trimmed = path.trim().replace(/\/+$/, "");
+  if (!trimmed || trimmed === "/") return "";
+  const i = trimmed.lastIndexOf("/");
+  if (i <= 0) return "";
+  return trimmed.slice(0, i);
+}
 
 const DEBOUNCE_MS = 300;
 
@@ -75,6 +92,13 @@ export const FolderPicker: Component<{
     scheduleFetch(entry.path);
   };
 
+  const goUp = () => {
+    if (isDisabled()) return;
+    const next = parentFolderPath(props.value());
+    props.onChange(next);
+    void doFetch(next);
+  };
+
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Escape") setOpen(false);
   };
@@ -90,17 +114,28 @@ export const FolderPicker: Component<{
 
   return (
     <div class="relative" ref={containerRef}>
-      <input
-        type="text"
-        class={`${inputClass} mt-1 ${props.invalid?.() ? "border-danger bg-danger/10" : ""}`}
-        placeholder={props.placeholder}
-        aria-label={props.ariaLabel}
-        value={props.value()}
-        disabled={isDisabled()}
-        onInput={(e) => onInput(e.currentTarget.value)}
-        onFocus={onFocus}
-        onKeyDown={onKeyDown}
-      />
+      <div class="mt-1 flex items-center gap-1">
+        <input
+          type="text"
+          class={`${inputClass} ${props.invalid?.() ? "border-danger bg-danger/10" : ""}`}
+          placeholder={props.placeholder}
+          aria-label={props.ariaLabel}
+          value={props.value()}
+          disabled={isDisabled()}
+          onInput={(e) => onInput(e.currentTarget.value)}
+          onFocus={onFocus}
+          onKeyDown={onKeyDown}
+        />
+        <button
+          type="button"
+          class="inline-flex h-[38px] w-10 shrink-0 items-center justify-center rounded-md border border-border bg-surface-2 text-fg hover:opacity-90 disabled:opacity-50"
+          aria-label="Up one directory"
+          disabled={isDisabled() || !parentFolderPath(props.value())}
+          onClick={goUp}
+        >
+          <ArrowUp size={16} />
+        </button>
+      </div>
       <Show when={!isDisabled() && open() && visibleEntries().length > 0}>
         <ul class="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-md border border-border bg-surface shadow-lg">
           <For each={visibleEntries()}>

@@ -799,12 +799,21 @@ export const Browse: Component = () => {
           <Muted class="mb-2">Choose a destination folder.</Muted>
           <p class="mb-2 font-mono text-xs text-muted">{destDir() || "Files"}</p>
           <div class="mb-2 flex gap-2">
+            {/* Claude 2026-10-02: dest picker uses the same Up icon as Browse.
+                Reason: FolderPicker and this Move dialog are both file pickers;
+                  the toolbar already had ArrowUp, dest was text-only.
+                Troubleshooting: dest Up has no chevron — this span is missing.
+                Review if: dest picker is replaced by FolderPicker. */}
             <Button
               variant="secondary"
+              aria-label="Up one directory"
               disabled={!destListing()?.parent && destDir() === ""}
               onClick={() => setDestDir(destListing()?.parent ?? "")}
             >
-              Up
+              <span class="inline-flex items-center gap-1">
+                <ArrowUp size={16} />
+                Up
+              </span>
             </Button>
           </div>
           <ul class="max-h-56 overflow-auto rounded border border-border">

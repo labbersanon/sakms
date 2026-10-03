@@ -95,7 +95,17 @@ func requestsHandler(grabsStore *grabs.Store, libStore *library.Store, excludesS
 				if excluded[key] {
 					continue
 				}
-				missing, err := libStore.MissingEpisodes(ctx, s.ID)
+				// Claude 2026-10-02: MissingCount is monitored seasons only.
+				// Reason: Requests used the unfiltered MissingEpisodes count, then
+				//   row Grab dispatched whole-show packs (AHS 2153–2157) while only
+				//   S13 was monitored. Air-date drain already skipped unmonitored
+				//   seasons; this worklist did not.
+				// Troubleshooting: a show vanishes from Requests while older
+				//   seasons are still fileless — those seasons are unmonitored.
+				//   MissingEpisodes (library) is still the unfiltered catalog list.
+				// Review if: Requests should surface unmonitored missing as a
+				//   separate informational count.
+				missing, err := monitoredMissingEpisodes(ctx, libStore, s.ID)
 				if err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return

@@ -180,7 +180,7 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, scSt
 		// only ever runs for the search path). The same enclosure rides the bulk
 		// path identically via grabOneBatchItem — one code path.
 		if strings.TrimSpace(req.DownloadURL) != "" {
-			dto, alreadyGrabbing, status, err := grabDirectEnclosure(ctx, sess, m, settingsStore, nzb, grabsStore, req)
+			dto, alreadyGrabbing, status, err := grabDirectEnclosure(ctx, sess, m, settingsStore, nzb, grabsStore, libStore, req)
 			if err != nil {
 				http.Error(w, err.Error(), status)
 				return
@@ -256,13 +256,21 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, scSt
 // server-side (a true one-click grab supplies only the enclosure + title), and
 // the indexer is named by indexerOrFeed. Returns the recorded grab DTO plus the
 // HTTP status a caller should surface on error.
-func grabDirectEnclosure(ctx context.Context, sess *mode.Session, m mode.Mode, settingsStore *settings.Store, nzb *usenet.Manager, grabsStore *grabs.Store, req apidto.AutoGrabRequest) (dto *apidto.Grab, alreadyGrabbing bool, status int, err error) {
+func grabDirectEnclosure(ctx context.Context, sess *mode.Session, m mode.Mode, settingsStore *settings.Store, nzb *usenet.Manager, grabsStore *grabs.Store, libStore *library.Store, req apidto.AutoGrabRequest) (dto *apidto.Grab, alreadyGrabbing bool, status int, err error) {
 	// Claude 2026-09-16: movie-release gate for direct-enclosure grabs.
 	// Reason: an enclosure URL grab bypasses RunAutoGrab entirely and would
 	//   otherwise never be checked — a feed item for an in-cinema film would
 	//   grab straight to the download client.
 	if _, blocked, reason := gateMovieGrab(ctx, sess.TMDB, m, req.TMDBID); blocked {
 		return nil, false, http.StatusConflict, fmt.Errorf("%s", reason)
+	}
+	// Claude 2026-10-02: direct enclosure must refuse unmonitored seasons.
+	// Reason: this path bypasses RunAutoGrab; a feed NZB for a tracked show
+	//   with no season would still land a whole-show pack.
+	// Troubleshooting: 409 same messages as refuseUnmonitoredSeriesGrab.
+	// Review if: Adult feed items ever carry series mode (they do not).
+	if err := refuseUnmonitoredSeriesGrab(ctx, libStore, m, req.TMDBID, req.SeasonNumber, req.SeasonSpecified); err != nil {
+		return nil, false, http.StatusConflict, err
 	}
 	rootFolder, err := autoGrabRootFolder(ctx, settingsStore, m)
 	if err != nil {

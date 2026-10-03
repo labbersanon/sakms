@@ -1648,7 +1648,7 @@ func TestCatalogSyncSurvivesATVDetailsFailure(t *testing.T) {
 	}
 }
 
-// --- Season routes and the un-filtered MissingCount -------------------------
+// --- Season routes and Requests MissingCount --------------------------------
 
 // TestSeasonMonitoringRoutes covers the read and the all-seasons write,
 // including the union ListSeasonStates reports: a season known only from a
@@ -2358,12 +2358,13 @@ func TestSeriesNewSeasonDiscoveryToggle(t *testing.T) {
 	}
 }
 
-// TestRequestsMissingCountStaysUnfiltered (T-5.1) is AC9. requests.go is
-// byte-for-byte unchanged, and MissingCount must keep counting the UNFILTERED
-// MissingEpisodes result — unmonitored seasons and future-dated episodes
-// included. If the air-date/monitored filter ever leaked into that computation,
-// the Requests screen would start under-reporting what is actually missing.
-func TestRequestsMissingCountStaysUnfiltered(t *testing.T) {
+// TestRequestsMissingCountMonitoredOnly replaced T-5.1 / AC9. That AC required
+// MissingCount to stay unfiltered so the air-date drain filter would not shrink
+// the worklist. Requests row Grab then treated that count as a whole-show
+// download and pulled unmonitored seasons (AHS 2153–2157 while only S13 was
+// monitored). MissingCount is now monitored seasons only. Future-dated
+// monitored episodes still count — air-date filtering stays in eligibleEpisodes.
+func TestRequestsMissingCountMonitoredOnly(t *testing.T) {
 	now := time.Now()
 	env := newAirDateEnv(t, map[int][]fakeTMDBEpisode{}, noQualifyingRelease)
 	series := env.trackSeries(t)
@@ -2373,12 +2374,12 @@ func TestRequestsMissingCountStaysUnfiltered(t *testing.T) {
 	env.seedMissingEpisode(t, series.ID, 2, 2, "")                  // UNMONITORED, unannounced
 	env.monitor(t, series.ID, 1, true)
 
-	missing, err := env.lib.MissingEpisodes(env.ctx, series.ID)
+	unfiltered, err := env.lib.MissingEpisodes(env.ctx, series.ID)
 	if err != nil {
 		t.Fatalf("listing missing episodes: %v", err)
 	}
-	if len(missing) != 4 {
-		t.Fatalf("fixture is wrong: %d missing episodes, want 4", len(missing))
+	if len(unfiltered) != 4 {
+		t.Fatalf("fixture is wrong: %d missing episodes, want 4", len(unfiltered))
 	}
 
 	srv := httptest.NewServer(NewRequestsMux(env.grabs, env.lib, env.excludes, nil, nil))
@@ -2396,8 +2397,8 @@ func TestRequestsMissingCountStaysUnfiltered(t *testing.T) {
 		if item.TMDBID != airDateTMDBID {
 			continue
 		}
-		if item.MissingCount != len(missing) {
-			t.Fatalf("MissingCount = %d, want %d (the UNFILTERED MissingEpisodes count)", item.MissingCount, len(missing))
+		if item.MissingCount != 2 {
+			t.Fatalf("MissingCount = %d, want 2 (monitored seasons only; future-dated still count)", item.MissingCount)
 		}
 		return
 	}

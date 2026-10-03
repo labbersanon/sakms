@@ -751,6 +751,27 @@ describe("Requests", () => {
     expect(screen.getByRole("button", { name: "Promote" })).toBeInTheDocument();
   });
 
+  it("a series Pending Retry row shows Promote, not Grab or Search & pick", async () => {
+    stubRequests({
+      items: [
+        item({
+          title: "American Horror Story",
+          mode: "series",
+          status: "Pending Retry",
+          grabId: 2153,
+          tmdbId: 1413,
+        }),
+      ],
+    });
+    render(() => <Requests />);
+    expect(await screen.findByText("American Horror Story")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Grab" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Search & pick" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Promote" })).toBeInTheDocument();
+  });
+
   it("hides Grab/Promote on In Library rows", async () => {
     stubRequests({
       items: [item({ title: "Incomplete Show", mode: "series", status: "In Library", tmdbId: 1, missingCount: 3 })],

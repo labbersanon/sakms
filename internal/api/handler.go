@@ -618,7 +618,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// feeds is ungated for Movies<->Series moves (D-1).
 	mux.HandleFunc("GET /api/modes/adult/scene-search", adultSceneSearchHandler(httpClient, connStore, scStore, settingsStore))
 	mux.HandleFunc("GET /api/modes/adult/scene-resolve", adultSceneResolveHandler(httpClient, connStore, scStore, settingsStore))
-	mux.HandleFunc("POST /api/modes/{mode}/search/grab", grabHandler(httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore, whStore))
+	mux.HandleFunc("POST /api/modes/{mode}/search/grab", grabHandler(httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore, whStore, libStore))
 	// Auto-grab is Discover's one-click unattended grab (Stage 2): search +
 	// bitrate-quality-floor scoring, then either grab the top qualifier or
 	// return the ranked manual pick list. Exactly one release per call.
@@ -628,7 +628,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// own mode, so NOT under /modes/{mode}); items are grabbed SEQUENTIALLY (max
 	// one Prowlarr search in flight), capped at MaxBatchGrabItems, skip-and-
 	// continue per item. See autoGrabBatchHandler in autograb_batch.go.
-	mux.HandleFunc("POST /api/autograb-batch", autoGrabBatchHandler(httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore, adultNewestReleaseStore))
+	mux.HandleFunc("POST /api/autograb-batch", autoGrabBatchHandler(httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore, adultNewestReleaseStore, libStore))
 	mux.HandleFunc("GET /api/modes/{mode}/grabs", listGrabsHandler(grabsStore))
 	mux.HandleFunc("POST /api/grabs/{id}/check-import", checkImportHandler(httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore, libStore, prober, videoHasher))
 	// Request-status worklist + its excluded-titles endpoints live on their own

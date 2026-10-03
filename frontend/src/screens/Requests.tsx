@@ -2,8 +2,9 @@
 // Only outstanding rows: in-flight grabs, or series still missing episodes.
 //
 // Row actions (for every status except In Library / Downloading):
-//   Grab          — one-click auto-grab (GrabDialog)
-//   Search & pick — release pick list (GET /search); Adult stays GrabDialog
+//   Grab          — one-click auto-grab (GrabDialog); hidden on series rows
+//   Search & pick — release pick list (GET /search); Adult stays GrabDialog;
+//                   hidden on series rows (per-episode actions live on detail)
 //   Promote       — bump grabId to the front of the DueForRetry schedule
 // Series rows open RequestsSeriesDetail (missing episodes + per-episode Grab).
 
@@ -102,6 +103,16 @@ function canAct(item: RequestItem): boolean {
 
 function canPromote(item: RequestItem): boolean {
   return canAct(item) && item.grabId > 0;
+}
+
+// Claude 2026-10-02: series worklist rows do not Grab/Search the whole show.
+// Reason: Grab/Search sent title+tmdbId with no season and downloaded
+//   unmonitored season packs (AHS 2153–2157 while only S13 was monitored).
+//   Per-episode Grab stays on RequestsSeriesDetail.
+// Troubleshooting: a series Pending Retry row shows Promote, not Grab.
+// Review if: a monitored-season-only row Grab is added to the worklist.
+function canGrabRow(item: RequestItem): boolean {
+  return canAct(item) && item.mode !== "series";
 }
 
 // canOpenRow mirrors openRow: an Adult row has no detail view, and a row
@@ -431,7 +442,7 @@ export const Requests: Component = () => {
                       >
                         {item.status}
                       </span>
-                      <Show when={canAct(item)}>
+                      <Show when={canGrabRow(item)}>
                         <Button
                           onClick={(e) => {
                             e.stopPropagation();

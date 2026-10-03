@@ -10545,3 +10545,29 @@ status stays active.
 | `frontend/src/components/FolderPicker.test.tsx` | parent walk; up click; disabled at roots |
 | `frontend/src/screens/Browse.tsx` | dest picker ArrowUp |
 
+## 2026-10-02 — Requests do not download unmonitored seasons
+
+**Problem:** Requests Grab/Search on a series sent title+tmdbId with no season. That dispatched whole-show packs (American Horror Story grabs 2153–2157) while only season 13 was monitored.
+**Root cause:** `FilterSeasonScope` is a no-op when `seasonSpecified` is false. Auto-grab drain already filtered via `eligibleEpisodes` + `MonitoredSeasons`; Requests MissingCount and row Grab did not.
+**Fix:** Tracked series grabs must name a monitored season (409 otherwise). Retry skips those rows instead of re-searching. Requests MissingCount and the series detail missing list are monitored seasons only. Series worklist rows hide Grab/Search; per-episode actions stay on the detail page.
+**Outcome:** Unmonitored seasons are not downloaded from Requests. Untracked series still grab. Queued season-less rows (2154/2155) are not cancelled.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/series_monitor_gate.go` | monitoredMissingEpisodes; refuseUnmonitoredSeriesGrab |
+| `internal/api/series_monitor_gate_test.go` | gate cases; missing-episode filter; Requests omit |
+| `internal/api/requests.go` | MissingCount via monitoredMissingEpisodes |
+| `internal/api/missing_episodes.go` | detail list via monitoredMissingEpisodes |
+| `internal/api/autograb_shared.go` | RunAutoGrab refuses season-less / unmonitored |
+| `internal/api/autograb.go` | grabDirectEnclosure refuses; libStore threaded |
+| `internal/api/autograb_batch.go` | batch search and enclosure paths refuse |
+| `internal/api/search.go` | grabHandler 409 |
+| `internal/api/usenetretry.go` | skip, do not reap |
+| `internal/api/handler.go` | batch handler gets libStore |
+| `internal/api/airdatemonitor.go` | eligibleEpisodes comment |
+| `internal/api/airdatemonitor_test.go` | MissingCount is monitored-only |
+| `frontend/src/screens/Requests.tsx` | canGrabRow hides series Grab/Search |
+| `frontend/src/screens/Requests.test.tsx` | series Pending Retry shows Promote not Grab |
+

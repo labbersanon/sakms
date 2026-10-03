@@ -815,6 +815,10 @@ func importUsenetFromDisk(
 	postGrabRuntimeReview(ctx, prober, grabsStore, sess, g, changes)
 	sess.NotifyPlayers(ctx, changes)
 	_ = grabsStore.SetDownloadStatus(ctx, id, downloadStatus, contentPath)
+	if len(changes) == 0 {
+		http.Error(w, errSeriesImportNoEpisodeIdentity.Error(), http.StatusConflict)
+		return errSeriesImportNoEpisodeIdentity
+	}
 	if err := grabsStore.UpdateStatus(ctx, id, grabs.Imported); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return err

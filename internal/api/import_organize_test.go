@@ -317,3 +317,24 @@ func TestImportGrabContent_SeriesSeasonDirDualImportsBothEpisodes(t *testing.T) 
 		t.Fatalf("dest missing: %v", err)
 	}
 }
+
+func TestImportGrabContent_SeriesUnparseableNoSeason_LeavesFile(t *testing.T) {
+	_, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	staging := t.TempDir()
+	root := t.TempDir()
+	src := filepath.Join(staging, "video.mkv")
+	if err := os.WriteFile(src, []byte("ep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := &grabs.Grab{
+		Mode: mode.Series, Title: "Show Name", TMDBID: 99,
+		RootFolderPath: root,
+	}
+	_, err := importGrabContent(context.Background(), libStore, g, src, "web", settingsStore, nil, nil, nil)
+	if !errors.Is(err, errSeriesImportNoEpisodeIdentity) {
+		t.Fatalf("err = %v, want errSeriesImportNoEpisodeIdentity", err)
+	}
+	if _, err := os.Stat(src); err != nil {
+		t.Fatalf("source was deleted: %v", err)
+	}
+}

@@ -3,11 +3,13 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/grabs"
@@ -291,13 +293,12 @@ func TestCheckImportHandler_Series_SeasonSpecifiedZero_RecordsSpecialsEpisode(t 
 	}
 }
 
-// TestCheckImportHandler_Series_SeasonNotSpecified_UnparseableFilename_SkipsRatherThanMisfiling
-// is the regression guard for the bug the naive "just delete the ==0 check"
-// fix would have introduced: a plain series-wide grab (no season ever
-// picked) whose single resolved file's name doesn't parse must NOT be
-// misfiled as a Season 0/Specials episode — it should simply not be
-// recorded, leaving the file on disk for a human to sort out via Rename.
-func TestCheckImportHandler_Series_SeasonNotSpecified_UnparseableFilename_SkipsRatherThanMisfiling(t *testing.T) {
+// TestCheckImportHandler_Series_SeasonNotSpecified_UnparseableFilename_DoesNotImportOrDelete
+// is the regression for AHS Search & pick 2153/2156/2157: a series-wide grab
+// whose filename doesn't parse must NOT be misfiled as Season 0, must NOT be
+// marked Imported, and must NOT delete the video. Staging wipe on Imported
+// used to throw the files away.
+func TestCheckImportHandler_Series_SeasonNotSpecified_UnparseableFilename_DoesNotImportOrDelete(t *testing.T) {
 	dir := t.TempDir()
 	downloadDir := filepath.Join(dir, "downloads", "Some.Show.Complete.1080p.WEB-DL.x264-GROUP")
 	tvRoot := filepath.Join(dir, "TV")
@@ -307,7 +308,8 @@ func TestCheckImportHandler_Series_SeasonNotSpecified_UnparseableFilename_SkipsR
 	if err := os.MkdirAll(tvRoot, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(downloadDir, "video.mkv"), []byte("fake video"), 0o644); err != nil {
+	video := filepath.Join(downloadDir, "video.mkv")
+	if err := os.WriteFile(video, []byte("fake video"), 0o644); err != nil {
 		t.Fatalf("writing file: %v", err)
 	}
 
@@ -317,7 +319,6 @@ func TestCheckImportHandler_Series_SeasonNotSpecified_UnparseableFilename_SkipsR
 	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
 	ctx := context.Background()
 
-	// A plain series-wide grab: no season ever picked, SeasonSpecified false.
 	g, err := grabsStore.Create(ctx, grabs.Grab{
 		Mode: mode.Series, Title: "Some Show", TMDBID: 555,
 		Indexer: "I", Protocol: "torrent", DownloadClient: "aria2",
@@ -335,8 +336,23 @@ func TestCheckImportHandler_Series_SeasonNotSpecified_UnparseableFilename_SkipsR
 		t.Fatalf("POST failed: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status %d, want 502 so the grab is not marked imported; body %q", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "no episode files could be identified") {
+		t.Fatalf("body %q, want the no-episode-identity error", body)
+	}
+
+	got, err := grabsStore.Get(ctx, g.ID)
+	if err != nil {
+		t.Fatalf("reloading grab: %v", err)
+	}
+	if got.Status == grabs.Imported {
+		t.Fatalf("grab was marked imported — that is what triggered staging wipe on AHS 2153/2156/2157")
+	}
+	if _, err := os.Stat(video); err != nil {
+		t.Fatalf("video was deleted: %v", err)
 	}
 
 	series, err := libStore.GetSeriesByTMDBID(ctx, 555)

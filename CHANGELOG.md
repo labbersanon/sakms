@@ -10572,3 +10572,20 @@ status stays active.
 | `frontend/src/screens/Requests.tsx` | canGrabRow hides series Grab/Search |
 | `frontend/src/screens/Requests.test.tsx` | series Pending Retry shows Promote not Grab |
 
+## 2026-10-02 — Series import does not wipe unidentified episode files
+
+**Problem:** Search & pick episodes downloaded but never appeared in the library. AHS grabs 2153/2156/2157 were Imported with seasonSpecified=false; library still only had S13E01–03/05.
+**Root cause:** Unparseable filenames skipped every file. Import returned success with zero episode rows. Post-import staging cleanup then deleted the videos.
+**Fix:** If a series download has video files that cannot be matched to episodes, return an error, leave the files in place, and do not mark the grab Imported. Do not wrap ErrNoVideoFile (that would park an alternate-release retry and delete the files).
+**Outcome:** Unidentified episode files stay in staging for Rename. Season-specified single-file fallback is unchanged. Files already wiped from 2153/2156/2157 cannot be recovered.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/import.go` | errSeriesImportNoEpisodeIdentity; no Imported/wipe on 0 episodes |
+| `internal/api/search.go` | importUsenetFromDisk skips wipe when no library files |
+| `internal/api/downloadreconcile.go` | reconcile import same |
+| `internal/api/search_series_test.go` | unparseable series-wide grab is not imported |
+| `internal/api/import_organize_test.go` | source file remains |
+

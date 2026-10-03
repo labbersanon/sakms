@@ -447,6 +447,9 @@ func reconcileImportUsenet(ctx context.Context, deps DownloadReconcileDeps, g *g
 	postGrabRuntimeReview(ctx, deps.Prober, deps.GrabsStore, sess, g, changes)
 	sess.NotifyPlayers(ctx, changes)
 	_ = deps.GrabsStore.SetDownloadStatus(ctx, g.ID, "complete", contentPath)
+	if len(changes) == 0 {
+		return errSeriesImportNoEpisodeIdentity
+	}
 	if err := deps.GrabsStore.UpdateStatus(ctx, g.ID, grabs.Imported); err != nil {
 		return err
 	}

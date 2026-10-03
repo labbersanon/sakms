@@ -89,6 +89,10 @@ func DownloadCompleteImporter(httpClient *http.Client, connStore *connections.St
 		if err := grabsStore.SetDownloadStatus(ctx, g.ID, "complete", contentPath); err != nil {
 			log.Printf("downloader import: grab %d recording download status: %v", g.ID, err)
 		}
+		if len(changes) == 0 {
+			log.Printf("downloader import: grab %d recorded no library files — leaving the copy in place", g.ID)
+			return
+		}
 		if err := grabsStore.UpdateStatus(ctx, g.ID, grabs.Imported); err != nil {
 			log.Printf("downloader import: grab %d marking imported: %v", g.ID, err)
 			return
@@ -201,6 +205,10 @@ func UsenetCompleteImporter(httpClient *http.Client, connStore *connections.Stor
 
 		if err := grabsStore.SetDownloadStatus(ctx, g.ID, "complete", contentPath); err != nil {
 			log.Printf("usenet import: grab %d recording download status: %v", g.ID, err)
+		}
+		if len(changes) == 0 {
+			log.Printf("usenet import: grab %d recorded no library files — leaving staging %s", g.ID, gid)
+			return
 		}
 		if err := grabsStore.UpdateStatus(ctx, g.ID, grabs.Imported); err != nil {
 			log.Printf("usenet import: grab %d marking imported: %v", g.ID, err)
@@ -344,6 +352,11 @@ func resolveImportEpisodeSlot(ctx context.Context, sess *mode.Session, tmdbID in
 	return season, []int{ep}, true
 }
 
+// errSeriesImportNoEpisodeIdentity is a finished series download whose
+// video files could not be matched to SxxExx (or the grab's season slot).
+// Callers must leave the files in place and must not mark the grab Imported.
+var errSeriesImportNoEpisodeIdentity = errors.New("download completed but no episode files could be identified — files left in place for Rename")
+
 func importGrabSeries(ctx context.Context, libStore *library.Store, g *grabs.Grab, contentPath, tier string, settingsStore *settings.Store, sess *mode.Session, prober dedup.Prober) ([]mode.PathChange, error) {
 	_ = prober
 	preset, err := resolveNamingPreset(ctx, settingsStore, mode.Series)
@@ -415,14 +428,18 @@ func importGrabSeries(ctx context.Context, libStore *library.Store, g *grabs.Gra
 		changes = append(changes, retireReplacedEpisodeFiles(ctx, libStore, priorPaths, destPath)...)
 	}
 	if len(changes) == 0 {
-		// Claude 2026-08-12: no episodes were parseable — return success with
-		// no changes (series row already created by UpsertSeries). The files
-		// stay on disk for a later Rename scan; the grab becomes Imported so
-		// it is not retried. Only reaches here when SeasonSpecified==false and
-		// no filename parsed — the SeasonSpecified==true fallback path
-		// (season/episode from the grab row) is handled inside the loop above.
-		// Review if: this case should instead report a non-200 to the caller.
-		return nil, nil
+		// Claude 2026-10-02: unidentified episode files must not count as imported.
+		// Reason: Search & pick on a series row sent seasonSpecified=false
+		//   (AHS 2153/2156/2157). Parse failed, import returned success with
+		//   no episode rows, then post-import staging cleanup deleted the
+		//   videos. Library still only had S13E01–03/05. The 2026-08-12
+		//   comment assumed files stayed for Rename; 2026-09-11 wipe made
+		//   that false.
+		// Troubleshooting: grab stays complete/not-imported; files remain
+		//   in staging. Must not wrap ErrNoVideoFile — that parks an
+		//   alternate-release retry and would delete these files again.
+		// Review if: Organize Rename is wired to consume these leftover dirs.
+		return nil, fmt.Errorf("%w (%d video file(s))", errSeriesImportNoEpisodeIdentity, len(videoPaths))
 	}
 	// Claude 2026-09-23: persist poster_url on import (DB only; Jellyfin independent).
 	ensureImportPoster(ctx, libStore, sess, mode.Series, g.TMDBID)

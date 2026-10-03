@@ -10510,3 +10510,23 @@ status stays active.
 | `internal/api/organize_disc.go` | Adult lock; catalog identity not TMDB-only |
 | `internal/api/organize_discs_test.go` | parseDiscMode; discHasCatalog |
 
+## 2026-10-02 — Disc imports classify each title, not the disc folder
+
+**Problem:** Extracting a compilation DVD (Golden Collection Vol. 5 Disc 3) applied one volume TMDB movie id to every title. Fifteen shorts landed as `alternate.N` under one Movies disc folder.
+**Root cause:** Identify and extract used job-level `tmdbId`/`title` for every work. Movie Apply folds the same TMDB id as alternates.
+**Fix:** Movies with more than one work SearchMovies each wiki name and import that id. Several items must not share one job-level movie id — those MKVs stay beside the ISO. Series slot match merges TVDB official episodes so year-seasons win on the same title. The Discs table shows per-row identity and extract sends per-item `tmdbId`.
+**Outcome:** Named disc titles import as ordinary Movies or Series library entries, not as a disc compilation folder.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/disc/match.go` | UniqueNamedHit; MergeCatalogByTitle |
+| `internal/disc/match_test.go` | exact title; remakes; TVDB override |
+| `internal/apidto/dto.go` | work/item TMDBID CatalogTitle Year Existing* |
+| `internal/apidto/ts/dto.gen.ts` | regenerated |
+| `internal/api/organize_discs.go` | per-work movie classify; skip shared volume id; TVDB slots |
+| `internal/api/organize_discs_test.go` | unique movie; skip shared; attach names |
+| `frontend/src/screens/Discs.tsx` | per-row identity; extract item tmdbId |
+| `frontend/src/screens/Discs.test.tsx` | compilation shorts send per-item ids |
+

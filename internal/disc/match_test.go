@@ -80,6 +80,34 @@ func TestMatchUniqueTitles_NamesShorts(t *testing.T) {
 	}
 }
 
+func TestUniqueNamedHit_OneExactTitle(t *testing.T) {
+	idx, ok := UniqueNamedHit("The Daffy Doc", []string{
+		"Looney Tunes Golden Collection, Vol. 5",
+		"The Daffy Doc",
+		"Other",
+	})
+	if !ok || idx != 1 {
+		t.Fatalf("idx=%d ok=%v, want 1 true", idx, ok)
+	}
+}
+
+func TestUniqueNamedHit_RemakesAreNotUnique(t *testing.T) {
+	_, ok := UniqueNamedHit("Duck Soup", []string{"Duck Soup", "Duck Soup"})
+	if ok {
+		t.Fatal("two same-title remakes must not pick a year")
+	}
+}
+
+func TestMergeCatalogByTitle_OverrideWins(t *testing.T) {
+	got := MergeCatalogByTitle(
+		[]CatalogEpisode{{Season: 1, Episode: 12, Title: "The Daffy Doc", RuntimeMin: 7}},
+		[]CatalogEpisode{{Season: 1938, Episode: 36, Title: "The Daffy Doc", RuntimeMin: 8}},
+	)
+	if len(got) != 1 || got[0].Season != 1938 || got[0].Episode != 36 {
+		t.Fatalf("got %+v, want TVDB year-season", got)
+	}
+}
+
 func TestMatchUniqueTitles_DuplicateCatalogTitleDropped(t *testing.T) {
 	got := MatchUniqueTitles(
 		map[string]string{"t02": "Short"},

@@ -10568,6 +10568,7 @@ status stays active.
 | `internal/api/handler.go` | batch handler gets libStore |
 | `internal/api/airdatemonitor.go` | eligibleEpisodes comment |
 | `internal/api/airdatemonitor_test.go` | MissingCount is monitored-only |
+| `internal/api/requests_test.go` | monitor season 1 on Show B fixture |
 | `frontend/src/screens/Requests.tsx` | canGrabRow hides series Grab/Search |
 | `frontend/src/screens/Requests.test.tsx` | series Pending Retry shows Promote not Grab |
 

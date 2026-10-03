@@ -165,7 +165,13 @@ func catalogEpisodeAtPath(ctx context.Context, sess *mode.Session, libStore *lib
 			return cataloged, err
 		}
 		if stray != nil && straySer != nil {
-			retireStrayWebAuthorityShort(ctx, libStore, stray, straySer, videoPath, parent.TMDBID)
+			// Claude 2026-10-02: retire any other series that already owns this file.
+			// Reason: retireStrayWebAuthorityShort skipped TMDBID>=0, so Looney Toons
+			//   shorts already on Looney Tunes Cartoons (2020) or a wrong real TMDB
+			//   hit stayed on that card after catalog attached them to 1929.
+			// Troubleshooting: Season 1948 files still appear under Cartoons 2020.
+			// Review if: the kids folder is renamed into Looney Tunes (1929).
+			retireMisfiledShortOwner(ctx, libStore, stray, straySer, videoPath, parent.TMDBID)
 		}
 		recordNestIdentification(ctx, libStore, parent, season, epNum, videoPath, foundRoot, prior)
 		return true, nil
@@ -182,6 +188,29 @@ func firstEpisode(eps []int) int {
 		return 0
 	}
 	return eps[0]
+}
+
+// Claude 2026-10-02: year-season files already on the wrong series must rescan.
+// Reason: ScanLibrarySeries marks known paths so Looney Toons shorts already
+//   attached to Cartoons 2020 never reach catalogEpisodeAtPath.
+// Troubleshooting: Series Scan leaves Toons folder files on the 2020 card.
+// Review if: the kids folder is renamed into Looney Tunes (1929) [tmdbid-N].
+func yearSeasonOwnedByWrongParent(ctx context.Context, sess *mode.Session, libStore *library.Store, ep library.Episode, ser library.Series, roots []string) bool {
+	if libStore == nil || !library.IsYearSeason(ep.SeasonNumber) || ep.FilePath == "" {
+		return false
+	}
+	if naming.TMDBIDFromPath(ep.FilePath) != 0 {
+		return false
+	}
+	showFolder := showFolderName(ep.FilePath, roots)
+	if showFolder == "" {
+		return false
+	}
+	parent, ok := findParentByShowFolder(ctx, sess, libStore, showFolder, rootContaining(ep.FilePath, roots))
+	if !ok {
+		return false
+	}
+	return parent.ID != ser.ID
 }
 
 type catalogEpisode struct {

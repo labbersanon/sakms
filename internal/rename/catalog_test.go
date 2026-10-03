@@ -1008,3 +1008,183 @@ func TestCatalogEpisodeAtPath_NestUndoRevertsWithoutMovingFile(t *testing.T) {
 		t.Fatalf("file should stay at %q: %v", video, err)
 	}
 }
+
+func TestCatalogEpisodeAtPath_YearSeasonRehomesFromCartoons2020(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	seasonDir := filepath.Join(root, "Looney Toons", "Season 1948")
+	if err := os.MkdirAll(seasonDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(seasonDir, "Looney Tunes - S1948E20 - You Were Never Duckier.mp4")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	libStore := newTestLibraryStore(t)
+	parent, err := libStore.UpsertSeries(ctx, library.Series{
+		TMDBID: 333432, TVDBID: 72514, Title: "Looney Tunes", Year: 1929, RootFolderPath: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cartoons, err := libStore.UpsertSeries(ctx, library.Series{
+		TMDBID: 102321, Title: "Looney Tunes Cartoons", Year: 2020, RootFolderPath: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: cartoons.ID, SeasonNumber: 1, EpisodeNumber: 1,
+		Title: "keep me", FilePath: filepath.Join(root, "other.mp4"), Size: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: cartoons.ID, SeasonNumber: 1948, EpisodeNumber: 20,
+		FilePath: video, Size: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := catalogEpisodeAtPath(ctx, &mode.Session{Mode: mode.Series}, libStore, video, root, []string{root})
+	if err != nil || !ok {
+		t.Fatalf("catalog ok=%v err=%v", ok, err)
+	}
+	ep, err := libStore.GetEpisode(ctx, parent.ID, 1948, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ep.FilePath != video {
+		t.Fatalf("1929 episode path = %q", ep.FilePath)
+	}
+	if _, err := libStore.GetEpisode(ctx, cartoons.ID, 1948, 20); err == nil {
+		t.Fatal("Cartoons 2020 must drop the year-season short")
+	}
+	keep, err := libStore.GetEpisode(ctx, cartoons.ID, 1, 1)
+	if err != nil || keep.Title != "keep me" {
+		t.Fatalf("Cartoons 2020 series must remain: %v %+v", err, keep)
+	}
+}
+
+func TestCatalogEpisodeAtPath_YearSeasonTaggedCartoonsFolderStays(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	seasonDir := filepath.Join(root, "Looney Tunes Cartoons (2020) [tmdbid-102321]", "Season 1948")
+	if err := os.MkdirAll(seasonDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(seasonDir, "Looney Tunes Cartoons S1948E20.mp4")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	libStore := newTestLibraryStore(t)
+	if _, err := libStore.UpsertSeries(ctx, library.Series{
+		TMDBID: 333432, Title: "Looney Tunes", Year: 1929, RootFolderPath: root,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cartoons, err := libStore.UpsertSeries(ctx, library.Series{
+		TMDBID: 102321, Title: "Looney Tunes Cartoons", Year: 2020, RootFolderPath: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: cartoons.ID, SeasonNumber: 1948, EpisodeNumber: 20,
+		FilePath: video, Size: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := catalogEpisodeAtPath(ctx, &mode.Session{Mode: mode.Series}, libStore, video, root, []string{root})
+	if err != nil || !ok {
+		t.Fatalf("catalog ok=%v err=%v", ok, err)
+	}
+	ep, err := libStore.GetEpisode(ctx, cartoons.ID, 1948, 20)
+	if err != nil || ep.FilePath != video {
+		t.Fatalf("tagged Cartoons folder must stay on 2020: %v %+v", err, ep)
+	}
+}
+
+func TestYearSeasonOwnedByWrongParent(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	libStore := newTestLibraryStore(t)
+	tunes, err := libStore.UpsertSeries(ctx, library.Series{
+		TMDBID: 333432, Title: "Looney Tunes", Year: 1929, RootFolderPath: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cartoons, err := libStore.UpsertSeries(ctx, library.Series{
+		TMDBID: 102321, Title: "Looney Tunes Cartoons", Year: 2020, RootFolderPath: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	toonsFile := filepath.Join(root, "Looney Toons", "Season 1948", "Looney Tunes S1948E20.mp4")
+	taggedFile := filepath.Join(root, "Looney Tunes Cartoons (2020) [tmdbid-102321]", "Season 1948", "x.mp4")
+	onCartoons := library.Episode{SeasonNumber: 1948, FilePath: toonsFile}
+	if !yearSeasonOwnedByWrongParent(ctx, nil, libStore, onCartoons, cartoons, []string{root}) {
+		t.Fatal("Toons file on Cartoons 2020 must rescan")
+	}
+	if yearSeasonOwnedByWrongParent(ctx, nil, libStore, onCartoons, tunes, []string{root}) {
+		t.Fatal("already on 1929 must stay known")
+	}
+	tagged := library.Episode{SeasonNumber: 1948, FilePath: taggedFile}
+	if yearSeasonOwnedByWrongParent(ctx, nil, libStore, tagged, cartoons, []string{root}) {
+		t.Fatal("tmdbid-tagged Cartoons folder must stay known")
+	}
+	sequential := library.Episode{SeasonNumber: 1, FilePath: toonsFile}
+	if yearSeasonOwnedByWrongParent(ctx, nil, libStore, sequential, cartoons, []string{root}) {
+		t.Fatal("sequential seasons are not year-season shorts")
+	}
+}
+
+func TestScanLibrarySeries_RehomesLooneyToonsOnto1929(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	seasonDir := filepath.Join(root, "Looney Toons", "Season 1947")
+	if err := os.MkdirAll(seasonDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(seasonDir, "A Hare Grows In Manhattan S1947E05 - H.265.mp4")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	libStore := newTestLibraryStore(t)
+	parent, err := libStore.UpsertSeries(ctx, library.Series{
+		TMDBID: 333432, TVDBID: 72514, Title: "Looney Tunes", Year: 1929, RootFolderPath: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stray, err := libStore.UpsertSeries(ctx, library.Series{
+		TMDBID: WebAuthorityTMDBID("A Hare Grows in Manhattan", 1947),
+		Title:  "A Hare Grows in Manhattan", Year: 1947, RootFolderPath: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: stray.ID, SeasonNumber: 1947, EpisodeNumber: 5,
+		FilePath: video, Size: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sess := &mode.Session{
+		Mode: mode.Series,
+		TMDB: fakeTMDBSeriesServer(t, map[string]string{}, nil),
+	}
+	if _, err := ScanLibrarySeries(ctx, sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), nil); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	ep, err := libStore.GetEpisode(ctx, parent.ID, 1947, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ep.FilePath != video {
+		t.Fatalf("merged path = %q", ep.FilePath)
+	}
+	if _, err := libStore.GetSeries(ctx, stray.ID); err == nil {
+		t.Fatal("singleton stray series must be retired")
+	}
+}

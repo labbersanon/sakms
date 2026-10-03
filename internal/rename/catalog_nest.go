@@ -495,14 +495,20 @@ func tryYearSeasonTVDBParent(
 	return &p
 }
 
-func retireStrayWebAuthorityShort(ctx context.Context, libStore *library.Store, ep *library.Episode, ser *library.Series, videoPath string, parentTMDB int) {
+// Claude 2026-10-02: detach a year-season short from the wrong library series.
+// Reason: web-authority-only retirement left Looney Toons files on Cartoons
+//   2020 (tmdb 102321) and on wrong real TMDB cards (Super Shiro, Bowery Bugs).
+// Troubleshooting: shorts under Looney Toons still have series_id != 1929.
+// Review if: catalog no longer writes library rows during Scan.
+func retireMisfiledShortOwner(ctx context.Context, libStore *library.Store, ep *library.Episode, ser *library.Series, videoPath string, parentTMDB int) {
 	if libStore == nil || ep == nil || ser == nil || videoPath == "" {
 		return
 	}
-	if ser.TMDBID == parentTMDB || ser.TMDBID >= 0 || ser.TVDBID != 0 {
+	if ser.TMDBID == parentTMDB {
 		return
 	}
 	if ep.FilePath != videoPath {
+		_ = libStore.DeleteEpisodeFileByPath(ctx, videoPath)
 		return
 	}
 	remaining, listErr := libStore.ListEpisodes(ctx, ser.ID)

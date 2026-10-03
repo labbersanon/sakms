@@ -10589,3 +10589,20 @@ status stays active.
 | `internal/api/search_series_test.go` | unparseable series-wide grab is not imported |
 | `internal/api/import_organize_test.go` | source file remains |
 
+## 2026-10-02 — Merge Looney Toons shorts into Looney Tunes 1929
+
+**Problem:** Episodes sitting in the kids `Looney Toons` folder were split across Looney Tunes 1929, Looney Tunes Cartoons 2020, and one-off cartoon title cards (A Hare Grows in Manhattan, Super Shiro, Bowery Bugs, …). The 2020 HBO Max series still correctly owned files in its own `[tmdbid-102321]` folder.
+**Root cause:** Series Scan marks already-tracked paths known, so year-season shorts attached to the wrong show never reached catalog. Retirement only deleted web-authority (negative TMDB) cards, so a file cataloged onto 1929 stayed on Cartoons 2020 when that show already owned it.
+**Fix:** Un-hide year-season files whose show folder uniquely maps to a different pre-1970 parent (and whose path has no `[tmdbid-N]`). Catalog attaches them to that parent and detaches the previous owner. Tagged Cartoons 2020 folders stay put. Files stay on disk in `Looney Toons`; identity is the 1929 series.
+**Outcome:** A Series Scan rehomes Looney Toons shorts onto Looney Tunes 1929. Singleton stray cards are removed. Cartoons 2020 keeps its own folder. Animaniacs nested under Looney Toons is sequential SxxExx and is not stolen.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/rename/catalog.go` | yearSeasonOwnedByWrongParent; retire after year-season catalog |
+| `internal/rename/catalog_nest.go` | retireMisfiledShortOwner (any non-parent series) |
+| `internal/rename/rename.go` | Scan un-hides misfiled year-season; skip propose after catalog |
+| `internal/rename/catalog_test.go` | rehome from 2020; tagged folder stays; Scan merge |
+
+

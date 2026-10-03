@@ -852,6 +852,20 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 				}
 				continue
 			}
+			// Claude 2026-10-02: year-season shorts on the wrong show are not "organized".
+			// Reason: known hid Looney Toons/Season 1948 files already on Cartoons 2020,
+			//   so catalog never rehomed them onto Looney Tunes 1929.
+			// Troubleshooting: Scan after #135 still lists those files under Cartoons.
+			// Review if: the kids folder is renamed into Looney Tunes (1929).
+			if yearSeasonOwnedByWrongParent(ctx, sess, libStore, ep, series, roots) {
+				delete(known, ep.FilePath)
+				if files, listErr := libStore.ListEpisodeFiles(ctx, ep.ID); listErr == nil {
+					for _, f := range files {
+						delete(known, f.FilePath)
+					}
+				}
+				continue
+			}
 			// Marking just the file path is enough — ScanRootFolder's
 			// recursive walk decides atomicity dynamically from known at
 			// whatever depth it encounters a directory, so a new season
@@ -916,6 +930,14 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 							out = append(out, p)
 						}
 					}
+					continue
+				}
+				// Claude 2026-10-02: year-season catalog-in-place is the merge.
+				// Reason: falling through after attaching Looney Toons shorts to 1929
+				//   let folder pin / web-authority propose them as Cartoons 2020 again.
+				// Troubleshooting: Scan catalogs the file then emits a second identity.
+				// Review if: Apply should also move Toons files into the 1929 folder.
+				if cataloged && library.IsYearSeason(season) {
 					continue
 				}
 				// Claude 2026-09-23: S00E00 movie folders look Jellyfin-shaped.

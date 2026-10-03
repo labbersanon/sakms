@@ -61,6 +61,10 @@ func TestRequestsHandler_AggregatesAndDedups(t *testing.T) {
 	if _, err := libStore.UpsertEpisode(ctx, library.Episode{SeriesID: series.ID, SeasonNumber: 1, EpisodeNumber: 2, FilePath: ""}); err != nil {
 		t.Fatalf("upsert ep2: %v", err)
 	}
+	// Claude 2026-10-02: Requests MissingCount is monitored seasons only.
+	if err := libStore.SetSeasonMonitored(ctx, series.ID, 1, true); err != nil {
+		t.Fatalf("monitor season 1: %v", err)
+	}
 	// Series Complete — every episode on disk; must stay off the worklist.
 	complete, err := libStore.UpsertSeries(ctx, library.Series{TMDBID: 201, Title: "Show Complete", RootFolderPath: "/tv"})
 	if err != nil {

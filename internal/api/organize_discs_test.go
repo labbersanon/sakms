@@ -14,6 +14,7 @@ import (
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/disc"
 	"github.com/labbersanon/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/tmdb"
 	"github.com/labbersanon/sakms/internal/websearch"
 )
 
@@ -313,10 +314,104 @@ func TestDiscHasCatalog(t *testing.T) {
 	if !discHasCatalog(apidto.OrganizeDiscUnpackRequest{Mode: "movies", TMDBID: 1}) {
 		t.Fatal("movies with tmdb should import")
 	}
+	if !discHasCatalog(apidto.OrganizeDiscUnpackRequest{
+		Mode:  "movies",
+		Items: []apidto.OrganizeDiscUnpackItem{{Name: "t02", TMDBID: 101}},
+	}) {
+		t.Fatal("movies with per-item tmdb should import")
+	}
 	if discHasCatalog(apidto.OrganizeDiscUnpackRequest{Mode: "adult", TMDBID: 1}) {
 		t.Fatal("adult must not import on tmdb id alone")
 	}
 	if !discHasCatalog(apidto.OrganizeDiscUnpackRequest{Mode: "adult", Box: "tpdb", SceneID: "9"}) {
 		t.Fatal("adult with box+scene should import")
 	}
+}
+
+func TestUniqueMovieByTitle(t *testing.T) {
+	got, ok := uniqueMovieByTitle("The Daffy Doc", []tmdb.Item{
+		{ID: 419819, Title: "Looney Tunes Golden Collection, Vol. 5"},
+		{ID: 101, Title: "The Daffy Doc", ReleaseDate: "1938-11-26"},
+	})
+	if !ok || got.ID != 101 {
+		t.Fatalf("got %+v ok=%v", got, ok)
+	}
+	_, ok = uniqueMovieByTitle("Duck Soup", []tmdb.Item{
+		{ID: 1, Title: "Duck Soup"},
+		{ID: 2, Title: "Duck Soup"},
+	})
+	if ok {
+		t.Fatal("remakes must not pick a year")
+	}
+}
+
+func TestShouldSkipSharedMovieImport(t *testing.T) {
+	req := apidto.OrganizeDiscUnpackRequest{
+		Mode: "movies", TMDBID: 419819, Title: "Vol. 5",
+		Items: []apidto.OrganizeDiscUnpackItem{
+			{Name: "t02"},
+			{Name: "t03"},
+		},
+	}
+	if !shouldSkipSharedMovieImport(req, req.Items[0]) {
+		t.Fatal("two untitled items must not share the volume movie id")
+	}
+	req.Items[0].TMDBID = 101
+	req.Items[0].Title = "The Daffy Doc"
+	if shouldSkipSharedMovieImport(req, req.Items[0]) {
+		t.Fatal("per-title id must import")
+	}
+	single := apidto.OrganizeDiscUnpackRequest{
+		Mode: "movies", TMDBID: 603, Title: "The Matrix",
+		Items: []apidto.OrganizeDiscUnpackItem{{Name: "t01"}},
+	}
+	if shouldSkipSharedMovieImport(single, single.Items[0]) {
+		t.Fatal("single-feature job id must import")
+	}
+}
+
+func TestDiscMovieIdentity_PrefersItem(t *testing.T) {
+	req := apidto.OrganizeDiscUnpackRequest{TMDBID: 419819, Title: "Vol. 5", Year: 2007}
+	it := apidto.OrganizeDiscUnpackItem{TMDBID: 101, Title: "The Daffy Doc", Year: 1938}
+	id, title, year := discMovieIdentity(req, it)
+	if id != 101 || title != "The Daffy Doc" || year != 1938 {
+		t.Fatalf("id=%d title=%q year=%d", id, title, year)
+	}
+}
+
+func TestAttachDiscWorkMovies_NamesEachShort(t *testing.T) {
+	searcher := movieSearchMap{
+		"The Daffy Doc":  {{ID: 101, Title: "The Daffy Doc", ReleaseDate: "1938-11-26"}},
+		"Bacall to Arms": {{ID: 102, Title: "Bacall to Arms", ReleaseDate: "1946-08-03"}},
+	}
+	works := []apidto.OrganizeDiscWork{
+		{Name: "t02", EpisodeTitle: "The Daffy Doc"},
+		{Name: "t03", EpisodeTitle: "Bacall to Arms"},
+	}
+	attachDiscWorkMovies(context.Background(), searcher, nil, works)
+	if works[0].TMDBID != 101 || works[0].CatalogTitle != "The Daffy Doc" || works[0].Year != 1938 {
+		t.Fatalf("t02 = %+v", works[0])
+	}
+	if works[1].TMDBID != 102 || works[1].CatalogTitle != "Bacall to Arms" {
+		t.Fatalf("t03 = %+v", works[1])
+	}
+}
+
+func TestAttachDiscWorkMovies_SingleFeatureKeepsVolume(t *testing.T) {
+	searcher := movieSearchMap{
+		"The Matrix": {{ID: 603, Title: "The Matrix", ReleaseDate: "1999-03-31"}},
+	}
+	works := []apidto.OrganizeDiscWork{
+		{Name: "t01", EpisodeTitle: "The Matrix"},
+	}
+	attachDiscWorkMovies(context.Background(), searcher, nil, works)
+	if works[0].TMDBID != 0 {
+		t.Fatalf("single feature must keep the volume hit, got %+v", works[0])
+	}
+}
+
+type movieSearchMap map[string][]tmdb.Item
+
+func (m movieSearchMap) SearchMovies(ctx context.Context, query string) ([]tmdb.Item, error) {
+	return m[query], nil
 }

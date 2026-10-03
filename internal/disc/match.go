@@ -2,6 +2,7 @@ package disc
 
 import (
 	"math"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -104,6 +105,62 @@ func MatchUniqueTitles(workTitle map[string]string, catalog []CatalogEpisode) ma
 	}
 	if len(out) == 0 {
 		return nil
+	}
+	return out
+}
+
+// UniqueNamedHit is the index of want in titles when the normalized name
+// matches exactly one entry. Remakes that share a title are not unique.
+func UniqueNamedHit(want string, titles []string) (int, bool) {
+	key := normTitle(want)
+	if key == "" {
+		return 0, false
+	}
+	found := -1
+	for i, title := range titles {
+		if normTitle(title) != key {
+			continue
+		}
+		if found >= 0 {
+			return 0, false
+		}
+		found = i
+	}
+	if found < 0 {
+		return 0, false
+	}
+	return found, true
+}
+
+// MergeCatalogByTitle keeps one episode per normalized title. Override
+// wins — TVDB official year-seasons replace the TMDB airdate slot when
+// both catalogs name the same short.
+func MergeCatalogByTitle(base, override []CatalogEpisode) []CatalogEpisode {
+	byKey := map[string]CatalogEpisode{}
+	var order []string
+	add := func(ep CatalogEpisode, replace bool) {
+		key := normTitle(ep.Title)
+		if key == "" {
+			key = ":" + strconv.Itoa(ep.Season) + ":" + strconv.Itoa(ep.Episode)
+		}
+		if _, ok := byKey[key]; !ok {
+			order = append(order, key)
+			byKey[key] = ep
+			return
+		}
+		if replace {
+			byKey[key] = ep
+		}
+	}
+	for _, ep := range base {
+		add(ep, false)
+	}
+	for _, ep := range override {
+		add(ep, true)
+	}
+	out := make([]CatalogEpisode, 0, len(order))
+	for _, key := range order {
+		out = append(out, byKey[key])
 	}
 	return out
 }

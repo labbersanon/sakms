@@ -16,6 +16,13 @@ package api
 // Reason: Discs mixed TMDB movies+TV and had no Adult path.
 // Troubleshooting: wrong catalog — Mode omitted defaults to movies.
 // Review if: empty Mode searches both TMDB catalogs again.
+//
+// Claude 2026-10-02: each named disc title gets its own library identity.
+// Reason: one volume TMDBID imported every short into a compilation folder.
+//   Movies searches each wiki name; Series matches TMDB+TVDB episode titles.
+// Troubleshooting: MKVs stacked as alternate.N under Vol. N — item TMDBID
+//   empty and shared job id was applied.
+// Review if: IFO/ffmpeg starts exposing per-title names (wiki skipped).
 
 import (
 	"context"
@@ -41,6 +48,7 @@ import (
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/tmdb"
+	"github.com/labbersanon/sakms/internal/tvdb"
 	"github.com/labbersanon/sakms/internal/websearch"
 )
 
@@ -201,7 +209,11 @@ func identifyDiscHits(
 	if catalog == mode.Adult {
 		return identifyAdultDiscHits(r, httpClient, connStore, scStore, settingsStore, libStore, queries)
 	}
-	sess, err := mode.Build(r.Context(), connStore, scStore, settingsStore, httpClient, nil, mode.Movies)
+	// Claude 2026-10-02: build the operator's catalog session (not always Movies).
+	// Reason: Series identify needs TVDB official episodes for year-season shorts.
+	// Troubleshooting: Golden shorts unmatched — session was Movies-only TMDB seasons.
+	// Review if: Adult identify shares this TMDB path again.
+	sess, err := mode.Build(r.Context(), connStore, scStore, settingsStore, httpClient, nil, catalog)
 	if err != nil || sess == nil || sess.TMDB == nil {
 		return nil
 	}
@@ -220,7 +232,7 @@ func identifyDiscHits(
 			fillDiscExisting(r.Context(), libStore, &hit)
 		}
 		if hit.Mode == string(mode.Series) && sess.TMDB != nil {
-			hit.Suggestions = suggestDiscSlots(r.Context(), sess.TMDB, hit.TMDBID, works)
+			hit.Suggestions = suggestDiscSlots(r.Context(), sess.TMDB, sess.TVDB, hit.TMDBID, works)
 		}
 		hits = append(hits, hit)
 	}
@@ -264,7 +276,64 @@ func identifyDiscHits(
 			return disc.VolumeTitleScore(hits[i].Title, volume) > disc.VolumeTitleScore(hits[j].Title, volume)
 		})
 	}
+	// Claude 2026-10-02: multi-title movie discs classify each named work.
+	// Reason: applying the volume compilation TMDBID stacked shorts as
+	//   alternate.N under one disc folder. Each wiki name is its own movie.
+	// Troubleshooting: works lack tmdbId — named count was ≤1 or no unique
+	//   SearchMovies title hit.
+	// Review if: single-feature DVDs start shipping with extra unnamed titles.
+	if catalog == mode.Movies {
+		attachDiscWorkMovies(r.Context(), sess.TMDB, libStore, works)
+	}
 	return hits
+}
+
+type movieSearcher interface {
+	SearchMovies(ctx context.Context, query string) ([]tmdb.Item, error)
+}
+
+func attachDiscWorkMovies(ctx context.Context, searcher movieSearcher, libStore *library.Store, works []apidto.OrganizeDiscWork) {
+	if searcher == nil || len(works) <= 1 {
+		return
+	}
+	for i := range works {
+		title := strings.TrimSpace(works[i].EpisodeTitle)
+		if title == "" {
+			continue
+		}
+		items, err := searcher.SearchMovies(ctx, title)
+		if err != nil || len(items) == 0 {
+			continue
+		}
+		hit, ok := uniqueMovieByTitle(title, items)
+		if !ok {
+			continue
+		}
+		works[i].TMDBID = hit.ID
+		works[i].CatalogTitle = hit.Title
+		works[i].Year = yearFromDate(hit.ReleaseDate)
+		if libStore == nil {
+			continue
+		}
+		item, gerr := libStore.GetByTMDBID(ctx, mode.Movies, hit.ID)
+		if gerr != nil || item == nil || item.FilePath == "" {
+			continue
+		}
+		works[i].ExistingPath = item.FilePath
+		works[i].ExistingTitle = item.Title
+	}
+}
+
+func uniqueMovieByTitle(want string, items []tmdb.Item) (tmdb.Item, bool) {
+	titles := make([]string, len(items))
+	for i, it := range items {
+		titles[i] = it.Title
+	}
+	idx, ok := disc.UniqueNamedHit(want, titles)
+	if !ok {
+		return tmdb.Item{}, false
+	}
+	return items[idx], true
 }
 
 func identifyAdultDiscHits(
@@ -385,8 +454,21 @@ func applyDiscConflicts(ctx context.Context, libStore *library.Store, items []ap
 			continue
 		}
 		path := ""
-		if hit.Mode == string(mode.Movies) || hit.Mode == string(mode.Adult) {
-			path = hit.ExistingPath
+		// Claude 2026-10-02: replace the file for THIS work's identity.
+		// Reason: hit.ExistingPath is the volume compilation; replacing it
+		//   would delete the wrong movie when a short has its own TMDBID.
+		// Troubleshooting: Replace old removed Golden Collection — item
+		//   TMDBID was ignored.
+		// Review if: Adult per-work scenes land and need the same lookup.
+		if hit.Mode == string(mode.Movies) && it.TMDBID > 0 && libStore != nil {
+			if item, err := libStore.GetByTMDBID(ctx, mode.Movies, it.TMDBID); err == nil && item != nil {
+				path = item.FilePath
+			}
+		}
+		if path == "" && (hit.Mode == string(mode.Movies) || hit.Mode == string(mode.Adult)) {
+			if it.TMDBID <= 0 || it.TMDBID == hit.TMDBID {
+				path = hit.ExistingPath
+			}
 		}
 		if hit.Mode == string(mode.Series) && it.SeasonNumber >= 0 && it.EpisodeNumber >= 1 {
 			for _, ep := range hit.Episodes {
@@ -417,26 +499,49 @@ func removeExistingLibraryFile(ctx context.Context, libStore *library.Store, pat
 	return err
 }
 
-func suggestDiscSlots(ctx context.Context, client *tmdb.Client, tmdbID int, works []apidto.OrganizeDiscWork) []apidto.OrganizeDiscSuggestion {
-	if client == nil || tmdbID <= 0 || len(works) == 0 {
-		return nil
-	}
-	details, err := client.TVDetails(ctx, tmdbID)
-	if err != nil {
+func suggestDiscSlots(ctx context.Context, client *tmdb.Client, tvdbClient *tvdb.Client, tmdbID int, works []apidto.OrganizeDiscWork) []apidto.OrganizeDiscSuggestion {
+	if tmdbID <= 0 || len(works) == 0 {
 		return nil
 	}
 	var catalog []disc.CatalogEpisode
-	for _, s := range details.Seasons {
-		eps, err := client.SeasonDetails(ctx, tmdbID, s.SeasonNumber)
-		if err != nil {
-			continue
+	if client != nil {
+		if details, err := client.TVDetails(ctx, tmdbID); err == nil {
+			for _, s := range details.Seasons {
+				eps, err := client.SeasonDetails(ctx, tmdbID, s.SeasonNumber)
+				if err != nil {
+					continue
+				}
+				for _, ep := range eps {
+					catalog = append(catalog, disc.CatalogEpisode{
+						Season: s.SeasonNumber, Episode: ep.EpisodeNumber,
+						Title: ep.Name, RuntimeMin: ep.Runtime,
+					})
+				}
+			}
 		}
-		for _, ep := range eps {
-			catalog = append(catalog, disc.CatalogEpisode{
-				Season: s.SeasonNumber, Episode: ep.EpisodeNumber,
-				Title: ep.Name, RuntimeMin: ep.Runtime,
-			})
+	}
+	// Claude 2026-10-02: merge TVDB official episodes into disc slot match.
+	// Reason: Looney Tunes shorts live in year-seasons on TVDB (S1938E36),
+	//   not TMDB's airdate seasons. Unique title match must see both.
+	// Troubleshooting: wiki name present, no S/E — ExternalIDs or SeriesEpisodes
+	//   failed, or the title was not unique after merge.
+	// Review if: TMDB year-seasons match TVDB official for this show.
+	if tvdbClient != nil && client != nil {
+		if tvdbID, err := client.ExternalIDs(ctx, tmdbID); err == nil && tvdbID > 0 {
+			if eps, err := tvdbClient.SeriesEpisodes(ctx, tvdbID, tvdb.SeasonTypeOfficial); err == nil {
+				var extra []disc.CatalogEpisode
+				for _, ep := range eps {
+					extra = append(extra, disc.CatalogEpisode{
+						Season: ep.SeasonNumber, Episode: ep.Number,
+						Title: ep.Name, RuntimeMin: ep.Runtime,
+					})
+				}
+				catalog = disc.MergeCatalogByTitle(catalog, extra)
+			}
 		}
+	}
+	if len(catalog) == 0 {
+		return nil
 	}
 	durs := map[string]float64{}
 	titles := map[string]string{}
@@ -477,7 +582,34 @@ func discHasCatalog(req apidto.OrganizeDiscUnpackRequest) bool {
 	if m == mode.Adult {
 		return strings.TrimSpace(req.Box) != "" && strings.TrimSpace(req.SceneID) != ""
 	}
-	return req.TMDBID > 0
+	if req.TMDBID > 0 {
+		return true
+	}
+	for _, it := range req.Items {
+		if it.TMDBID > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func discMovieIdentity(req apidto.OrganizeDiscUnpackRequest, it apidto.OrganizeDiscUnpackItem) (tmdbID int, title string, year int) {
+	if it.TMDBID > 0 {
+		title = strings.TrimSpace(it.Title)
+		if title == "" {
+			title = strings.TrimSpace(it.EpisodeTitle)
+		}
+		return it.TMDBID, title, it.Year
+	}
+	return req.TMDBID, req.Title, req.Year
+}
+
+func shouldSkipSharedMovieImport(req apidto.OrganizeDiscUnpackRequest, it apidto.OrganizeDiscUnpackItem) bool {
+	if it.TMDBID > 0 {
+		return false
+	}
+	// Job-level compilation TMDBID is only safe for a single-feature extract.
+	return len(req.Items) > 1 || req.TMDBID <= 0
 }
 
 func importDiscOutputs(ctx context.Context, deps discUnpackDeps, src string, req apidto.OrganizeDiscUnpackRequest, outputs []string) ([]string, error) {
@@ -552,6 +684,22 @@ func importOneDiscOutput(
 	if m == mode.Series && it.EpisodeNumber < 1 {
 		return src, nil
 	}
+	title, tmdbID, year := req.Title, req.TMDBID, req.Year
+	// Claude 2026-10-02: Movies import uses the work's TMDBID, not the volume.
+	// Reason: ApplyLibrary folds same TMDBID as alternate.N — that is the
+	//   disc-folder bug. Per-title identity rides on the unpack item.
+	// Troubleshooting: shorts landed under Golden Collection — item TMDBID
+	//   was 0 and shouldSkipSharedMovieImport did not run.
+	// Review if: Adult disc titles get per-work scene assignment.
+	if m == mode.Movies {
+		if shouldSkipSharedMovieImport(req, it) {
+			return src, nil
+		}
+		tmdbID, title, year = discMovieIdentity(req, it)
+		if tmdbID <= 0 {
+			return src, nil
+		}
+	}
 	p := proposals.Proposal{
 		Mode:            m,
 		Workflow:        proposals.Rename,
@@ -559,9 +707,9 @@ func importOneDiscOutput(
 		SourcePath:      src,
 		SourceName:      filepath.Base(src),
 		RootFolderPath:  destRoot,
-		Title:           req.Title,
-		TMDBID:          req.TMDBID,
-		Year:            req.Year,
+		Title:           title,
+		TMDBID:          tmdbID,
+		Year:            year,
 		SeasonNumber:    it.SeasonNumber,
 		EpisodeNumber:   it.EpisodeNumber,
 		EpisodeTitle:    it.EpisodeTitle,
@@ -569,6 +717,13 @@ func importOneDiscOutput(
 		Date:            req.Date,
 		GiveBackBox:     req.Box,
 		GiveBackSceneID: req.SceneID,
+	}
+	if m == mode.Movies {
+		if existing, gerr := libStore.GetByTMDBID(ctx, mode.Movies, tmdbID); gerr == nil && existing != nil {
+			if strings.TrimSpace(existing.RootFolderPath) != "" {
+				p.RootFolderPath = existing.RootFolderPath
+			}
+		}
 	}
 	if m == mode.Adult {
 		_, _, _, err := rename.ApplyLibraryAdult(ctx, sess, libStore, p, tier, nil)
@@ -585,7 +740,7 @@ func importOneDiscOutput(
 		if err != nil {
 			return src, err
 		}
-		if item, gerr := libStore.GetByTMDBID(ctx, mode.Movies, req.TMDBID); gerr == nil && item != nil && item.FilePath != "" {
+		if item, gerr := libStore.GetByTMDBID(ctx, mode.Movies, tmdbID); gerr == nil && item != nil && item.FilePath != "" {
 			return item.FilePath, nil
 		}
 		return src, nil
@@ -615,8 +770,17 @@ func discDestRoot(ctx context.Context, deps discUnpackDeps, m mode.Mode, req api
 				}
 			}
 		case mode.Movies:
+			ids := make([]int, 0, 1+len(req.Items))
 			if req.TMDBID > 0 {
-				if it, err := deps.libStore.GetByTMDBID(ctx, mode.Movies, req.TMDBID); err == nil && it != nil && strings.TrimSpace(it.RootFolderPath) != "" {
+				ids = append(ids, req.TMDBID)
+			}
+			for _, item := range req.Items {
+				if item.TMDBID > 0 {
+					ids = append(ids, item.TMDBID)
+				}
+			}
+			for _, id := range ids {
+				if it, err := deps.libStore.GetByTMDBID(ctx, mode.Movies, id); err == nil && it != nil && strings.TrimSpace(it.RootFolderPath) != "" {
 					return it.RootFolderPath, nil
 				}
 			}

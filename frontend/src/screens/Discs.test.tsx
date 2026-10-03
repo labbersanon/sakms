@@ -17,12 +17,9 @@ const isoEntry = {
 
 const identifyExistingMovie = {
   path: "/media/show.iso",
-  volume: "LOONEY_TUNES_GOLDEN_V5_D1",
-  queries: ["LOONEY TUNES GOLDEN"],
-  works: [
-    { name: "t02", title: 2, durationS: 433, role: "feature" },
-    { name: "t03", title: 3, durationS: 400, role: "feature" },
-  ],
+  volume: "FEATURE",
+  queries: ["FEATURE"],
+  works: [{ name: "t01", title: 1, durationS: 5400, role: "feature" }],
   hits: [
     {
       mode: "movies",
@@ -31,6 +28,46 @@ const identifyExistingMovie = {
       year: 1999,
       existingPath: "/media/movies/The Matrix (1999).mkv",
       existingTitle: "The Matrix",
+    },
+  ],
+};
+
+const identifyCompilationMovies = {
+  path: "/media/show.iso",
+  volume: "LOONEY_TUNES_GOLDEN_V5_D1",
+  queries: ["LOONEY TUNES GOLDEN"],
+  works: [
+    {
+      name: "t02",
+      title: 2,
+      durationS: 433,
+      role: "feature",
+      episodeTitle: "The Daffy Doc",
+      tmdbId: 101,
+      catalogTitle: "The Daffy Doc",
+      year: 1938,
+    },
+    {
+      name: "t03",
+      title: 3,
+      durationS: 400,
+      role: "feature",
+      episodeTitle: "Bacall to Arms",
+      tmdbId: 102,
+      catalogTitle: "Bacall to Arms",
+      year: 1946,
+      existingPath: "/media/movies/Bacall to Arms (1946).mkv",
+      existingTitle: "Bacall to Arms",
+    },
+  ],
+  hits: [
+    {
+      mode: "movies",
+      tmdbId: 419819,
+      title: "Looney Tunes Golden Collection, Vol. 5",
+      year: 2007,
+      existingPath: "/media/movies/Looney Tunes Golden Collection, Vol. 5 (2007).mkv",
+      existingTitle: "Looney Tunes Golden Collection, Vol. 5",
     },
   ],
 };
@@ -123,25 +160,58 @@ describe("Discs", () => {
     const { identifyBodies } = stubDiscs();
     await openFolder();
     fireEvent.click(screen.getByLabelText("Select show.iso"));
-    expect(await screen.findByText("LOONEY_TUNES_GOLDEN_V5_D1")).toBeInTheDocument();
+    expect(await screen.findByText("FEATURE")).toBeInTheDocument();
     expect(identifyBodies).toEqual([{ path: "/media/show.iso", mode: "movies" }]);
     expect(screen.getByLabelText("Catalog title")).toHaveDisplayValue(
       /The Matrix \(1999\) · in library/,
     );
     expect(screen.getByText(/V is volume and D is disc/)).toBeInTheDocument();
-    expect(screen.getByLabelText("Select t02")).not.toBeChecked();
-    expect(screen.getByLabelText("Select t03")).not.toBeChecked();
-    expect(screen.getAllByText(/Exists · The Matrix/).length).toBe(2);
+    expect(screen.getByLabelText("Select t01")).not.toBeChecked();
+    expect(screen.getByText(/Exists · The Matrix/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Extract selected" })).toBeDisabled();
+  });
+
+  it("classifies named movie shorts as their own titles, not the compilation", async () => {
+    const { extracts } = stubDiscs({ identify: identifyCompilationMovies });
+    await openFolder();
+    fireEvent.click(screen.getByLabelText("Select show.iso"));
+    expect(await screen.findByText("The Daffy Doc")).toBeInTheDocument();
+    expect(screen.getByText("The Daffy Doc (1938)")).toBeInTheDocument();
+    expect(screen.getByLabelText("Select t02")).toBeChecked();
+    expect(screen.getByLabelText("Select t03")).not.toBeChecked();
+    expect(screen.getByText(/Exists · Bacall to Arms/)).toBeInTheDocument();
+    expect(screen.queryByText(/Exists · Looney Tunes Golden Collection/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Extract selected" }));
+    await waitFor(() => {
+      expect(extracts).toEqual([
+        {
+          path: "/media/show.iso",
+          mode: "movies",
+          tmdbId: 419819,
+          title: "Looney Tunes Golden Collection, Vol. 5",
+          year: 2007,
+          items: [
+            {
+              name: "t02",
+              episodeTitle: "The Daffy Doc",
+              tmdbId: 101,
+              title: "The Daffy Doc",
+              year: 1938,
+            },
+          ],
+        },
+      ]);
+    });
   });
 
   it("asks what to do with the old file when an existing title is checked", async () => {
     const { extracts } = stubDiscs();
     await openFolder();
     fireEvent.click(screen.getByLabelText("Select show.iso"));
-    await screen.findByLabelText("Select t02");
+    await screen.findByLabelText("Select t01");
 
-    fireEvent.click(screen.getByLabelText("Select t02"));
+    fireEvent.click(screen.getByLabelText("Select t01"));
     expect(await screen.findByText("Already in the library")).toBeInTheDocument();
     expect(screen.getByText(/The Matrix already exists/)).toBeInTheDocument();
 
@@ -149,12 +219,12 @@ describe("Discs", () => {
     await waitFor(() => {
       expect(screen.queryByText("Already in the library")).not.toBeInTheDocument();
     });
-    expect(screen.getByLabelText("Select t02")).not.toBeChecked();
+    expect(screen.getByLabelText("Select t01")).not.toBeChecked();
 
-    fireEvent.click(screen.getByLabelText("Select t02"));
+    fireEvent.click(screen.getByLabelText("Select t01"));
     fireEvent.click(await screen.findByRole("button", { name: "Replace old" }));
     await waitFor(() => {
-      expect(screen.getByLabelText("Select t02")).toBeChecked();
+      expect(screen.getByLabelText("Select t01")).toBeChecked();
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Extract selected" }));
@@ -166,7 +236,7 @@ describe("Discs", () => {
           tmdbId: 603,
           title: "The Matrix",
           year: 1999,
-          items: [{ name: "t02", conflict: "replace" }],
+          items: [{ name: "t01", conflict: "replace" }],
         },
       ]);
     });
@@ -176,8 +246,8 @@ describe("Discs", () => {
     const { extracts } = stubDiscs();
     await openFolder();
     fireEvent.click(screen.getByLabelText("Select show.iso"));
-    await screen.findByLabelText("Select t03");
-    fireEvent.click(screen.getByLabelText("Select t03"));
+    await screen.findByLabelText("Select t01");
+    fireEvent.click(screen.getByLabelText("Select t01"));
     fireEvent.click(await screen.findByRole("button", { name: "Keep both" }));
     fireEvent.click(screen.getByRole("button", { name: "Extract selected" }));
     await waitFor(() => {
@@ -188,7 +258,7 @@ describe("Discs", () => {
           tmdbId: 603,
           title: "The Matrix",
           year: 1999,
-          items: [{ name: "t03", conflict: "keep_both" }],
+          items: [{ name: "t01", conflict: "keep_both" }],
         },
       ]);
     });

@@ -2545,6 +2545,15 @@ type OrganizeDiscUnpackItem struct {
 	EpisodeNumber int    `json:"episodeNumber,omitempty"`
 	EpisodeTitle  string `json:"episodeTitle,omitempty"`
 	Conflict      string `json:"conflict,omitempty"`
+	// Claude 2026-10-02: per-work Movies identity.
+	// Reason: one job TMDBID folded every short into the volume compilation
+	//   as alternate.N. Each named work imports as its own movie when set.
+	// Troubleshooting: many MKVs under one Golden Collection folder — item
+	//   TMDBID was empty and import used the volume hit.
+	// Review if: Adult disc titles get per-work scene assignment.
+	TMDBID int    `json:"tmdbId,omitempty"`
+	Title  string `json:"title,omitempty"`
+	Year   int    `json:"year,omitempty"`
 }
 
 // OrganizeDiscIdentifyRequest is POST /api/organize/discs/identify.
@@ -2602,6 +2611,18 @@ type OrganizeDiscWork struct {
 	DurationS    float64 `json:"durationS"`
 	Role         string  `json:"role"`
 	EpisodeTitle string  `json:"episodeTitle,omitempty"`
+	// Claude 2026-10-02: per-work catalog identity (not the disc volume).
+	// Reason: compilation TMDB hits must not become the library folder for
+	//   every title on the disc. Movies searches each wiki name; Series
+	//   keeps S/E on suggestions.
+	// Troubleshooting: Library column says the volume title for every row —
+	//   attachDiscWorkMovies did not run or named count was 1.
+	// Review if: IFO/ffmpeg starts exposing per-title names (wiki skipped).
+	TMDBID        int    `json:"tmdbId,omitempty"`
+	CatalogTitle  string `json:"catalogTitle,omitempty"`
+	Year          int    `json:"year,omitempty"`
+	ExistingPath  string `json:"existingPath,omitempty"`
+	ExistingTitle string `json:"existingTitle,omitempty"`
 }
 
 // OrganizeDiscIdentifyResponse is POST /api/organize/discs/identify.

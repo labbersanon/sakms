@@ -16,6 +16,13 @@
 //   The chip is the library; identify searches that catalog only.
 // Troubleshooting: no mode row — this block is missing or below the ISO table.
 // Review if: Adult titles get per-work scene assignment.
+//
+// Claude 2026-10-02: per-work movie identity, not the disc compilation.
+// Reason: extract sent one volume TMDBID and Apply stacked shorts as
+//   alternate.N. Named works carry tmdbId/catalogTitle; extract sends them.
+// Troubleshooting: Library column repeats the volume title — work.tmdbId
+//   missing or existingForWork still used hit.existingPath for every row.
+// Review if: Adult titles get per-work scene assignment.
 
 import {
   type Component,
@@ -25,7 +32,7 @@ import {
   createResource,
   createSignal,
 } from "solid-js";
-import type { OrganizeDiscHit, OrganizeDiscWork } from "@dto";
+import type { OrganizeDiscHit, OrganizeDiscUnpackItem, OrganizeDiscWork } from "@dto";
 import { FolderPicker } from "../components/FolderPicker";
 import { Button, ErrorText, Muted, SELECT_CLASS, labelClass } from "../components/ui";
 import type { ImportMode } from "../api/manualImport";
@@ -87,11 +94,28 @@ function catalogLabel(h: OrganizeDiscHit): string {
 
 function existingForWork(
   hit: OrganizeDiscHit | undefined,
-  _work: OrganizeDiscWork,
+  work: OrganizeDiscWork,
   slot?: Slot,
+  workCount = 1,
 ): { path: string; title: string } | null {
+  if (work.existingPath) {
+    return {
+      path: work.existingPath,
+      title: work.existingTitle || work.catalogTitle || work.episodeTitle || work.name,
+    };
+  }
   if (!hit) return null;
-  if ((hit.mode === "movies" || hit.mode === "adult") && hit.existingPath) {
+  if (hit.mode === "movies") {
+    // Compilation existing applies only to a single-feature disc.
+    if (workCount > 1 && (!work.tmdbId || work.tmdbId !== hit.tmdbId)) {
+      return null;
+    }
+    if (hit.existingPath) {
+      return { path: hit.existingPath, title: hit.existingTitle || hit.title };
+    }
+    return null;
+  }
+  if (hit.mode === "adult" && hit.existingPath) {
     return { path: hit.existingPath, title: hit.existingTitle || hit.title };
   }
   if (hit.mode === "series" && slot) {
@@ -163,8 +187,9 @@ export const Discs: Component = () => {
       const nextSlots = slotsFromHit(first);
       setSlots(nextSlots);
       const initial = new Set<string>();
+      const count = (resp.works ?? []).length;
       for (const w of resp.works ?? []) {
-        if (!existingForWork(first, w, nextSlots[w.name])) initial.add(w.name);
+        if (!existingForWork(first, w, nextSlots[w.name], count)) initial.add(w.name);
       }
       setSelected(initial);
       return resp;
@@ -183,15 +208,16 @@ export const Discs: Component = () => {
     const nextSlots = slotsFromHit(h);
     setSlots(nextSlots);
     const next = new Set<string>();
+    const count = works().length;
     for (const w of works()) {
-      if (!existingForWork(h, w, nextSlots[w.name])) next.add(w.name);
+      if (!existingForWork(h, w, nextSlots[w.name], count)) next.add(w.name);
     }
     setSelected(next);
     setConflicts({});
   };
 
   const trySelect = (w: OrganizeDiscWork, on: boolean) => {
-    const exist = existingForWork(hit(), w, slots()[w.name]);
+    const exist = existingForWork(hit(), w, slots()[w.name], works().length);
     if (on && exist) {
       setConflictRow({ name: w.name, path: exist.path, title: exist.title });
       return;
@@ -225,7 +251,7 @@ export const Discs: Component = () => {
     const w = works().find((x) => x.name === name);
     const h = hit();
     if (!w || !h) return;
-    const exist = existingForWork(h, w, { season, episode, title });
+    const exist = existingForWork(h, w, { season, episode, title }, works().length);
     if (exist) {
       setSelected((cur) => {
         const next = new Set(cur);
@@ -256,13 +282,21 @@ export const Discs: Component = () => {
         date: h?.date,
         items: names.map((name) => {
           const slot = slots()[name];
-          return {
-            name,
-            seasonNumber: slot?.season,
-            episodeNumber: slot?.episode,
-            episodeTitle: slot?.title,
-            conflict: conflicts()[name],
-          };
+          const w = works().find((x) => x.name === name);
+          const item: OrganizeDiscUnpackItem = { name, conflict: conflicts()[name] };
+          if (slot) {
+            item.seasonNumber = slot.season;
+            item.episodeNumber = slot.episode;
+            item.episodeTitle = slot.title;
+          } else if (w?.episodeTitle) {
+            item.episodeTitle = w.episodeTitle;
+          }
+          if (w?.tmdbId) {
+            item.tmdbId = w.tmdbId;
+            item.title = w.catalogTitle;
+            item.year = w.year;
+          }
+          return item;
         }),
       });
       for (;;) {
@@ -294,9 +328,10 @@ export const Discs: Component = () => {
         Pick the library first (Movies, Series, or Adult), then one DVD
         ISO. Identification runs after you select the ISO. When the image
         has no title names, Wikipedia (SearXNG as a page finder) fills the
-        disc list. Unique catalog title or duration matches are
-        pre-assigned. Titles that already exist in the library start
-        unchecked.
+        disc list. Each named title is classified as its own movie or
+        series episode — not as the disc compilation. Unique catalog
+        title or duration matches are pre-assigned. Titles that already
+        exist in the library start unchecked.
       </Muted>
 
       <div class="mb-4 flex flex-wrap gap-2">
@@ -408,8 +443,10 @@ export const Discs: Component = () => {
                   Catalog title
                 </label>
                 <p class="mt-1 text-xs text-muted">
-                  Select the correct title. In the filename, V is volume and D
-                  is disc (v5d1 is volume 5, disc 1).
+                  Select the correct series or single-feature title. In the
+                  filename, V is volume and D is disc (v5d1 is volume 5, disc
+                  1). A compilation match is not the import folder when the
+                  disc has several named titles.
                 </p>
                 <select
                   id="disc-catalog-title"
@@ -443,7 +480,8 @@ export const Discs: Component = () => {
                 <tbody>
                   <For each={works()}>
                     {(w) => {
-                      const exist = () => existingForWork(hit(), w, slots()[w.name]);
+                      const exist = () =>
+                        existingForWork(hit(), w, slots()[w.name], works().length);
                       const slot = () => slots()[w.name];
                       return (
                         <tr class="border-t border-border/60">
@@ -466,12 +504,19 @@ export const Discs: Component = () => {
                             {formatDuration(w.durationS)}
                           </td>
                           <td class="px-2 py-1.5 text-muted">
-                            <Show when={exist()} fallback="New">
+                            <Show when={exist()}>
                               {(ex) => (
                                 <span>
                                   Exists · {ex().title}
                                 </span>
                               )}
+                            </Show>
+                            <Show when={!exist() && w.catalogTitle}>
+                              {w.catalogTitle}
+                              {w.year ? ` (${w.year})` : ""}
+                            </Show>
+                            <Show when={!exist() && !w.catalogTitle}>
+                              New
                             </Show>
                             <Show when={hit()?.mode === "series"}>
                               <div class="mt-1">

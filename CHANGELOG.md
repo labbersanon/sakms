@@ -10530,3 +10530,18 @@ status stays active.
 | `frontend/src/screens/Discs.tsx` | per-row identity; extract item tmdbId |
 | `frontend/src/screens/Discs.test.tsx` | compilation shorts send per-item ids |
 
+## 2026-10-02 — Folder picker up-one-directory icon
+
+**Problem:** Folder pickers on Discs, Import, and Settings could only type a path or click a child. There was no way to walk up to the parent folder. Browse already had an Up control; the Move dest dialog was text-only.
+**Root cause:** `FolderPicker` had no parent action. Every screen that uses it inherited that gap.
+**Fix:** Add an ArrowUp "Up one directory" button on `FolderPicker`. The same icon is on Browse's Move dest picker. The button is disabled at a browsable root or when the picker is disabled.
+**Outcome:** Every folder picker can move to the parent folder.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/components/FolderPicker.tsx` | parentFolderPath; Up icon |
+| `frontend/src/components/FolderPicker.test.tsx` | parent walk; up click; disabled at roots |
+| `frontend/src/screens/Browse.tsx` | dest picker ArrowUp |
+

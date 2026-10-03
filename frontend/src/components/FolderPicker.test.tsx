@@ -9,7 +9,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
-import { FolderPicker } from "./FolderPicker";
+import { FolderPicker, parentFolderPath } from "./FolderPicker";
 import { AdultModeContext } from "./ui";
 import { jsonResponse } from "../testing/http";
 
@@ -58,6 +58,16 @@ const roots: BrowseBody = {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+describe("parentFolderPath", () => {
+  it("walks up POSIX directories and stops at a browsable root", () => {
+    expect(parentFolderPath("/media/Movies/Kids")).toBe("/media/Movies");
+    expect(parentFolderPath("/media/Movies/")).toBe("/media");
+    expect(parentFolderPath("/media")).toBe("");
+    expect(parentFolderPath("/")).toBe("");
+    expect(parentFolderPath("")).toBe("");
+  });
 });
 
 describe("FolderPicker", () => {
@@ -148,6 +158,41 @@ describe("FolderPicker", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /\/downloads/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /\/adult/ })).toBeNull();
+  });
+
+  it("moves to the parent folder from the up-one-directory icon", async () => {
+    const urls = stub((url) => {
+      const path = new URL(url, "http://local").searchParams.get("path") || "";
+      if (path === "/media") {
+        return {
+          path: "/media",
+          entries: [{ name: "Movies", path: "/media/Movies" }],
+        };
+      }
+      return roots;
+    });
+    render(() => <Harness initial="/media/Movies" />);
+    const up = screen.getByRole("button", { name: "Up one directory" });
+    expect(up).toBeEnabled();
+    fireEvent.click(up);
+    const input = screen.getByLabelText("Folder") as HTMLInputElement;
+    expect(input.value).toBe("/media");
+    await waitFor(() =>
+      expect(urls.some((u) => u.includes("/api/browse?path=%2Fmedia"))).toBe(
+        true,
+      ),
+    );
+    expect(
+      await screen.findByRole("button", { name: /Movies/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("disables the up icon at the roots list", () => {
+    stub(roots);
+    render(() => <Harness />);
+    expect(
+      screen.getByRole("button", { name: "Up one directory" }),
+    ).toBeDisabled();
   });
 
   it("does not fetch or open suggestions when disabled", async () => {

@@ -718,6 +718,9 @@ type episodeKey struct {
 // via TMDB search, and skips anything already tracked WITH a file — an
 // episode TMDB previously reported as missing (file_path == "") is NOT
 // skipped, since finding its file is exactly what fills that gap in.
+// After the orphan walk it also proposes moving already-tracked primaries
+// that are not preset-conformant into SeriesFolderName/SeasonDirName/
+// EpisodeFileName (tmdbID≤0, dummy S00E00, and dest==source are skipped).
 //
 // One proposal per resolved episode file, never one per season-pack folder
 // — same "surface everything individually" posture ScanLibrary (Movies)
@@ -1049,6 +1052,7 @@ func ScanLibrarySeries(ctx context.Context, sess *mode.Session, libStore *librar
 	// not change this check to Contains without re-reading the alternative
 	// tradeoff recorded in plan §9.7.1.
 
+	out = append(out, proposeTrackedSeriesSchemaMoves(ctx, libStore, allSeries, roots, preset, out)...)
 	catalogPendingSeries(ctx, sess, libStore, roots, out)
 	return out, nil
 }

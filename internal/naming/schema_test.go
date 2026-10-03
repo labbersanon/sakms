@@ -173,6 +173,38 @@ func TestMatchesSeriesSchema(t *testing.T) {
 			t.Error("expected a conformant Legacy range-shaped episode to match")
 		}
 	})
+
+	t.Run("year-season Jellyfin episode matches", func(t *testing.T) {
+		root := t.TempDir()
+		videoPath := writeFile(t, filepath.Join(root, "Classic Shorts (1929) [tmdbid-42]", "Season 1947"), "Classic Shorts S1947E05 Title.mkv")
+		if !MatchesSeriesSchema(videoPath, Jellyfin) {
+			t.Error("expected Season 1947 / S1947E05 under a tagged series folder to match")
+		}
+	})
+
+	t.Run("year-season Legacy episode matches", func(t *testing.T) {
+		root := t.TempDir()
+		videoPath := writeFile(t, filepath.Join(root, "Classic Shorts", "Season 1947"), "Classic Shorts - S1947E05 - Title.mkv")
+		if !MatchesSeriesSchema(videoPath, Legacy) {
+			t.Error("expected Season 1947 / S1947E05 Legacy names to match")
+		}
+	})
+
+	t.Run("bare year folder is not schema", func(t *testing.T) {
+		root := t.TempDir()
+		videoPath := writeFile(t, filepath.Join(root, "Classic Shorts (1929) [tmdbid-42]", "1947"), "Classic Shorts S1947E05 Title.mkv")
+		if MatchesSeriesSchema(videoPath, Jellyfin) {
+			t.Error("expected a bare year folder to need a move into Season 1947")
+		}
+	})
+
+	t.Run("S2000E01 is not a year-season schema match", func(t *testing.T) {
+		root := t.TempDir()
+		videoPath := writeFile(t, filepath.Join(root, "Some Show (2000) [tmdbid-9]", "Season 2000"), "Some Show S2000E01.mkv")
+		if MatchesSeriesSchema(videoPath, Jellyfin) {
+			t.Error("expected post-1999 four-digit seasons to stay sequential, not year-season")
+		}
+	})
 }
 
 func TestMatchesAdultSchema(t *testing.T) {

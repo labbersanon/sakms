@@ -2,9 +2,12 @@
 //
 // ScanLibraryPHash and ScanLibrarySeriesPHash group ALL video files —
 // tracked primaries, extra copies recorded on the library row, and orphans —
-// independently of Rename. Two files group only when they are perceptually
-// similar. TMDB ids, SxxExx parses, and filename search are not used to
-// form groups — Dedup does not identify titles.
+// independently of Rename. Two files group when they are perceptually
+// similar, or when they are extra copies on the same library row (same
+// non-zero trackedID) even if their hashes differ. TMDB ids, SxxExx parses,
+// and filename search are not used to form groups — Dedup does not identify
+// titles. An orphan that merely shares a TMDB folder with a tracked file
+// still needs a similar phash.
 //
 // ApplyLibrary / ApplyLibrarySeries delete only the losing candidate's own
 // file — removing an extra copy never deletes the title it belongs to.
@@ -111,9 +114,9 @@ func pHashGroupReason(group []pHashFileItem, n int, similarity float64, perFrame
 	})
 	switch {
 	case byID && byHash:
-		return fmt.Sprintf("%d copies share TMDB identity and are perceptually similar (%.0f%% similar)", n, similarity*100)
+		return fmt.Sprintf("%d copies of the same library title are perceptually similar (%.0f%% similar)", n, similarity*100)
 	case byID:
-		return fmt.Sprintf("%d copies share the same TMDB identity", n)
+		return fmt.Sprintf("%d copies of the same library title", n)
 	default:
 		return fmt.Sprintf("%d copies found to be perceptually similar (%.0f%% similar)", n, similarity*100)
 	}
@@ -174,6 +177,36 @@ func minPairwiseSimilarity(group []pHashFileItem, frames int) float64 {
 	return min
 }
 
+// pHashSameTrackedRow groups extra copies recorded on one library row even
+// when their hashes differ (two encodes of the same episode). A zero
+// trackedID is an orphan — same TMDB folder is not enough (Last Crusade).
+func pHashSameTrackedRow(a, b pHashFileItem) bool {
+	return a.trackedID != 0 && a.trackedID == b.trackedID
+}
+
+// libraryScanRoots mirrors Rename's kids-root walk: the mode's library root
+// plus sess.KidsRootPath when it is configured and distinct, so kids-root
+// orphans become candidates too.
+func libraryScanRoots(sess *mode.Session, rootFolderPath string) []string {
+	roots := []string{rootFolderPath}
+	if sess != nil && sess.KidsRootPath != "" && sess.KidsRootPath != rootFolderPath {
+		roots = append(roots, sess.KidsRootPath)
+	}
+	return roots
+}
+
+func scanUnmappedEntries(roots []string, known map[string]bool) ([]library.UnmappedEntry, error) {
+	var all []library.UnmappedEntry
+	for _, root := range roots {
+		entries, err := library.ScanRootFolder(root, known)
+		if err != nil {
+			return nil, fmt.Errorf("scanning %s: %w", root, err)
+		}
+		all = append(all, entries...)
+	}
+	return all, nil
+}
+
 // ScanLibraryPHash is Dedup's Movies scan. Files group by perceptual
 // similarity only. Extra copies on library_item_files are candidates too —
 // Rename having folded them in does not exempt them.
@@ -183,7 +216,6 @@ func minPairwiseSimilarity(group []pHashFileItem, frames int) float64 {
 // doc comment for the measured calibration this was chosen against),
 // configurable via movies_phash_dedup_threshold.
 func ScanLibraryPHash(ctx context.Context, sess *mode.Session, libStore *library.Store, rootFolderPath string, prober Prober, hasher PHasher, perFrameThreshold int, onProgress ProgressFunc) ([]proposals.Proposal, error) {
-	_ = sess // kept on the signature; Dedup does not identify via sess.TMDB
 	if rootFolderPath == "" {
 		return nil, fmt.Errorf("no Movies library root folder configured yet — add one in Settings first")
 	}
@@ -216,9 +248,9 @@ func ScanLibraryPHash(ctx context.Context, sess *mode.Session, libStore *library
 		}
 	}
 
-	entries, err := library.ScanRootFolder(rootFolderPath, known)
+	entries, err := scanUnmappedEntries(libraryScanRoots(sess, rootFolderPath), known)
 	if err != nil {
-		return nil, fmt.Errorf("scanning %s: %w", rootFolderPath, err)
+		return nil, err
 	}
 
 	type movieOrphan struct{ name, path string }
@@ -270,7 +302,7 @@ func ScanLibraryPHash(ctx context.Context, sess *mode.Session, libStore *library
 	}
 	_ = libStore.DeleteOrphanPHashesNotIn(ctx, keepCached)
 
-	uf := unionByPHashAndIdentity(items, perFrameThreshold, nil)
+	uf := unionByPHashAndIdentity(items, perFrameThreshold, pHashSameTrackedRow)
 	groups := pHashGroupComponents(items, uf)
 
 	var out []proposals.Proposal
@@ -294,7 +326,7 @@ func ScanLibraryPHash(ctx context.Context, sess *mode.Session, libStore *library
 			SourceName: title, Title: title, TMDBID: tmdbID, RootFolderPath: rootPath,
 			Candidates:      candidates,
 			PHashSimilarity: similarity,
-			Reason:          pHashGroupReason(group, len(candidates), similarity, perFrameThreshold, nil),
+			Reason:          pHashGroupReason(group, len(candidates), similarity, perFrameThreshold, pHashSameTrackedRow),
 		})
 	}
 	return out, nil
@@ -310,7 +342,6 @@ func ScanLibraryPHash(ctx context.Context, sess *mode.Session, libStore *library
 //
 // perFrameThreshold is configurable via series_phash_dedup_threshold.
 func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *library.Store, rootFolderPath string, prober Prober, hasher PHasher, perFrameThreshold int, onProgress ProgressFunc) ([]proposals.Proposal, error) {
-	_ = sess // kept on the signature; Dedup does not identify via sess.TMDB
 	if rootFolderPath == "" {
 		return nil, fmt.Errorf("no Series library root folder configured yet — add one in Settings first")
 	}
@@ -347,9 +378,9 @@ func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *l
 		}
 	}
 
-	entries, err := library.ScanRootFolder(rootFolderPath, known)
+	entries, err := scanUnmappedEntries(libraryScanRoots(sess, rootFolderPath), known)
 	if err != nil {
-		return nil, fmt.Errorf("scanning %s: %w", rootFolderPath, err)
+		return nil, err
 	}
 
 	// Pre-resolve every orphan entry into ONE flat list of video paths BEFORE
@@ -436,7 +467,7 @@ func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *l
 	}
 	_ = libStore.DeleteOrphanPHashesNotIn(ctx, keepCached)
 
-	uf := unionByPHashAndIdentity(items, perFrameThreshold, nil)
+	uf := unionByPHashAndIdentity(items, perFrameThreshold, pHashSameTrackedRow)
 	groups := pHashGroupComponents(items, uf)
 
 	var out []proposals.Proposal
@@ -478,7 +509,7 @@ func ScanLibrarySeriesPHash(ctx context.Context, sess *mode.Session, libStore *l
 			RootFolderPath:      rootPath,
 			Candidates:          candidates,
 			PHashSimilarity:     similarity,
-			Reason:              pHashGroupReason(group, len(candidates), similarity, perFrameThreshold, nil),
+			Reason:              pHashGroupReason(group, len(candidates), similarity, perFrameThreshold, pHashSameTrackedRow),
 		})
 	}
 	return out, nil

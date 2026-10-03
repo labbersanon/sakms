@@ -4,11 +4,13 @@
 // to keep the better-quality copy instead of leaving both silently in
 // place (today's behavior in both source CLIs).
 //
-// Movies and Series group by perceptual hash OR shared TMDB identity
-// (ScanLibraryPHash / ScanLibrarySeriesPHash). Adult groups by the resolved
-// scene's (box, scene_id) and refines untracked orphans with refineByPHash.
-// In every mode, an extra copy recorded on a library row is a Dedup candidate
-// of its own — Rename folding it in does not hide it from Dedup.
+// Movies and Series group by perceptual hash, or when two files are extra
+// copies on the same library row (ScanLibraryPHash / ScanLibrarySeriesPHash).
+// Sharing a TMDB id with a dissimilar orphan is not enough — that Last Crusade
+// case stays ungrouped. Adult groups by the resolved scene's (box, scene_id)
+// and refines untracked orphans with refineByPHash. In every mode, an extra
+// copy recorded on a library row is a Dedup candidate of its own — Rename
+// folding it in does not hide it from Dedup.
 //
 // CORRECTION (logical episode-splitting): Series' UNIQUE(series_id, season,
 // episode) constraint rules out ambiguity for ONE (series,season,episode)

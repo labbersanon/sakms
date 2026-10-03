@@ -20,6 +20,14 @@ var (
 	movieFolderJellyfin = regexp.MustCompile(`^.+(?: \(\d{4}\))? \[tmdbid-\d+\]$`)
 	movieFolderLegacy   = regexp.MustCompile(`^.+ \(\d{4}\)$`)
 	seasonDirPattern    = regexp.MustCompile(`^Season \d{2}$`)
+	// Claude 2026-10-02: year-season Jellyfin/Legacy shapes (Season 1947 / S1947E05).
+	// Reason: theatrical shorts use calendar years as season numbers; \d{2} never
+	//   matches Season 1947 or SyyyyExx, so a correctly named dest would be
+	//   re-proposed forever after a hierarchy Scan.
+	// Troubleshooting: year-season files under [tmdbid-N]/Season yyyy stay Pending.
+	// Review if: SeasonDirName stops using %02d (1947 already prints as 1947).
+	episodeFileYearJellyfin = regexp.MustCompile(`^.+[^-] S\d{4}E\d{1,3}(?:-E\d{1,3})?(?: .+)?$`)
+	episodeFileYearLegacy   = regexp.MustCompile(`^.+ - S\d{4}E\d{1,3}(?:-E\d{1,3})?(?: - .+)?$`)
 	// [^-] before the space excludes a Legacy-shaped "Title - SxxExx" name —
 	// RE2 has no lookbehind, so this is the plain-regex way to require the
 	// character right before "SxxExx" isn't a dash. The optional (?:-E\d{2})?
@@ -82,20 +90,48 @@ func MatchesMovieSchema(entryPath string, preset Preset) bool {
 // MatchesSeriesSchema reports whether videoPath — an individual episode
 // file, already resolved via library.ResolveEpisodeVideoFiles — is already
 // organized per preset: its own file name and its immediate "Season NN"
-// parent both match the expected shape, and (Jellyfin only, since Legacy's
-// series folder is a bare title with no fixed shape to check) its series
-// folder grandparent does too.
+// (or year-season "Season 1947") parent both match the expected shape, and
+// (Jellyfin only, since Legacy's series folder is a bare title with no
+// fixed shape to check) its series folder grandparent does too.
 func MatchesSeriesSchema(videoPath string, preset Preset) bool {
 	fileBase := strings.TrimSuffix(filepath.Base(videoPath), filepath.Ext(videoPath))
 	seasonDir := filepath.Base(filepath.Dir(videoPath))
-	if !seasonDirPattern.MatchString(seasonDir) {
+	if !matchesSeasonDir(seasonDir) {
+		return false
+	}
+	if !matchesEpisodeFile(fileBase, preset) {
 		return false
 	}
 	if preset == Legacy {
-		return episodeFileLegacy.MatchString(fileBase)
+		return true
 	}
 	seriesDir := filepath.Base(filepath.Dir(filepath.Dir(videoPath)))
-	return episodeFileJellyfin.MatchString(fileBase) && seriesFolderJellyfin.MatchString(seriesDir)
+	return seriesFolderJellyfin.MatchString(seriesDir)
+}
+
+// matchesSeasonDir accepts sequential "Season 01" and year-season "Season 1947".
+// A bare year folder ("1947") is not schema — SeasonDirName always writes Season.
+func matchesSeasonDir(name string) bool {
+	if seasonDirPattern.MatchString(name) {
+		return true
+	}
+	_, ok := library.YearSeasonFolder(name)
+	return ok && strings.HasPrefix(strings.ToLower(strings.TrimSpace(name)), "season")
+}
+
+func matchesEpisodeFile(fileBase string, preset Preset) bool {
+	sequential, yearSeason := episodeFileJellyfin, episodeFileYearJellyfin
+	if preset == Legacy {
+		sequential, yearSeason = episodeFileLegacy, episodeFileYearLegacy
+	}
+	if sequential.MatchString(fileBase) {
+		return true
+	}
+	if !yearSeason.MatchString(fileBase) {
+		return false
+	}
+	_, _, ok := library.ParseYearSeasonNumbers(fileBase)
+	return ok
 }
 
 // MatchesAdultSchema reports whether path's filename already carries the

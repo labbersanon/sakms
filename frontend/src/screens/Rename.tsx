@@ -203,6 +203,27 @@ export function canReviewName(p: Proposal, mode: Mode): boolean {
   return (mode === "movies" || mode === "series") && p.status === "unmatched";
 }
 
+// Claude 2026-10-02: hide Delete file on tracked hierarchy moves.
+// Reason: Series Scan proposes relocating already-tracked primaries; DeleteSource
+//   has no libStore and would destroy the library file. TrackedID is on the
+//   domain JSON even though the curated DTO omits it (same pattern as tmdbId).
+// Troubleshooting: Delete file still enabled — confirm Scan set trackedId.
+export function isTrackedLibraryRelocate(p: Proposal): boolean {
+  const n = (p as { trackedId?: number }).trackedId;
+  return typeof n === "number" && n > 0;
+}
+
+function proposalRowActionEnabled(
+  id: RowActionId,
+  p: Proposal,
+  mode: Mode,
+  titleMode: boolean,
+): boolean {
+  if (id === "review") return canReviewName(p, mode);
+  if (id === "delete" && isTrackedLibraryRelocate(p)) return false;
+  return rowActionEnabled(id, p.status, titleMode);
+}
+
 function proposalTmdbId(p: Proposal): number {
   const n = (p as { tmdbId?: number }).tmdbId;
   return typeof n === "number" && n > 0 ? n : 0;
@@ -264,7 +285,11 @@ export function planActionForRow(
   // than executed. That re-check is what makes the client-side gate honest,
   // and it matters far more for delete than for the other two — do not
   // collapse it as redundant.
-  if (action === "delete" && rowActionEnabled("delete", p.status, titleMode)) {
+  if (
+    action === "delete" &&
+    rowActionEnabled("delete", p.status, titleMode) &&
+    !isTrackedLibraryRelocate(p)
+  ) {
     return "delete";
   }
   return null;
@@ -310,9 +335,7 @@ const RowActions: Component<{
 }> = (props) => {
   const actions = () => rowActions(props.mode);
   const enabled = (id: RowActionId) =>
-    id === "review"
-      ? canReviewName(props.proposal, props.mode)
-      : rowActionEnabled(id, props.proposal.status, props.titleMode);
+    proposalRowActionEnabled(id, props.proposal, props.mode, props.titleMode);
   const hasAny = () => actions().some((a) => enabled(a.id));
   const selectedOk = () => {
     const id = props.selected;
@@ -1591,13 +1614,7 @@ const RenameQueue: Component<{ mode: Mode; adultAspect: AdultOrganizeAspect }> =
           continue;
         }
         const cur = next[p.id];
-        const curEnabled =
-          cur === "review"
-            ? canReviewName(p, mode)
-            : cur
-              ? rowActionEnabled(cur, p.status, titleMode)
-              : false;
-        if (cur && !curEnabled) {
+        if (cur && !proposalRowActionEnabled(cur, p, mode, titleMode)) {
           next[p.id] = defaultRowAction(p.status, titleMode, mode, p);
           changed = true;
         }

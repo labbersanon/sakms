@@ -80,6 +80,45 @@ func TestVerifyAndRepair_ProgressCallback(t *testing.T) {
 	}
 }
 
+func TestSniffExtensionlessPayloads_RenamesMatroska(t *testing.T) {
+	dir := t.TempDir()
+	hash := filepath.Join(dir, "b86d323d0cc3fe7bd82cd8d713016f69d70161adad68e41a6ce69b946371")
+	writeMatroskaPayload(t, hash)
+	got := sniffExtensionlessPayloads([]string{hash})
+	if len(got) != 1 || !strings.HasSuffix(got[0], ".mkv") {
+		t.Fatalf("want .mkv rename, got %v", got)
+	}
+	if _, err := os.Stat(got[0]); err != nil {
+		t.Fatalf("renamed file missing: %v", err)
+	}
+	if _, err := os.Stat(hash); !os.IsNotExist(err) {
+		t.Fatal("extensionless path should be gone after sniff-rename")
+	}
+}
+
+func TestSniffExtensionlessPayloads_RenamesRAR(t *testing.T) {
+	dir := t.TempDir()
+	hash := filepath.Join(dir, "257f385f0cc3fe7bd82cd8d713016f69d70161adad68e41a6ce69b946371")
+	payload := append([]byte("Rar!\x1a\x07\x01\x00"), bytes.Repeat([]byte{0}, 32)...)
+	if err := os.WriteFile(hash, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := sniffExtensionlessPayloads([]string{hash})
+	if len(got) != 1 || !strings.HasSuffix(got[0], ".rar") {
+		t.Fatalf("want .rar rename, got %v", got)
+	}
+}
+
+func TestSniffExtensionlessPayloads_LeavesNamedFiles(t *testing.T) {
+	dir := t.TempDir()
+	named := filepath.Join(dir, "show.mkv")
+	writeMatroskaPayload(t, named)
+	got := sniffExtensionlessPayloads([]string{named})
+	if len(got) != 1 || got[0] != named {
+		t.Fatalf("named mkv should be unchanged, got %v", got)
+	}
+}
+
 func TestNormalizeObfuscatedPar2Names_KeepsRealPar2(t *testing.T) {
 	dir := t.TempDir()
 	real := filepath.Join(dir, "set.par2")

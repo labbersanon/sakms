@@ -61,6 +61,7 @@ func TestDownloadAll_UniquifiesCollidingYencNames(t *testing.T) {
 		for i := range p.full {
 			p.full[i] = fill
 		}
+		copy(p.full, []byte{0x1A, 0x45, 0xDF, 0xA3})
 		for i := 0; i < segCount; i++ {
 			id := fmt.Sprintf("%s-seg%d@test", label, i+1)
 			off := int64(i * partSize)
@@ -162,6 +163,7 @@ func TestDownloadAll_UniquifiesWhenSubjectAlsoCollides(t *testing.T) {
 
 	mkBody := func(label string, fill byte) (id string, body []byte, full []byte) {
 		full = bytes.Repeat([]byte{fill}, partSize)
+		copy(full, []byte{0x1A, 0x45, 0xDF, 0xA3})
 		id = label + "-seg1@test"
 		body = yencPart(t, sharedName, int64(len(full)), 1, 1, 0, full)
 		return id, body, full
@@ -200,20 +202,18 @@ func TestDownloadAll_UniquifiesWhenSubjectAlsoCollides(t *testing.T) {
 		t.Fatalf("AddNZB: %v", err)
 	}
 	final := waitTerminal(t, m, gid)
-	if final.Status != "error" {
-		t.Fatalf("status=%q err=%q want error (hash.par2 staging is not a video)", final.Status, final.ErrorMessage)
-	}
-	if !strings.Contains(final.ErrorMessage, "unpack produced no video") {
-		t.Fatalf("err=%q want no-video unpack", final.ErrorMessage)
+	if final.Status != "complete" {
+		t.Fatalf("status=%q err=%q want complete after sniff-rename of hash.par2 Matroska", final.Status, final.ErrorMessage)
 	}
 	dir := filepath.Join(staging, gid)
-	gotA, err := os.ReadFile(filepath.Join(dir, sharedName))
+	names := listNames(t, dir)
+	gotA, err := os.ReadFile(filepath.Join(dir, "316cef87b8ef42dc840681b2b2cf2c37.mkv"))
 	if err != nil {
-		t.Fatalf("part1: %v dir=%v", err, listNames(t, dir))
+		t.Fatalf("part1: %v dir=%v", err, names)
 	}
-	gotB, err := os.ReadFile(filepath.Join(dir, "316cef87b8ef42dc840681b2b2cf2c37.part002.par2"))
+	gotB, err := os.ReadFile(filepath.Join(dir, "316cef87b8ef42dc840681b2b2cf2c37.part002.mkv"))
 	if err != nil {
-		t.Fatalf("part2: %v dir=%v", err, listNames(t, dir))
+		t.Fatalf("part2: %v dir=%v", err, names)
 	}
 	if !bytes.Equal(gotA, fullA) || !bytes.Equal(gotB, fullB) {
 		t.Fatal("assembled bytes mismatch")

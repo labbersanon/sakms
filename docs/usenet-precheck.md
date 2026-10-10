@@ -4,7 +4,7 @@
 <!-- Claude 2026-09-22: sample/escalate retired — full payload STAT instead.
 Reason: assembleFile fail-closes on any hole; a 48-segment sample could miss a single 430/451.
 **Escalation scope:** A — only files that missed in the sample (+ small re-sample). -->
-**Check:** STAT **every** payload and PAR2 article (skip decorative `.nfo` / `.sfv` / images; honor resume skip map). Each STAT 430 is BODY-confirmed; one lying STAT does not skip the rest or later NZBs. After STAT ok, BODY the **first segment** of each payload leader and abort (`ErrNoVideoUnpacked`) when those peeks are only decorative junk (JPEG/PNG/MP3, PAR2 FileDesc listing nfo/images, ZIP/RAR members with no video). Obfuscated `.par2` that is Matroska/MP4 still proceeds. Inconclusive peeks (unknown magic, truncated PAR2, archive with no inner names) proceed. Resume skip maps skip the video gate.  
+**Check:** STAT **every** payload and PAR2 article (skip decorative `.nfo` / `.sfv` / images; honor resume skip map). Each STAT 430 is BODY-confirmed; one lying STAT does not skip the rest or later NZBs. After STAT ok, BODY the **first segment** of each payload leader and abort (`ErrNoVideoUnpacked`) unless some peek has **video or archive magic** (Matroska/MP4/AVI prefix, or `Rar!`/`PK`/`7z`). PAR2 FileDesc names, a claimed `.mkv` filename, and EBML bytes in the middle of a compressed segment are not proof. Obfuscated `.par2` that is actually Matroska still proceeds (prefix magic). Timeout with zero successful peeks is inconclusive (proceed). Timeout after peeks with no magic aborts. Resume skip maps skip the video gate.  
 <!-- Claude 2026-09-22: candidate retries exhaust the full graded list (was max 3).
 Reason: precheck owns source selection; download-time alternate caps retired. -->
 **Candidate retries:** every qualified runner-up in the graded list per `RunAutoGrab` / batch cycle, then park / NoMatch.
@@ -32,7 +32,7 @@ Reason: that waived real holes and every later NZB. Replaced by per-miss BODY co
 8. BODY trust probe: if STAT says 430 but BODY works, mark STAT unreliable for the process and proceed (skip the gate for the rest of the process lifetime). -->
 9. Zero NNTP pools → no-op (keeps unit fixtures green).
 10. **Drain** gates on **pipeline** free slots (`precheck|waiting < MaxConcurrentDownloads`), not BODY-only — so the next Request can enter Precheck while current NZBs download.
-11. **Video peek after STAT ok:** BODY the first article of each payload leader (skip RAR volumes that are not part01). Classify by payload magic, PAR2 FileDesc names, and ZIP/RAR member names. Abort `ErrNoVideoUnpacked` only when every successful peek is junk. Named `.mkv` without magic still proceeds (fail-open). Timeout or decode errors are inconclusive (proceed). Resume (`skip` map non-empty) skips this gate.
+11. **Video peek after STAT ok:** BODY the first article of each payload leader (skip RAR volumes that are not part01). Proceed only on prefix video magic or archive magic. PAR2 FileDesc listing a video, or a `.mkv` subject with no matching magic, is unknown — keep scanning other files, then abort if none had magic. Timeout with no successful peeks is inconclusive (proceed). Resume (`skip` map non-empty) skips this gate.
 
 <!-- Claude 2026-09-22: previous hybrid sample path (do not restore without revisiting assembleFile holes).
 2. Sample up to **48** payload segments (skip `.par2` / `.nfo` / images when identifiable).
@@ -60,7 +60,7 @@ Reason: that waived real holes and every later NZB. Replaced by per-miss BODY co
 ## Code
 
 - `internal/usenet/precheck.go` — full-payload STAT gate + precheck semaphore
-- `internal/usenet/precheck_video.go` — first-segment magic / PAR2 FileDesc / archive-name peek
+- `internal/usenet/precheck_video.go` — first-segment video/archive **magic** peek (FileDesc/filename are not proof)
 - `internal/usenet/manager.go` — `New` / `SetMaxConcurrentDownloads` seed both semaphores; Waiting phase
 - `internal/usenet/pool.go` — `getCtx`
 - `internal/api/autograb_shared.go` — candidate loop (full qualified order)

@@ -10631,4 +10631,26 @@ status stays active.
 | `internal/usenet/transport.go` | os.ErrDeadlineExceeded is transport (not context.DeadlineExceeded) |
 | `internal/usenet/transport_test.go` | typed os.ErrDeadlineExceeded case |
 
+## 2026-10-10 — Usenet video peek requires payload magic
+
+**Problem:** Many NZBs logged `usenet precheck: video peek ok` then `unpack produced no video` after a full BODY. Today that was five hash-named Love Is Blind GIDs in ~10 minutes (e.g. `nzb-f6f43a3924122167`, 4.3 GB in 129s, unpack 0ms). The peek file was a bare hex hash with no extension.
+**Root cause:** The first-segment peek treated PAR2 FileDesc video names, a claimed `.mkv` filename, or EBML bytes anywhere in the segment as proof of video and returned immediately. Hash-named PAR2 indexes listing `movie.mkv` passed. Assembled files kept the extensionless hash name, so unpack saw neither a video ext nor a RAR leader.
+**Fix:** Proceed only on prefix video magic (Matroska/MP4/AVI) or archive magic (`Rar!`/`PK`/`7z`). PAR2 FileDesc and claimed extensions are unknown — keep scanning, then abort `ErrNoVideoUnpacked` if no magic was seen. After assemble, sniff-rename extensionless payloads (`.mkv`/`.mp4`/`.rar`/`.zip`) so a real hash-named MKV still unpacks.
+**Outcome:** A PAR2-only NZB whose FileDesc lists `movie.mkv` is rejected at precheck. A hash-named first segment with `Rar!` or EBML prefix still proceeds. Extensionless Matroska in staging is renamed before unpack.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/precheck_video.go` | magic-only proceed; FileDesc/filename not proof |
+| `internal/usenet/precheck_video_test.go` | PAR2 FileDesc / hash-no-magic abort; claimed .mkv unknown; RAR hash is archive |
+| `internal/usenet/precheck.go` | comment: peek requires magic |
+| `internal/usenet/manager.go` | sniffExtensionlessPayloads before PAR2 |
+| `internal/usenet/sniff.go` | sniff .7z from 7z magic |
+| `internal/usenet/par2_obfuscation_test.go` | extensionless Matroska/RAR rename |
+| `internal/usenet/usenet_test.go` | EBML prefix on makePayload fixtures |
+| `internal/usenet/assemble_contiguous_test.go` | EBML prefix on first chunk |
+| `internal/usenet/name_collision_test.go` | hash.par2 Matroska completes after sniff-rename |
+| `docs/usenet-precheck.md` | magic-only video peek |
+
 

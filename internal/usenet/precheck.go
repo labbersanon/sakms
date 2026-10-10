@@ -461,10 +461,19 @@ func (m *Manager) statArticleAny(ctx context.Context, msgID string) (found, remo
 				}
 				break
 			}
+			// Claude 2026-10-10: STAT uses the same socket deadline as BODY.
+			// Reason: a hung STAT would pin a precheckSem slot the same way a
+			//   hung BODY pins the download semaphore.
+			// Troubleshooting: precheck never finishing while Downloads is idle.
+			// Review if: Tensai75/nntp exports SetDeadline.
+			disarm := armNNTPDeadline(conn)
 			_, _, serr := conn.Stat(ensureAngleMsgID(msgID))
 			mapped := mapNNTPError(serr)
 			// 430/451 are valid STAT answers — keep the connection.
 			keep := mapped == nil || errors.Is(mapped, ErrArticleNotFound) || errors.Is(mapped, ErrArticleRemoved)
+			if keep {
+				disarm()
+			}
 			p.put(conn, keep)
 			if mapped == nil {
 				return true, false, nil

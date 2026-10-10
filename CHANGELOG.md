@@ -10613,4 +10613,22 @@ status stays active.
 | `frontend/src/screens/Rename.tsx` | disable Delete file when trackedId set |
 | `frontend/src/screens/Rename.delete.test.tsx` | tracked relocate Delete disabled |
 
+## 2026-10-10 — Usenet hung BODY times out as a transport failure
+
+**Problem:** Ancient Aliens grab 1846 (`nzb-5d6f9e389e9d6127`) sat in Downloads as "attempting" for 116 hours at 0 B/s after resuming 67 already-complete segments. `usenet_max_concurrent_downloads=1`, so every other queued NZB stayed deferred ("usenet download slots full").
+**Root cause:** Tensai75/nntp never sets a read deadline. Eweka accepted BODY and then stalled while TCP keepalives still ACKed, so `bufio.Reader.ReadBytes` blocked forever. `downloadAll` never returned, `dl.err` stayed nil, `sweepUsenetFailures` skipped the grab (`dl.Err == nil`), and reconcile treated the GID as still live. The existing fail path (`applyUsenetFailure` → `parkUsenetTransportFailure`) never ran because no error was ever produced. Torrent stale-threshold does not apply to Usenet.
+**Fix:** Arm a 60s socket deadline around BODY and STAT (NZBGet ArticleTimeout default). A timed-out read classifies as `ErrTransport`, so the existing park/resume ladder runs and keeps the sidecar. Failed sockets are `Close`d rather than `Quit`d — `Quit` after a hung BODY blocked on the same stall (the first test hung in `put` → `Quit`).
+**Outcome:** A fake NNTP that never sends the article now returns `ErrTransport` in ~1.6s (3 attempts). Production still needs this build deployed; grab 1846 remains the live hung BODY until then.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/nntpdeadline.go` | articleIOTimeout; setNNTPDeadline; discardNNTP; armNNTPDeadline |
+| `internal/usenet/nntpdeadline_test.go` | hung BODY → ErrTransport; live Conn deadline; os.ErrDeadlineExceeded |
+| `internal/usenet/pool.go` | arm deadline in fetchSegment; discardNNTP on failed put |
+| `internal/usenet/precheck.go` | same deadline around STAT |
+| `internal/usenet/transport.go` | os.ErrDeadlineExceeded is transport (not context.DeadlineExceeded) |
+| `internal/usenet/transport_test.go` | typed os.ErrDeadlineExceeded case |
+
 

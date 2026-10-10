@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"syscall"
 	"time"
@@ -61,8 +62,10 @@ func isTransportError(err error) bool {
 	if errors.As(err, &nntpErr) {
 		return false
 	}
-	// Typed I/O sentinels.
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
+	// Typed I/O sentinels. os.ErrDeadlineExceeded is the conn.SetDeadline
+	// timeout (articleIOTimeout), distinct from context.DeadlineExceeded.
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, os.ErrDeadlineExceeded) {
 		return true
 	}
 	// POSIX socket errors.

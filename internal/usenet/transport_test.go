@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"syscall"
 	"testing"
 )
@@ -24,6 +25,7 @@ func TestIsTransportError_TypedErrors(t *testing.T) {
 		{"io.EOF", io.EOF, true},
 		{"io.ErrUnexpectedEOF", io.ErrUnexpectedEOF, true},
 		{"net.ErrClosed", net.ErrClosed, true},
+		{"os.ErrDeadlineExceeded", os.ErrDeadlineExceeded, true},
 		{"syscall.EPIPE", syscall.EPIPE, true},
 		{"syscall.ECONNRESET", syscall.ECONNRESET, true},
 		{"syscall.ECONNABORTED", syscall.ECONNABORTED, true},

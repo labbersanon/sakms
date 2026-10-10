@@ -194,14 +194,14 @@ func (p *pool) getCtx(ctx context.Context) (*nntp.Conn, error) {
 // Review if: the live-token accounting moves into a dedicated counter.
 func (p *pool) put(c *nntp.Conn, ok bool) {
 	if !ok {
-		c.Quit()
+		discardNNTP(c)
 		p.releaseLive()
 		return
 	}
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
-		c.Quit()
+		discardNNTP(c)
 		p.releaseLive()
 		return
 	}
@@ -211,7 +211,7 @@ func (p *pool) put(c *nntp.Conn, ok bool) {
 	default:
 		// Pool is full (shouldn't happen if callers respect MaxConns, but be safe).
 		p.mu.Unlock()
-		c.Quit()
+		discardNNTP(c)
 		p.releaseLive()
 	}
 }
@@ -332,11 +332,23 @@ func fetchSegment(c *nntp.Conn, msgID string) (segmentResult, error) {
 			return segmentResult{}, fmt.Errorf("usenet: invalid message-id %q", msgID)
 		}
 	}
+	// Claude 2026-10-10: arm the socket deadline before BODY + yEnc decode.
+	// Reason: c.Body() then decodeYEncBody read until '.' with no timeout; a
+	//   stalled article holds the download slot indefinitely (see nntpdeadline.go).
+	// Troubleshooting: grab 1846 Ancient Aliens sat in BODY for 116h at 0 B/s.
+	// Review if: Tensai75/nntp exports SetDeadline.
+	disarm := armNNTPDeadline(c)
 	body, err := c.Body("<" + msgID + ">")
 	if err != nil {
+		// Keep the expired deadline so discard/Quit cannot hang on the same stall.
 		return segmentResult{}, mapNNTPError(err)
 	}
-	return decodeYEncBody(body, msgID)
+	res, decErr := decodeYEncBody(body, msgID)
+	if decErr != nil {
+		return segmentResult{}, decErr
+	}
+	disarm()
+	return res, nil
 }
 
 // decodeYEncBody yEnc-decodes one NNTP article body. nntp.Conn.Body() has

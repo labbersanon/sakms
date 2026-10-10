@@ -2468,6 +2468,13 @@ func uniqueOutputName(base string, used map[string]struct{}) string {
 // length while the RAR payload is intact).
 // Review if: go-newsgroups/par2 treats FileDesc length mismatch as trim/pad.
 func verifyAndRepair(dir string, files []string, onProgress func(done, total int64), onFile func(name string)) ([]string, error) {
+	// Claude 2026-10-10: sniff-rename extensionless hash payloads before PAR2.
+	// Reason: Love Is Blind hash-named NZBs assembled 4GB with no ext; unpack
+	//   saw neither a video nor a RAR leader and logged "unpack produced no video".
+	// Troubleshooting: staging files named as 40+ hex chars and unpack fails
+	//   in 0ms — sniff here so a real MKV/RAR still unpacks.
+	// Review if: preferredOutputName always receives a subject with a known ext.
+	files = sniffExtensionlessPayloads(files)
 	files = normalizeObfuscatedPar2Names(files)
 
 	var par2Paths, dataPaths []string
@@ -2568,6 +2575,40 @@ func isPar2Payload(path string) bool {
 		return false
 	}
 	return string(head) == "PAR2"
+}
+
+// sniffExtensionlessPayloads appends a sniffed .mkv/.mp4/.rar/.zip extension
+// onto assembled files that have no importer-recognized suffix (bare hex hashes).
+func sniffExtensionlessPayloads(files []string) []string {
+	out := make([]string, 0, len(files))
+	for _, p := range files {
+		if _, err := os.Stat(p); err != nil {
+			continue
+		}
+		if knownOutputExt(p) {
+			out = append(out, p)
+			continue
+		}
+		ext := sniffMediaExt(p)
+		if ext == "" {
+			out = append(out, p)
+			continue
+		}
+		newPath := p + ext
+		if _, err := os.Stat(newPath); err == nil {
+			log.Printf("usenet: sniff: rename %s → %s: target exists", filepath.Base(p), filepath.Base(newPath))
+			out = append(out, p)
+			continue
+		}
+		if err := os.Rename(p, newPath); err != nil {
+			log.Printf("usenet: sniff: rename %s → %s: %v", filepath.Base(p), filepath.Base(newPath), err)
+			out = append(out, p)
+			continue
+		}
+		log.Printf("usenet: sniff: renamed extensionless payload %s → %s", filepath.Base(p), filepath.Base(newPath))
+		out = append(out, newPath)
+	}
+	return out
 }
 
 // normalizeObfuscatedPar2Names renames .par2 files whose payload magic is a

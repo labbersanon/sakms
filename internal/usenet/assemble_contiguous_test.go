@@ -109,6 +109,9 @@ func makeStridedPayload(t *testing.T, decoded []int, stride int, fileSize int64)
 		for j := range chunk {
 			chunk[j] = byte((i+1)*17 + j%251)
 		}
+		if i == 0 && n >= 4 {
+			copy(chunk, []byte{0x1A, 0x45, 0xDF, 0xA3})
+		}
 		copy(p.full[off:], chunk)
 		p.msgIDs = append(p.msgIDs, msgID)
 		p.parts = append(p.parts, yencPart(t, p.filename, fileSize, i+1, len(decoded), off, chunk))

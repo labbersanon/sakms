@@ -32,6 +32,9 @@ func sniffMediaExtFrom(head []byte) string {
 		if bytes.HasPrefix(head, []byte("PK")) {
 			return ".zip"
 		}
+		if bytes.HasPrefix(head, []byte{0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C}) {
+			return ".7z"
+		}
 		return ""
 	default:
 		return ""

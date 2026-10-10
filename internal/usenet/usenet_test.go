@@ -604,6 +604,10 @@ func makePayload(t *testing.T, segCount, partSize int) testPayload {
 	for i := range p.full {
 		p.full[i] = byte(i % 251)
 	}
+	// Prefix EBML so the video peek (magic-only as of 2026-10-10) proceeds.
+	if len(p.full) >= 4 {
+		copy(p.full, []byte{0x1A, 0x45, 0xDF, 0xA3})
+	}
 	var segs strings.Builder
 	for i := 0; i < segCount; i++ {
 		msgID := fmt.Sprintf("seg%d@test", i+1)

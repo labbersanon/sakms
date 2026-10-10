@@ -17,22 +17,29 @@ import (
 
 func TestClassifyPeek_MatroskaMagic(t *testing.T) {
 	data := append([]byte{0x1A, 0x45, 0xDF, 0xA3}, "body"...)
-	if got := classifyPeek(data, "hash.par2", `"hash.par2" yEnc`, 0); got != evidenceVideo {
+	if got := classifyPeek(data); got != evidenceVideo {
 		t.Fatalf("got %v want evidenceVideo", got)
 	}
 }
 
 func TestClassifyPeek_JPEGIsJunk(t *testing.T) {
 	data := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10}
-	if got := classifyPeek(data, "photo.jpg", `"photo.jpg" yEnc`, 0); got != evidenceJunk {
+	if got := classifyPeek(data); got != evidenceJunk {
 		t.Fatalf("got %v want evidenceJunk", got)
 	}
 }
 
-func TestClassifyPeek_NamedMKVWithoutMagicStillCounts(t *testing.T) {
+func TestClassifyPeek_NamedMKVWithoutMagicIsUnknown(t *testing.T) {
 	data := []byte{1, 2, 3, 4, 5}
-	if got := classifyPeek(data, "release.mkv", `release.mkv (1/1)`, 0); got != evidenceVideo {
-		t.Fatalf("got %v want evidenceVideo (claimed video ext)", got)
+	if got := classifyPeek(data); got != evidenceUnknown {
+		t.Fatalf("got %v want evidenceUnknown (claimed ext is not magic)", got)
+	}
+}
+
+func TestClassifyPeek_EmbeddedMagicInUnknownIsNotVideo(t *testing.T) {
+	data := append([]byte("xxxx"), append([]byte{0x1A, 0x45, 0xDF, 0xA3}, []byte("not-a-prefix")...)...)
+	if got := classifyPeek(data); got != evidenceUnknown {
+		t.Fatalf("got %v want evidenceUnknown (embedded EBML is not prefix magic)", got)
 	}
 }
 
@@ -49,21 +56,28 @@ func TestClassifyPeek_ZipWithMKVMember(t *testing.T) {
 	if err := zw.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if got := classifyPeek(buf.Bytes(), "hash.rar", `"hash.rar" yEnc`, 0); got != evidenceVideo {
+	if got := classifyPeek(buf.Bytes()); got != evidenceVideo {
 		t.Fatalf("got %v want evidenceVideo from zip member", got)
 	}
 }
 
-func TestClassifyPeek_PAR2FileDescVideo(t *testing.T) {
+func TestClassifyPeek_PAR2FileDescVideoIsUnknown(t *testing.T) {
 	blob := par2WithNames(t, "movie.mkv")
-	if got := classifyPeek(blob, "set.par2", `"set.par2" yEnc`, 0); got != evidenceVideo {
-		t.Fatalf("got %v want evidenceVideo from FileDesc", got)
+	if got := classifyPeek(blob); got != evidenceUnknown {
+		t.Fatalf("got %v want evidenceUnknown (FileDesc is a claim, not magic)", got)
+	}
+}
+
+func TestClassifyPeek_HashNamedRARIsArchive(t *testing.T) {
+	data := append([]byte("Rar!\x1a\x07\x01\x00"), bytes.Repeat([]byte{0}, 64)...)
+	if got := classifyPeek(data); got != evidenceArchive {
+		t.Fatalf("got %v want evidenceArchive from RAR magic", got)
 	}
 }
 
 func TestClassifyPeek_PAR2FileDescJunkOnly(t *testing.T) {
 	blob := par2WithNames(t, "release.nfo", "folder.jpg")
-	if got := classifyPeek(blob, "set.par2", `"set.par2" yEnc`, 0); got != evidenceJunk {
+	if got := classifyPeek(blob); got != evidenceJunk {
 		t.Fatalf("got %v want evidenceJunk from FileDesc", got)
 	}
 }
@@ -114,6 +128,56 @@ func TestPrecheckVideo_ObfuscatedPar2MatroskaProceeds(t *testing.T) {
 	_, err := m.precheckNZB(context.Background(), parsePayloadNZB(t, p), nil, "")
 	if err != nil {
 		t.Fatalf("precheckNZB: %v", err)
+	}
+}
+
+func TestPrecheckVideo_PAR2FileDescOnlyAborts(t *testing.T) {
+	blob := par2WithNames(t, "movie.mkv")
+	p := makeNamedPayload(t, "set.par2", blob, 1, len(blob))
+	p.nzbXML = `<?xml version="1.0" encoding="UTF-8"?>
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+  <file poster="p@example.com" date="0" subject="&quot;set.par2&quot; yEnc (1/1)">
+    <groups><group>alt.binaries.test</group></groups>
+    <segments>
+      <segment bytes="64" number="1">` + p.msgIDs[0] + `</segment>
+    </segments>
+  </file>
+</nzb>`
+	srv := newFakeNNTP(t)
+	srv.serveAll(p)
+	m := New(Config{Servers: []ServerConfig{srv.cfg()}, StagingDir: t.TempDir()})
+	_, err := m.precheckNZB(context.Background(), parsePayloadNZB(t, p), nil, "")
+	if !errors.Is(err, ErrNoVideoUnpacked) {
+		t.Fatalf("err=%v want ErrNoVideoUnpacked (PAR2 FileDesc is not payload magic)", err)
+	}
+}
+
+func TestPrecheckVideo_HashNamedNoMagicAborts(t *testing.T) {
+	hash := "b86d323d0cc3fe7bd82cd8d713016f69d70161adad68e41a6ce69b946371"
+	p := makeNamedPayload(t, hash, []byte{1, 2, 3, 4, 5, 6, 7, 8}, 1, 64)
+	p.nzbXML = `<?xml version="1.0" encoding="UTF-8"?>
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+  <file poster="p@example.com" date="0" subject="&quot;` + hash + `&quot; yEnc (1/1)">
+    <groups><group>alt.binaries.test</group></groups>
+    <segments>
+      <segment bytes="64" number="1">` + p.msgIDs[0] + `</segment>
+    </segments>
+  </file>
+</nzb>`
+	srv := newFakeNNTP(t)
+	srv.serveAll(p)
+	staging := t.TempDir()
+	nzbHTTP := nzbServer(t, p)
+	m := New(Config{Servers: []ServerConfig{srv.cfg()}, StagingDir: staging, HTTPClient: nzbHTTP.Client()})
+	gid, err := m.AddNZB(context.Background(), nzbHTTP.URL, "Love Is Blind Hash")
+	if !errors.Is(err, ErrNoVideoUnpacked) {
+		t.Fatalf("err=%v want ErrNoVideoUnpacked (hash name is not payload magic)", err)
+	}
+	if gid != "" {
+		t.Fatalf("gid=%q want empty", gid)
+	}
+	if ents, _ := os.ReadDir(staging); len(ents) != 0 {
+		t.Fatalf("staging not empty: %v", ents)
 	}
 }
 

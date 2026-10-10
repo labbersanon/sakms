@@ -199,11 +199,10 @@ func (m *Manager) precheckNZB(ctx context.Context, nzb *NZB, skip map[string]boo
 
 // Claude 2026-09-28: after STAT ok, peek first-segment BODY for usable video.
 // Reason: nfo/audio/image NZBs passed STAT and burned full BODY + staging.
-//
-//	Magic / PAR2 FileDesc / archive member names abort before download.
-//
 // Troubleshooting: journal "usenet precheck: abort — no usable video".
 // Review if: first-volume RAR listing (unrar l) is added for hash-named archives.
+// Claude 2026-10-10: peek requires video/archive magic (not PAR2 FileDesc).
+// Related: precheck_video.go.
 func (m *Manager) finishPrecheck(ctx context.Context, payload []NZBFile, skip map[string]bool, progressGID string, res PrecheckResult) (PrecheckResult, error) {
 	if err := m.precheckVideo(ctx, payload, skip, progressGID); err != nil {
 		return res, err

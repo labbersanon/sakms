@@ -499,7 +499,14 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 		// Review if: AutoGrabRequest carries explicit tiers from the Grab pills.
 		tiers := resolveAutoGrabTiersForTitle(ctx, deps.LibStore, deps.SettingsStore, req.Mode, req.TMDBID)
 		minRes := resolveMinResolutionForTitle(ctx, deps.LibStore, req.Mode, req.TMDBID)
-		candidates = requireMinResolution(candidates, minRes)
+		// Claude 2026-10-10: filter releases and candidates together.
+		// Reason: requireMinResolution dropped below-min candidates but left
+		//   pr.releases unfiltered. SelectBest PickIndex then indexed the
+		//   unfiltered NZB list, so AHS S13E06 dispatched 1080p ELiTE while
+		//   the grade log showed the 2160p 3.4 GB runner (score 29 / floor 20).
+		// Troubleshooting: dispatch title resolution must match grade res=.
+		// Review if: another scoreOnePhase filter mutates candidates only.
+		pr.releases, candidates = keepAlignedMinResolution(pr.releases, candidates, minRes)
 		pr.sel = autograb.SelectBest(candidates, tiers, minSeedersFor(req.Mode))
 		return pr, nil
 	}
@@ -584,6 +591,12 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 	// Review if: a settings-bounded dispatch cap returns for indexer quota.
 	for _, idx := range order {
 		picked = releases[idx]
+		if idx >= 0 && idx < len(sel.Grades) {
+			if gt := sel.Grades[idx].Candidate.Title; gt != "" && gt != picked.Title {
+				log.Printf("auto-grab: skip index mismatch idx=%d release=%q grade=%q", idx, picked.Title, gt)
+				continue
+			}
+		}
 		var status int
 		downloadClient, gid, status, err = dispatchToDownloadClient(ctx, deps.SettingsStore, sess, req.Mode, deps.NZB, deps.UsenetSearch, string(picked.Protocol), picked.DownloadURL, picked.Title)
 		if err == nil {
@@ -602,6 +615,9 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 			return out, err
 		}
 		log.Printf("usenet precheck: candidate %d (%s) unavailable — trying next", idx, picked.Title)
+	}
+	if gid == "" && err == nil {
+		err = errCandidateReleaseMismatch
 	}
 	// Claude 2026-09-17: native precheck exhaustion → remaining Prowlarr phases (§7.3).
 	if err != nil && nativePhase && usenet.IsPrecheckReject(err) {
@@ -873,4 +889,26 @@ func filterExcludedReleases(releases []prowlarr.Release, excludeKeys []string) [
 		}
 	}
 	return out
+}
+
+var errCandidateReleaseMismatch = errors.New("auto-grab candidate/release index mismatch")
+
+// keepAlignedMinResolution drops below-min rows from releases and candidates
+// together so Selection indices still map to the NZB that was graded.
+func keepAlignedMinResolution(releases []prowlarr.Release, cands []autograb.Candidate, minRes int) ([]prowlarr.Release, []autograb.Candidate) {
+	if minRes <= 0 || len(cands) == 0 {
+		return releases, cands
+	}
+	outR := make([]prowlarr.Release, 0, len(cands))
+	outC := make([]autograb.Candidate, 0, len(cands))
+	for i, c := range cands {
+		if c.Resolution > 0 && c.Resolution < minRes {
+			continue
+		}
+		outC = append(outC, c)
+		if i < len(releases) {
+			outR = append(outR, releases[i])
+		}
+	}
+	return outR, outC
 }

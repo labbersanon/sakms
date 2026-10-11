@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/labbersanon/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/autograb"
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/prowlarr"
@@ -662,5 +663,84 @@ func TestClassifyDownloadStateUsenetFailures(t *testing.T) {
 				t.Errorf("classifyDownloadState(%q, %v) = %q, want %q", tc.state, tc.failure, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestKeepAlignedMinResolution_DropsLeadingSDTogether(t *testing.T) {
+	releases := []prowlarr.Release{
+		{GUID: "sd", Title: "Show.S13E06.720p.WEB-DL.x264-SD"},
+		{GUID: "elite", Title: "American.Horror.Story.S13E06.1080p.x265-ELiTE"},
+		{GUID: "uhd", Title: "Show.S13E06.2160p.WEB-DL.x265-playWEB"},
+	}
+	cands := []autograb.Candidate{
+		{Title: releases[0].Title, Resolution: 720},
+		{Title: releases[1].Title, Resolution: 1080},
+		{Title: releases[2].Title, Resolution: 2160},
+	}
+	gotR, gotC := keepAlignedMinResolution(releases, cands, 1080)
+	if len(gotR) != 2 || len(gotC) != 2 {
+		t.Fatalf("len releases=%d cands=%d, want 2/2", len(gotR), len(gotC))
+	}
+	if gotR[0].GUID != "elite" || gotC[0].Title != releases[1].Title {
+		t.Fatalf("index 0 = %s / %s, want elite", gotR[0].GUID, gotC[0].Title)
+	}
+	if gotR[1].GUID != "uhd" || gotC[1].Resolution != 2160 {
+		t.Fatalf("index 1 = %s res=%d, want uhd/2160", gotR[1].GUID, gotC[1].Resolution)
+	}
+}
+
+// TestRunAutoGrab_MinResolutionDoesNotDispatchDroppedRelease is the AHS S13E06
+// ELiTE recurrence: min 1080 drops a leading 720p, SelectBest then picks the
+// 2160p at filtered index 1. Before keepAlignedMinResolution, that index still
+// pointed at unfiltered releases[1] (the 1080p ELiTE).
+func TestRunAutoGrab_MinResolutionDoesNotDispatchDroppedRelease(t *testing.T) {
+	ctx := context.Background()
+	_, _, settingsStore, grabsStore, libStore, _, _, _, _, _ := testStores(t)
+	dl := newTestDownloader("gid-uhd", t.TempDir())
+	if err := settingsStore.Set(ctx, qualityTierKey(mode.Movies), string(quality.Medium)); err != nil {
+		t.Fatal(err)
+	}
+	if err := settingsStore.Set(ctx, moviesLibraryRootFolderKey, "/movies"); err != nil {
+		t.Fatal(err)
+	}
+	if err := libStore.SetTitleQualityPrefs(ctx, mode.Movies, 42,
+		[]quality.Tier{quality.Medium, quality.High, quality.Lossless}, 1080, true); err != nil {
+		t.Fatal(err)
+	}
+
+	sd := prowlarr.Release{
+		GUID: "sd", Title: "Show.2023.720p.WEB-DL.x264-SD", Indexer: "I",
+		Protocol: prowlarr.Torrent, Size: 2_000_000_000, Seeders: 50,
+		DownloadURL: "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	}
+	elite := prowlarr.Release{
+		GUID: "elite", Title: "American.Horror.Story.S13E06.1080p.x265-ELiTE", Indexer: "NZBGeek",
+		Protocol: prowlarr.Torrent, Size: 307_988_000, Seeders: 50,
+		DownloadURL: "magnet:?xt=urn:btih:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+	}
+	uhd := prowlarr.Release{
+		GUID: "uhd", Title: "Show.2023.2160p.WEB-DL.x265-playWEB", Indexer: "I",
+		Protocol: prowlarr.Torrent, Size: 20_000_000_000, Seeders: 50,
+		DownloadURL: "magnet:?xt=urn:btih:cccccccccccccccccccccccccccccccccccccccc",
+	}
+
+	out, err := RunAutoGrab(ctx,
+		AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore, LibStore: libStore},
+		&mode.Session{Mode: mode.Movies, Downloader: dl, TMDB: releasedTMDBClient(t)},
+		AutoGrabRequest{
+			Mode: mode.Movies, Title: "Show", TMDBID: 42,
+			Trigger:        TriggerOperator,
+			Releases:       []prowlarr.Release{sd, elite, uhd},
+			RuntimeSeconds: 6000,
+		})
+	if err != nil {
+		t.Fatalf("RunAutoGrab: %v", err)
+	}
+	if !out.Grabbed {
+		t.Fatalf("expected UHD dispatch, got %+v", out)
+	}
+	picked := out.Releases[out.Selection.PickIndex]
+	if picked.GUID != "uhd" {
+		t.Fatalf("dispatched %s (%s), want uhd — min-res filter desynced release indices", picked.GUID, picked.Title)
 	}
 }

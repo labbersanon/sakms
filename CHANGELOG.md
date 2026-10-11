@@ -10689,4 +10689,17 @@ status stays active.
 | `internal/autograb/autograb_test.go` | live ELiTE 307988000 B / 24 min / 1080 x265 vs Medium |
 | `internal/api/import_quality_test.go` | reject + fail-open + Adult skip |
 
+## 2026-10-10 — Auto-grab min-resolution filter must keep release indices aligned
+
+**Problem:** After #141, drain dispatched `American.Horror.Story.S13E06.1080p.x265-ELiTE` again. The grade log said `status=qualified score=29.13Mbps floor=20.00Mbps implied=18.20Mbps runtime=1500s size=3413119000 codec=x265 res=2160` — a 2160p ~3.4 GB file's math on a 1080p ELiTE title.
+**Root cause:** `requireMinResolution` dropped below-min candidates (a leading 720p when AHS min is 1080) but left `pr.releases` unfiltered. `SelectBest` then picked the 2160p at filtered index 1, and dispatch used `releases[1]` which was still the ELiTE NZB. Import never ran; grab 2165 sat queued.
+**Fix:** Filter releases and candidates together (`keepAlignedMinResolution`). Skip dispatch when the graded title and NZB title disagree.
+**Outcome:** A 720p + ELiTE + 2160p list with min 1080 dispatches the 2160p NZB, not ELiTE.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/autograb_shared.go` | keepAlignedMinResolution; mismatch skip |
+| `internal/api/autograb_shared_test.go` | leading-SD alignment + RunAutoGrab regression |
 

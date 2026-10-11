@@ -347,23 +347,17 @@ func (p *pool) dial(ctx context.Context) (*nntp.Conn, error) {
 		}
 		ch <- dialOutcome{c: c, err: err}
 	}()
-	wait := nntpDialTimeout
-	if wait <= 0 {
-		select {
-		case <-ctx.Done():
-			go discardDialOutcome(ch)
-			return nil, ctx.Err()
-		case o := <-ch:
-			return p.finishDial(addr, o)
-		}
+	var timeout <-chan time.Time
+	if nntpDialTimeout > 0 {
+		timer := time.NewTimer(nntpDialTimeout)
+		defer timer.Stop()
+		timeout = timer.C
 	}
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		go discardDialOutcome(ch)
 		return nil, ctx.Err()
-	case <-timer.C:
+	case <-timeout:
 		go discardDialOutcome(ch)
 		return nil, fmt.Errorf("usenet: dialing %s: %w", addr, os.ErrDeadlineExceeded)
 	case o := <-ch:

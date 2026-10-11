@@ -64,7 +64,10 @@ func TestSetNNTPDeadline_AppliesToLiveConn(t *testing.T) {
 	}
 }
 
-func TestDial_UnacceptedTCPTimesOut(t *testing.T) {
+// newBlackholePool returns a MaxConns=1 pool pointed at a listener that never
+// Accepts, with nntpDialTimeout shortened to 200ms for the test.
+func newBlackholePool(t *testing.T) *pool {
+	t.Helper()
 	orig := nntpDialTimeout
 	nntpDialTimeout = 200 * time.Millisecond
 	t.Cleanup(func() { nntpDialTimeout = orig })
@@ -73,12 +76,15 @@ func TestDial_UnacceptedTCPTimesOut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	t.Cleanup(func() { ln.Close() })
 	port := ln.Addr().(*net.TCPAddr).Port
+	return newPool(ServerConfig{Host: "127.0.0.1", Port: port, MaxConns: 1})
+}
 
-	p := newPool(ServerConfig{Host: "127.0.0.1", Port: port, MaxConns: 1})
+func TestDial_UnacceptedTCPTimesOut(t *testing.T) {
+	p := newBlackholePool(t)
 	start := time.Now()
-	_, err = p.dial(context.Background())
+	_, err := p.dial(context.Background())
 	elapsed := time.Since(start)
 	if err == nil {
 		t.Fatal("dial to a listener that never Accepts succeeded")
@@ -92,18 +98,7 @@ func TestDial_UnacceptedTCPTimesOut(t *testing.T) {
 }
 
 func TestGetCtx_DialTimeoutReleasesLiveToken(t *testing.T) {
-	orig := nntpDialTimeout
-	nntpDialTimeout = 200 * time.Millisecond
-	t.Cleanup(func() { nntpDialTimeout = orig })
-
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-	port := ln.Addr().(*net.TCPAddr).Port
-	p := newPool(ServerConfig{Host: "127.0.0.1", Port: port, MaxConns: 1})
-
+	p := newBlackholePool(t)
 	ctx := context.Background()
 	if _, err := p.getCtx(ctx); err == nil {
 		t.Fatal("first getCtx succeeded against a blackhole listener")

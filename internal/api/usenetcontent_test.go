@@ -109,7 +109,7 @@ func TestContentUnusableFailure(t *testing.T) {
 }
 
 // TestParkUsenetContentFailure_HappyPath asserts the park write: due-now,
-// GID cleared, transport_retry_count=0, keys appended, Forget NOT called,
+// GID cleared, transport_retry_count=0, keys appended, Forget called,
 // owned staging wiped.
 func TestParkUsenetContentFailure_HappyPath(t *testing.T) {
 	ctx := context.Background()
@@ -161,8 +161,8 @@ func TestParkUsenetContentFailure_HappyPath(t *testing.T) {
 	if grabs.AlternateAttempts(grabs.ParseTriedReleaseKeys(got.TriedReleaseKeys)) != 1 {
 		t.Errorf("AlternateAttempts = %d, want 1 (u: entry added)", grabs.AlternateAttempts(grabs.ParseTriedReleaseKeys(got.TriedReleaseKeys)))
 	}
-	if len(eng.forgotGIDs) != 0 {
-		t.Errorf("engine.Forget called on content park; got %v (error row must stay on Downloads)", eng.forgotGIDs)
+	if len(eng.forgotGIDs) != 1 || eng.forgotGIDs[0] != "nzb-happy" {
+		t.Errorf("engine.Forget = %v, want [nzb-happy] (Downloads must not keep the Failed row)", eng.forgotGIDs)
 	}
 	if _, err := os.Stat(gidDir); !os.IsNotExist(err) {
 		t.Errorf("owned staging %s still present after content park: %v", gidDir, err)
@@ -212,8 +212,8 @@ func TestParkUsenetContentFailure_ReleaseKeysUseNZBTitleNotMediaTitle(t *testing
 	if got.TriedReleaseKeys == mediaKeys {
 		t.Error("tried_release_keys hashed media/show title; must use NZB/release title")
 	}
-	if len(eng.forgotGIDs) != 0 {
-		t.Errorf("Forget called; got %v", eng.forgotGIDs)
+	if len(eng.forgotGIDs) != 1 || eng.forgotGIDs[0] != "nzb-nzbtitle" {
+		t.Errorf("engine.Forget = %v, want [nzb-nzbtitle]", eng.forgotGIDs)
 	}
 }
 

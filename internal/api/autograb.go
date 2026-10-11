@@ -459,6 +459,35 @@ func seriesEpisodeRuntimeSeconds(ctx context.Context, sess *mode.Session, tmdbID
 	return 0
 }
 
+// autoGrabRuntimeSeconds is the bitrate scorer's runtime for one AutoGrabRequest.
+// Native NNTP search used to pass req.RuntimeSeconds (0 on every series/movies
+// operator and drain grab), so GradeCandidate short-circuited to unknown-bitrate
+// and the native phase could never reject a tiny encode on size. Movies/Series
+// resolve TMDB the same way autoGrabSearch already does; Adult uses DurationSeconds.
+func autoGrabRuntimeSeconds(ctx context.Context, sess *mode.Session, req AutoGrabRequest) float64 {
+	if req.RuntimeSeconds > 0 {
+		return req.RuntimeSeconds
+	}
+	if req.Mode == mode.Adult {
+		return float64(req.DurationSeconds)
+	}
+	if sess == nil || sess.TMDB == nil {
+		return 0
+	}
+	switch req.Mode {
+	case mode.Series:
+		return seriesEpisodeRuntimeSeconds(ctx, sess, req.TMDBID, req.Season, req.Episode)
+	case mode.Movies:
+		details, err := sess.TMDB.MovieDetails(ctx, req.TMDBID)
+		if err != nil || details.Runtime <= 0 {
+			return 0
+		}
+		return float64(details.Runtime) * 60
+	default:
+		return 0
+	}
+}
+
 // These patterns classify a release title as a season pack / multi-episode
 // release rather than the single episode a single-episode grab asked for.
 // Indexers routinely return season packs among the matches for an

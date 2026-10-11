@@ -273,7 +273,6 @@ func importGrabContent(ctx context.Context, libStore *library.Store, g *grabs.Gr
 }
 
 func importGrabMovies(ctx context.Context, libStore *library.Store, g *grabs.Grab, contentPath, tier string, settingsStore *settings.Store, sess *mode.Session, prober dedup.Prober) ([]mode.PathChange, error) {
-	_ = prober
 	preset, err := resolveNamingPreset(ctx, settingsStore, mode.Movies)
 	if err != nil {
 		return nil, fmt.Errorf("resolving movies naming preset: %w", err)
@@ -288,6 +287,9 @@ func importGrabMovies(ctx context.Context, libStore *library.Store, g *grabs.Gra
 	// Troubleshooting: importGrabContent returns ErrNoVideoUnpacked.
 	// Review if: torrent complete grows the same check (it shares this function).
 	if err := usenet.VideoLooksFinished(videoPath, 0); err != nil {
+		return nil, err
+	}
+	if err := refuseImportBelowFloor(ctx, libStore, settingsStore, sess, g, videoPath, prober); err != nil {
 		return nil, err
 	}
 	year := movieYearFromTMDB(ctx, sess, g.TMDBID)
@@ -358,7 +360,6 @@ func resolveImportEpisodeSlot(ctx context.Context, sess *mode.Session, tmdbID in
 var errSeriesImportNoEpisodeIdentity = errors.New("download completed but no episode files could be identified — files left in place for Rename")
 
 func importGrabSeries(ctx context.Context, libStore *library.Store, g *grabs.Grab, contentPath, tier string, settingsStore *settings.Store, sess *mode.Session, prober dedup.Prober) ([]mode.PathChange, error) {
-	_ = prober
 	preset, err := resolveNamingPreset(ctx, settingsStore, mode.Series)
 	if err != nil {
 		return nil, fmt.Errorf("resolving series naming preset: %w", err)
@@ -377,6 +378,9 @@ func importGrabSeries(ctx context.Context, libStore *library.Store, g *grabs.Gra
 	var changes []mode.PathChange
 	for _, videoPath := range videoPaths {
 		if err := usenet.VideoLooksFinished(videoPath, 0); err != nil {
+			return changes, err
+		}
+		if err := refuseImportBelowFloor(ctx, libStore, settingsStore, sess, g, videoPath, prober); err != nil {
 			return changes, err
 		}
 		// Claude 2026-10-01: Loose parse so Season-dir NN-NN duals import as two episodes.

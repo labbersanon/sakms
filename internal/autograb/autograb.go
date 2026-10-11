@@ -26,11 +26,18 @@
 package autograb
 
 import (
+	"errors"
 	"sort"
 	"strings"
 
 	"github.com/labbersanon/sakms/internal/quality"
 )
+
+// ErrBelowQualityFloor is a downloaded file whose implied bitrate does not
+// clear the title's quality-tier floor. Import wraps this with
+// usenet.ErrContentUnusable so the alternate-NZB park fires; pre-grab Select
+// never returns it (below-floor is StatusBelowFloor, not an error).
+var ErrBelowQualityFloor = errors.New("video is below the title quality floor")
 
 // Tunable defaults. These are the plan's proposed starting points, explicitly
 // documented as tunable (validate against the real library once live), not

@@ -10669,4 +10669,24 @@ status stays active.
 | `internal/api/downloads.go` | X-Accel-Buffering: no; comment-flush; log marshal errors |
 | `frontend/src/screens/DownloadDetailPopup.tsx` | on-disk size falls back to completedLength |
 
+## 2026-10-10 — Import rejects below-floor video; native search uses TMDB runtime
+
+**Problem:** Discover Grab imported `American.Horror.Story.S13E06.1080p.x265-ELiTE` (~294 MiB / 24 min, score 2.74 Mbps) as `medium`. AHS prefs are medium+high+lossless min 1080 (floor 5 Mbps at 1080p). S13E01–E05 on disk are 2.4–3.4 GB.
+**Root cause:** Native NNTP scoring used `req.RuntimeSeconds` (0 on series Grab/drain), so that phase could not apply the bitrate floor. Import then stamped `autoGrabTier` (the preference floor label) with no size/runtime check, so a below-floor file looked like a quality pass. Post-grab review only flags duration mismatch and stored `duration_sec=0`.
+**Fix:** Native/pre-fetched phases inherit TMDB runtime the same way Prowlarr search already does. Dispatch logs score/floor/runtime/size. After unpack, import grades actual file size × probed (else TMDB) runtime and parks an alternate NZB on below-floor/mislabeled instead of relocating into the library.
+**Outcome:** A 1080p x265 ~300 MB / 24 min file is `below-floor` at Medium and does not import. Requests shows "below the quality floor — trying a different release".
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/autograb.go` | `autoGrabRuntimeSeconds` fills TMDB/Adult runtime when request runtime is 0 |
+| `internal/api/autograb_shared.go` | native phase uses that runtime; log dispatch grade |
+| `internal/api/import_quality.go` | import-time `GradeCandidate` gate |
+| `internal/api/import.go` | movies/series import call the gate before relocate |
+| `internal/api/usenetcontent.go` | below-floor reason on alternate-NZB park |
+| `internal/autograb/autograb.go` | `ErrBelowQualityFloor` |
+| `internal/autograb/autograb_test.go` | live ELiTE 307988000 B / 24 min / 1080 x265 vs Medium |
+| `internal/api/import_quality_test.go` | reject + fail-open + Adult skip |
+
 

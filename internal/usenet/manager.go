@@ -234,6 +234,8 @@ type dlState struct {
 	speed    int64
 	// Claude 2026-10-11: per-job unpack passwords (NZB meta / title / X-DNZB-Password).
 	passwords []string
+	// passwordDiscoverTried is set after one Discover/AI search for this GID.
+	passwordDiscoverTried bool
 }
 
 // Manager is the Usenet download engine. It starts NZB downloads, tracks
@@ -301,6 +303,13 @@ type Manager struct {
 	hwBenchRunning  bool
 	hwBenchHold     <-chan struct{}
 	unpackPasswords []string
+	// Claude 2026-10-11: Discover/AI password lookup when NZB+sidecar have none.
+	// Reason: Smad-style RARs encrypt with a password posted on a sibling NZB
+	//   title or a comment; aborting peek with no search left the slot parked.
+	// Troubleshooting: journal "discovered N unpack password candidate(s)";
+	//   password.txt appears in the GID staging dir.
+	// Review if: a per-job UI password field replaces search.
+	discoverPasswords PasswordDiscoverFunc
 }
 
 // DefaultMaxConcurrentDownloads is used when Config.MaxConcurrentDownloads is
@@ -626,6 +635,17 @@ func (m *Manager) SetUnpackPasswords(pw []string) {
 	m.mu.Unlock()
 }
 
+// SetPasswordDiscoverer installs the Discover/AI lookup used when a job has
+// no NZB meta, title password, or staging sidecar. Nil disables search.
+func (m *Manager) SetPasswordDiscoverer(fn PasswordDiscoverFunc) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.discoverPasswords = fn
+	m.mu.Unlock()
+}
+
 func (m *Manager) unpackPasswordList(dl *dlState) []string {
 	var extra []string
 	if m != nil {
@@ -653,12 +673,57 @@ func (m *Manager) hasUnpackPassword(gid string) bool {
 	if len(m.unpackPasswords) > 0 {
 		return true
 	}
-	if gid != "" {
-		if dl := m.downloads[gid]; dl != nil && len(dl.passwords) > 0 {
-			return true
-		}
+	if gid == "" {
+		return false
 	}
-	return false
+	dl := m.downloads[gid]
+	if dl == nil {
+		return false
+	}
+	if len(dl.passwords) > 0 {
+		return true
+	}
+	return len(stagingPasswords(dl.stagingDir)) > 0
+}
+
+const passwordDiscoverTimeout = 15 * time.Second
+
+// discoverJobPasswords runs one Discover/AI search when this GID has no
+// per-job password and no staging sidecar. Global operator passwords do not
+// skip search: they are a fallback list, not a sidecar.
+func (m *Manager) discoverJobPasswords(ctx context.Context, gid string) {
+	if m == nil || gid == "" {
+		return
+	}
+	m.mu.Lock()
+	dl := m.downloads[gid]
+	fn := m.discoverPasswords
+	if dl == nil || fn == nil || dl.passwordDiscoverTried {
+		m.mu.Unlock()
+		return
+	}
+	if len(dl.passwords) > 0 || len(stagingPasswords(dl.stagingDir)) > 0 {
+		m.mu.Unlock()
+		return
+	}
+	dl.passwordDiscoverTried = true
+	title := dl.name
+	dir := dl.stagingDir
+	m.mu.Unlock()
+
+	dctx, cancel := context.WithTimeout(ctx, passwordDiscoverTimeout)
+	defer cancel()
+	found := fn(dctx, title)
+	if len(found) == 0 {
+		return
+	}
+	writeStagingPasswords(dir, found)
+	m.mu.Lock()
+	if dl := m.downloads[gid]; dl != nil {
+		dl.passwords = mergePasswords(dl.passwords, found)
+	}
+	m.mu.Unlock()
+	log.Printf("usenet: discovered %d unpack password candidate(s) for %s", len(found), gid)
 }
 
 func (m *Manager) SetResumePolicy(enabled, forceFull bool) {
@@ -1634,6 +1699,16 @@ func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState
 	unpacked, unpackErr := unpackArchives(dl.stagingDir, files, func(done, total int64) {
 		m.setPhaseProgress(gid, done, total)
 	}, passwords)
+	if errors.Is(unpackErr, ErrPasswordProtected) {
+		before := len(passwords)
+		m.discoverJobPasswords(ctx, gid)
+		passwords = m.unpackPasswordList(dl)
+		if len(passwords) > before {
+			unpacked, unpackErr = unpackArchives(dl.stagingDir, files, func(done, total int64) {
+				m.setPhaseProgress(gid, done, total)
+			}, passwords)
+		}
+	}
 	if errors.Is(unpackErr, ErrUnpackChecksum) {
 		if cmdErr := par2CmdRepair(dl.stagingDir); cmdErr != nil {
 			log.Printf("usenet: par2cmdline after checksum %s: %v", gid, cmdErr)

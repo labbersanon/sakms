@@ -125,6 +125,12 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 		TraktBaseURL:  trakt.DefaultBaseURL,
 		Cache:         discoverCache,
 	}
+	// Claude 2026-10-11: encrypted-RAR password search when NZB+sidecar are empty.
+	// Reason: Discover sibling titles often carry {{pw}}; AI web search is opt-in
+	//   via the existing ai_fallback_enabled toggle.
+	// Troubleshooting: journal "usenet password discover:"; staging password.txt.
+	// Review if: a per-job UI password field replaces search.
+	attachUsenetPasswordDiscoverer(nzb, httpClient, connStore, scStore, settingsStore, dl)
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/connections/test", connectionsTestHandler(httpClient))
 	// test-stored tests an ALREADY-SAVED connection using its stored secret,

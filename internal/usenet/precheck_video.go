@@ -97,8 +97,16 @@ func (m *Manager) precheckVideo(ctx context.Context, payload []NZBFile, skip map
 		switch ev {
 		case evidenceVideo, evidenceArchive:
 			if ev == evidenceArchive && rarLooksEncrypted(seg.data) && !m.hasUnpackPassword(progressGID) {
-				log.Printf("usenet precheck: abort — encrypted RAR and no password file=%q", peekLabel(t.subject, seg.filename))
-				return ErrPasswordProtected
+				// Claude 2026-10-11: Discover/AI when NZB+sidecar have no password.
+				// Reason: sibling indexer titles often carry {{pw}}; aborting peek
+				//   without a search parked Smad RARs that a Discover hit would unlock.
+				// Troubleshooting: journal "discovered N unpack password candidate(s)".
+				// Review if: a per-job UI password field replaces search.
+				m.discoverJobPasswords(ctx, progressGID)
+				if !m.hasUnpackPassword(progressGID) {
+					log.Printf("usenet precheck: abort — encrypted RAR and no password file=%q", peekLabel(t.subject, seg.filename))
+					return ErrPasswordProtected
+				}
 			}
 			log.Printf("usenet precheck: video peek ok file=%q", peekLabel(t.subject, seg.filename))
 			return nil

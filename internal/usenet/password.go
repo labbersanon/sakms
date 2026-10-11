@@ -1,11 +1,16 @@
 package usenet
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 )
+
+// PasswordDiscoverFunc searches Discover/native/AI for unpack passwords when
+// the NZB and staging sidecar did not carry one. Must not log the values.
+type PasswordDiscoverFunc func(ctx context.Context, title string) []string
 
 // Claude 2026-10-11: SAB/NZBGet-compatible password sources for unrar.
 // Reason: password RARs (Smad hash sets) burned a full BODY then stalled on
@@ -18,6 +23,8 @@ import (
 var (
 	titleBracePW    = regexp.MustCompile(`\{\{([^{}]+)\}\}`)
 	titlePasswordEq = regexp.MustCompile(`(?i)(?:^|[\s.])password=(\S+)`)
+	// nfo/txt lines: "password: foo", "Password is foo", "PW=foo"
+	articlePasswordRE = regexp.MustCompile(`(?i)(?:archive\s+)?(?:pass(?:word)?|pw)\s*(?:is|:|=)\s*(\S+)`)
 )
 
 // SplitTitlePassword pulls a SAB-style password out of an NZB/job name.
@@ -102,6 +109,18 @@ func collectJobPasswords(dnzb DNZBHeaders, nzb *NZB, name string, extra []string
 			add(pw)
 		}
 	}
+	if nzb != nil {
+		for _, f := range nzb.Files {
+			if _, pw := SplitTitlePassword(f.Subject); pw != "" {
+				add(pw)
+			}
+			if n := filenameFromSubject(f.Subject); n != "" {
+				if _, pw := SplitTitlePassword(n); pw != "" {
+					add(pw)
+				}
+			}
+		}
+	}
 	for _, pw := range extra {
 		add(pw)
 	}
@@ -124,6 +143,39 @@ func stagingPasswords(dir string) []string {
 		}
 	}
 	return out
+}
+
+// writeStagingPasswords persists discovered passwords as password.txt so the
+// next peek/unpack/resume does not re-search. Sidecar-only — never the global
+// operator list.
+func writeStagingPasswords(dir string, passwords []string) {
+	if dir == "" || len(passwords) == 0 {
+		return
+	}
+	cleaned := mergePasswords(passwords)
+	if len(cleaned) == 0 {
+		return
+	}
+	body := strings.Join(cleaned, "\n") + "\n"
+	_ = os.WriteFile(filepath.Join(dir, "password.txt"), []byte(body), 0o600)
+}
+
+// DiscoverySearchQuery is the Discover/native query for a job name: drop an
+// embedded SAB password, keep the scene title.
+func DiscoverySearchQuery(name string) string {
+	title, _ := SplitTitlePassword(name)
+	return trimJobName(title)
+}
+
+// PasswordsFromTitles extracts SAB-style passwords from indexer/native titles.
+func PasswordsFromTitles(titles []string) []string {
+	var out []string
+	for _, t := range titles {
+		if _, pw := SplitTitlePassword(t); pw != "" {
+			out = append(out, pw)
+		}
+	}
+	return mergePasswords(out)
 }
 
 func mergePasswords(groups ...[]string) []string {

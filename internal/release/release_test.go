@@ -228,6 +228,13 @@ func TestGroupTokens_Smad(t *testing.T) {
 	}
 }
 
+func TestGroupTokens_IndexerDuplicateSuffix(t *testing.T) {
+	got := GroupTokens("Mickey.Mouse.Clubhouse.S04E25.Mickeys.Monster.Musical.Part.2.1080p.DSNP.WEB-DL.AAC2.0.AVC-AndreMor 1")
+	if len(got) != 1 || got[0] != "andremor" {
+		t.Fatalf("got %v want [andremor]", got)
+	}
+}
+
 func TestScoreCandidate_BlockedGroupStaysBlockedRegardlessOfBonuses(t *testing.T) {
 	prefs := DefaultProfile()
 	prefs.BlockedGroups = []string{"badgroup"}

@@ -177,6 +177,44 @@ func TestIsEXDEV(t *testing.T) {
 // TempDir is one filesystem, we still verify Move succeeds when src/dst are
 // same-FS (rename), covered above. This test documents the EXDEV error shape
 // Move must accept.
+func TestCopyFile_ReadonlySourceGetsWritableDest(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+	src := filepath.Join(srcDir, "scene.mp4")
+	dst := filepath.Join(dstDir, "library.mp4")
+	if err := os.WriteFile(src, []byte("payload"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := copyFile(src, dst, info.Mode()); err != nil {
+		t.Fatalf("copyFile: %v", err)
+	}
+	st, err := os.Stat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm()&0o200 == 0 {
+		t.Fatalf("dest mode %o has no owner-write; want source|0644", st.Mode().Perm())
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil || string(got) != "payload" {
+		t.Fatalf("dst = %q err=%v", got, err)
+	}
+}
+
+func TestWrapDestOpen_MarksPermission(t *testing.T) {
+	err := wrapDestOpen(&os.PathError{Op: "open", Path: "/media/x", Err: syscall.EPERM})
+	if !errors.Is(err, ErrDestNotWritable) {
+		t.Fatalf("err = %v, want ErrDestNotWritable", err)
+	}
+	if errors.Is(wrapDestOpen(os.ErrNotExist), ErrDestNotWritable) {
+		t.Fatal("ErrNotExist must not be dest-not-writable")
+	}
+}
+
 func TestMove_EXDEVErrorShape(t *testing.T) {
 	link := &os.LinkError{Op: "rename", Old: "/data/a", New: "/adult/a", Err: syscall.EXDEV}
 	if link.Error() == "" || !isEXDEV(link) {

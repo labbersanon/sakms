@@ -20,6 +20,7 @@ import (
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/place"
 	"github.com/labbersanon/sakms/internal/rename"
 	"github.com/labbersanon/sakms/internal/searchterm"
 	"github.com/labbersanon/sakms/internal/serviceconn"
@@ -298,6 +299,15 @@ func reconcileUsenetInFlight(ctx context.Context, deps DownloadReconcileDeps, g 
 		if err := reconcileImportUsenet(ctx, deps, g, stagingPath); err != nil {
 			if contentUnusableFailure(err) {
 				log.Printf("download reconcile: grab %d unusable staging — already parked, not relaunching", g.ID)
+				return false
+			}
+			// Claude 2026-10-11: dest EPERM is not a bad NZB — do not relaunch.
+			// Reason: CIFS rejected copyFile of a 0444 staging mp4; relaunch
+			//   re-downloaded Arrested Development S04E14/E15 in a loop.
+			// Troubleshooting: journal "dest not writable, not relaunching"; staging kept.
+			// Review if: dest ACL repair is automated.
+			if errors.Is(err, place.ErrDestNotWritable) {
+				log.Printf("download reconcile: importing usenet staging for grab %d: %v — dest not writable, not relaunching", g.ID, err)
 				return false
 			}
 			log.Printf("download reconcile: importing usenet staging for grab %d: %v — will relaunch", g.ID, err)

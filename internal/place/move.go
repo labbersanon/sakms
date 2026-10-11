@@ -138,6 +138,25 @@ func copyPath(src, dst string) error {
 	return copyFile(src, dst, info.Mode())
 }
 
+// ErrDestNotWritable is a CIFS/ACL deny creating or truncating the library dest.
+// Import must not relaunch the NZB — the release is fine; the dest is not.
+var ErrDestNotWritable = errors.New("place: destination not writable")
+
+func destFilePerm(mode fs.FileMode) fs.FileMode {
+	return mode.Perm() | 0o644
+}
+
+func destNotWritable(err error) bool {
+	return errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES)
+}
+
+func wrapDestOpen(err error) error {
+	if destNotWritable(err) {
+		return fmt.Errorf("%w: %w", ErrDestNotWritable, err)
+	}
+	return err
+}
+
 func copyFile(src, dst string, mode fs.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
@@ -147,9 +166,20 @@ func copyFile(src, dst string, mode fs.FileMode) error {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode.Perm())
+	// Claude 2026-10-11: dest create mode is source|0644, never a copy of 0444.
+	// Reason: unrar preserves archive unix mode; CIFS nounix rejects O_WRONLY
+	//   create with 0444 (EPERM) even when the season dir is writable.
+	// Troubleshooting: Arrested Development S04E14/E15 import permission denied;
+	//   staging mp4 is 0444; touch as uid 1001 in the dest dir succeeds.
+	// Review if: library dest mode is a setting, or CIFS unix extensions are on.
+	perm := destFilePerm(mode)
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	if destNotWritable(err) {
+		_ = os.Remove(dst)
+		out, err = os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	}
 	if err != nil {
-		return err
+		return wrapDestOpen(err)
 	}
 	if _, err := io.Copy(out, in); err != nil {
 		out.Close()

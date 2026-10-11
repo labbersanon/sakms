@@ -216,6 +216,45 @@ func TestParkUsenetContentFailure_ReleaseKeysUseNZBTitleNotMediaTitle(t *testing
 	}
 }
 
+func TestParkUsenetContentFailure_IndexerDuplicateTitleWritesGroupKey(t *testing.T) {
+	ctx := context.Background()
+	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
+	deps := AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore}
+
+	_ = dispatchedUsenetGrab(t, grabsStore, "nzb-andremor")
+	gLoaded, err := grabsStore.GetByDownloadGID(ctx, "nzb-andremor")
+	if err != nil {
+		t.Fatalf("GetByDownloadGID: %v", err)
+	}
+	g := *gLoaded
+	nzbTitle := "Mickey.Mouse.Clubhouse.S04E25.Mickeys.Monster.Musical.Part.2.1080p.DSNP.WEB-DL.AAC2.0.AVC-AndreMor 1"
+	eng := &fakeForgetEngine{
+		stagingDir: t.TempDir(),
+		filenames:  map[string]string{"nzb-andremor": nzbTitle},
+	}
+	if _, err := parkUsenetContentFailure(ctx, deps, g, usenet.ErrNoVideoUnpacked, eng); err != nil {
+		t.Fatalf("parkUsenetContentFailure: %v", err)
+	}
+	got, err := grabsStore.Get(ctx, g.ID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	want := parkTriedKeys(g.DownloadURL, nzbTitle)
+	if got.TriedReleaseKeys != want {
+		t.Errorf("tried_release_keys = %q, want %q", got.TriedReleaseKeys, want)
+	}
+	foundGroup := false
+	for _, k := range grabs.ParseTriedReleaseKeys(got.TriedReleaseKeys) {
+		if k == "g:andremor" {
+			foundGroup = true
+			break
+		}
+	}
+	if !foundGroup {
+		t.Errorf("tried_release_keys = %q, want g:andremor", got.TriedReleaseKeys)
+	}
+}
+
 // TestParkUsenetContentFailure_EmptyReleaseTitleKeysURLOnly asserts that when
 // the engine has no Filename we still store the URL key and never hash g.Title.
 func TestParkUsenetContentFailure_EmptyReleaseTitleKeysURLOnly(t *testing.T) {

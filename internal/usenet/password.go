@@ -195,14 +195,14 @@ func mergePasswords(groups ...[]string) []string {
 }
 
 func preferredNZBName(passed string, dnzb DNZBHeaders, nzb *NZB) string {
-	if s := strings.TrimSpace(dnzb.Name); s != "" {
+	if s := strings.TrimSpace(dnzb.Name); s != "" && !obfuscatedNZBName(s) {
 		title, _ := SplitTitlePassword(s)
 		if title != "" {
 			return title
 		}
 		return s
 	}
-	if s := nzbMetaValue(nzb, "title"); s != "" {
+	if s := nzbMetaValue(nzb, "title"); s != "" && !obfuscatedNZBName(s) {
 		title, _ := SplitTitlePassword(s)
 		if title != "" {
 			return title
@@ -217,4 +217,29 @@ func preferredNZBName(passed string, dnzb DNZBHeaders, nzb *NZB) string {
 		return s
 	}
 	return "usenet-download"
+}
+
+// Claude 2026-10-11: skip yEnc/X-DNZB hex blobs as the NZB display name.
+// Reason: preferredNZBName used to prefer X-DNZB-Name even when it was
+//
+//	81614M36….mkv, so Downloads and park keys lost the Prowlarr title.
+//
+// Troubleshooting: grab 1206 Filename was hex.mkv; t: keys never matched r.Title.
+// Review if: indexer title is stored on the grab and X-DNZB-Name is display-only.
+func obfuscatedNZBName(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	lower := strings.ToLower(s)
+	for _, ext := range []string{".mkv", ".mp4", ".avi", ".ts", ".m4v", ".nzb"} {
+		if strings.HasSuffix(lower, ext) {
+			s = s[:len(s)-len(ext)]
+			break
+		}
+	}
+	if strings.ContainsAny(s, ".-_ ") {
+		return false
+	}
+	return len(s) >= 16
 }

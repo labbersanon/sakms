@@ -33,7 +33,13 @@ var (
 	codecPattern      = regexp.MustCompile(`(?i)\b(x264|x265|h\.?264|h\.?265|hevc|xvid|av1)\b`)
 	// groupPattern matches the scene-naming convention of a trailing
 	// "-GROUPNAME" at the very end of a release title.
-	groupPattern = regexp.MustCompile(`-([A-Za-z0-9]+)$`)
+	// Claude 2026-10-11: optional " 1" (or " N") suffix after the group.
+	// Reason: NZBHydra duplicate listings are titled "…-AndreMor 1"; `$` after
+	//   GROUP missed them so park never wrote g:andremor.
+	// Troubleshooting: dispatch of "…AndreMor 1" after a content park of the same NZB.
+	// Review if: indexer duplicate suffix is stored as its own field instead of title.
+	// Old: `-([A-Za-z0-9]+)$`
+	groupPattern = regexp.MustCompile(`-([A-Za-z0-9]+)(?:\s+\d+)?$`)
 )
 
 // sourcePatterns is ordered so a more specific match (e.g. "web-dl") is

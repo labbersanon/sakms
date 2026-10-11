@@ -18,6 +18,9 @@ import (
 //   season has no library_season_monitored=true row.
 // Review if: operator Discover grab of an unmonitored season should be an
 //   explicit override (it is not today).
+// Claude 2026-10-11: RunAutoGrab skips this for TriggerQualityWatch.
+// Reason: upgrade-watch is an owned-file hunt, not a missing-episode grab.
+// Troubleshooting: TestMonitorSeriesUpgradeWatch_HuntsWhenFileBelowPrefs.
 
 var (
 	errSeriesGrabNeedsSeason   = errors.New("this series is tracked — grab a monitored season, not the whole show")

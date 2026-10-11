@@ -14,6 +14,7 @@ import (
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/prowlarr"
+	"github.com/labbersanon/sakms/internal/release"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenet"
 	"github.com/labbersanon/sakms/internal/usenetsearch"
@@ -363,8 +364,19 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 	//   library_season_monitored is not true for that season.
 	// Review if: an untracked series should still allow a season-less grab
 	//   (it does — GetSeriesByTMDBID not-found is allowed).
-	if err := refuseUnmonitoredSeriesGrab(ctx, deps.LibStore, req.Mode, req.TMDBID, req.Season, req.SeasonSpecified); err != nil {
-		return AutoGrabOutcome{Status: http.StatusConflict, Err: err}, err
+	// Claude 2026-10-11: skip this gate for TriggerQualityWatch.
+	// Reason: upgrade-watch hunts a better copy of an ON-DISK episode under a
+	//   series-level flag. The monitor table means "grab missing episodes of
+	//   this season", not "refuse upgrades of files we already have". Applying
+	//   the gate here 409s TestMonitorSeriesUpgradeWatch_HuntsWhenFileBelowPrefs
+	//   (red on main since #134) with errSeriesSeasonUnmonitored.
+	// Troubleshooting: series upgrade-watch "auto-grab failed (*errors.errorString)"
+	//   and no parked grab — refuseUnmonitoredSeriesGrab wrapping that error.
+	// Review if: upgrade-watch becomes per-season instead of series-level.
+	if req.Trigger != TriggerQualityWatch {
+		if err := refuseUnmonitoredSeriesGrab(ctx, deps.LibStore, req.Mode, req.TMDBID, req.Season, req.SeasonSpecified); err != nil {
+			return AutoGrabOutcome{Status: http.StatusConflict, Err: err}, err
+		}
 	}
 
 	// Claude 2026-09-16: movie-release gate — Layer 2 of CAM-prevention.
@@ -877,6 +889,11 @@ func filterExcludedReleases(releases []prowlarr.Release, excludeKeys []string) [
 	out := releases[:0:0]
 	for _, r := range releases {
 		rk := grabs.ReleaseKeys(r.DownloadURL, r.Title)
+		for _, tok := range release.GroupTokens(r.Title) {
+			if k := grabs.GroupKey(tok); k != "" {
+				rk = append(rk, k)
+			}
+		}
 		excluded := false
 		for _, k := range rk {
 			if keySet[k] {

@@ -40,7 +40,9 @@ var ErrNoVideoUnpacked = fmt.Errorf("%w: unpack produced no video", ErrContentUn
 // Review if: a distinct precheck-only sentinel is needed for operator copy.
 // Related: precheck_video.go, IsPrecheckReject.
 func IsPrecheckReject(err error) bool {
-	return errors.Is(err, ErrArticlesUnavailable) || errors.Is(err, ErrNoVideoUnpacked)
+	return errors.Is(err, ErrArticlesUnavailable) ||
+		errors.Is(err, ErrNoVideoUnpacked) ||
+		errors.Is(err, ErrPasswordProtected)
 }
 
 // Claude 2026-09-19: typed password-archive sentinel (wraps ErrContentUnusable).
@@ -49,8 +51,12 @@ func IsPrecheckReject(err error) bool {
 //	the alternate-release park via errors.Is(..., ErrContentUnusable).
 //
 // Troubleshooting: journal "password-protected archive"; Requests shows password reason.
-// Review if: password-file support is added (then this may become retryable same-NZB).
+// Review if: a UI per-job password field is added on top of NZB meta / title / password.txt.
 var ErrPasswordProtected = fmt.Errorf("%w: password-protected archive (unsupported)", ErrContentUnusable)
+
+// ErrUnpackChecksum is unrar packed-data CRC after PAR2 reported OK.
+// finalizeAssembled retries par2cmdline once, then parks as content-unusable.
+var ErrUnpackChecksum = fmt.Errorf("%w: packed data checksum error", ErrContentUnusable)
 
 // ErrUnpackToolMissing is an ENVIRONMENT fault — no unrar or 7z in the image.
 // A different release cannot fix it, so it must NOT be content-classified.

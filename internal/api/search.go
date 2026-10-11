@@ -553,10 +553,16 @@ func wrapUsenetPrecheckErr(err error) (string, string, int, error) {
 	if errors.Is(err, usenet.ErrNoVideoUnpacked) {
 		return "", "", http.StatusConflict, fmt.Errorf("this release has no usable video — pick another: %w", usenet.ErrNoVideoUnpacked)
 	}
+	if errors.Is(err, usenet.ErrPasswordProtected) {
+		return "", "", http.StatusConflict, fmt.Errorf("this release is password-protected — pick another: %w", usenet.ErrPasswordProtected)
+	}
 	return "", "", http.StatusConflict, fmt.Errorf("this release's articles aren't on your subscriptions — pick another: %w", usenet.ErrArticlesUnavailable)
 }
 
 func precheckParkReason(err error) string {
+	if errors.Is(err, usenet.ErrPasswordProtected) {
+		return contentPasswordReason
+	}
 	if errors.Is(err, usenet.ErrNoVideoUnpacked) {
 		return contentNoVideoReason
 	}

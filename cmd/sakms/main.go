@@ -1014,6 +1014,7 @@ func buildUsenetManager(ctx context.Context, dataDir string, serviceConnStore *s
 
 	resumeEnabled := settingBool(ctx, settingsStore, api.UsenetSegmentResumeEnabledKey, true)
 	forceFull := settingBool(ctx, settingsStore, api.UsenetSegmentResumeForceFullKey, false)
+	unpackPW, _ := api.LoadUnpackPasswords(ctx, settingsStore)
 	m := usenet.New(usenet.Config{
 		Servers:                servers,
 		StagingDir:             staging,
@@ -1022,6 +1023,7 @@ func buildUsenetManager(ctx context.Context, dataDir string, serviceConnStore *s
 		SegmentResume:          resumeEnabled,
 		ForceFullDownload:      forceFull,
 		RateCap:                rateCap,
+		UnpackPasswords:        unpackPW,
 	})
 	// Claude 2026-09-21: load last hardware-bench REPLACE, not live EMA.
 	// Reason: restart must restore the calibrated base (or compiled 25/40).

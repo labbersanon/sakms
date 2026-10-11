@@ -40,6 +40,16 @@ func TestDispatchArticlesUnavailableWrapPreservesSentinel(t *testing.T) {
 	}
 }
 
+func TestWrapUsenetPrecheckErr_PasswordKeepsSentinel(t *testing.T) {
+	_, _, status, err := wrapUsenetPrecheckErr(usenet.ErrPasswordProtected)
+	if status != http.StatusConflict {
+		t.Fatalf("status=%d want 409", status)
+	}
+	if !errors.Is(err, usenet.ErrPasswordProtected) || !usenet.IsPrecheckReject(err) {
+		t.Fatalf("err=%v must wrap ErrPasswordProtected", err)
+	}
+}
+
 func TestWrapUsenetPrecheckErr_NoVideoKeepsSentinel(t *testing.T) {
 	_, _, status, err := wrapUsenetPrecheckErr(usenet.ErrNoVideoUnpacked)
 	if status != http.StatusConflict {

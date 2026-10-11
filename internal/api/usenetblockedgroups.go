@@ -10,6 +10,7 @@ import (
 	"github.com/labbersanon/sakms/internal/prowlarr"
 	"github.com/labbersanon/sakms/internal/release"
 	"github.com/labbersanon/sakms/internal/settings"
+	"github.com/labbersanon/sakms/internal/usenet"
 	"github.com/labbersanon/sakms/internal/usenetsearch"
 )
 
@@ -26,7 +27,7 @@ const (
 )
 
 // Unset key → default. An explicit empty store value means the operator cleared the list.
-var defaultBlockedReleaseGroups = []string{"TupaC"}
+var defaultBlockedReleaseGroups = []string{"TupaC", "Smad"}
 
 type usenetBlockedReleaseGroupsBody struct {
 	Groups []string `json:"groups"`
@@ -106,8 +107,9 @@ func filterBlockedReleaseGroups(releases []prowlarr.Release, blocked []string) [
 		if _, hit := block[strings.ToLower(info.Group)]; hit {
 			continue
 		}
-		// Also skip titles that advertise a password in the name (2b fail-fast).
-		if releaseTitleLooksPasswordProtected(r.Title) {
+		// Skip titles that advertise an unknown password. A SAB-style embedded
+		// password ({{pw}} / password=) is extractable — let the grab proceed.
+		if _, pw := usenet.SplitTitlePassword(r.Title); pw == "" && releaseTitleLooksPasswordProtected(r.Title) {
 			continue
 		}
 		out = append(out, r)

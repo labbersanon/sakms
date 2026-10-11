@@ -60,6 +60,22 @@ func normaliseTitle(s string) string {
 	return strings.Join(strings.Fields(strings.ToLower(s)), " ")
 }
 
+// NormaliseTitle is the exported form of title fingerprinting used by park
+// to refuse a t: key of the media/show name.
+func NormaliseTitle(s string) string {
+	return normaliseTitle(s)
+}
+
+// GroupKey is the tried_release_keys entry that excludes a release group for
+// the rest of this grab's alternate-release episode (not a global block).
+func GroupKey(group string) string {
+	g := strings.ToLower(strings.TrimSpace(group))
+	if g == "" {
+		return ""
+	}
+	return "g:" + g
+}
+
 // ParseTriedReleaseKeys splits the newline-separated tried_release_keys value.
 func ParseTriedReleaseKeys(s string) []string {
 	if s == "" {
@@ -118,16 +134,18 @@ func appendKeys(existing, newKeys []string) []string {
 //   - status                = 'pending_retry'
 //   - retry_after           = after   (due-now: pass time.Now())
 //   - retry_reason          = reason
-//   - download_gid          = ''      (DueForRetry needs download_gid='')
+//   - download_gid          = ”      (DueForRetry needs download_gid=”)
 //   - transport_retry_count = 0       (transport episode, if any, is over)
 //   - tried_release_keys    = appended, de-duped
 //   - retry_count           UNCHANGED (days-ladder driver, not this episode)
-//   - next_search_scope     UNTOUCHED (stays '')
+//   - next_search_scope     UNTOUCHED (stays ”)
 //
 // Claude 2026-09-17: download_gid cleared — required by DueForRetry's
-//   'download_gid = ' filter; leaving it would make the row invisible to the
-//   very cycle it was parked for. Also prevents DueForResume treating it as
-//   a transport-resume row.
+//
+//	'download_gid = ' filter; leaving it would make the row invisible to the
+//	very cycle it was parked for. Also prevents DueForResume treating it as
+//	a transport-resume row.
+//
 // Review if: a resume_gid column separates the two concerns.
 func (s *Store) ParkForAlternateRelease(ctx context.Context, id int64, after time.Time, reason string, newKeys []string) error {
 	existing, err := s.triedReleaseKeys(ctx, id)

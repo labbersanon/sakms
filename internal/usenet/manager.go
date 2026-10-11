@@ -232,6 +232,8 @@ type dlState struct {
 	// Review if: ETA becomes too slow to reflect real speed drops/spikes.
 	speedWin ratesmooth.Window
 	speed    int64
+	// Claude 2026-10-11: per-job unpack passwords (NZB meta / title / X-DNZB-Password).
+	passwords []string
 }
 
 // Manager is the Usenet download engine. It starts NZB downloads, tracks
@@ -290,14 +292,15 @@ type Manager struct {
 	// Troubleshooting: repair/unpack ETA systematically high/low on this hardware.
 	// Review if: hardware priors become a typed settings struct or the engine
 	//   emits its own ETA.
-	repairBps      int64
-	unpackBps      int64
-	repairN        int
-	unpackN        int
-	hwCalibrated   bool
-	hwCalibratedAt time.Time
-	hwBenchRunning bool
-	hwBenchHold    <-chan struct{}
+	repairBps       int64
+	unpackBps       int64
+	repairN         int
+	unpackN         int
+	hwCalibrated    bool
+	hwCalibratedAt  time.Time
+	hwBenchRunning  bool
+	hwBenchHold     <-chan struct{}
+	unpackPasswords []string
 }
 
 // DefaultMaxConcurrentDownloads is used when Config.MaxConcurrentDownloads is
@@ -327,6 +330,9 @@ type Config struct {
 	// RateCap is the shared global download bandwidth limiter (torrent + Usenet).
 	// Nil means unlimited.
 	RateCap *xferlimit.Cap
+	// UnpackPasswords is the operator password list (one per line in settings).
+	// Tried after a per-job password when unrar reports encryption.
+	UnpackPasswords []string
 }
 
 // New constructs a Manager for the given NNTP server configuration(s).
@@ -356,6 +362,7 @@ func New(cfg Config) *Manager {
 		rateCap:                cfg.RateCap,
 		repairBps:              DefaultHardwareRepairBps,
 		unpackBps:              DefaultHardwareUnpackBps,
+		unpackPasswords:        append([]string(nil), cfg.UnpackPasswords...),
 	}
 	m.pools = newPools(servers)
 	m.semaphore = make(chan struct{}, maxDL)
@@ -609,6 +616,51 @@ func (m *Manager) ResumePolicy() (enabled, forceFull bool) {
 // true (or resume is disabled), in-flight sidecars are cleared immediately and
 // force-full also sweeps every owned staging dir on disk — not only the next
 // runDownload. Matches the Settings UI promise to clear sidecars on toggle.
+// SetUnpackPasswords replaces the operator password list used by unrar/7z.
+func (m *Manager) SetUnpackPasswords(pw []string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.unpackPasswords = append([]string(nil), pw...)
+	m.mu.Unlock()
+}
+
+func (m *Manager) unpackPasswordList(dl *dlState) []string {
+	var extra []string
+	if m != nil {
+		m.mu.Lock()
+		extra = append([]string(nil), m.unpackPasswords...)
+		m.mu.Unlock()
+	}
+	var job []string
+	if dl != nil {
+		job = dl.passwords
+	}
+	dir := ""
+	if dl != nil {
+		dir = dl.stagingDir
+	}
+	return mergePasswords(job, extra, stagingPasswords(dir))
+}
+
+func (m *Manager) hasUnpackPassword(gid string) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.unpackPasswords) > 0 {
+		return true
+	}
+	if gid != "" {
+		if dl := m.downloads[gid]; dl != nil && len(dl.passwords) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *Manager) SetResumePolicy(enabled, forceFull bool) {
 	if m == nil {
 		return
@@ -805,10 +857,9 @@ func (m *Manager) AddNZB(ctx context.Context, url, name string) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	if name == "" {
-		name = dnzb.Name
-	}
-	return m.AddArticleSet(ctx, nzb, name)
+	pws := collectJobPasswords(dnzb, nzb, name, nil)
+	name = preferredNZBName(name, dnzb, nzb)
+	return m.addArticleSet(ctx, nzb, name, pws)
 }
 
 // AddArticleSet starts a download from an already-parsed (or synthesized) NZB
@@ -820,6 +871,12 @@ func (m *Manager) AddNZB(ctx context.Context, url, name string) (string, error) 
 // Troubleshooting: dispatch of sakms-nntp: URLs must call this, not AddNZB.
 // Review if: AddNZB gains non-HTTP sources beyond native search.
 func (m *Manager) AddArticleSet(ctx context.Context, nzb *NZB, name string) (string, error) {
+	pws := collectJobPasswords(DNZBHeaders{}, nzb, name, nil)
+	name = preferredNZBName(name, DNZBHeaders{}, nzb)
+	return m.addArticleSet(ctx, nzb, name, pws)
+}
+
+func (m *Manager) addArticleSet(ctx context.Context, nzb *NZB, name string, passwords []string) (string, error) {
 	if nzb == nil {
 		return "", errors.New("usenet: nil article set")
 	}
@@ -853,6 +910,7 @@ func (m *Manager) AddArticleSet(ctx context.Context, nzb *NZB, name string) (str
 	dl := &dlState{
 		gid:        gid,
 		name:       name,
+		passwords:  passwords,
 		stagingDir: dlDir,
 		status:     "active",
 		// Claude 2026-09-22: register before STAT so Downloads can show Precheck.
@@ -924,9 +982,10 @@ func (m *Manager) RelaunchNZB(ctx context.Context, gid, url, name string) error 
 	if err != nil {
 		return err
 	}
-	if name == "" {
-		name = dnzb.Name
+	if dnzb.Password != "" && nzb != nil {
+		nzb.Meta = append(append([]NZBMeta(nil), nzb.Meta...), NZBMeta{Type: "password", Value: dnzb.Password})
 	}
+	name = preferredNZBName(name, dnzb, nzb)
 	return m.RelaunchArticleSet(ctx, gid, nzb, name)
 }
 
@@ -949,6 +1008,8 @@ func (m *Manager) RelaunchArticleSet(ctx context.Context, gid string, nzb *NZB, 
 	if nzb == nil {
 		return errors.New("usenet: nil article set")
 	}
+	pws := collectJobPasswords(DNZBHeaders{}, nzb, name, nil)
+	name = preferredNZBName(name, DNZBHeaders{}, nzb)
 	if name == "" {
 		name = "usenet-download"
 	}
@@ -978,6 +1039,7 @@ func (m *Manager) RelaunchArticleSet(ctx context.Context, gid string, nzb *NZB, 
 	dl := &dlState{
 		gid:        gid,
 		name:       name,
+		passwords:  pws,
 		stagingDir: dlDir,
 		status:     "active",
 		// Claude 2026-09-22: show Precheck on relaunch too (same Downloads pill).
@@ -1532,7 +1594,12 @@ func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState
 	})
 	m.logPhaseTiming(gid, phaseRepairing, repairBytes, repairStarted, repairSampled)
 	if repairErr != nil {
-		log.Printf("usenet: par2 repair %s: %v — continuing to unpack", gid, repairErr)
+		if cmdErr := par2CmdRepair(dl.stagingDir); cmdErr != nil {
+			log.Printf("usenet: par2 repair %s: %v — continuing to unpack", gid, repairErr)
+		} else {
+			log.Printf("usenet: par2 repair %s: go-par2 failed (%v); par2cmdline recovered", gid, repairErr)
+			repairErr = nil
+		}
 	}
 	files = repaired
 
@@ -1563,9 +1630,19 @@ func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState
 	// Review if: hardware priors become a typed settings struct or the engine
 	//   emits its own ETA.
 	unpackSampled := unpackPhaseSampled(dl.stagingDir)
+	passwords := m.unpackPasswordList(dl)
 	unpacked, unpackErr := unpackArchives(dl.stagingDir, files, func(done, total int64) {
 		m.setPhaseProgress(gid, done, total)
-	})
+	}, passwords)
+	if errors.Is(unpackErr, ErrUnpackChecksum) {
+		if cmdErr := par2CmdRepair(dl.stagingDir); cmdErr != nil {
+			log.Printf("usenet: par2cmdline after checksum %s: %v", gid, cmdErr)
+		} else {
+			unpacked, unpackErr = unpackArchives(dl.stagingDir, files, func(done, total int64) {
+				m.setPhaseProgress(gid, done, total)
+			}, passwords)
+		}
+	}
 	m.logPhaseTiming(gid, phaseUnpacking, unpackBytes, unpackStarted, unpackSampled)
 	if unpackErr != nil {
 		failed := false
@@ -2479,7 +2556,7 @@ func verifyAndRepair(dir string, files []string, onProgress func(done, total int
 
 	var par2Paths, dataPaths []string
 	for _, p := range files {
-		if isPar2Payload(p) {
+		if isPar2Candidate(p) {
 			par2Paths = append(par2Paths, p)
 		} else {
 			dataPaths = append(dataPaths, p)
@@ -2510,8 +2587,17 @@ func verifyAndRepair(dir string, files []string, onProgress func(done, total int
 		if err != nil {
 			return files, fmt.Errorf("par2: reading %s: %w", p, err)
 		}
+		data = trimPar2Magic(data)
+		if par2MagicOffset(data) < 0 {
+			log.Printf("usenet: par2: skipping non-PAR2 payload %s (not loading as data)", filepath.Base(p))
+			step()
+			continue
+		}
 		blobs = append(blobs, data)
 		step()
+	}
+	if len(blobs) == 0 {
+		return files, nil
 	}
 
 	rs, err := par2lib.Parse(blobs...)
@@ -2557,24 +2643,6 @@ func verifyAndRepair(dir string, files []string, onProgress func(done, total int
 		step()
 	}
 	return files, nil
-}
-
-// isPar2Payload reports whether path is a real PAR2 set (extension + magic).
-func isPar2Payload(path string) bool {
-	if !strings.HasSuffix(strings.ToLower(path), ".par2") {
-		return false
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	head := make([]byte, 4)
-	n, err := f.Read(head)
-	if err != nil || n < 4 {
-		return false
-	}
-	return string(head) == "PAR2"
 }
 
 // sniffExtensionlessPayloads appends a sniffed .mkv/.mp4/.rar/.zip extension

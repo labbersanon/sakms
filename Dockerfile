@@ -114,6 +114,10 @@ RUN set -eux; \
 # which is where sakms resolves the bare `ffmpeg`/`ffprobe` names it exec's
 # (internal/phash, internal/videophash, internal/vmaf).
 FROM debian:trixie-slim AS base
+# Claude 2026-10-11: par2cmdline for second-chance repair after unrar CRC.
+# Reason: go-newsgroups/par2 can report Complete while packed-data checksum fails.
+# Troubleshooting: journal "par2cmdline after checksum"; image must have `par2`.
+# Review if: go-newsgroups/par2 gains streaming repair that matches unrar CRC.
 # Claude 2026-09-03: unrar (non-free) + p7zip-full for Usenet post-PAR2 unpack.
 # Reason: releases are usually multi-part RAR; import needs a flat video in the
 #   GID staging dir. unrar is in non-free; enable contrib/non-free on the
@@ -132,7 +136,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       sed -i 's/Components: main$/Components: main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources; \
     fi \
     && apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates gosu unrar p7zip-full \
+    && apt-get install -y --no-install-recommends ca-certificates gosu unrar p7zip-full par2 \
     && useradd --create-home --home-dir /data --uid 1000 sakms
 
 COPY --from=ffmpeg /out/ffmpeg  /usr/local/bin/ffmpeg

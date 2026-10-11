@@ -60,18 +60,20 @@ func ParseNZB(data []byte) (*NZB, error) {
 // DNZBHeaders holds metadata from X-DNZB-* HTTP response headers that
 // Newznab/Prowlarr indexers include alongside an NZB body download.
 type DNZBHeaders struct {
-	Name    string // X-DNZB-Name — release name
-	RCode   int    // X-DNZB-RCode — 200 = ok; other = failure
-	Failure string // X-DNZB-Failure — human-readable reason when RCode != 200
+	Name     string // X-DNZB-Name — release name
+	RCode    int    // X-DNZB-RCode — 200 = ok; other = failure
+	Failure  string // X-DNZB-Failure — human-readable reason when RCode != 200
+	Password string // X-DNZB-Password — unpack password when the indexer knows it
 }
 
 // parseDNZBHeaders extracts X-DNZB-* headers from an HTTP response header set.
 func parseDNZBHeaders(h http.Header) DNZBHeaders {
 	code, _ := strconv.Atoi(h.Get("X-DNZB-RCode"))
 	return DNZBHeaders{
-		Name:    h.Get("X-DNZB-Name"),
-		RCode:   code,
-		Failure: h.Get("X-DNZB-Failure"),
+		Name:     h.Get("X-DNZB-Name"),
+		RCode:    code,
+		Failure:  h.Get("X-DNZB-Failure"),
+		Password: h.Get("X-DNZB-Password"),
 	}
 }
 

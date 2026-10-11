@@ -3,6 +3,7 @@ package usenet
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -43,7 +44,7 @@ var (
 //
 // If no archives are present, a video already in dir is a no-op success.
 // No archives and no video is ErrNoVideoUnpacked (try a different NZB).
-func unpackArchives(dir string, files []string, onProgress func(done, total int64)) ([]string, error) {
+func unpackArchives(dir string, files []string, onProgress func(done, total int64), passwords []string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		// Claude 2026-09-17: ReadDir failure is an environment/filesystem fault.
@@ -133,13 +134,13 @@ func unpackArchives(dir string, files []string, onProgress func(done, total int6
 				if unrarErr != nil {
 					runErr = fmt.Errorf("unrar not available for %s", leader)
 				} else {
-					runErr = runUnrar(ctx, unrarPath, path, dir)
+					runErr = runUnrar(ctx, unrarPath, path, dir, passwords)
 				}
 			case "zip", "7z":
 				if sevenErr != nil {
 					runErr = fmt.Errorf("7z not available for %s", leader)
 				} else {
-					runErr = run7z(ctx, sevenPath, path, dir)
+					runErr = run7z(ctx, sevenPath, path, dir, passwords)
 				}
 			}
 			if runErr != nil {
@@ -159,6 +160,17 @@ func unpackArchives(dir string, files []string, onProgress func(done, total int6
 	afterVideos := videoNamesInDir(dir)
 	if !gainedVideo(beforeVideos, afterVideos) {
 		if firstErr != nil {
+			// Claude 2026-10-11: do not wrap password/CRC as ErrNoVideoUnpacked.
+			// Reason: contentFailureReason checked no-video first, so Requests showed
+			//   "no usable video" for Smad password RARs; checksum needs a par2cmdline retry.
+			// Troubleshooting: last leader error is password or packed-data checksum.
+			// Review if: a third unpack failure class is added.
+			if errors.Is(firstErr, ErrPasswordProtected) {
+				return files, firstErr
+			}
+			if looksChecksumErr(firstErr) {
+				return files, fmt.Errorf("%w: %w", ErrUnpackChecksum, firstErr)
+			}
 			return files, fmt.Errorf("%w in %s (last leader error: %w)", ErrNoVideoUnpacked, dir, firstErr)
 		}
 		return files, fmt.Errorf("%w in %s", ErrNoVideoUnpacked, dir)
@@ -189,8 +201,10 @@ func archiveKind(name string) string {
 //
 // Claude 2026-09-15: rank complete RAR sets before orphan pretty-named part01s.
 // Reason: obfuscated posts often include Show.Name.part01.rar (no part02) plus
-//          a full AbCdEf.part01–N.rar set; lexicographic order tried the orphan
-//          first and aborted before the hash set (see unpack loop).
+//
+//	a full AbCdEf.part01–N.rar set; lexicographic order tried the orphan
+//	first and aborted before the hash set (see unpack loop).
+//
 // Troubleshooting: unpack "Bad archive" on pretty part01 while hash parts exist.
 // Review if: .r00-style volume sets need the same completeness scoring.
 func archiveLeaders(names []string) []string {
@@ -296,42 +310,97 @@ func archiveSetKey(name string) string {
 	return strings.TrimSuffix(lower, filepath.Ext(lower))
 }
 
-func runUnrar(ctx context.Context, bin, archive, dest string) error {
+func runUnrar(ctx context.Context, bin, archive, dest string, passwords []string) error {
 	// e = extract without paths (flat into dest). -o+ overwrite. -y assume yes.
-	cmd := unpackCommand(ctx, bin, "e", "-o+", "-y", archive, dest+string(filepath.Separator))
-	var stderr bytes.Buffer
-	cmd.Stdout = nil
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = err.Error()
+	// -p- = empty password, never prompt (NZBGet). Without it unrar blocks on stdin.
+	try := func(pw string, empty bool) error {
+		args := []string{"e", "-o+", "-y"}
+		if empty {
+			args = append(args, "-p-")
+		} else {
+			args = append(args, "-p"+pw)
 		}
-		if looksPasswordProtected(msg) {
-			return fmt.Errorf("%w: %s", ErrPasswordProtected, msg)
+		args = append(args, archive, dest+string(filepath.Separator))
+		cmd := unpackCommand(ctx, bin, args...)
+		var stderr bytes.Buffer
+		cmd.Stdout = nil
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			msg := strings.TrimSpace(stderr.String())
+			if msg == "" {
+				msg = err.Error()
+			}
+			if looksPasswordProtected(msg) {
+				return fmt.Errorf("%w: %s", ErrPasswordProtected, msg)
+			}
+			return fmt.Errorf("%s", msg)
 		}
-		return fmt.Errorf("%s", msg)
+		return nil
 	}
-	return nil
+	err := try("", true)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, ErrPasswordProtected) {
+		return err
+	}
+	for _, pw := range passwords {
+		if pw == "" {
+			continue
+		}
+		if e := try(pw, false); e == nil {
+			return nil
+		}
+	}
+	return err
 }
 
-func run7z(ctx context.Context, bin, archive, dest string) error {
-	// e = extract without paths. -y assume yes. -oDEST (no space).
-	cmd := unpackCommand(ctx, bin, "e", "-y", "-o"+dest, archive)
-	var stderr bytes.Buffer
-	cmd.Stdout = nil
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = err.Error()
+func run7z(ctx context.Context, bin, archive, dest string, passwords []string) error {
+	try := func(pw string) error {
+		args := []string{"e", "-y", "-o" + dest}
+		if pw != "" {
+			args = append(args, "-p"+pw)
 		}
-		if looksPasswordProtected(msg) {
-			return fmt.Errorf("%w: %s", ErrPasswordProtected, msg)
+		args = append(args, archive)
+		cmd := unpackCommand(ctx, bin, args...)
+		var stderr bytes.Buffer
+		cmd.Stdout = nil
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			msg := strings.TrimSpace(stderr.String())
+			if msg == "" {
+				msg = err.Error()
+			}
+			if looksPasswordProtected(msg) {
+				return fmt.Errorf("%w: %s", ErrPasswordProtected, msg)
+			}
+			return fmt.Errorf("%s", msg)
 		}
-		return fmt.Errorf("%s", msg)
+		return nil
 	}
-	return nil
+	err := try("")
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, ErrPasswordProtected) {
+		return err
+	}
+	for _, pw := range passwords {
+		if e := try(pw); e == nil {
+			return nil
+		}
+	}
+	return err
+}
+
+func looksChecksumErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "checksum") ||
+		strings.Contains(lower, "crc failed") ||
+		strings.Contains(lower, "packed data")
 }
 
 func looksPasswordProtected(msg string) bool {

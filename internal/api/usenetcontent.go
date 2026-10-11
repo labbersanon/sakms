@@ -24,6 +24,7 @@ import (
 	"github.com/labbersanon/sakms/internal/autograb"
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/library"
+	"github.com/labbersanon/sakms/internal/release"
 	"github.com/labbersanon/sakms/internal/usenet"
 )
 
@@ -73,11 +74,11 @@ func contentUnusableFailure(err error) bool {
 // contentFailureReason maps a content-unusable failure to its operator-facing
 // reason string.
 func contentFailureReason(failure error) string {
-	if errors.Is(failure, library.ErrNoVideoFile) || errors.Is(failure, usenet.ErrNoVideoUnpacked) {
-		return contentNoVideoReason
-	}
 	if errors.Is(failure, usenet.ErrPasswordProtected) {
 		return contentPasswordReason
+	}
+	if errors.Is(failure, library.ErrNoVideoFile) || errors.Is(failure, usenet.ErrNoVideoUnpacked) {
+		return contentNoVideoReason
 	}
 	if errors.Is(failure, usenet.ErrArticleNotFound) {
 		return contentArticlesMissingReason
@@ -86,6 +87,17 @@ func contentFailureReason(failure error) string {
 		return contentBelowFloorReason
 	}
 	return contentUnpackFailedReason
+}
+
+func parkNZBTitle(engineFilename, mediaTitle string) string {
+	eng := strings.TrimSpace(engineFilename)
+	if eng == "" {
+		return ""
+	}
+	if grabs.NormaliseTitle(eng) == grabs.NormaliseTitle(mediaTitle) {
+		return ""
+	}
+	return eng
 }
 
 // contentForgetEngine is the narrow interface parkUsenetContentFailure needs
@@ -149,7 +161,15 @@ func parkUsenetContentFailure(
 	if engine != nil {
 		releaseTitle = engine.FindFilename(g.DownloadGID)
 	}
+	// Claude 2026-10-11: never hash g.Title (show name) as t:.
+	// Reason: RelaunchNZB used to store the media title as Filename, so park
+	//   wrote t:hash("the red skelton show") which matches no Prowlarr title.
+	// Troubleshooting: same WEBTUBE NZB class re-dispatched after content park.
+	releaseTitle = parkNZBTitle(releaseTitle, g.Title)
 	newKeys := grabs.ReleaseKeys(g.DownloadURL, releaseTitle)
+	for _, tok := range release.GroupTokens(releaseTitle) {
+		newKeys = append(newKeys, grabs.GroupKey(tok))
+	}
 	reason := contentFailureReason(failure)
 	if err := deps.GrabsStore.ParkForAlternateRelease(ctx, g.ID, time.Now(), reason, newKeys); err != nil {
 		return false, fmt.Errorf("content park grab %d: %w", g.ID, err)

@@ -96,6 +96,10 @@ func (m *Manager) precheckVideo(ctx context.Context, payload []NZBFile, skip map
 		ev := classifyPeek(seg.data)
 		switch ev {
 		case evidenceVideo, evidenceArchive:
+			if ev == evidenceArchive && rarLooksEncrypted(seg.data) && !m.hasUnpackPassword(progressGID) {
+				log.Printf("usenet precheck: abort — encrypted RAR and no password file=%q", peekLabel(t.subject, seg.filename))
+				return ErrPasswordProtected
+			}
 			log.Printf("usenet precheck: video peek ok file=%q", peekLabel(t.subject, seg.filename))
 			return nil
 		}

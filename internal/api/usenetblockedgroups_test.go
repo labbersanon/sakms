@@ -12,12 +12,14 @@ func TestFilterBlockedReleaseGroups_DropsTupaCAndPasswordTitles(t *testing.T) {
 		{Title: "Love.Is.Blind.S07E12.1080p.NF.WEB-DL.DUAL-TupaC"},
 		{Title: "Some.Show.S01E01.PASSWORD.PROTECTED-FOO"},
 		{Title: "Love.Is.Blind.S06E02.1080p.WEB-DL-RiPER"},
+		{Title: "Hot.Wheels.S03E01.1080p.WEB-DL-Smad"},
+		{Title: "Show.S01E01.1080p.WEB password=secret-OK"},
 	}
-	out := filterBlockedReleaseGroups(in, []string{"TupaC"})
-	if len(out) != 2 {
-		t.Fatalf("len=%d want 2: %+v", len(out), titlesOf(out))
+	out := filterBlockedReleaseGroups(in, []string{"TupaC", "Smad"})
+	if len(out) != 3 {
+		t.Fatalf("len=%d want 3: %+v", len(out), titlesOf(out))
 	}
-	if out[0].Title != in[0].Title || out[1].Title != in[3].Title {
+	if out[0].Title != in[0].Title || out[1].Title != in[3].Title || out[2].Title != in[5].Title {
 		t.Fatalf("got %+v", titlesOf(out))
 	}
 }

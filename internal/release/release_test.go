@@ -208,6 +208,26 @@ func TestScoreCandidate_IndexerTrustFlagAddsBonus(t *testing.T) {
 	}
 }
 
+func TestGroupTokens_WEBTUBEObfuscated(t *testing.T) {
+	got := GroupTokens("The.Red.Skelton.Show.S04E30.720p.WEB.h264-WEBTUBE-Obfuscated")
+	want := map[string]bool{"obfuscated": true, "webtube": true}
+	if len(got) != 2 {
+		t.Fatalf("got %v", got)
+	}
+	for _, g := range got {
+		if !want[g] {
+			t.Errorf("unexpected token %q in %v", g, got)
+		}
+	}
+}
+
+func TestGroupTokens_Smad(t *testing.T) {
+	got := GroupTokens("Hot.Wheels.Lets.Race.S03E01.1080p.WEB-DL-Smad")
+	if len(got) != 1 || got[0] != "smad" {
+		t.Fatalf("got %v want [smad]", got)
+	}
+}
+
 func TestScoreCandidate_BlockedGroupStaysBlockedRegardlessOfBonuses(t *testing.T) {
 	prefs := DefaultProfile()
 	prefs.BlockedGroups = []string{"badgroup"}

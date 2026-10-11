@@ -152,8 +152,8 @@ func parkUsenetContentFailure(
 	// Claude 2026-09-22: fingerprint the NZB/release title, never g.Title.
 	// Reason: g.Title is the media/show name (e.g. "Burn Notice"); filterExcludedReleases
 	//   hashes r.Title which is the Prowlarr/NZB release name. Hashing the show name
-	//   excludes every candidate for that title. Engine Filename is the name passed to
-	//   AddNZB/AddArticleSet (picked.Title / X-DNZB-Name). Empty filename → URL key only.
+	//   excludes every candidate for that title. Engine FindFilename is the AddNZB
+	//   argument (picked.Title), not obfuscated X-DNZB-Name. Empty → URL key only.
 	// Troubleshooting: 430 parks then the next search still picks the same NZB, or
 	//   every NZB for the show is excluded via a t: key of the show name.
 	// Review if: grabs persist the NZB title as its own column.

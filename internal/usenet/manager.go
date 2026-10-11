@@ -180,8 +180,14 @@ func (dl *dlState) setPhase(phase string) {
 // dlState is the mutable runtime state of one usenet download. All fields
 // except the atomics are protected by Manager.mu.
 type dlState struct {
-	gid        string
-	name       string
+	gid  string
+	name string
+	// Claude 2026-10-11: indexer title for content-park keys, not X-DNZB-Name.
+	// Reason: preferredNZBName display can be an obfuscated hex.mkv; filterExcludedReleases
+	//   hashes Prowlarr r.Title. Park must use the AddNZB argument (picked.Title).
+	// Troubleshooting: grab 1206 re-dispatched the same …AndreMor 1 NZB six times.
+	// Review if: grabs persist the NZB title as its own column.
+	parkName   string
 	stagingDir string
 	resume     *resumeTracker // sidecar writer; set in runDownload (disabled=true when resume is off)
 	resumeMode string
@@ -922,9 +928,10 @@ func (m *Manager) AddNZB(ctx context.Context, url, name string) (string, error) 
 	if err != nil {
 		return "", err
 	}
+	parkName := strings.TrimSpace(name)
 	pws := collectJobPasswords(dnzb, nzb, name, nil)
 	name = preferredNZBName(name, dnzb, nzb)
-	return m.addArticleSet(ctx, nzb, name, pws)
+	return m.addArticleSet(ctx, nzb, name, parkName, pws)
 }
 
 // AddArticleSet starts a download from an already-parsed (or synthesized) NZB
@@ -936,12 +943,13 @@ func (m *Manager) AddNZB(ctx context.Context, url, name string) (string, error) 
 // Troubleshooting: dispatch of sakms-nntp: URLs must call this, not AddNZB.
 // Review if: AddNZB gains non-HTTP sources beyond native search.
 func (m *Manager) AddArticleSet(ctx context.Context, nzb *NZB, name string) (string, error) {
+	parkName := strings.TrimSpace(name)
 	pws := collectJobPasswords(DNZBHeaders{}, nzb, name, nil)
 	name = preferredNZBName(name, DNZBHeaders{}, nzb)
-	return m.addArticleSet(ctx, nzb, name, pws)
+	return m.addArticleSet(ctx, nzb, name, parkName, pws)
 }
 
-func (m *Manager) addArticleSet(ctx context.Context, nzb *NZB, name string, passwords []string) (string, error) {
+func (m *Manager) addArticleSet(ctx context.Context, nzb *NZB, name, parkName string, passwords []string) (string, error) {
 	if nzb == nil {
 		return "", errors.New("usenet: nil article set")
 	}
@@ -975,6 +983,7 @@ func (m *Manager) addArticleSet(ctx context.Context, nzb *NZB, name string, pass
 	dl := &dlState{
 		gid:        gid,
 		name:       name,
+		parkName:   parkName,
 		passwords:  passwords,
 		stagingDir: dlDir,
 		status:     "active",
@@ -1050,8 +1059,7 @@ func (m *Manager) RelaunchNZB(ctx context.Context, gid, url, name string) error 
 	if dnzb.Password != "" && nzb != nil {
 		nzb.Meta = append(append([]NZBMeta(nil), nzb.Meta...), NZBMeta{Type: "password", Value: dnzb.Password})
 	}
-	name = preferredNZBName(name, dnzb, nzb)
-	return m.RelaunchArticleSet(ctx, gid, nzb, name)
+	return m.relaunchArticleSet(ctx, gid, nzb, name, dnzb)
 }
 
 // RelaunchArticleSet is RelaunchNZB without the HTTP fetch — used when the
@@ -1062,6 +1070,10 @@ func (m *Manager) RelaunchNZB(ctx context.Context, gid, url, name string) error 
 // Troubleshooting: relaunch of sakms-nntp: must call this path.
 // Review if: locator re-resolution moves entirely into the API layer.
 func (m *Manager) RelaunchArticleSet(ctx context.Context, gid string, nzb *NZB, name string) error {
+	return m.relaunchArticleSet(ctx, gid, nzb, name, DNZBHeaders{})
+}
+
+func (m *Manager) relaunchArticleSet(ctx context.Context, gid string, nzb *NZB, name string, dnzb DNZBHeaders) error {
 	if !IsOwnedStagingName(gid) {
 		return fmt.Errorf("usenet: refusing relaunch into non-owned gid %q", gid)
 	}
@@ -1073,8 +1085,9 @@ func (m *Manager) RelaunchArticleSet(ctx context.Context, gid string, nzb *NZB, 
 	if nzb == nil {
 		return errors.New("usenet: nil article set")
 	}
-	pws := collectJobPasswords(DNZBHeaders{}, nzb, name, nil)
-	name = preferredNZBName(name, DNZBHeaders{}, nzb)
+	parkName := strings.TrimSpace(name)
+	pws := collectJobPasswords(dnzb, nzb, name, nil)
+	name = preferredNZBName(name, dnzb, nzb)
 	if name == "" {
 		name = "usenet-download"
 	}
@@ -1104,6 +1117,7 @@ func (m *Manager) RelaunchArticleSet(ctx context.Context, gid string, nzb *NZB, 
 	dl := &dlState{
 		gid:        gid,
 		name:       name,
+		parkName:   parkName,
 		passwords:  pws,
 		stagingDir: dlDir,
 		status:     "active",
@@ -1356,15 +1370,26 @@ func (m *Manager) FindByGID(gid string) (*Download, error) {
 //
 // Troubleshooting: 430 park excluded "Burn Notice" instead of the NZB name.
 // Review if: grabs persist the NZB title as its own column.
+// Claude 2026-10-11: return the indexer/Prowlarr title (parkName), not X-DNZB-Name.
+// Reason: obfuscated X-DNZB-Name (hex.mkv) hashed as t: never matches r.Title, so
+// the same AndreMor NZB was re-dispatched after every unpack park. parkName is
+// the AddNZB argument (picked.Title). Empty parkName falls back to display name.
+// Troubleshooting: journal "N keys excluded" then dispatch of the same …-AndreMor 1.
+// Review if: grabs persist the NZB title as its own column (same as above).
 func (m *Manager) FindFilename(gid string) string {
 	if m == nil || gid == "" {
 		return ""
 	}
-	d, err := m.FindByGID(gid)
-	if err != nil || d == nil {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	dl := m.downloads[gid]
+	if dl == nil {
 		return ""
 	}
-	return d.Filename
+	if s := strings.TrimSpace(dl.parkName); s != "" {
+		return s
+	}
+	return dl.name
 }
 
 // InjectDownloadForTest registers a live download entry so API tests can

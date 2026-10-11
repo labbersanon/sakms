@@ -152,3 +152,37 @@ func TestPreferredNZBName_PrefersDNZBOverPassedShowTitle(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestPreferredNZBName_SkipsObfuscatedDNZBUsesPassed(t *testing.T) {
+	passed := "Mickey.Mouse.Clubhouse.S04E25.Mickeys.Monster.Musical.Part.2.1080p.DSNP.WEB-DL.AAC2.0.AVC-AndreMor 1"
+	got := preferredNZBName(passed, DNZBHeaders{Name: "81614M36L3g09n90W5m9n26h6y867135.mkv"}, nil)
+	if got != passed {
+		t.Fatalf("got %q, want passed indexer title", got)
+	}
+}
+
+func TestFindFilename_PrefersParkNameOverObfuscatedDisplay(t *testing.T) {
+	park := "Mickey.Mouse.Clubhouse.S04E25.Mickeys.Monster.Musical.Part.2.1080p.DSNP.WEB-DL.AAC2.0.AVC-AndreMor 1"
+	m := &Manager{downloads: map[string]*dlState{
+		"nzb-1": {
+			gid:      "nzb-1",
+			name:     "81614M36L3g09n90W5m9n26h6y867135.mkv",
+			parkName: park,
+		},
+	}}
+	if got := m.FindFilename("nzb-1"); got != park {
+		t.Fatalf("got %q, want indexer title", got)
+	}
+}
+
+func TestObfuscatedNZBName(t *testing.T) {
+	if !obfuscatedNZBName("81614M36L3g09n90W5m9n26h6y867135.mkv") {
+		t.Fatal("hex.mkv should be obfuscated")
+	}
+	if obfuscatedNZBName("Show.S04E30.720p.WEB-WEBTUBE") {
+		t.Fatal("scene title is not obfuscated")
+	}
+	if obfuscatedNZBName("short") {
+		t.Fatal("short token is not obfuscated")
+	}
+}

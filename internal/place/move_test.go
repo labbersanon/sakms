@@ -172,6 +172,44 @@ func TestIsEXDEV(t *testing.T) {
 	}
 }
 
+func TestCopyFile_ReadonlySourceGetsWritableDest(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+	src := filepath.Join(srcDir, "scene.mp4")
+	dst := filepath.Join(dstDir, "library.mp4")
+	if err := os.WriteFile(src, []byte("payload"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := copyFile(src, dst, info.Mode()); err != nil {
+		t.Fatalf("copyFile: %v", err)
+	}
+	st, err := os.Stat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm()&0o200 == 0 {
+		t.Fatalf("dest mode %o has no owner-write; want source|0644", st.Mode().Perm())
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil || string(got) != "payload" {
+		t.Fatalf("dst = %q err=%v", got, err)
+	}
+}
+
+func TestWrapDestOpen_MarksPermission(t *testing.T) {
+	err := wrapDestOpen(&os.PathError{Op: "open", Path: "/media/x", Err: syscall.EPERM})
+	if !errors.Is(err, ErrDestNotWritable) {
+		t.Fatalf("err = %v, want ErrDestNotWritable", err)
+	}
+	if errors.Is(wrapDestOpen(os.ErrNotExist), ErrDestNotWritable) {
+		t.Fatal("ErrNotExist must not be dest-not-writable")
+	}
+}
+
 // TestMove_ForcedEXDEVFallback uses a custom rename failure path by moving
 // via the public Move after ensuring rename cannot succeed: on systems where
 // TempDir is one filesystem, we still verify Move succeeds when src/dst are

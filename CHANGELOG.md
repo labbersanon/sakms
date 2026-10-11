@@ -10653,4 +10653,20 @@ status stays active.
 | `internal/usenet/name_collision_test.go` | hash.par2 Matroska completes after sniff-rename |
 | `docs/usenet-precheck.md` | magic-only video peek |
 
+## 2026-10-10 — Downloads SSE must not WalkDir staging/NAS
+
+**Problem:** Downloads stayed on "Connecting to the download engine…" after the #139 deploy. healthz 200; sakms idle ~7h with no usenet logs; Burn Notice `nzb-01a2204572badb24` stuck at 64KB with no NNTP sockets.
+**Root cause:** Every `/api/downloads` and `/api/downloads/stream` snapshot called `dirBytes` → `filepath.WalkDir` on each live download's `Dir`. A CIFS/NAS tree or stalled file never returned, so the first SSE `data:` frame was never flushed and `hasData` stayed false.
+**Fix:** Stop walking disk on the list/SSE mapper. Popup "on disk" uses `completedLength` when `bytesOnDisk` is absent. SSE sets `X-Accel-Buffering: no` and comment-flushes before the snapshot. Marshal errors are logged.
+**Outcome:** First stream frame is in-memory only (engine snapshot + grab enrichment). Deploy recreates sakms to unstick WalkDir-blocked stream goroutines.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/download_details.go` | omit BytesOnDisk WalkDir from list/SSE mappers |
+| `internal/api/download_details_test.go` | list mappers leave BytesOnDisk 0 despite files on disk |
+| `internal/api/downloads.go` | X-Accel-Buffering: no; comment-flush; log marshal errors |
+| `frontend/src/screens/DownloadDetailPopup.tsx` | on-disk size falls back to completedLength |
+
 

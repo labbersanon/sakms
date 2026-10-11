@@ -334,7 +334,7 @@ const UsenetPipeline: Component<{ dl: Download }> = (props) => {
         </Show>
         <Show when={u()?.stagingPath}>
           <span class="min-w-0 truncate" title={u()?.stagingPath}>
-            {formatSize(u()?.bytesOnDisk ?? 0)} on disk
+            {formatSize(u()?.bytesOnDisk || props.dl.completedLength)} on disk
           </span>
         </Show>
         <Show when={(u()?.statTotal ?? 0) > 0}>
@@ -512,7 +512,7 @@ const TorrentPipeline: Component<{
           </Show>
         </span>
         <Show when={t()?.savePath}>
-          <span>{formatSize(t()?.bytesOnDisk ?? 0)} on disk</span>
+          <span>{formatSize(t()?.bytesOnDisk || props.dl.completedLength)} on disk</span>
         </Show>
       </div>
 

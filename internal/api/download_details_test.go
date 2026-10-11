@@ -3,6 +3,8 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -124,4 +126,51 @@ func TestUsenetDetailsEmpty_OmitsZero(t *testing.T) {
 		t.Fatalf("expected nil Usenet on empty engine row, got %#v", got.Usenet)
 	}
 	_ = apidto.DownloadProtocolUsenet
+}
+
+func TestUsenetDetailsFromEngine_SkipsDiskWalk(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "payload.bin"), []byte("hello-world"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := usenetDetailsFromEngine(usenet.Download{
+		GID:      "nzb-1",
+		Filename: "Show.mkv",
+		Dir:      dir,
+	})
+	if got == nil {
+		t.Fatal("want usenet details")
+	}
+	if got.BytesOnDisk != 0 {
+		t.Fatalf("BytesOnDisk=%d want 0 — list/SSE must not WalkDir", got.BytesOnDisk)
+	}
+	if got.StagingPath != dir {
+		t.Fatalf("StagingPath=%q want %q", got.StagingPath, dir)
+	}
+	if n := dirBytes(dir); n != 11 {
+		t.Fatalf("fixture WalkDir=%d want 11 — mapper must not have used this", n)
+	}
+}
+
+func TestTorrentDetailsFromEngine_SkipsDiskWalk(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "payload.bin"), []byte("hello-world"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := torrentDetailsFromEngine(downloader.Download{
+		GID: "g1",
+		Dir: dir,
+	})
+	if got == nil {
+		t.Fatal("want torrent details")
+	}
+	if got.BytesOnDisk != 0 {
+		t.Fatalf("BytesOnDisk=%d want 0 — list/SSE must not WalkDir", got.BytesOnDisk)
+	}
+	if got.SavePath != dir {
+		t.Fatalf("SavePath=%q want %q", got.SavePath, dir)
+	}
+	if n := dirBytes(dir); n != 11 {
+		t.Fatalf("fixture WalkDir=%d want 11 — mapper must not have used this", n)
+	}
 }

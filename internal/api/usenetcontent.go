@@ -227,9 +227,8 @@ func parkContentFailureOrDaysLadder(ctx context.Context, deps AutoGrabDeps, g gr
 	return parkGrabForRetry(ctx, deps, g.ID, usenetRetrievalReason(failure))
 }
 
-// clearOwnedUsenetStagingEngine is clearOwnedUsenetStaging using the narrow
-// contentForgetEngine interface. Called from parkUsenetContentFailure so tests
-// can inject a fake engine without needing a real *usenet.Manager.
+// forgetContentEngineRow drops the engine's terminal row for gid so Downloads
+// does not show Failed for a grab that is already parked for retry.
 func forgetContentEngineRow(engine contentForgetEngine, gid string, grabID int64, why string) {
 	if engine == nil || gid == "" {
 		return
@@ -239,6 +238,9 @@ func forgetContentEngineRow(engine contentForgetEngine, gid string, grabID int64
 	}
 }
 
+// clearOwnedUsenetStagingEngine is clearOwnedUsenetStaging using the narrow
+// contentForgetEngine interface. Called from parkUsenetContentFailure so tests
+// can inject a fake engine without needing a real *usenet.Manager.
 func clearOwnedUsenetStagingEngine(engine contentForgetEngine, gid string) {
 	if engine == nil || gid == "" {
 		return

@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Tensai75/nntp"
 	"github.com/mnightingale/rapidyenc"
@@ -37,6 +39,27 @@ var ErrArticleRemoved = errors.New("usenet: article removed (451)")
 // Review if: per-subscription max_conns becomes a required field with its own
 // non-zero default enforced at the storage layer.
 const defaultMaxConnsPerServer = 4
+
+// nntpDialTimeout bounds TCP connect, TLS handshake, and the NNTP greeting
+// read. 0 disables (tests only). Distinct from articleIOTimeout, which only
+// covers BODY/STAT after the session exists.
+//
+// Claude 2026-10-10: dial/greeting timeout so a hung connect cannot pin the
+//
+//	live-token (MaxConns) the way a hung BODY used to pin the download slot.
+//
+// Reason: grab 733 Burn Notice S04E08 wrote one 50KB par2 segment then sat
+//
+//	30+ min with fd still open, zero NNTP sockets, dl.err nil. articleIOTimeout
+//	never fired because getCtx had consumed the live token and blocked inside
+//	nntp.DialTLS (no timeout) / newConn greeting.
+//
+// Troubleshooting: Downloads "attempting" at ~50KB; ss shows no :563; queued
+//
+//	NZBs deferred "usenet download slots full".
+//
+// Review if: Tensai75/nntp grows DialTimeout and we can drop the local dial.
+var nntpDialTimeout = 30 * time.Second
 
 // ServerConfig holds the parameters needed to dial and authenticate one NNTP
 // server. Credentials are provided by the caller from the connections store —
@@ -67,17 +90,23 @@ func effectiveMaxConns(cfg ServerConfig) int {
 //
 // Claude 2026-09-01: live-socket hard cap (NZBGet ServerX.Connections pattern).
 // Reason: get() used to dial whenever idle was empty, so N concurrent NZBs each
-//   running errgroup.SetLimit(MaxConns) could open N×MaxConns sockets against a
-//   provider that only allows MaxConns — downloads started, then died with
-//   in-memory-only errors and stranded grabs.
+//
+//	running errgroup.SetLimit(MaxConns) could open N×MaxConns sockets against a
+//	provider that only allows MaxConns — downloads started, then died with
+//	in-memory-only errors and stranded grabs.
+//
 // Troubleshooting: usenet downloads that write a bit then stall/error while
-//   Eweka auth still works for a single connection.
+//
+//	Eweka auth still works for a single connection.
+//
 // Review if: multi-server fill logic needs per-server budgets that differ from
-//   the Manager's segment SetLimit.
+//
+//	the Manager's segment SetLimit.
+//
 // Related: NZBGet nzbget.conf ServerX.Connections / ArticleRetries.
 type pool struct {
-	cfg    ServerConfig
-	idle   chan *nntp.Conn
+	cfg  ServerConfig
+	idle chan *nntp.Conn
 	// live has capacity effectiveMaxConns and one token per live TCP socket
 	// (idle or checked out). Taking from idle does not consume a new token;
 	// dialing does; closing a socket (failed put / drained idle) releases one.
@@ -124,7 +153,7 @@ func (p *pool) tryGet() (*nntp.Conn, error) {
 	}
 	select {
 	case p.live <- struct{}{}:
-		c, err := p.dial()
+		c, err := p.dial(context.Background())
 		if err != nil {
 			<-p.live
 			return nil, err
@@ -158,7 +187,7 @@ func (p *pool) getCtx(ctx context.Context) (*nntp.Conn, error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case p.live <- struct{}{}:
-		c, err := p.dial()
+		c, err := p.dial(ctx)
 		if err != nil {
 			<-p.live
 			return nil, err
@@ -187,10 +216,14 @@ func (p *pool) getCtx(ctx context.Context) (*nntp.Conn, error) {
 //
 // Claude 2026-09-01: releasing the live token on discard/close paths.
 // Reason: every dial consumes a live token; discarding the socket without
-//   releasing it permanently shrinks the pool's effective MaxConns to zero
-//   after enough failures.
+//
+//	releasing it permanently shrinks the pool's effective MaxConns to zero
+//	after enough failures.
+//
 // Troubleshooting: usenet downloads that stop making progress after a burst of
-//   article/dial errors even though MaxConns is still configured high.
+//
+//	article/dial errors even though MaxConns is still configured high.
+//
 // Review if: the live-token accounting moves into a dedicated counter.
 func (p *pool) put(c *nntp.Conn, ok bool) {
 	if !ok {
@@ -229,9 +262,13 @@ func (p *pool) releaseLive() {
 //
 // Claude 2026-09-18: flush sibling idle sockets after a transport failure.
 // Reason: maxSegmentAttemptsPerServer (3) < MaxConns (e.g. 8). get() prefers
-//   idle, so retries can burn stale pooled sockets without ever dialing.
+//
+//	idle, so retries can burn stale pooled sockets without ever dialing.
+//
 // Troubleshooting: broken pipe then pending_retry; resume may recover after
-//   "segment recovered after N attempt(s)".
+//
+//	"segment recovered after N attempt(s)".
+//
 // Review if: idle sockets gain a max-age / DATE probe before reuse.
 func (p *pool) invalidateIdle() {
 	p.mu.Lock()
@@ -280,30 +317,77 @@ func (p *pool) close() {
 	}
 }
 
-func (p *pool) dial() (*nntp.Conn, error) {
+type dialOutcome struct {
+	c   *nntp.Conn
+	err error
+}
+
+func discardDialOutcome(ch <-chan dialOutcome) {
+	o := <-ch
+	if o.c != nil {
+		discardNNTP(o.c)
+	}
+}
+
+func (p *pool) dial(ctx context.Context) (*nntp.Conn, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	addr := fmt.Sprintf("%s:%d", p.cfg.Host, p.cfg.Port)
-	var (
-		c   *nntp.Conn
-		err error
-	)
-	if p.cfg.TLS {
-		c, err = nntp.DialTLS("tcp", addr, &tls.Config{ServerName: p.cfg.Host})
-	} else {
-		c, err = nntp.Dial("tcp", addr)
+	ch := make(chan dialOutcome, 1)
+	go func() {
+		var (
+			c   *nntp.Conn
+			err error
+		)
+		if p.cfg.TLS {
+			c, err = nntp.DialTLS("tcp", addr, &tls.Config{ServerName: p.cfg.Host})
+		} else {
+			c, err = nntp.Dial("tcp", addr)
+		}
+		ch <- dialOutcome{c: c, err: err}
+	}()
+	wait := nntpDialTimeout
+	if wait <= 0 {
+		select {
+		case <-ctx.Done():
+			go discardDialOutcome(ch)
+			return nil, ctx.Err()
+		case o := <-ch:
+			return p.finishDial(addr, o)
+		}
 	}
-	if err != nil {
-		return nil, fmt.Errorf("usenet: dialing %s: %w", addr, err)
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		go discardDialOutcome(ch)
+		return nil, ctx.Err()
+	case <-timer.C:
+		go discardDialOutcome(ch)
+		return nil, fmt.Errorf("usenet: dialing %s: %w", addr, os.ErrDeadlineExceeded)
+	case o := <-ch:
+		return p.finishDial(addr, o)
 	}
+}
+
+func (p *pool) finishDial(addr string, o dialOutcome) (*nntp.Conn, error) {
+	if o.err != nil {
+		return nil, fmt.Errorf("usenet: dialing %s: %w", addr, o.err)
+	}
+	disarm := armNNTPDeadline(o.c)
 	// ModeReader switches mode-switching servers to reader mode; most servers
 	// accept it silently and some require it — error is intentionally ignored.
-	_ = c.ModeReader()
+	_ = o.c.ModeReader()
 	if p.cfg.Username != "" {
-		if authErr := c.Authenticate(p.cfg.Username, p.cfg.Password); authErr != nil {
-			c.Quit()
+		if authErr := o.c.Authenticate(p.cfg.Username, p.cfg.Password); authErr != nil {
+			disarm()
+			discardNNTP(o.c)
 			return nil, fmt.Errorf("usenet: authenticating to %s: %w", addr, authErr)
 		}
 	}
-	return c, nil
+	disarm()
+	return o.c, nil
 }
 
 // segmentResult holds the yEnc-decoded output of one NNTP article.
@@ -357,9 +441,11 @@ func fetchSegment(c *nntp.Conn, msgID string) (segmentResult, error) {
 //
 // Claude 2026-09-29: recover rapidyenc panics into an error.
 // Reason: detectFormat does line[1:length] when a UU length of 0 meets a
-//   line longer than 1 byte (space-prefixed junk BODY). That panic ran on
-//   the boot reconcile goroutine and crash-looped sakms after the #98 deploy
-//   (grab 1926 precheckVideo peek).
+//
+//	line longer than 1 byte (space-prefixed junk BODY). That panic ran on
+//	the boot reconcile goroutine and crash-looped sakms after the #98 deploy
+//	(grab 1926 precheckVideo peek).
+//
 // Troubleshooting: "slice bounds out of range [1:0]" in rapidyenc.Response.detectFormat.
 // Review if: rapidyenc rejects length==0 before that slice.
 func decodeYEncBody(r io.Reader, msgID string) (res segmentResult, err error) {
@@ -444,7 +530,7 @@ func (a *articleWireReader) Read(p []byte) (int, error) {
 // button to validate an NNTP server config without starting the full engine.
 func TestConnect(cfg ServerConfig) error {
 	p := newPool(cfg)
-	c, err := p.dial()
+	c, err := p.dial(context.Background())
 	if err != nil {
 		return err
 	}

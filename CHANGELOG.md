@@ -10703,3 +10703,17 @@ status stays active.
 | `internal/api/autograb_shared.go` | keepAlignedMinResolution; mismatch skip |
 | `internal/api/autograb_shared_test.go` | leading-SD alignment + RunAutoGrab regression |
 
+## 2026-10-10 — NNTP dial/greeting times out so a hung connect cannot pin the slot
+
+**Problem:** Burn Notice S04E08 (`nzb-d3743eb01c98b8e7`, grab 733) sat in Downloads after one 50 KB `.par2` segment. No NNTP sockets; `dl.err` nil; `usenet_max_concurrent_downloads=1` blocked 27 queued NZBs including AHS S13E06 2160p playWEB.
+**Root cause:** `articleIOTimeout` only covers BODY/STAT. `pool.getCtx` takes the live-token then calls `nntp.DialTLS` / `newConn` greeting with no timeout. A hung connect or silent greeting holds the token; later `getCtx` waits forever with no socket for the BODY deadline to apply.
+**Fix:** 30s timeout on TCP connect, TLS handshake, and greeting; Authenticate still uses `articleIOTimeout`. Dial timeout releases the live-token so the next attempt can proceed and classify as transport.
+**Outcome:** A listener that never greets fails `getCtx` in ~200ms twice (token not leaked). Production still needs this build deployed to unstick grab 733.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/pool.go` | nntpDialTimeout around DialTLS/Dial + greeting; live-token released on timeout |
+| `internal/usenet/nntpdeadline_test.go` | blackhole dial timeout; live-token release |
+

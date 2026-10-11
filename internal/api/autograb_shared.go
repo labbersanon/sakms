@@ -14,6 +14,7 @@ import (
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/prowlarr"
+	"github.com/labbersanon/sakms/internal/release"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenet"
 	"github.com/labbersanon/sakms/internal/usenetsearch"
@@ -877,6 +878,11 @@ func filterExcludedReleases(releases []prowlarr.Release, excludeKeys []string) [
 	out := releases[:0:0]
 	for _, r := range releases {
 		rk := grabs.ReleaseKeys(r.DownloadURL, r.Title)
+		for _, tok := range release.GroupTokens(r.Title) {
+			if k := grabs.GroupKey(tok); k != "" {
+				rk = append(rk, k)
+			}
+		}
 		excluded := false
 		for _, k := range rk {
 			if keySet[k] {

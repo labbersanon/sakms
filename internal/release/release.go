@@ -94,6 +94,44 @@ func Parse(title string) Info {
 	return info
 }
 
+var obfuscationSuffix = map[string]bool{
+	"obfuscated":  true,
+	"obfuscation": true,
+}
+
+// GroupTokens returns release-group names to exclude after a content failure.
+// Scene `-GROUP` plus the real group when the title ends in `-GROUP-Obfuscated`
+// (WEBTUBE-Obfuscated parses as group Obfuscated otherwise).
+func GroupTokens(title string) []string {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return nil
+	}
+	info := Parse(title)
+	var out []string
+	seen := map[string]bool{}
+	add := func(s string) {
+		s = strings.ToLower(strings.TrimSpace(s))
+		if s == "" || seen[s] {
+			return
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	add(info.Group)
+	parts := strings.Split(title, "-")
+	if len(parts) >= 3 {
+		last := parts[len(parts)-1]
+		if i := strings.IndexAny(last, ". "); i >= 0 {
+			last = last[:i]
+		}
+		if obfuscationSuffix[strings.ToLower(strings.TrimSpace(last))] {
+			add(parts[len(parts)-2])
+		}
+	}
+	return out
+}
+
 // Profile is a user's release preferences. Resolution and source/codec are
 // deliberately independent axes: PreferredResolutions is driven by a
 // separate "maximum resolution" setting (see internal/quality's

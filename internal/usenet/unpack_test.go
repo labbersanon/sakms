@@ -40,7 +40,7 @@ func TestUnpackArchives_NoArchives_NoOp(t *testing.T) {
 	if err := os.WriteFile(mkv, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := unpackArchives(dir, []string{mkv}, nil)
+	got, err := unpackArchives(dir, []string{mkv}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestUnpackArchives_NoArchivesNoVideo_Errors(t *testing.T) {
 	if err := os.WriteFile(nfo, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := unpackArchives(dir, []string{nfo}, nil)
+	_, err := unpackArchives(dir, []string{nfo}, nil, nil)
 	if !errors.Is(err, ErrNoVideoUnpacked) {
 		t.Fatalf("err=%v want ErrNoVideoUnpacked", err)
 	}
@@ -75,7 +75,7 @@ func TestUnpackArchives_ZipExtractsAndDeletesArchives(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := unpackArchives(dir, []string{zipPath}, nil)
+	got, err := unpackArchives(dir, []string{zipPath}, nil, nil)
 	if err != nil {
 		t.Fatalf("unpack: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestUnpackArchives_FakeUnrarRunner(t *testing.T) {
 		return exec.CommandContext(ctx, helper, dest)
 	}
 
-	got, err := unpackArchives(dir, []string{rar, vol}, nil)
+	got, err := unpackArchives(dir, []string{rar, vol}, nil, nil)
 	if err != nil {
 		t.Fatalf("unpack: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestUnpackArchives_TriesNextLeaderAfterFailure(t *testing.T) {
 		return exec.CommandContext(ctx, helper, dest)
 	}
 
-	if _, err := unpackArchives(dir, []string{pretty, hash1, hash2}, nil); err != nil {
+	if _, err := unpackArchives(dir, []string{pretty, hash1, hash2}, nil, nil); err != nil {
 		t.Fatalf("unpack should succeed via hash set: %v", err)
 	}
 	if attempts < 2 {
@@ -258,7 +258,7 @@ func TestUnpackArchives_ProgressCallback(t *testing.T) {
 	var calls [][2]int64
 	if _, err := unpackArchives(dir, []string{pretty, hash1, hash2}, func(done, total int64) {
 		calls = append(calls, [2]int64{done, total})
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("unpack: %v", err)
 	}
 	if len(calls) < 2 {

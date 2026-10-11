@@ -11,8 +11,17 @@ import (
 
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/library"
+	"github.com/labbersanon/sakms/internal/release"
 	"github.com/labbersanon/sakms/internal/usenet"
 )
+
+func parkTriedKeys(url, title string) string {
+	keys := grabs.ReleaseKeys(url, title)
+	for _, tok := range release.GroupTokens(title) {
+		keys = append(keys, grabs.GroupKey(tok))
+	}
+	return grabs.FormatTriedReleaseKeys(keys)
+}
 
 // fakeForgetEngine satisfies contentForgetEngine for tests. No real staging
 // dirs are created unless the test seeds them under stagingDir.
@@ -194,9 +203,9 @@ func TestParkUsenetContentFailure_ReleaseKeysUseNZBTitleNotMediaTitle(t *testing
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	want := grabs.FormatTriedReleaseKeys(grabs.ReleaseKeys(g.DownloadURL, nzbTitle))
+	want := parkTriedKeys(g.DownloadURL, nzbTitle)
 	if got.TriedReleaseKeys != want {
-		t.Errorf("tried_release_keys = %q, want NZB-title keys %q", got.TriedReleaseKeys, want)
+		t.Errorf("tried_release_keys = %q, want NZB-title+group keys %q", got.TriedReleaseKeys, want)
 	}
 	mediaKeys := grabs.FormatTriedReleaseKeys(grabs.ReleaseKeys(g.DownloadURL, g.Title))
 	if got.TriedReleaseKeys == mediaKeys {
@@ -581,6 +590,19 @@ func TestContentNoVideoReason(t *testing.T) {
 	err2 := fmt.Errorf("%w: par2", usenet.ErrContentUnusable)
 	if got := contentFailureReason(err2); got != contentUnpackFailedReason {
 		t.Errorf("contentFailureReason(ErrContentUnusable) = %q, want %q", got, contentUnpackFailedReason)
+	}
+	wrapped := fmt.Errorf("%w in dir (last: %w)", usenet.ErrNoVideoUnpacked, usenet.ErrPasswordProtected)
+	if got := contentFailureReason(wrapped); got != contentPasswordReason {
+		t.Errorf("password wrapped in no-video = %q, want password reason", got)
+	}
+}
+
+func TestParkNZBTitle_DropsMediaTitle(t *testing.T) {
+	if got := parkNZBTitle("The Red Skelton Show", "the red skelton show"); got != "" {
+		t.Fatalf("got %q, want empty (show name is not an NZB title)", got)
+	}
+	if got := parkNZBTitle("Show.S04E30.720p.WEB-WEBTUBE", "The Red Skelton Show"); got != "Show.S04E30.720p.WEB-WEBTUBE" {
+		t.Fatalf("got %q", got)
 	}
 }
 

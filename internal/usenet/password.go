@@ -221,9 +221,7 @@ func preferredNZBName(passed string, dnzb DNZBHeaders, nzb *NZB) string {
 
 // Claude 2026-10-11: skip yEnc/X-DNZB hex blobs as the NZB display name.
 // Reason: preferredNZBName used to prefer X-DNZB-Name even when it was
-//
-//	81614M36….mkv, so Downloads and park keys lost the Prowlarr title.
-//
+// 81614M36….mkv, so Downloads and park keys lost the Prowlarr title.
 // Troubleshooting: grab 1206 Filename was hex.mkv; t: keys never matched r.Title.
 // Review if: indexer title is stored on the grab and X-DNZB-Name is display-only.
 func obfuscatedNZBName(s string) bool {

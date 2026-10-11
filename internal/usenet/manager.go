@@ -1372,10 +1372,8 @@ func (m *Manager) FindByGID(gid string) (*Download, error) {
 // Review if: grabs persist the NZB title as its own column.
 // Claude 2026-10-11: return the indexer/Prowlarr title (parkName), not X-DNZB-Name.
 // Reason: obfuscated X-DNZB-Name (hex.mkv) hashed as t: never matches r.Title, so
-//
-//	the same AndreMor NZB was re-dispatched after every unpack park. parkName is
-//	the AddNZB argument (picked.Title). Empty parkName falls back to display name.
-//
+// the same AndreMor NZB was re-dispatched after every unpack park. parkName is
+// the AddNZB argument (picked.Title). Empty parkName falls back to display name.
 // Troubleshooting: journal "N keys excluded" then dispatch of the same …-AndreMor 1.
 // Review if: grabs persist the NZB title as its own column (same as above).
 func (m *Manager) FindFilename(gid string) string {

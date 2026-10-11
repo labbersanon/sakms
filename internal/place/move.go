@@ -142,10 +142,6 @@ func copyPath(src, dst string) error {
 // Import must not relaunch the NZB — the release is fine; the dest is not.
 var ErrDestNotWritable = errors.New("place: destination not writable")
 
-func destFilePerm(mode fs.FileMode) fs.FileMode {
-	return mode.Perm() | 0o644
-}
-
 func destNotWritable(err error) bool {
 	return errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES)
 }
@@ -172,7 +168,7 @@ func copyFile(src, dst string, mode fs.FileMode) error {
 	// Troubleshooting: Arrested Development S04E14/E15 import permission denied;
 	//   staging mp4 is 0444; touch as uid 1001 in the dest dir succeeds.
 	// Review if: library dest mode is a setting, or CIFS unix extensions are on.
-	perm := destFilePerm(mode)
+	perm := mode.Perm() | 0o644
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
 	if destNotWritable(err) {
 		_ = os.Remove(dst)

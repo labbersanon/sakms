@@ -172,11 +172,6 @@ func TestIsEXDEV(t *testing.T) {
 	}
 }
 
-// TestMove_ForcedEXDEVFallback uses a custom rename failure path by moving
-// via the public Move after ensuring rename cannot succeed: on systems where
-// TempDir is one filesystem, we still verify Move succeeds when src/dst are
-// same-FS (rename), covered above. This test documents the EXDEV error shape
-// Move must accept.
 func TestCopyFile_ReadonlySourceGetsWritableDest(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
@@ -215,6 +210,11 @@ func TestWrapDestOpen_MarksPermission(t *testing.T) {
 	}
 }
 
+// TestMove_ForcedEXDEVFallback uses a custom rename failure path by moving
+// via the public Move after ensuring rename cannot succeed: on systems where
+// TempDir is one filesystem, we still verify Move succeeds when src/dst are
+// same-FS (rename), covered above. This test documents the EXDEV error shape
+// Move must accept.
 func TestMove_EXDEVErrorShape(t *testing.T) {
 	link := &os.LinkError{Op: "rename", Old: "/data/a", New: "/adult/a", Err: syscall.EXDEV}
 	if link.Error() == "" || !isEXDEV(link) {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -243,14 +244,7 @@ func TestParkUsenetContentFailure_IndexerDuplicateTitleWritesGroupKey(t *testing
 	if got.TriedReleaseKeys != want {
 		t.Errorf("tried_release_keys = %q, want %q", got.TriedReleaseKeys, want)
 	}
-	foundGroup := false
-	for _, k := range grabs.ParseTriedReleaseKeys(got.TriedReleaseKeys) {
-		if k == "g:andremor" {
-			foundGroup = true
-			break
-		}
-	}
-	if !foundGroup {
+	if !slices.Contains(grabs.ParseTriedReleaseKeys(got.TriedReleaseKeys), "g:andremor") {
 		t.Errorf("tried_release_keys = %q, want g:andremor", got.TriedReleaseKeys)
 	}
 }

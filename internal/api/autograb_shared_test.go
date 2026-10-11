@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/labbersanon/sakms/internal/apidto"
+	"github.com/labbersanon/sakms/internal/autograb"
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/prowlarr"

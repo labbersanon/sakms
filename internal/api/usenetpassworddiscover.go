@@ -23,12 +23,12 @@ import (
 const maxDiscoveredPasswords = 5
 
 // Claude 2026-10-11: Discover/native/AI password lookup for encrypted RARs.
-// Reason: NZB meta and password.txt are often missing; a sibling indexer hit
-//   ({{pw}} / password=) or an explicit comment is how SAB users recover it.
+// Reason: fallback after this NZB's file subjects and nfo/txt BODY peeks miss.
+//   Indexer titles may still carry {{pw}} / password=; AI is opt-in.
 // Troubleshooting: journal "usenet password discover:" then engine
 //   "discovered N unpack password candidate(s)". Never logs the value.
 // Review if: a per-job UI password field replaces search.
-// Related: usenet.SetPasswordDiscoverer; precheck encrypted abort.
+// Related: usenet.peekPostPasswords; SetPasswordDiscoverer.
 
 func attachUsenetPasswordDiscoverer(nzb *usenet.Manager, httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, dl *downloader.Manager) {
 	if nzb == nil || connStore == nil || settingsStore == nil {

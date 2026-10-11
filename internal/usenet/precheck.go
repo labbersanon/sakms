@@ -176,7 +176,7 @@ func (m *Manager) precheckNZB(ctx context.Context, nzb *NZB, skip map[string]boo
 
 	if len(missIDs) == 0 {
 		log.Printf("usenet precheck: ok full checked=%d payload=%d", res.Checked, res.PayloadSegments)
-		return m.finishPrecheck(ctx, payload, skip, progressGID, res)
+		return m.finishPrecheck(ctx, nzb, payload, skip, progressGID, res)
 	}
 
 	// confirmMissingArticles uses the caller ctx, not the STAT timeout.
@@ -188,7 +188,7 @@ func (m *Manager) precheckNZB(ctx context.Context, nzb *NZB, skip map[string]boo
 	if len(confirmed) == 0 {
 		log.Printf("usenet precheck: ok after BODY confirm checked=%d payload=%d stat_misses=%d (STAT unreliable)",
 			res.Checked, res.PayloadSegments, len(missIDs))
-		return m.finishPrecheck(ctx, payload, skip, progressGID, res)
+		return m.finishPrecheck(ctx, nzb, payload, skip, progressGID, res)
 	}
 	res.Missing = len(confirmed) + removed
 	res.WorstFile = worstFileName(payload, confirmed)
@@ -203,7 +203,8 @@ func (m *Manager) precheckNZB(ctx context.Context, nzb *NZB, skip map[string]boo
 // Review if: first-volume RAR listing (unrar l) is added for hash-named archives.
 // Claude 2026-10-10: peek requires video/archive magic (not PAR2 FileDesc).
 // Related: precheck_video.go.
-func (m *Manager) finishPrecheck(ctx context.Context, payload []NZBFile, skip map[string]bool, progressGID string, res PrecheckResult) (PrecheckResult, error) {
+func (m *Manager) finishPrecheck(ctx context.Context, nzb *NZB, payload []NZBFile, skip map[string]bool, progressGID string, res PrecheckResult) (PrecheckResult, error) {
+	m.peekPostPasswords(ctx, nzb, progressGID)
 	if err := m.precheckVideo(ctx, payload, skip, progressGID); err != nil {
 		return res, err
 	}

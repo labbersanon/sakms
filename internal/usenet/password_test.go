@@ -39,6 +39,17 @@ func TestNZBMetaPassword(t *testing.T) {
 	}
 }
 
+func TestCollectJobPasswordsFromFileSubjects(t *testing.T) {
+	nzb := &NZB{Files: []NZBFile{
+		{Subject: `[1/9] "Show.S01E01.part01.rar" yEnc (1/50)`},
+		{Subject: `[9/9] "Show.S01E01.nfo" password=hunter2 yEnc (1/1)`},
+	}}
+	got := collectJobPasswords(DNZBHeaders{}, nzb, "Show.S01E01", nil)
+	if len(got) != 1 || got[0] != "hunter2" {
+		t.Fatalf("got %v, want [hunter2] from file subject", got)
+	}
+}
+
 func TestStagingPasswords(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "password.txt")

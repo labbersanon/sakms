@@ -23,6 +23,8 @@ type PasswordDiscoverFunc func(ctx context.Context, title string) []string
 var (
 	titleBracePW    = regexp.MustCompile(`\{\{([^{}]+)\}\}`)
 	titlePasswordEq = regexp.MustCompile(`(?i)(?:^|[\s.])password=(\S+)`)
+	// nfo/txt lines: "password: foo", "Password is foo", "PW=foo"
+	articlePasswordRE = regexp.MustCompile(`(?i)(?:archive\s+)?(?:pass(?:word)?|pw)\s*(?:is|:|=)\s*(\S+)`)
 )
 
 // SplitTitlePassword pulls a SAB-style password out of an NZB/job name.
@@ -105,6 +107,18 @@ func collectJobPasswords(dnzb DNZBHeaders, nzb *NZB, name string, extra []string
 	if dnzb.Name != "" {
 		if _, pw := SplitTitlePassword(dnzb.Name); pw != "" {
 			add(pw)
+		}
+	}
+	if nzb != nil {
+		for _, f := range nzb.Files {
+			if _, pw := SplitTitlePassword(f.Subject); pw != "" {
+				add(pw)
+			}
+			if n := filenameFromSubject(f.Subject); n != "" {
+				if _, pw := SplitTitlePassword(n); pw != "" {
+					add(pw)
+				}
+			}
 		}
 	}
 	for _, pw := range extra {

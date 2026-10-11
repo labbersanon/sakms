@@ -97,9 +97,9 @@ func (m *Manager) precheckVideo(ctx context.Context, payload []NZBFile, skip map
 		switch ev {
 		case evidenceVideo, evidenceArchive:
 			if ev == evidenceArchive && rarLooksEncrypted(seg.data) && !m.hasUnpackPassword(progressGID) {
-				// Claude 2026-10-11: Discover/AI when NZB+sidecar have no password.
-				// Reason: sibling indexer titles often carry {{pw}}; aborting peek
-				//   without a search parked Smad RARs that a Discover hit would unlock.
+				// Claude 2026-10-11: Discover/AI after this post's subjects + nfo/txt.
+				// Reason: peekPostPasswords already BODY'd companion articles; this
+				//   is the indexer/AI fallback when the collection itself had none.
 				// Troubleshooting: journal "discovered N unpack password candidate(s)".
 				// Review if: a per-job UI password field replaces search.
 				m.discoverJobPasswords(ctx, progressGID)

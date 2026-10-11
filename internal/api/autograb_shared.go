@@ -479,6 +479,17 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 			pr.releases = FilterSeasonScope(pr.releases, req.Season, req.Episode, req.SeasonSpecified)
 		}
 
+		// Claude 2026-10-10: native/pre-fetched phases inherit TMDB runtime.
+		// Reason: scoreOnePhase set runtime from req.RuntimeSeconds only (0 for
+		//   series drain/operator Grab). Native then graded unknown-bitrate and
+		//   could not apply the Medium/1080 floor. AHS S13E06 ELiTE (~294 MiB /
+		//   24 min x265, score 2.74 vs floor 5) still dispatched.
+		// Troubleshooting: journal "auto-grab: dispatching" includes runtime=Ns.
+		// Review if: AutoGrabRequest.RuntimeSeconds is always filled at the caller.
+		if pr.runtimeSeconds <= 0 {
+			pr.runtimeSeconds = autoGrabRuntimeSeconds(ctx, sess, req)
+		}
+
 		neutralizeSeasonPacks := req.Mode == mode.Series && pr.runtimeSeconds > 0
 		candidates := buildAutoGrabCandidates(pr.releases, pr.runtimeSeconds, neutralizeSeasonPacks)
 		// Claude 2026-09-22: title override tiers + soft max-resolution prefer.
@@ -578,6 +589,12 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 		if err == nil {
 			sel.PickIndex = idx
 			out.Selection = sel
+			if idx >= 0 && idx < len(sel.Grades) {
+				gr := sel.Grades[idx]
+				log.Printf("auto-grab: dispatching %q status=%s score=%.2fMbps floor=%.2fMbps implied=%.2fMbps runtime=%.0fs size=%d codec=%s res=%d",
+					picked.Title, gr.Status, gr.Score, gr.FloorMbps, gr.ImpliedMbps,
+					gr.Candidate.RuntimeSeconds, gr.Candidate.SizeBytes, gr.Candidate.Codec, gr.Candidate.Resolution)
+			}
 			break
 		}
 		if !usenet.IsPrecheckReject(err) {

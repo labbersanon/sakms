@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/labbersanon/sakms/internal/autograb"
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/usenet"
@@ -81,6 +82,9 @@ func contentFailureReason(failure error) string {
 	if errors.Is(failure, usenet.ErrArticleNotFound) {
 		return contentArticlesMissingReason
 	}
+	if errors.Is(failure, autograb.ErrBelowQualityFloor) {
+		return contentBelowFloorReason
+	}
 	return contentUnpackFailedReason
 }
 
@@ -107,8 +111,10 @@ var _ contentForgetEngine = (*usenet.Manager)(nil)
 //
 // Claude 2026-09-22: MaxAlternateReleaseAttempts gate removed.
 // Reason: precheck exhausts the graded list each cycle; tried_release_keys
-//   exclude dead NZBs. A hard "3 alt parks" cap was a download-time fallback
-//   the operator retired — requeue through precheck instead.
+//
+//	exclude dead NZBs. A hard "3 alt parks" cap was a download-time fallback
+//	the operator retired — requeue through precheck instead.
+//
 // Troubleshooting: content/430 → pending_retry due-now → drainAlternateReleaseRetries.
 // Review if: a park-episode cap returns for indexer churn.
 //

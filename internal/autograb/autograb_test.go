@@ -387,3 +387,20 @@ func TestFloorTable480pRowPresentForEveryTier(t *testing.T) {
 		}
 	}
 }
+
+// TestLiveAHSS13E06EliteIsBelowMedium1080 is the 2026-10-10 miss: NZBGeek
+// American.Horror.Story.S13E06.1080p.x265-ELiTE (307988000 B, TMDB 24 min)
+// scored 2.74 Mbps vs Medium/1080 floor 5, but still imported as medium.
+func TestLiveAHSS13E06EliteIsBelowMedium1080(t *testing.T) {
+	g := GradeCandidate(Candidate{
+		Title:    "American.Horror.Story.S13E06.1080p.x265-ELiTE",
+		Protocol: "usenet", SizeBytes: 307_988_000, RuntimeSeconds: 24 * 60,
+		Resolution: 1080, Codec: "x265",
+	}, quality.Medium, 0)
+	if g.Status != StatusBelowFloor || g.Qualified {
+		t.Fatalf("status=%s qualified=%v score=%.2f floor=%.2f, want below-floor", g.Status, g.Qualified, g.Score, g.FloorMbps)
+	}
+	if g.Score >= 5 {
+		t.Fatalf("score=%.2f must stay under the 5 Mbps Medium/1080 floor", g.Score)
+	}
+}

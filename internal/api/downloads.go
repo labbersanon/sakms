@@ -411,6 +411,12 @@ func downloadsStreamHandler(dl *downloader.Manager, nzb *usenet.Manager, grabsSt
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
+		// Claude 2026-10-10: disable proxy buffering on this SSE.
+		// Reason: a buffered reverse proxy never forwards the first frame, so
+		//   Downloads stays on "Connecting to the download engine…".
+		// Troubleshooting: EventSource open, hasData false, healthz 200.
+		// Review if: Traefik buffering middleware is added in front of sakms.
+		w.Header().Set("X-Accel-Buffering", "no")
 
 		ctx := r.Context()
 
@@ -426,8 +432,10 @@ func downloadsStreamHandler(dl *downloader.Manager, nzb *usenet.Manager, grabsSt
 			return rows
 		}
 
-		// Paint an initial snapshot immediately so the screen isn't blank until
-		// the queue next changes.
+		// Comment-flush before snapshot so the browser EventSource leaves
+		// CONNECTING even if the first payload is slow.
+		fmt.Fprintf(w, ": ok\n\n")
+		flusher.Flush()
 		writeSSEData(w, flusher, snapshot())
 
 		// Subscribe to both managers. A nil channel blocks forever in a select,
@@ -476,6 +484,7 @@ func downloadsStreamHandler(dl *downloader.Manager, nzb *usenet.Manager, grabsSt
 func writeSSEData(w http.ResponseWriter, flusher http.Flusher, v any) {
 	data, err := json.Marshal(v)
 	if err != nil {
+		log.Printf("downloads stream: marshal snapshot: %v", err)
 		return
 	}
 	fmt.Fprintf(w, "data: %s\n\n", data)

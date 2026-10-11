@@ -15,6 +15,10 @@ import (
 	"github.com/labbersanon/sakms/internal/usenet"
 )
 
+// dirBytes walks a download staging dir. Do not call it from list/SSE mappers —
+// WalkDir of a CIFS/NAS tree blocked the first Downloads SSE frame for hours
+// ("Connecting to the download engine…", 2026-10-10). Popup "on disk" uses
+// completedLength. Keep the helper for a future per-GID detail GET.
 func dirBytes(dir string) int64 {
 	if dir == "" {
 		return 0
@@ -58,8 +62,13 @@ func usenetDetailsFromEngine(d usenet.Download) *apidto.UsenetDownloadDetails {
 		ActiveConns:     d.ActiveConns,
 		MaxConns:        d.MaxConns,
 		StagingPath:     d.Dir,
-		BytesOnDisk:     dirBytes(d.Dir),
-		FailingSegment:  d.FailingSegment,
+		// Claude 2026-10-10: omit BytesOnDisk on list/SSE.
+		// Reason: dirBytes WalkDir of /media or a stalled CIFS file blocked
+		//   GET /api/downloads/stream before the first frame (Downloads stuck
+		//   on "Connecting to the download engine…"; sakms idle 7h).
+		// Troubleshooting: Downloads connecting forever while healthz 200.
+		// Review if: a bounded GET /api/downloads/{gid} walks disk for the popup.
+		FailingSegment: d.FailingSegment,
 	}
 	if usenetDetailsEmpty(out) {
 		return nil
@@ -105,7 +114,6 @@ func torrentDetailsFromEngine(d downloader.Download) *apidto.TorrentDownloadDeta
 		Files:           files,
 		Trackers:        trackers,
 		SavePath:        d.Dir,
-		BytesOnDisk:     dirBytes(d.Dir),
 	}
 	if torrentDetailsEmpty(out) {
 		return nil

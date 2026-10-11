@@ -198,6 +198,8 @@ func TestListTracked_Series_UpgradeWatchLightsMonitored(t *testing.T) {
 
 func newSeriesUpgradeWatchEnv(t *testing.T, filePath, stampedTier string) *airDateEnv {
 	t.Helper()
+	// Season 1 is intentionally not library_season_monitored: upgrade-watch
+	// hunts owned files under the series flag, not the missing-episode monitor.
 	env := newAirDateEnv(t, map[int][]fakeTMDBEpisode{
 		1: {{Number: 1, Name: "Pilot", AirDate: "2020-01-01"}},
 	}, noQualifyingRelease)

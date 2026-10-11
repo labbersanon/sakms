@@ -364,8 +364,19 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 	//   library_season_monitored is not true for that season.
 	// Review if: an untracked series should still allow a season-less grab
 	//   (it does — GetSeriesByTMDBID not-found is allowed).
-	if err := refuseUnmonitoredSeriesGrab(ctx, deps.LibStore, req.Mode, req.TMDBID, req.Season, req.SeasonSpecified); err != nil {
-		return AutoGrabOutcome{Status: http.StatusConflict, Err: err}, err
+	// Claude 2026-10-11: skip this gate for TriggerQualityWatch.
+	// Reason: upgrade-watch hunts a better copy of an ON-DISK episode under a
+	//   series-level flag. The monitor table means "grab missing episodes of
+	//   this season", not "refuse upgrades of files we already have". Applying
+	//   the gate here 409s TestMonitorSeriesUpgradeWatch_HuntsWhenFileBelowPrefs
+	//   (red on main since #134) with errSeriesSeasonUnmonitored.
+	// Troubleshooting: series upgrade-watch "auto-grab failed (*errors.errorString)"
+	//   and no parked grab — refuseUnmonitoredSeriesGrab wrapping that error.
+	// Review if: upgrade-watch becomes per-season instead of series-level.
+	if req.Trigger != TriggerQualityWatch {
+		if err := refuseUnmonitoredSeriesGrab(ctx, deps.LibStore, req.Mode, req.TMDBID, req.Season, req.SeasonSpecified); err != nil {
+			return AutoGrabOutcome{Status: http.StatusConflict, Err: err}, err
+		}
 	}
 
 	// Claude 2026-09-16: movie-release gate — Layer 2 of CAM-prevention.

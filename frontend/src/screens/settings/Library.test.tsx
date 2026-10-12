@@ -275,7 +275,14 @@ describe("Settings → Library — quality prefs: Rename Undo depth", () => {
   it("PUTs a Low 480p floor without lowering the 1080p floor", async () => {
     const calls = stubQualityFetch(10);
     render(() => <QualityPrefsSection mode={() => "movies"} />);
-    await waitFor(() => expect(depthField().value).toBe("10"));
+    // 10 is the signal's pre-GET placeholder, so wait on a GET-seeded
+    // control instead — otherwise Save would PUT the synthesizeFloors("high")
+    // initial map with only 480 flipped.
+    await waitFor(() =>
+      expect(
+        screen.getByRole("checkbox", { name: "Quality tier Medium" }),
+      ).toBeChecked(),
+    );
 
     const group = screen.getByRole("group", { name: "480p bitrate floor" });
     fireEvent.click(within(group).getByRole("button", { name: "Low" }));

@@ -54,13 +54,14 @@ describe("CalendarView", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => (
+    const { container } = render(() => (
       <CalendarView mode="movies" onGrab={() => {}} onDetail={() => {}} />
     ));
 
     // The item renders (bucketed into the day-15 cell). Empty posterPath means
     // the title shows in both the TextPoster fallback and the card title.
     expect((await screen.findAllByText("Bucketed Movie")).length).toBeGreaterThan(0);
+    expect(container.querySelector(".min-w-\\[106rem\\]")).toBeTruthy();
     // Day-15 cell exists (the number label).
     expect(screen.getByText("15")).toBeInTheDocument();
   });

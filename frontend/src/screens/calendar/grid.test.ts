@@ -1,7 +1,6 @@
 // grid.test.ts — locks down grid.ts's month-geometry contract (pad2, dayKey,
-// monthRange, cells). See grid.ts's header comment for why this file exists
-// as a deliberate duplicate of ../discover/CalendarView.tsx's own private
-// helpers rather than importing a shared module.
+// monthRange, cells). Discover CalendarView and Queue History/Upcoming all
+// import these helpers (via MonthGrid) as of 2026-10-12.
 
 import { describe, expect, it } from "vitest";
 import { cells, dayKey, monthRange, pad2 } from "./grid";

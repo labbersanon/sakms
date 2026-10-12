@@ -28,6 +28,11 @@
 // (§2.1): a Calendar pre-release request is a `pending_retry` row, and History
 // must never show an unreleased movie as something that already landed.
 //
+// Claude 2026-10-12: grid cells use MonthGrid + CalendarPosterCard.
+// Reason: Queue calendars must match Discover's 220px / 106rem poster month.
+// Troubleshooting: History was a squeezed text agenda next to Discover Calendar.
+// Review if: Grab grows a poster field and the /poster lookup can drop.
+//
 // TIMEZONE — a DELIBERATE, DOCUMENTED NON-FIX. DO NOT "CORRECT" IT (§2.4).
 // Grab.createdAt is UTC (the `strftime('%Y-%m-%dT%H:%M:%fZ','now')` column
 // default at internal/db/migrations/0009_grabs.sql:15). Day buckets are the
@@ -53,12 +58,16 @@ import {
   Show,
 } from "solid-js";
 import { type Grab, fetchGrabs } from "../../api/grab";
-import type { Mode } from "../../api/discover";
+import {
+  type Mode,
+  cardPosterSrc,
+  fetchTitleCard,
+} from "../../api/discover";
 import { ErrorText, ModeTabs, Muted } from "../../components/ui";
 import { matchesQueueSearch } from "../queueSearch";
-import { cells, dayKey, monthRange } from "./grid";
-
-const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+import { monthRange } from "./grid";
+import { MonthGrid } from "./MonthGrid";
+import { CalendarPosterCard } from "./CalendarPosterCard";
 
 const MODE_LABELS: Record<string, string> = {
   movies: "Movies",
@@ -94,6 +103,42 @@ const StatusChip: Component<{ status: string }> = (props) => (
     {props.status}
   </span>
 );
+
+// HistoryPosterCard is one landed grab in the month grid. TMDB poster is
+// lazy (same /poster lookup Library uses) so the Grab DTO does not need art.
+const HistoryPosterCard: Component<{ grab: Grab }> = (props) => {
+  const [card] = createResource(
+    () => {
+      const id = props.grab.tmdbId;
+      const m = props.grab.mode;
+      return id && (m === "movies" || m === "series")
+        ? { mode: m as "movies" | "series", tmdbId: id }
+        : undefined;
+    },
+    ({ mode, tmdbId }) =>
+      fetchTitleCard(mode, tmdbId).catch(() => ({
+        posterPath: "",
+        posterUrl: "",
+        overview: "",
+      })),
+  );
+  const src = () => {
+    const c = card();
+    return c ? cardPosterSrc(c) : "";
+  };
+  return (
+    <CalendarPosterCard
+      title={props.grab.title}
+      posterSrc={src()}
+      hover={card()?.overview}
+    >
+      <div class="mt-1 flex flex-wrap items-center gap-1">
+        <StatusChip status={props.grab.status} />
+        <ReviewBadge grab={props.grab} />
+      </div>
+    </CalendarPosterCard>
+  );
+};
 
 export const History: Component<{
   year: number;
@@ -174,56 +219,13 @@ export const History: Component<{
         <Show
           when={props.display === "list"}
           fallback={
-            <div class="grid grid-cols-7 gap-2">
-              <For each={WEEKDAYS}>
-                {(w) => (
-                  <div class="px-1 text-xs font-semibold uppercase tracking-wide text-muted">
-                    {w}
-                  </div>
-                )}
-              </For>
-              <For each={cells(props.year, props.month)}>
-                {(day) => (
-                  <div
-                    class="min-h-[6rem] rounded-lg border border-border p-1.5"
-                    classList={{
-                      "bg-surface/40": day !== null,
-                      "bg-transparent": day === null,
-                    }}
-                  >
-                    <Show when={day !== null}>
-                      {/* The day number is the cell's own coordinate, not the
-                          grab's date text — see the copy-honesty note above. */}
-                      <div class="mb-1 text-xs font-medium text-muted">{day}</div>
-                      <div class="flex flex-col gap-1.5">
-                        <For
-                          each={
-                            buckets().get(
-                              dayKey(props.year, props.month, day!),
-                            ) ?? []
-                          }
-                        >
-                          {(g) => (
-                            <div class="rounded-md border border-border bg-surface p-1.5">
-                              <div
-                                class="truncate text-xs text-fg"
-                                title={g.title}
-                              >
-                                {g.title}
-                              </div>
-                              <div class="mt-1 flex flex-wrap items-center gap-1">
-                                <StatusChip status={g.status} />
-                                <ReviewBadge grab={g} />
-                              </div>
-                            </div>
-                          )}
-                        </For>
-                      </div>
-                    </Show>
-                  </div>
-                )}
-              </For>
-            </div>
+            <MonthGrid year={props.year} month={props.month}>
+              {(_day, key) => (
+                <For each={buckets().get(key) ?? []}>
+                  {(g) => <HistoryPosterCard grab={g} />}
+                </For>
+              )}
+            </MonthGrid>
           }
         >
           <Show

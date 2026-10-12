@@ -56,15 +56,13 @@ describe("activity helpers", () => {
     expect(activityStatus(grab({ status: "failed" }))).toBe("failed");
   });
 
-  it("truncates a reason at an em dash and a length cap", () => {
+  it("truncates a reason at an em dash, not by length", () => {
     expect(
       activityReason(
         "the connection to the usenet server dropped — resuming shortly",
       ),
     ).toBe("the connection to the usenet server dropped");
-    const long = activityReason("x".repeat(90));
-    expect(long.endsWith("…")).toBe(true);
-    expect(long.length).toBeLessThanOrEqual(80);
+    expect(activityReason("x".repeat(90))).toBe("x".repeat(90));
   });
 
   it("buckets downloaded / attempted / failed without overlap", () => {
@@ -112,9 +110,11 @@ describe("Activity screen", () => {
     const items = screen.getAllByRole("listitem");
     expect(items[0]!.textContent).toContain("New Show S01E01");
     expect(items[1]!.textContent).toContain("Old Movie");
-    expect(screen.getByRole("list").parentElement?.className).toContain(
-      "bg-surface",
-    );
+    expect(items[0]!.textContent).not.toContain("series");
+    expect(items[1]!.textContent).not.toContain("movies");
+    const card = screen.getByRole("list").parentElement;
+    expect(card?.className).toContain("bg-surface");
+    expect(card?.className).toContain("overflow-auto");
   });
 
   it("search matches title, status, and reason", async () => {

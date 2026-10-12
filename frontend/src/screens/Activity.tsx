@@ -1,4 +1,4 @@
-// Activity — Queue's compact grab log. One line per grab: when, mode, title,
+// Activity — Queue's compact grab log. One line per grab: when, title,
 // short status, and a truncated reason when there is one. Search and the
 // Downloaded / Attempted / Failed chips are the whole UI.
 //
@@ -64,8 +64,7 @@ export function activityReason(raw: string | undefined): string {
   const s = (raw ?? "").replace(/\s+/g, " ").trim();
   if (!s) return "";
   const dash = s.indexOf(" — ");
-  const base = dash > 0 ? s.slice(0, dash) : s;
-  return base.length > 80 ? `${base.slice(0, 77)}…` : base;
+  return dash > 0 ? s.slice(0, dash) : s;
 }
 
 function bucketOf(id: string): ActivityBucket {
@@ -141,28 +140,30 @@ export const Activity: Component = () => {
           Troubleshooting: Activity hard to read — same Browse failure
             (listing must use bg-surface over the wallpaper).
           Review if: Activity rows become per-item Download cards. */}
-      <div class="mt-2 max-h-[70vh] overflow-y-auto rounded-xl border border-border bg-surface px-3 py-2">
+      {/* Claude 2026-10-12: title instead of mode; overflow-x on the card.
+          Reason: mode was a redundant column; long titles were truncated.
+          Troubleshooting: title clipped — card must overflow-x-auto and
+            rows whitespace-nowrap so the line can scroll sideways.
+          Review if: a dedicated events table with column headers. */}
+      <div class="mt-2 max-h-[70vh] overflow-auto rounded-xl border border-border bg-surface px-3 py-2">
         <Show when={!rows.loading} fallback={<Muted>Loading…</Muted>}>
           <Show
             when={visible().length > 0}
             fallback={<Muted>No matching activity.</Muted>}
           >
-            <ul class="space-y-0.5 text-xs">
+            <ul class="min-w-max space-y-0.5 text-xs">
               <For each={visible()}>
                 {(g) => {
                   const reason = activityReason(g.retryReason);
                   return (
-                    <li class="flex items-baseline gap-3 border-b border-border/40 py-1 font-mono">
+                    <li class="flex flex-nowrap items-baseline gap-3 whitespace-nowrap border-b border-border/40 py-1 font-mono">
                       <span class="w-[9.5rem] shrink-0 text-muted">
                         {activityStamp(g.createdAt)}
                       </span>
-                      <span class="w-14 shrink-0 text-muted">{g.mode}</span>
-                      <span class="min-w-0 flex-1 truncate text-fg" title={g.title}>
-                        {g.title}
-                      </span>
+                      <span class="shrink-0 text-fg">{g.title}</span>
                       <span class="shrink-0 text-fg">{activityStatus(g)}</span>
                       <Show when={reason}>
-                        <span class="max-w-[20rem] min-w-0 truncate text-muted" title={g.retryReason}>
+                        <span class="shrink-0 text-muted" title={g.retryReason}>
                           {reason}
                         </span>
                       </Show>

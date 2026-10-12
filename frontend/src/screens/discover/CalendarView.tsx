@@ -1,15 +1,19 @@
 // CalendarView — Mainstream Discover's month-grid sub-view (F2). A monthly grid
 // with prev/next-month navigation; each visible month's date range is fetched
-// from GET /api/modes/{mode}/discover/calendar (Movies release dates + TV
-// premieres, both modes merged since Mainstream combines them), and the returned
-// DiscoverItem[] is bucketed by releaseDate into day cells. Each item renders as
-// the SAME PosterCard the carousels/grid use (not a bespoke one-off card) — so a
-// click opens the existing DetailPopup and the Grab affordance works identically,
-// and so the later F3 select-mode checkbox lands on it for free. Edit mode is
-// disabled while Calendar is active (there are no rows to reorder); the parent
-// (Mainstream.tsx) owns that gating.
+// from GET /api/modes/{mode}/discover/calendar for the active Movies/Series tab
+// (not both). DiscoverItem[] is bucketed by releaseDate into day cells. Each
+// item renders as the SAME PosterCard the carousels/grid use — a click opens
+// DetailPopup and Grab works identically, and F3 select-mode checkboxes land
+// on it for free. Edit mode is disabled while Calendar is active (no rows to
+// reorder); Mainstream.tsx owns that gating.
 //
-// v1 scope is Movies releases + TV first-air premieres; a per-episode air-date
+// Claude 2026-10-11: fetch only the active tab's mode.
+// Reason: Mainstream split Movies/Series into tabs; the calendar still merged
+//   both TMDB windows, so the Series tab's month grid was movie releases.
+// Troubleshooting: Discover → Series → Calendar shows films, not TV premieres.
+// Review if: a combined Movies+Series calendar tab is added back on purpose.
+//
+// v1 scope is Movies releases or TV first-air premieres; a per-episode air-date
 // calendar is a documented follow-up (heavier, per-episode TMDB queries).
 
 import {
@@ -48,20 +52,14 @@ function monthRange(year: number, month: number): { from: string; to: string } {
   return { from: dayKey(year, month, 1), to: dayKey(year, month, lastDay) };
 }
 
-// cardMode derives a merged calendar item's grab mode from its TMDB mediaType,
-// the same per-item-mode pattern the combined library/search grids already use.
-const cardMode = (item: DiscoverItem): "movies" | "series" =>
-  item.mediaType === "tv" ? "series" : "movies";
-
 export const CalendarView: Component<{
+  mode: "movies" | "series";
   onGrab: (t: GrabTarget) => void;
   onDetail: (t: DetailTarget) => void;
 }> = (props) => {
   const now = new Date();
   const [year, setYear] = createSignal(now.getFullYear());
   const [month, setMonth] = createSignal(now.getMonth());
-
-  const monthKey = () => `${year()}-${pad2(month() + 1)}`;
 
   const step = (delta: number) => {
     // Normalize month over/underflow into the adjacent year via a single Date.
@@ -70,17 +68,13 @@ export const CalendarView: Component<{
     setMonth(d.getMonth());
   };
 
-  // Fetch (and refetch on month change) the whole visible month's range for
-  // BOTH modes, merged — Mainstream is a combined Movies+Series page. A
-  // per-mode failure degrades to [] so one missing source never blanks the grid.
-  const [items] = createResource(monthKey, async () => {
-    const { from, to } = monthRange(year(), month());
-    const [movies, series] = await Promise.all([
-      fetchDiscoverCalendar("movies", from, to).catch(() => [] as DiscoverItem[]),
-      fetchDiscoverCalendar("series", from, to).catch(() => [] as DiscoverItem[]),
-    ]);
-    return [...movies, ...series];
-  });
+  // Fetch (and refetch on month or Movies/Series tab change) this tab's month.
+  // A fetch failure degrades to [] so a TMDB blip never blanks the grid chrome.
+  const [items] = createResource(
+    () => ({ mode: props.mode, ...monthRange(year(), month()) }),
+    ({ mode, from, to }) =>
+      fetchDiscoverCalendar(mode, from, to).catch(() => [] as DiscoverItem[]),
+  );
 
   // buckets keys the fetched items by their YYYY-MM-DD release day. Memoized
   // (not a plain derived signal) since <For> reads it once per cell per
@@ -163,7 +157,7 @@ export const CalendarView: Component<{
                       <For each={buckets().get(dayKey(year(), month(), day!)) ?? []}>
                         {(item) => (
                           <PosterCard
-                            mode={cardMode(item)}
+                            mode={props.mode}
                             item={item}
                             onGrab={props.onGrab}
                             onDetail={props.onDetail}

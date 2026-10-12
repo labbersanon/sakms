@@ -1362,7 +1362,11 @@ export const MainstreamDiscover: Component<{
         <Show
           when={view() !== "calendar"}
           fallback={
-            <CalendarView onGrab={setGrabTarget} onDetail={setDetailTarget} />
+            <CalendarView
+              mode={ownedMode()}
+              onGrab={setGrabTarget}
+              onDetail={setDetailTarget}
+            />
           }
         >
         <Show

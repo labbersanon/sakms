@@ -133,9 +133,8 @@ var _ contentForgetEngine = (*usenet.Manager)(nil)
 // Side effects on success (best-effort — failure is logged, not fatal):
 //   - clearOwnedUsenetStaging: the staged bytes are proven useless; leaving
 //     them would trigger hollow reconcile imports on restart.
-//   - The engine error row is kept on Downloads (no Forget) so 430/unpack
-//     failures are visible until the operator Cancels. Complete rows still
-//     auto-dismiss via scheduleDismissComplete.
+//   - Forget the engine error row so Downloads does not show Failed; the grab
+//     is already pending_retry (queue) for an alternate or the days ladder.
 func parkUsenetContentFailure(
 	ctx context.Context,
 	deps AutoGrabDeps,
@@ -179,16 +178,14 @@ func parkUsenetContentFailure(
 		g.ID, g.Title, reason)
 
 	if engine != nil {
-		// Claude 2026-09-22: do not Forget the error row on content park.
-		// Reason: Forget dropped the terminal engine entry so Downloads looked silent
-		//   after 430/unpack/no-video; the operator asked to keep the error visible
-		//   until manual Cancel. Staging bytes are still useless and are wiped below.
-		// Troubleshooting: 430 parks grab pending_retry but Downloads still shows the
-		//   error until Cancel. Complete rows still auto-dismiss via scheduleDismissComplete.
-		// Review if: operator wants errors auto-forgotten after a glance window.
-		// if !engine.Forget(g.DownloadGID) {
-		// 	log.Printf("usenet content: Forget(%s) for grab %d returned false (already absent)", g.DownloadGID, g.ID)
-		// }
+		// Claude 2026-10-11: Forget the error row on content park.
+		// Reason: 430/unpack parks pending_retry (alternate or days ladder). Leaving
+		//   the engine error made Downloads show Failed while Requests already queued
+		//   the retry. Precheck-abort already dropPrecheckFailed (no Failed pill);
+		//   BODY 430 must match. Staging is still wiped below.
+		// Troubleshooting: Downloads "article not found" after grab 1904 430 park.
+		// Review if: a glance window for unpack errors is wanted separately from 430.
+		forgetContentEngineRow(engine, g.DownloadGID, g.ID, "content park")
 		clearOwnedUsenetStagingEngine(engine, g.DownloadGID)
 	}
 
@@ -224,17 +221,21 @@ func parkContentFailureOrDaysLadder(ctx context.Context, deps AutoGrabDeps, g gr
 	// Cap / fail-closed decline: parkUsenetContentFailure skipped wipe.
 	// The staging is still hollow — clean it before the days-ladder park.
 	if engine != nil && strings.HasPrefix(g.DownloadGID, usenetGIDPrefix) {
-		// Claude 2026-09-22: keep the error row on days-ladder fallthrough too.
-		// Reason: same silent-Downloads failure as the content-park success path;
-		//   operator asked to keep errors visible until dismiss/cancel.
-		// Troubleshooting: cap-reached 430 still shows on Downloads until Cancel.
-		// Review if: days-ladder fallthrough should Forget after a glance window.
-		// if !engine.Forget(g.DownloadGID) {
-		// 	log.Printf("usenet content: Forget(%s) on days-ladder fallthrough for grab %d returned false", g.DownloadGID, g.ID)
-		// }
+		forgetContentEngineRow(engine, g.DownloadGID, g.ID, "days-ladder fallthrough")
 		clearOwnedUsenetStagingEngine(engine, g.DownloadGID)
 	}
 	return parkGrabForRetry(ctx, deps, g.ID, usenetRetrievalReason(failure))
+}
+
+// forgetContentEngineRow drops the engine's terminal row for gid so Downloads
+// does not show Failed for a grab that is already parked for retry.
+func forgetContentEngineRow(engine contentForgetEngine, gid string, grabID int64, why string) {
+	if engine == nil || gid == "" {
+		return
+	}
+	if !engine.Forget(gid) {
+		log.Printf("usenet content: Forget(%s) for grab %d (%s) returned false (already absent)", gid, grabID, why)
+	}
 }
 
 // clearOwnedUsenetStagingEngine is clearOwnedUsenetStaging using the narrow

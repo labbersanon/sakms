@@ -3516,15 +3516,18 @@ export interface SetSeasonMonitoredRequest {
 }
 /**
  * TitleQualityPrefsResponse is GET for one series or movie title's quality
- * prefs. When Inherited is true, Tiers are the mode defaults and MinResolution
- * is 0 (any) — mode soft-max is a separate Settings control. Floor is the
- * lowest accepted tier (the minimum quality), for single-pill UI binding.
+ * prefs. When Inherited is true, Tiers/ResolutionFloors are the mode defaults
+ * and MinResolution is 0 (any) — mode soft-max is a separate Settings control.
+ * Floor is the lowest accepted tier (the minimum quality), for older clients.
+ * ResolutionFloors is the same per-rung bitrate map Settings uses (keys
+ * "480"/"720"/"1080"/"2160"); GET always returns all four rungs.
  */
 export interface TitleQualityPrefsResponse {
   tiers: string[];
   floor: string;
   minResolution: number /* int */;
   inherited: boolean;
+  resolutionFloors: { [key: string]: string};
   upgradeQueued?: number /* int */;
   /**
    * Claude 2026-09-28: upgrade-watch, present only when a library row exists
@@ -3553,12 +3556,16 @@ export interface MovieUpgradeWatchResponse {
  * TitleQualityPrefsRequest is PUT body. Clear=true deletes the override
  * (back to mode defaults). Otherwise Floor (preferred) or Tiers is required;
  * a single Floor is expanded to that tier and above. MinResolution 0 = any.
+ * ResolutionFloors, when sent, is the per-rung auto-grab floor (same keys
+ * and values as mode Settings). Omitted/empty synthesizes UniformFloors
+ * from Floor so older clients keep one floor on every rung.
  */
 export interface TitleQualityPrefsRequest {
   floor?: string;
   tiers?: string[];
   minResolution: number /* int */;
   clear?: boolean;
+  resolutionFloors?: { [key: string]: string};
 }
 /**
  * SeriesNewSeasonDiscoveryResponse / SeriesNewSeasonDiscoveryRequest back

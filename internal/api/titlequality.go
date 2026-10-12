@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/labbersanon/sakms/internal/apidto"
@@ -139,7 +140,22 @@ func putTitleQualityPrefs(w http.ResponseWriter, r *http.Request, deps titleQual
 		return
 	}
 
-	if err := deps.lib.SetTitleQualityPrefs(ctx, m, tmdbID, tiers, req.MinResolution, true); err != nil {
+	floors, err := parseResolutionFloors(req.ResolutionFloors)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(floors) == 0 {
+		floors = autograb.UniformFloors(quality.Lowest(tiers))
+	} else {
+		merged := autograb.UniformFloors(quality.Lowest(tiers))
+		for r, t := range floors {
+			merged[r] = t
+		}
+		floors = merged
+	}
+
+	if err := deps.lib.SetTitleQualityPrefs(ctx, m, tmdbID, tiers, req.MinResolution, true, floors); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -180,10 +196,11 @@ func titlePrefsTiersFromRequest(req apidto.TitleQualityPrefsRequest) []quality.T
 
 func effectiveTitleQualityPrefs(ctx context.Context, deps titleQualityDeps, m mode.Mode, tmdbID int) apidto.TitleQualityPrefsResponse {
 	modeTiers := resolveQualityTiers(ctx, deps.settings, m)
+	modeFloors := resolveResolutionFloors(ctx, deps.settings, m)
 
 	stored, err := deps.lib.GetTitleQualityPrefs(ctx, m, tmdbID)
 	if err != nil || !stored.HasOverride {
-		return titlePrefsResponse(modeTiers, 0, true)
+		return titlePrefsResponse(modeTiers, 0, true, modeFloors)
 	}
 	tiers := stored.Tiers
 	if len(tiers) == 0 {
@@ -193,15 +210,38 @@ func effectiveTitleQualityPrefs(ctx context.Context, deps titleQualityDeps, m mo
 	if stored.MinResolutionSet {
 		minRes = stored.MinResolution
 	}
-	return titlePrefsResponse(tiers, minRes, false)
+	return titlePrefsResponse(tiers, minRes, false, titleOverrideFloors(stored))
 }
 
-func titlePrefsResponse(tiers []quality.Tier, minRes int, inherited bool) apidto.TitleQualityPrefsResponse {
+func titlePrefsResponse(tiers []quality.Tier, minRes int, inherited bool, floors map[int]quality.Tier) apidto.TitleQualityPrefsResponse {
+	if len(floors) == 0 {
+		floors = autograb.UniformFloors(quality.Lowest(tiers))
+	}
 	floor := quality.Lowest(tiers)
+	var rungTiers []quality.Tier
+	for _, r := range autograb.FloorRungs() {
+		if t := floors[r]; quality.Rank(t) > 0 {
+			rungTiers = append(rungTiers, t)
+		}
+	}
+	if len(rungTiers) > 0 {
+		floor = quality.Lowest(rungTiers)
+	}
 	return apidto.TitleQualityPrefsResponse{
 		Tiers: qualityTiersToStrings(tiers), Floor: string(floor),
 		MinResolution: minRes, Inherited: inherited,
+		ResolutionFloors: resolutionFloorsToStrings(floors),
 	}
+}
+
+func titleOverrideFloors(stored library.TitleQualityPrefs) map[int]quality.Tier {
+	out := autograb.UniformFloors(quality.Lowest(stored.Tiers))
+	for r, t := range stored.ResolutionFloors {
+		if quality.Rank(t) > 0 {
+			out[r] = t
+		}
+	}
+	return out
 }
 
 // resolveAutoGrabTiersForTitle returns title override tiers when present,
@@ -215,29 +255,36 @@ func resolveAutoGrabTiersForTitle(ctx context.Context, lib *library.Store, setti
 	return resolveQualityTiers(ctx, settingsStore, m)
 }
 
+// Claude 2026-10-12: title override floors are per-rung, matching Settings.
+// Reason: UniformFloors(Lowest(tiers)) made a Looney override Medium at 480p
+//
+//	and 1080p; the operator asked overrides to follow the same rules.
+//
+// Troubleshooting: library_quality_prefs.resolution_floors; TitleQualityPrefs
+//
+//	480p/1080p pills. Empty stored map (pre-0038 rows) still UniformFloors.
+//
+// Review if: Inherited GET stops copying mode floors onto the title card.
+// Related files: migrations/0038_title_quality_resolution_floors.sql
+//
 // resolveAutoGrabFloorsForTitle is the per-rung bitrate floor map. A title
-// override still applies one floor (Lowest of its set) to every rung; inherited
-// mode Settings uses the per-resolution map.
+// override uses its stored per-resolution map (same rules as mode Settings);
+// a pre-column override with empty floors still applies Lowest(tiers) to every
+// rung. Inherited titles use the mode Settings map.
 func resolveAutoGrabFloorsForTitle(ctx context.Context, lib *library.Store, settingsStore *settings.Store, m mode.Mode, tmdbID int) map[int]quality.Tier {
 	if lib != nil && tmdbID > 0 {
-		if stored, err := lib.GetTitleQualityPrefs(ctx, m, tmdbID); err == nil && stored.HasOverride && len(stored.Tiers) > 0 {
-			return autograb.UniformFloors(quality.Lowest(stored.Tiers))
+		if stored, err := lib.GetTitleQualityPrefs(ctx, m, tmdbID); err == nil && stored.HasOverride {
+			return titleOverrideFloors(stored)
 		}
 	}
 	return resolveResolutionFloors(ctx, settingsStore, m)
 }
 
 // resolveAutoGrabAcceptedByResolution is the accepted set auto-grab walks
-// highest-first, keyed by floorTable rung. Title overrides keep their explicit
-// set (Lossless may stay unchecked); inherited mode Settings expands each
-// rung's floor with TiersAtOrAbove.
+// highest-first, keyed by floorTable rung. Title overrides expand each rung's
+// floor with TiersAtOrAbove, matching mode Settings.
 func resolveAutoGrabAcceptedByResolution(ctx context.Context, lib *library.Store, settingsStore *settings.Store, m mode.Mode, tmdbID int) map[int][]quality.Tier {
-	if lib != nil && tmdbID > 0 {
-		if stored, err := lib.GetTitleQualityPrefs(ctx, m, tmdbID); err == nil && stored.HasOverride && len(stored.Tiers) > 0 {
-			return autograb.UniformAccepted(stored.Tiers)
-		}
-	}
-	return autograb.AcceptedFromFloors(resolveResolutionFloors(ctx, settingsStore, m))
+	return autograb.AcceptedFromFloors(resolveAutoGrabFloorsForTitle(ctx, lib, settingsStore, m, tmdbID))
 }
 
 // resolveMinResolutionForTitle returns the hard resolution floor for a title
@@ -268,6 +315,14 @@ func qualityPrefsRaised(prev, next apidto.TitleQualityPrefsResponse) bool {
 	if next.MinResolution > prev.MinResolution {
 		return true
 	}
+	for _, r := range autograb.FloorRungs() {
+		k := strconv.Itoa(r)
+		prevT := quality.Tier(prev.ResolutionFloors[k])
+		nextT := quality.Tier(next.ResolutionFloors[k])
+		if quality.Rank(nextT) > quality.Rank(prevT) && quality.Rank(nextT) > 0 {
+			return true
+		}
+	}
 	return false
 }
 
@@ -275,9 +330,9 @@ func queueQualityUpgrades(ctx context.Context, deps titleQualityDeps, m mode.Mod
 	if deps.grabs == nil || deps.lib == nil || tmdbID <= 0 {
 		return 0
 	}
-	floor := quality.Lowest(parseQualityTiers(prefs.Tiers))
-	if quality.Rank(floor) <= 0 {
-		return 0
+	floors, _ := parseResolutionFloors(prefs.ResolutionFloors)
+	if len(floors) == 0 {
+		floors = autograb.UniformFloors(quality.Lowest(parseQualityTiers(prefs.Tiers)))
 	}
 	minRes := prefs.MinResolution
 	queued := 0
@@ -299,7 +354,7 @@ func queueQualityUpgrades(ctx context.Context, deps titleQualityDeps, m mode.Mod
 			if ep.FilePath == "" {
 				continue
 			}
-			if !fileNeedsQualityUpgrade(ep.FilePath, ep.QualityTier, floor, minRes) {
+			if !fileNeedsQualityUpgrade(ep.FilePath, ep.QualityTier, fileQualityFloor(ep.FilePath, floors), minRes) {
 				continue
 			}
 			if parkQualityUpgrade(ctx, deps.grabs, m, series.Title, tmdbID, ep.SeasonNumber, ep.EpisodeNumber) {
@@ -314,7 +369,7 @@ func queueQualityUpgrades(ctx context.Context, deps titleQualityDeps, m mode.Mod
 			}
 			return 0
 		}
-		if item.FilePath == "" || !fileNeedsQualityUpgrade(item.FilePath, item.QualityTier, floor, minRes) {
+		if item.FilePath == "" || !fileNeedsQualityUpgrade(item.FilePath, item.QualityTier, fileQualityFloor(item.FilePath, floors), minRes) {
 			return 0
 		}
 		if parkQualityUpgrade(ctx, deps.grabs, m, item.Title, tmdbID, 0, 0) {

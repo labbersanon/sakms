@@ -3510,15 +3510,18 @@ type SetSeasonMonitoredRequest struct {
 // Review if: mode Settings max_resolution adopts the same minimum semantics.
 
 // TitleQualityPrefsResponse is GET for one series or movie title's quality
-// prefs. When Inherited is true, Tiers are the mode defaults and MinResolution
-// is 0 (any) — mode soft-max is a separate Settings control. Floor is the
-// lowest accepted tier (the minimum quality), for single-pill UI binding.
+// prefs. When Inherited is true, Tiers/ResolutionFloors are the mode defaults
+// and MinResolution is 0 (any) — mode soft-max is a separate Settings control.
+// Floor is the lowest accepted tier (the minimum quality), for older clients.
+// ResolutionFloors is the same per-rung bitrate map Settings uses (keys
+// "480"/"720"/"1080"/"2160"); GET always returns all four rungs.
 type TitleQualityPrefsResponse struct {
-	Tiers         []string `json:"tiers"`
-	Floor         string   `json:"floor"`
-	MinResolution int      `json:"minResolution"`
-	Inherited     bool     `json:"inherited"`
-	UpgradeQueued int      `json:"upgradeQueued,omitempty"`
+	Tiers            []string          `json:"tiers"`
+	Floor            string            `json:"floor"`
+	MinResolution    int               `json:"minResolution"`
+	Inherited        bool              `json:"inherited"`
+	ResolutionFloors map[string]string `json:"resolutionFloors"`
+	UpgradeQueued    int               `json:"upgradeQueued,omitempty"`
 	// Claude 2026-09-28: upgrade-watch, present only when a library row exists
 	//   for this TMDB id (movies: library_items; series: library_series).
 	// Reason: TitleQualityPrefs is the toggle home; one GET carries prefs + flag.
@@ -3542,11 +3545,15 @@ type MovieUpgradeWatchResponse struct {
 // TitleQualityPrefsRequest is PUT body. Clear=true deletes the override
 // (back to mode defaults). Otherwise Floor (preferred) or Tiers is required;
 // a single Floor is expanded to that tier and above. MinResolution 0 = any.
+// ResolutionFloors, when sent, is the per-rung auto-grab floor (same keys
+// and values as mode Settings). Omitted/empty synthesizes UniformFloors
+// from Floor so older clients keep one floor on every rung.
 type TitleQualityPrefsRequest struct {
-	Floor         string   `json:"floor,omitempty"`
-	Tiers         []string `json:"tiers,omitempty"`
-	MinResolution int      `json:"minResolution"`
-	Clear         bool     `json:"clear,omitempty"`
+	Floor            string            `json:"floor,omitempty"`
+	Tiers            []string          `json:"tiers,omitempty"`
+	MinResolution    int               `json:"minResolution"`
+	Clear            bool              `json:"clear,omitempty"`
+	ResolutionFloors map[string]string `json:"resolutionFloors,omitempty"`
 }
 
 // SeriesNewSeasonDiscoveryResponse / SeriesNewSeasonDiscoveryRequest back

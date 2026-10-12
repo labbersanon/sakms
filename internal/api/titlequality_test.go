@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/autograb"
+	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/quality"
 )
 
@@ -26,6 +28,51 @@ func TestQualityPrefsRaised(t *testing.T) {
 	}
 	if !qualityPrefsRaised(base, min1080) {
 		t.Fatal("raising min resolution must count as raised")
+	}
+	sameRes := apidto.TitleQualityPrefsResponse{
+		Tiers: []string{"medium", "high", "lossless"}, Floor: "medium", MinResolution: 0,
+		ResolutionFloors: map[string]string{"480": "low", "720": "medium", "1080": "medium", "2160": "medium"},
+	}
+	raised480 := apidto.TitleQualityPrefsResponse{
+		Tiers: []string{"medium", "high", "lossless"}, Floor: "medium", MinResolution: 0,
+		ResolutionFloors: map[string]string{"480": "medium", "720": "medium", "1080": "medium", "2160": "medium"},
+	}
+	if qualityPrefsRaised(sameRes, sameRes) {
+		t.Fatal("identical per-rung floors must not count as raised")
+	}
+	if !qualityPrefsRaised(sameRes, raised480) {
+		t.Fatal("raising the 480p floor must count as raised")
+	}
+}
+
+func TestResolveAutoGrabFloorsForTitle_OverridePerRung(t *testing.T) {
+	ctx := context.Background()
+	_, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	if err := settingsStore.Set(ctx, qualityTiersKey(mode.Series), `["medium","high","lossless"]`); err != nil {
+		t.Fatal(err)
+	}
+	if err := settingsStore.Set(ctx, qualityResolutionFloorsKey(mode.Series), `{"480":"medium","720":"medium","1080":"medium","2160":"medium"}`); err != nil {
+		t.Fatal(err)
+	}
+	inherited := resolveAutoGrabFloorsForTitle(ctx, libStore, settingsStore, mode.Series, 333432)
+	if inherited[480] != quality.Medium || inherited[1080] != quality.Medium {
+		t.Fatalf("inherited floors=%v, want medium on 480 and 1080", inherited)
+	}
+
+	floors := map[int]quality.Tier{480: quality.Low, 720: quality.Medium, 1080: quality.Medium, 2160: quality.Medium}
+	if err := libStore.SetTitleQualityPrefs(ctx, mode.Series, 333432, quality.TiersAtOrAbove(quality.Low), 0, true, floors); err != nil {
+		t.Fatal(err)
+	}
+	got := resolveAutoGrabFloorsForTitle(ctx, libStore, settingsStore, mode.Series, 333432)
+	if got[480] != quality.Low || got[1080] != quality.Medium {
+		t.Fatalf("override floors=%v, want 480=low 1080=medium", got)
+	}
+	accepted := resolveAutoGrabAcceptedByResolution(ctx, libStore, settingsStore, mode.Series, 333432)
+	if quality.Lowest(accepted[480]) != quality.Low {
+		t.Fatalf("480 accepted=%v, want Low as floor", accepted[480])
+	}
+	if quality.Lowest(accepted[1080]) != quality.Medium {
+		t.Fatalf("1080 accepted=%v, want Medium as floor", accepted[1080])
 	}
 }
 

@@ -704,7 +704,7 @@ func TestRunAutoGrab_MinResolutionDoesNotDispatchDroppedRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := libStore.SetTitleQualityPrefs(ctx, mode.Movies, 42,
-		[]quality.Tier{quality.Medium, quality.High, quality.Lossless}, 1080, true); err != nil {
+		[]quality.Tier{quality.Medium, quality.High, quality.Lossless}, 1080, true, nil); err != nil {
 		t.Fatal(err)
 	}
 

@@ -9,6 +9,7 @@ export type TitleQualityPrefsResponse = {
   floor: string;
   minResolution: number;
   inherited: boolean;
+  resolutionFloors?: Record<string, string>;
   upgradeQueued?: number;
   upgradeWatch?: boolean;
   upgradeWatchAvailable?: boolean;
@@ -19,6 +20,7 @@ export type TitleQualityPrefsRequest = {
   tiers?: string[];
   minResolution: number;
   clear?: boolean;
+  resolutionFloors?: Record<string, string>;
 };
 
 export type TitleQualityKey =

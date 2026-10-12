@@ -1,10 +1,11 @@
-// TitleQualityPrefs — minimum quality tier + minimum resolution for one
-// monitored/tracked title. Defaults light up from mode Settings (quality
-// floor) when Inherited; resolution minimum defaults to Any (0).
-// Saving a higher floor queues upgrades for on-disk files below it.
+// TitleQualityPrefs — per-resolution bitrate floors + minimum height for one
+// monitored/tracked title. Inherited lights up from mode Settings (same 480/
+// 720/1080/2160 pills); resolution minimum defaults to Any (0). Saving a
+// higher floor queues upgrades for on-disk files below it.
 
 import {
   type Component,
+  For,
   Show,
   createEffect,
   createResource,
@@ -32,6 +33,11 @@ const RESOLUTION_OPTIONS = MAX_RESOLUTIONS.map(String);
 const RESOLUTION_LABELS: Record<string, string> = Object.fromEntries(
   MAX_RESOLUTIONS.map((r) => [String(r), r === 0 ? "Any" : `${r}p+`]),
 );
+const FLOOR_RUNGS = ["480", "720", "1080", "2160"] as const;
+const synthesizeFloors = (floor: string): Record<string, string> =>
+  Object.fromEntries(FLOOR_RUNGS.map((r) => [r, floor]));
+const floorsEqual = (a: Record<string, string>, b: Record<string, string>) =>
+  FLOOR_RUNGS.every((r) => (a[r] ?? "") === (b[r] ?? ""));
 
 export const TitleQualityPrefs: Component<{
   mode: Mode;
@@ -43,6 +49,9 @@ export const TitleQualityPrefs: Component<{
   );
   const [floor, setFloor] = createSignal("high");
   const [minRes, setMinRes] = createSignal(0);
+  const [resFloors, setResFloors] = createSignal<Record<string, string>>(
+    synthesizeFloors("high"),
+  );
   const [busy, setBusy] = createSignal(false);
   const [writeError, setWriteError] = createSignal("");
   const [upgradeNote, setUpgradeNote] = createSignal("");
@@ -50,18 +59,35 @@ export const TitleQualityPrefs: Component<{
   createEffect(
     on(prefs, (p) => {
       if (!p) return;
-      setFloor(p.floor || "high");
+      const nextFloor = p.floor || "high";
+      setFloor(nextFloor);
+      setResFloors({
+        ...synthesizeFloors(nextFloor),
+        ...(p.resolutionFloors ?? {}),
+      });
       setMinRes(p.minResolution ?? 0);
       setWriteError("");
       setUpgradeNote("");
     }),
   );
 
+  const savedFloors = () => {
+    const p = prefs();
+    if (!p) return synthesizeFloors("high");
+    return { ...synthesizeFloors(p.floor || "high"), ...(p.resolutionFloors ?? {}) };
+  };
+
   const dirty = () => {
     const p = prefs();
     if (!p) return false;
-    return floor() !== (p.floor || "high") || minRes() !== (p.minResolution ?? 0);
+    return (
+      minRes() !== (p.minResolution ?? 0) || !floorsEqual(resFloors(), savedFloors())
+    );
   };
+
+  const lowestFloor = () =>
+    QUALITY_TIERS.find((t) => FLOOR_RUNGS.some((r) => resFloors()[r] === t)) ??
+    floor();
 
   const save = async () => {
     setBusy(true);
@@ -69,8 +95,9 @@ export const TitleQualityPrefs: Component<{
     setUpgradeNote("");
     try {
       const out = await putTitleQualityPrefs(props.mode, props.titleKey, {
-        floor: floor(),
+        floor: lowestFloor(),
         minResolution: minRes(),
+        resolutionFloors: resFloors(),
       });
       if (out.upgradeQueued) {
         setUpgradeNote(
@@ -133,8 +160,8 @@ export const TitleQualityPrefs: Component<{
       <Show when={!prefs.loading && prefs()}>
         <Muted class="mb-2">
           {prefs()!.inherited
-            ? "Using Settings quality floor — resolution minimum is Any until you override."
-            : "Minimum quality and resolution for unattended grabs of this title."}
+            ? "Using Settings bitrate floors per resolution — resolution minimum is Any until you override."
+            : "Bitrate floors per resolution and minimum height for unattended grabs of this title."}
         </Muted>
         <PillSelector
           label="Minimum resolution"
@@ -143,13 +170,21 @@ export const TitleQualityPrefs: Component<{
           selected={String(minRes())}
           onSelect={(r) => setMinRes(Number(r))}
         />
-        <PillSelector
-          label="Minimum quality"
-          options={[...QUALITY_TIERS]}
-          optionLabels={TIER_LABELS}
-          selected={floor()}
-          onSelect={setFloor}
-        />
+        <div class="mb-2">
+          <For each={FLOOR_RUNGS}>
+            {(r) => (
+              <div role="group" aria-label={`${r}p bitrate floor`}>
+                <PillSelector
+                  label={`${r}p`}
+                  options={[...QUALITY_TIERS]}
+                  optionLabels={TIER_LABELS}
+                  selected={resFloors()[r] ?? "high"}
+                  onSelect={(t) => setResFloors((prev) => ({ ...prev, [r]: t }))}
+                />
+              </div>
+            )}
+          </For>
+        </div>
         <div class="mt-2 flex flex-wrap items-center gap-2">
           <button
             type="button"

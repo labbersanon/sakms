@@ -18,7 +18,7 @@ func TestTitleQualityPrefs_RoundTripAndDelete(t *testing.T) {
 	}
 
 	tiers := []quality.Tier{quality.High, quality.Lossless}
-	if err := s.SetTitleQualityPrefs(ctx, mode.Series, 4589, tiers, 1080, true); err != nil {
+	if err := s.SetTitleQualityPrefs(ctx, mode.Series, 4589, tiers, 1080, true, nil); err != nil {
 		t.Fatalf("set: %v", err)
 	}
 	got, err := s.GetTitleQualityPrefs(ctx, mode.Series, 4589)
@@ -32,7 +32,7 @@ func TestTitleQualityPrefs_RoundTripAndDelete(t *testing.T) {
 		t.Fatalf("tiers=%v", got.Tiers)
 	}
 
-	if err := s.SetTitleQualityPrefs(ctx, mode.Series, 4589, tiers, 0, false); err != nil {
+	if err := s.SetTitleQualityPrefs(ctx, mode.Series, 4589, tiers, 0, false, nil); err != nil {
 		t.Fatalf("clear min: %v", err)
 	}
 	got, err = s.GetTitleQualityPrefs(ctx, mode.Series, 4589)
@@ -41,6 +41,18 @@ func TestTitleQualityPrefs_RoundTripAndDelete(t *testing.T) {
 	}
 	if got.MinResolutionSet {
 		t.Fatalf("min should inherit, got set=%v val=%d", got.MinResolutionSet, got.MinResolution)
+	}
+
+	floors := map[int]quality.Tier{480: quality.Low, 720: quality.Medium, 1080: quality.Medium, 2160: quality.High}
+	if err := s.SetTitleQualityPrefs(ctx, mode.Series, 4589, tiers, 1080, true, floors); err != nil {
+		t.Fatalf("set floors: %v", err)
+	}
+	got, err = s.GetTitleQualityPrefs(ctx, mode.Series, 4589)
+	if err != nil {
+		t.Fatalf("get floors: %v", err)
+	}
+	if got.ResolutionFloors[480] != quality.Low || got.ResolutionFloors[1080] != quality.Medium || got.ResolutionFloors[2160] != quality.High {
+		t.Fatalf("resolution floors=%v", got.ResolutionFloors)
 	}
 
 	if err := s.DeleteTitleQualityPrefs(ctx, mode.Series, 4589); err != nil {

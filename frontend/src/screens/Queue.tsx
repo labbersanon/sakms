@@ -1,4 +1,5 @@
-// Queue groups Downloads / Requests / Calendar under a single sidebar entry.
+// Queue groups Downloads / Requests / Calendar / Activity under a single
+// sidebar entry.
 // Workflow switching lives in the sidebar (collapsible group / flyout); this
 // screen reads `?tab=` and renders the matching embedded component. The active
 // tab is also mirrored to localStorage (`sakms.queue.tab`).
@@ -14,7 +15,7 @@
 // (value={undefined}): with no shell setter in scope, ModeTabs falls back to
 // rendering its Movies/Series/Adult bar INLINE in the body — exactly as it
 // does in calendar/History.test.tsx standalone. The Provider still wraps all
-// three children, matching Organize.tsx line-for-line.
+// four children, matching Organize.tsx line-for-line.
 //
 // Claude 2026-08-29: dropped ScreenTabs workflow bar; URL ?tab= is sole
 //   switcher besides the sidebar (queue-sidebar-nest).
@@ -29,6 +30,7 @@ import { ScreenTabsContext } from "../components/ui";
 import { Downloads } from "./Downloads";
 import { Requests } from "./Requests";
 import { Calendar } from "./calendar";
+import { Activity } from "./Activity";
 import {
   type QueueTabId,
   isQueueTabId,
@@ -68,6 +70,9 @@ export const Queue: Component = () => {
         </Show>
         <Show when={tab() === "calendar"}>
           <Calendar />
+        </Show>
+        <Show when={tab() === "activity"}>
+          <Activity />
         </Show>
       </ScreenTabsContext.Provider>
     </div>

@@ -1,5 +1,6 @@
 // Queue screen tests — sidebar-driven tabs via ?tab= (Downloads / Requests /
-// Calendar). Shell ScreenTabs for workflows were removed (queue-sidebar-nest).
+// Calendar / Activity). Shell ScreenTabs for workflows were removed
+// (queue-sidebar-nest).
 //
 // Covered:
 //   - ?tab= selects the embedded screen; default/invalid → downloads (or stored);
@@ -46,8 +47,9 @@ const stubFetch = () => {
 
 // Per-tab markers, each unique to one embedded screen.
 const DOWNLOADS_MARKER = "Connecting to the download engine…";
-const REQUESTS_MARKER = "No requests match this filter.";
+const REQUESTS_MARKER = "Nothing is missing.";
 const CALENDAR_MARKER = "Upcoming";
+const ACTIVITY_MARKER = "No matching activity.";
 
 const renderQueue = (url = "/queue") => {
   const history = createMemoryHistory();
@@ -94,6 +96,12 @@ describe("Queue — query tab", () => {
     expect(
       await screen.findByRole("button", { name: CALENDAR_MARKER }),
     ).toBeInTheDocument();
+  });
+
+  it("?tab=activity shows the activity empty state", async () => {
+    stubFetch();
+    renderQueue("/queue?tab=activity");
+    expect(await screen.findByText(ACTIVITY_MARKER)).toBeInTheDocument();
   });
 
   it("opens the persisted tab when ?tab= missing", async () => {

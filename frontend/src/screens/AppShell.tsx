@@ -969,7 +969,7 @@ const SettingsNavGroup: Component<{
 };
 
 // Claude 2026-08-29: Queue collapsible group + icon-collapsed flyout.
-// Reason: queue-sidebar-nest — nested Downloads/Requests/Calendar.
+// Reason: queue-sidebar-nest — nested Downloads/Requests/Calendar/Activity.
 // Troubleshooting: parent click navigates to last ?tab= and expands children.
 // Review if: nested path routes replace query params.
 const QueueNavGroup: Component<{

@@ -24,7 +24,7 @@ const NAV_LABELS = [
 ];
 
 const ORGANIZE_CHILDREN = ["Rename", "Clean-up", "Dedup", "Browse", "Import", "Discs"];
-const QUEUE_CHILDREN = ["Downloads", "Requests", "Calendar"];
+const QUEUE_CHILDREN = ["Downloads", "Requests", "Calendar", "Activity"];
 const SETTINGS_CHILDREN = [
   "Roots",
   "Metadata",

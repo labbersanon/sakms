@@ -232,6 +232,14 @@ type dlState struct {
 	// Review if: stream handler sends the fanout payload instead of re-Listing.
 	total     int64
 	completed int64
+	// lastProgressAt is wall clock of the last completed-byte increase (or of
+	// entering phaseDownloading). abortStaleDownloads cancels a downloading
+	// job whose completed length has not moved for usenetStaleProgressTimeout.
+	lastProgressAt time.Time
+	// staleAbort is set by abortStaleDownloads before it cancels dlCtx, so
+	// runDownload can remap context.Canceled to ErrStaleProgress (2m transport
+	// park) instead of the 0s shutdown-resume path.
+	staleAbort bool
 	// Claude 2026-09-21: rolling ~60s DownloadSpeed window (ratesmooth).
 	// Reason: 10s still bursty for Usenet/NNTP ETA; operators asked for a larger span.
 	// Troubleshooting: ↓ MB/s and ETA jumping across SSE frames.
@@ -321,6 +329,13 @@ type Manager struct {
 // DefaultMaxConcurrentDownloads is used when Config.MaxConcurrentDownloads is
 // unset (<=0). One NZB at a time is the safe default for provider fairness.
 const DefaultMaxConcurrentDownloads = 1
+
+// usenetStaleProgressTimeout is how long a downloading NZB may sit with no
+// completed-byte increase before abortStaleDownloads cancels it. Longer than
+// articleIOTimeout (60s) so a single slow BODY still counts as progress once
+// WriteAt lands; shorter than the 40+ min hangs that occupy the only slot.
+// 0 disables (tests).
+var usenetStaleProgressTimeout = 2 * time.Minute
 
 // Config parameterises a Manager.
 type Config struct {
@@ -601,6 +616,16 @@ func (m *Manager) fireOnError(ctx context.Context, gid string, failure error) {
 		return
 	}
 	if ctx.Err() != nil {
+		// Claude 2026-10-11: stale-progress abort cancels dlCtx then fires
+		//   ErrStaleProgress (ErrTransport). The ctx.Err skip used to drop that
+		//   park, leaving the GID in-memory-error until the 24h sweep.
+		// Reason: parkUsenetTransportFailure must see ErrTransport (2m backoff),
+		//   not context.Canceled (0s shutdown resume that re-enters the hang).
+		// Troubleshooting: grab 1843 stalled in assembleFile with no :563.
+		// Review if: fireOnError always sync-parks ErrTransport.
+		if errors.Is(failure, ErrTransport) {
+			m.onError(gid, failure)
+		}
 		return
 	}
 	go m.onError(gid, failure)
@@ -910,12 +935,49 @@ func (m *Manager) Start(ctx context.Context) {
 			}
 			return
 		case <-ticker.C:
+			m.abortStaleDownloads()
 			snap := m.pollSnapshot()
 			if !sameDownloads(prev, snap) {
 				m.fanout(snap)
 				prev = snap
 			}
 		}
+	}
+}
+
+// abortStaleDownloads cancels active downloading jobs whose completed length
+// has not increased for usenetStaleProgressTimeout. Cancel unblocks assembleFile
+// (gotCond waits on gctx.Done) without Manager.Cancel, which would delete staging.
+func (m *Manager) abortStaleDownloads() {
+	if usenetStaleProgressTimeout <= 0 {
+		return
+	}
+	now := time.Now()
+	type stale struct {
+		gid, name string
+		cancel    context.CancelFunc
+	}
+	var abort []stale
+	m.mu.Lock()
+	for _, dl := range m.downloads {
+		if dl == nil || dl.status != "active" || dl.phase != phaseDownloading || dl.cancel == nil || dl.staleAbort {
+			continue
+		}
+		if dl.lastProgressAt.IsZero() {
+			dl.lastProgressAt = now
+			continue
+		}
+		if now.Sub(dl.lastProgressAt) < usenetStaleProgressTimeout {
+			continue
+		}
+		dl.staleAbort = true
+		abort = append(abort, stale{gid: dl.gid, name: dl.name, cancel: dl.cancel})
+	}
+	m.mu.Unlock()
+	for _, s := range abort {
+		log.Printf("usenet: download %s (%s) stalled with no progress for %s — cancelling for transport resume",
+			s.gid, s.name, usenetStaleProgressTimeout)
+		s.cancel()
 	}
 }
 
@@ -1473,6 +1535,7 @@ func (m *Manager) acquireDownloadSlot(ctx context.Context, gid string, dl *dlSta
 	m.mu.Lock()
 	if cur := m.downloads[gid]; cur != nil && cur.status == "active" {
 		cur.setPhase(phaseDownloading)
+		cur.lastProgressAt = time.Now()
 	}
 	m.mu.Unlock()
 	return true
@@ -1567,6 +1630,11 @@ func (m *Manager) runDownload(ctx context.Context, gid string, dl *dlState, nzb 
 		}
 		failed := false
 		m.mu.Lock()
+		if dl.staleAbort && errors.Is(err, context.Canceled) {
+			// Do not wrap Canceled — parkUsenetTransportFailure treats
+			// errors.Is(Canceled) as a 0s shutdown resume.
+			err = fmt.Errorf("%w (%v)", ErrStaleProgress, err)
+		}
 		switch dl.status {
 		case "removed", "paused":
 			// True pause does not cancel. Staging-gone Resume sets error before cancel.
@@ -2317,6 +2385,9 @@ func (m *Manager) addCompleted(gid string, n int64) {
 	m.mu.Lock()
 	if dl, ok := m.downloads[gid]; ok {
 		dl.completed += n
+		if n > 0 {
+			dl.lastProgressAt = time.Now()
+		}
 	}
 	m.mu.Unlock()
 }

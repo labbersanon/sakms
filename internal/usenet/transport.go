@@ -18,6 +18,21 @@ import (
 // the article: a dropped socket, a reset, a dial failure, a truncated body.
 var ErrTransport = errors.New("usenet: transport failure")
 
+// ErrStaleProgress is a transport park used when a download holds the BODY
+// slot with no completed-byte increase. Distinct from context.Canceled so
+// parkUsenetTransportFailure applies the live-socket backoff (2m) instead of
+// the 0s shutdown-resume path, which would immediately re-enter the hang.
+//
+// Claude 2026-10-11: stale-progress abort for hung assembleFile.
+// Reason: grab 1843 resumed 10 sidecar segments then sat 40+ min at 5.2M with
+// the staging fd open, zero NNTP sockets, all threads futex_wait. nntpDialTimeout
+// never armed because assembleFile never reached pool.dial (Cond/getCtx wait).
+// Troubleshooting: Downloads "attempting" after "resuming — N segment(s)"; ss
+// in the sakms netns has no :563; queued NZBs wait on MaxConcurrentDownloads=1.
+// Review if: assembleFile's sliding window / colliding yEnc resume keys no longer
+// deadlock, and this watchdog is only a backstop.
+var ErrStaleProgress = fmt.Errorf("%w: download stalled with no progress", ErrTransport)
+
 const (
 	// maxSegmentAttemptsPerServer is how many times fetchSegmentAny tries one
 	// pool before moving to the next. 3 = original attempt + 2 reconnects.

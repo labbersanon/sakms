@@ -9,10 +9,15 @@
 export const QUEUE_TAB_KEY = "sakms.queue.tab";
 export const QUEUE_NAV_EXPANDED_KEY = "sakms.queue.navExpanded";
 
+// Claude 2026-10-12: Activity tab — compact grab review log.
+// Reason: Downloads/History/Requests don't list attempts + failures together.
+// Troubleshooting: sidebar missing Activity — this array is the nav source.
+// Review if: Activity moves off grabs onto a dedicated events table.
 export const QUEUE_TABS = [
   { id: "downloads", label: "Downloads" },
   { id: "requests", label: "Requests" },
   { id: "calendar", label: "Calendar" },
+  { id: "activity", label: "Activity" },
 ] as const;
 
 export type QueueTabId = (typeof QUEUE_TABS)[number]["id"];

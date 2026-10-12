@@ -1,27 +1,15 @@
-// grid.ts — month-grid geometry helpers for the History/Upcoming calendar
-// screen: pad2, dayKey, monthRange, cells.
+// grid.ts — month-grid geometry helpers: pad2, dayKey, monthRange, cells.
 //
-// This is a DELIBERATE, DOCUMENTED DUPLICATE of the near-identical private
-// helpers in ../discover/CalendarView.tsx (pad2/dayKey/monthRange/cells
-// there, same names, same shapes). It is NOT an oversight and a future
-// deslop/simplify pass must not "fix" it by hoisting a shared module.
+// Claude 2026-10-12: Discover CalendarView now imports these helpers (and
+//   MonthGrid.tsx) instead of keeping a private copy.
+// Reason: every calendar was asked to match Discover's month grid; two
+//   copies of cells/dayKey would drift the poster scroller.
+// Troubleshooting: Queue History/Upcoming used a different cell geometry
+//   and chrome than Discover → Calendar.
+// Review if: a calendar is added that must NOT share Discover's 7-day pad.
 //
-// Per §0.3 of .omc/plans/autopilot-impl-calendar-grabs-requests.md: the two
-// callers are genuinely independent screens serving different purposes —
-// CalendarView.tsx buckets Discover's TMDB release-date browsing grid
-// (Movies+Series merged, poster-first DiscoverItem rows), this screen
-// buckets History's grabs.Grab rows (by createdAt, no poster) and Upcoming's
-// Series-episode/Movies-release rows — three different data sources feeding
-// two independent screens with no common carrier type. This repo's
-// no-premature-abstraction convention (see CLAUDE.md's "Established
-// engineering conventions" and Queue.tsx's documented relationship to
-// Organize.tsx: "deliberately a near-line-for-line mirror ... not a shared
-// abstraction extracted from the two") treats two callers with different
-// purposes as insufficient justification for a shared helper, especially
-// one that would couple this Queue-embedded Calendar screen to an unrelated
-// Discover screen. Keep this file's implementation in sync in SPIRIT with
-// CalendarView.tsx's conventions (month is 0-based, cells pads with `null`
-// rather than adjacent-month day numbers) but do not import from it.
+// Data sources stay independent (DiscoverItem vs Grab vs upcoming entries).
+// Only geometry and chrome are shared — see MonthGrid.tsx.
 
 export const pad2 = (n: number): string => String(n).padStart(2, "0");
 

@@ -36,6 +36,8 @@ const stubGrabs = (byMode: Partial<Record<string, Grab[]>>) => {
       const url = String(input);
       const m = url.match(/\/api\/modes\/([^/]+)\/grabs/);
       if (m) return jsonResponse(byMode[m[1] ?? ""] ?? []);
+      if (url.includes("/poster"))
+        return jsonResponse({ posterPath: "", overview: "" });
       throw new Error("unexpected fetch: " + url);
     }),
   );
@@ -166,6 +168,7 @@ describe("History — grid layout", () => {
     const { container } = renderHistory();
     await screen.findByText("Day Four");
 
+    expect(container.querySelector(".min-w-\\[106rem\\]")).toBeTruthy();
     expect(dayCell(container, 4).textContent).toContain("Day Four");
     expect(dayCell(container, 4).textContent).not.toContain("Day Twenty");
     expect(dayCell(container, 20).textContent).toContain("Day Twenty");

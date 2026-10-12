@@ -24,13 +24,16 @@
 // the shell's one tab slot belongs to Queue, and this selector is a
 // within-screen control, not a screen-level tab set.
 //
-// CELL SHAPES DIFFER BY VIEW AND THAT IS INTENTIONAL (plan §7.2, verbatim:
-// "Do not force a shared cell component across three shapes; that is the
-// abstraction §0.3 already declined"). Series cells are TEXT
-// (`Series — S02E05`): TMDB episode data carries no season/episode-level image
-// suitable for a small calendar cell within this feature's scope. Movies cells
-// are poster-bearing, through /api/images/proxy (tmdbPoster) — never a direct
-// image.tmdb.org <img src>.
+// Claude 2026-10-12: both content types use CalendarPosterCard in MonthGrid.
+// Reason: Queue calendars must match Discover's 220px / 106rem poster month.
+//   Series still has no click-to-request (Constraint 2); the poster is the
+//   show's TMDB art via /poster, not an episode still.
+// Troubleshooting: Upcoming Series was a text agenda; Movies used cell-width
+//   thumbs on a 70rem grid.
+// Review if: UpcomingSeriesEntry grows posterPath and the /poster lookup can drop.
+//
+// CELL SHAPES used to differ (plan §7.2). Chrome is now shared; actions are
+// not: Movies stay click-to-request, Series stay inert.
 //
 // SERIES EPISODES ARE NEVER CLICKABLE-TO-REQUEST (plan §0.6 / Constraint 2).
 // The asymmetry is deliberate, not an oversight: click-to-request is a
@@ -61,13 +64,17 @@ import {
   type UpcomingMovieEntry,
   type UpcomingSeriesEntry,
 } from "../../api/calendar";
-import { tmdbPoster } from "../../api/discover";
+import {
+  cardPosterSrc,
+  fetchTitleCard,
+  tmdbPoster,
+} from "../../api/discover";
 import { fetchUsenetAutoGrabEnabled } from "../../api/usenet";
 import { ErrorText, Muted, ScreenTabBar } from "../../components/ui";
 import { matchesQueueSearch } from "../queueSearch";
 import { cells, dayKey, monthRange, pad2 } from "./grid";
-
-const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+import { MonthGrid } from "./MonthGrid";
+import { CalendarPosterCard } from "./CalendarPosterCard";
 
 // Deliberately not exported: the content switch is internal to this view —
 // calendar/index.tsx owns the History/Upcoming switch, not this one.
@@ -234,97 +241,60 @@ export const Upcoming: Component<{
     entry: UpcomingMovieEntry;
     layout: "grid" | "list";
   }> = (p) => {
-    const poster = () => tmdbPoster(p.entry.posterPath ?? "");
     const planned = () => p.entry.releaseKind === "planned";
-
-    const body = () => (
-      <div
-        classList={{
-          "flex items-center gap-3 text-left": p.layout === "list",
-          "flex flex-col gap-1": p.layout === "grid",
-        }}
-      >
-        <Show when={poster()}>
-          <img
-            src={poster()}
-            alt=""
-            classList={{
-              "w-full rounded object-cover aspect-[2/3]": p.layout === "grid",
-              "h-16 w-11 shrink-0 rounded object-cover": p.layout === "list",
-            }}
-          />
-        </Show>
-        <div class="min-w-0">
-          <div class="truncate text-xs font-medium text-fg">
-            {p.entry.title}
-          </div>
-          <Show when={p.layout === "list"}>
-            <div class="text-xs text-muted">{p.entry.releaseDate}</div>
-          </Show>
-          {/* releaseKind is a display nuance, not a functional gate — a
-              "planned" (theatrical-only, no confirmed digital date yet) film
-              is exactly as clickable as a "digital" one. The label is text,
-              not colour alone, so the distinction survives a colourblind
-              operator and is assertable in a test. */}
-          <span
-            class="mt-0.5 inline-block rounded border px-1 text-[10px] font-medium"
-            classList={{
-              "border-dashed border-warn text-warn": planned(),
-              "border-border text-muted": !planned(),
-            }}
-            title={
-              planned()
-                ? "Planned (theatrical) date — no confirmed digital release yet"
-                : "Confirmed digital release date"
-            }
-          >
-            {planned() ? "Planned" : "Digital"}
-          </span>
-        </div>
-      </div>
-    );
-
+    const requested = () => isRequested(p.entry);
     return (
-      <Show
-        when={!isRequested(p.entry)}
-        fallback={
-          <div class="rounded border border-border bg-surface-2 p-1.5">
-            {body()}
-            <div class="mt-1 text-[10px] font-medium text-muted">Requested</div>
-          </div>
+      <CalendarPosterCard
+        title={p.entry.title}
+        posterSrc={tmdbPoster(p.entry.posterPath ?? "")}
+        meta={p.layout === "list" ? p.entry.releaseDate : undefined}
+        badge={
+          requested() ? "Requested" : planned() ? "Planned" : "Digital"
         }
-      >
-        <button
-          type="button"
-          class="w-full rounded border border-border bg-surface-2 p-1.5 text-left transition hover:border-accent disabled:opacity-50"
-          aria-label={`Request ${p.entry.title}`}
-          disabled={pending() === p.entry.tmdbId}
-          onClick={() => void request(p.entry)}
-        >
-          {body()}
-        </button>
-      </Show>
+        badgeWarn={planned() && !requested()}
+        onClick={
+          requested() ? undefined : () => void request(p.entry)
+        }
+        disabled={pending() === p.entry.tmdbId}
+        ariaLabel={requested() ? undefined : `Request ${p.entry.title}`}
+        layout={p.layout}
+      />
     );
   };
 
-  // Series entries render as plain text with NO interactive element at all —
-  // see this file's header. Not a button, not a link, no onClick.
+  // Series entries are poster cards with NO request button — see header.
   const SeriesCell: Component<{
     entry: UpcomingSeriesEntry;
     layout: "grid" | "list";
-  }> = (p) => (
-    <div class="rounded border border-border bg-surface-2 p-1.5">
-      <div class="truncate text-xs font-medium text-fg">
-        {p.entry.seriesTitle} — {episodeCode(p.entry)}
-      </div>
-      <Show when={p.entry.episodeTitle}>
-        <div class="truncate text-[11px] text-muted">{p.entry.episodeTitle}</div>
-      </Show>
-      <Show when={p.layout === "list"}>
-        <div class="text-[11px] text-muted">{p.entry.airDate}</div>
-      </Show>
-    </div>
-  );
+  }> = (p) => {
+    const [card] = createResource(
+      () => (p.entry.tmdbId > 0 ? p.entry.tmdbId : undefined),
+      (tmdbId) =>
+        fetchTitleCard("series", tmdbId).catch(() => ({
+          posterPath: "",
+          posterUrl: "",
+          overview: "",
+        })),
+    );
+    const src = () => {
+      const c = card();
+      return c ? cardPosterSrc(c) : "";
+    };
+    const title = () => `${p.entry.seriesTitle} — ${episodeCode(p.entry)}`;
+    const meta = () =>
+      [p.entry.episodeTitle, p.layout === "list" ? p.entry.airDate : ""]
+        .filter(Boolean)
+        .join(" · ");
+    return (
+      <CalendarPosterCard
+        title={title()}
+        posterSrc={src()}
+        meta={meta()}
+        hover={card()?.overview}
+        layout={p.layout}
+      />
+    );
+  };
 
   const DayEntries: Component<{ dayKey: string; layout: "grid" | "list" }> = (
     p,
@@ -349,45 +319,9 @@ export const Upcoming: Component<{
       : (seriesBuckets().get(key) ?? []).length;
 
   const GridView: Component = () => (
-    <div class="overflow-x-auto">
-      {/* Seven columns of a poster-bearing cell; narrower than
-          discover/CalendarView's 106rem because this cell's poster is
-          cell-width rather than a fixed 220px card. */}
-      <div class="min-w-[70rem]">
-        <div class="grid grid-cols-7 gap-2">
-          <For each={WEEKDAYS}>
-            {(w) => (
-              <div class="px-1 text-xs font-semibold uppercase tracking-wide text-muted">
-                {w}
-              </div>
-            )}
-          </For>
-        </div>
-        <div class="mt-1 grid grid-cols-7 gap-2">
-          <For each={cells(props.year, props.month)}>
-            {(day) => (
-              <div
-                class="min-h-[6rem] rounded-lg border border-border p-1.5"
-                classList={{
-                  "bg-surface/40": day !== null,
-                  "bg-transparent": day === null,
-                }}
-              >
-                <Show when={day !== null}>
-                  <div class="mb-1 text-xs font-medium text-muted">{day}</div>
-                  <div class="flex flex-col gap-2">
-                    <DayEntries
-                      dayKey={dayKey(props.year, props.month, day!)}
-                      layout="grid"
-                    />
-                  </div>
-                </Show>
-              </div>
-            )}
-          </For>
-        </div>
-      </div>
-    </div>
+    <MonthGrid year={props.year} month={props.month}>
+      {(_day, key) => <DayEntries dayKey={key} layout="grid" />}
+    </MonthGrid>
   );
 
   const ListView: Component = () => (

@@ -26,12 +26,10 @@
 // screen (§0.7): History's ModeTabs still registers a tab set, and without the
 // shadow it would hijack the shell slot the moment History mounts.
 //
-// MONTH NAVIGATION mirrors discover/CalendarView.tsx:117-130 structurally — the
-// same `‹`/`›` Buttons, the same "Previous month"/"Next month" aria-labels, the
-// same single-Date over/underflow normalization in step(). That is convention
-// reuse, not code reuse: nothing is imported from that screen, matching the
-// deliberate-duplication stance grid.ts's header sets out in full (§0.3).
-// MONTH_NAMES is duplicated here for the same reason.
+// MONTH NAVIGATION mirrors discover/CalendarView.tsx structurally — the same
+// `‹`/`›` Buttons and aria-labels. The month GRID itself is shared (MonthGrid
+// + grid.ts) so Queue History/Upcoming match Discover's 220px / 106rem chrome.
+// MONTH_NAMES stays here because Discover's CalendarView owns its own navigator.
 //
 // BOTH PERSISTED KEYS SANITIZE FOR DISPLAY WITHOUT REWRITING STORAGE: an
 // unreadable or unrecognized stored value falls back to the default for DISPLAY

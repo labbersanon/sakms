@@ -67,6 +67,8 @@ function mount(opts: {
         return new Response("boom", { status: 500 });
       return jsonResponse({ enabled: opts.autoGrab === true });
     }
+    if (url.includes("/poster"))
+      return jsonResponse({ posterPath: "", overview: "" });
     if (url.startsWith("/api/calendar/prerelease-request")) {
       if (opts.post === "fail")
         return new Response("the request could not be recorded", {
@@ -296,13 +298,14 @@ describe("Upcoming — §5.7 toggle-conditional confirmation copy", () => {
 });
 
 describe("Upcoming — Series cells", () => {
-  it("renders as text with no poster", async () => {
-    mount({ series: [episode()] });
+  it("renders a Discover-sized poster card and is not a request button", async () => {
+    const h = mount({ series: [episode()] });
     selectSeries();
     expect(
       await screen.findByText("Severance — S02E05"),
     ).toBeInTheDocument();
-    expect(document.querySelector("img")).toBeNull();
+    expect(h.container.querySelector(".min-w-\\[106rem\\]")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Request / })).toBeNull();
   });
 
   it("has NO click-to-request affordance at all (deliberate asymmetry)", async () => {

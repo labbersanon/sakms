@@ -135,37 +135,45 @@ export const Activity: Component = () => {
       <Show when={rows.error}>
         <ErrorText>{(rows.error as Error)?.message}</ErrorText>
       </Show>
-      <Show when={!rows.loading} fallback={<Muted>Loading…</Muted>}>
-        <Show
-          when={visible().length > 0}
-          fallback={<Muted>No matching activity.</Muted>}
-        >
-          <ul class="mt-2 max-h-[70vh] space-y-0.5 overflow-y-auto text-xs">
-            <For each={visible()}>
-              {(g) => {
-                const reason = activityReason(g.retryReason);
-                return (
-                  <li class="flex items-baseline gap-3 border-b border-border/40 py-1 font-mono">
-                    <span class="w-[9.5rem] shrink-0 text-muted">
-                      {activityStamp(g.createdAt)}
-                    </span>
-                    <span class="w-14 shrink-0 text-muted">{g.mode}</span>
-                    <span class="min-w-0 flex-1 truncate text-fg" title={g.title}>
-                      {g.title}
-                    </span>
-                    <span class="shrink-0 text-fg">{activityStatus(g)}</span>
-                    <Show when={reason}>
-                      <span class="max-w-[20rem] min-w-0 truncate text-muted" title={g.retryReason}>
-                        {reason}
+      {/* Claude 2026-10-12: wrap the log in bg-surface (white).
+          Reason: Queue pages sit on cream wallpaper (--color-bg); a
+            transparent <ul> lets navy mono show through ticket paper.
+          Troubleshooting: Activity hard to read — same Browse failure
+            (listing must use bg-surface over the wallpaper).
+          Review if: Activity rows become per-item Download cards. */}
+      <div class="mt-2 max-h-[70vh] overflow-y-auto rounded-xl border border-border bg-surface px-3 py-2">
+        <Show when={!rows.loading} fallback={<Muted>Loading…</Muted>}>
+          <Show
+            when={visible().length > 0}
+            fallback={<Muted>No matching activity.</Muted>}
+          >
+            <ul class="space-y-0.5 text-xs">
+              <For each={visible()}>
+                {(g) => {
+                  const reason = activityReason(g.retryReason);
+                  return (
+                    <li class="flex items-baseline gap-3 border-b border-border/40 py-1 font-mono">
+                      <span class="w-[9.5rem] shrink-0 text-muted">
+                        {activityStamp(g.createdAt)}
                       </span>
-                    </Show>
-                  </li>
-                );
-              }}
-            </For>
-          </ul>
+                      <span class="w-14 shrink-0 text-muted">{g.mode}</span>
+                      <span class="min-w-0 flex-1 truncate text-fg" title={g.title}>
+                        {g.title}
+                      </span>
+                      <span class="shrink-0 text-fg">{activityStatus(g)}</span>
+                      <Show when={reason}>
+                        <span class="max-w-[20rem] min-w-0 truncate text-muted" title={g.retryReason}>
+                          {reason}
+                        </span>
+                      </Show>
+                    </li>
+                  );
+                }}
+              </For>
+            </ul>
+          </Show>
         </Show>
-      </Show>
+      </div>
     </div>
   );
 };

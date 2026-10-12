@@ -342,6 +342,32 @@ describe("Discover select-mode — works over every card surface", () => {
       (await screen.findAllByTestId("select-checkbox")).length,
     ).toBeGreaterThan(0);
   });
+
+  it("Series calendar fetches TV premieres, not movies", async () => {
+    const today = new Date();
+    const iso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+    stubFetch((url) => {
+      if (url.includes("/discover/calendar") && url.includes("movies"))
+        throw new Error("Series calendar must not fetch movies: " + url);
+      if (url.includes("/discover/calendar") && url.includes("series"))
+        return jsonResponse([
+          movie({
+            id: 6,
+            title: "Cal Show",
+            releaseDate: iso,
+            mediaType: "tv",
+          }),
+        ]);
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => <DiscoverMainstream />);
+    fireEvent.click(screen.getByRole("button", { name: "Series" }));
+    fireEvent.click(screen.getByText("Calendar"));
+    await screen.findByText("Cal Show");
+    expect(screen.queryByText("Cal Movie")).toBeNull();
+  });
 });
 
 // --- Series bulk-select against the season/episode grid picker ---

@@ -51,12 +51,12 @@ describe("CalendarView", () => {
     stubFetch((url) => {
       if (url.includes("/api/modes/movies/discover/calendar"))
         return jsonResponse([item]);
-      if (url.includes("/api/modes/series/discover/calendar"))
-        return jsonResponse([]);
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <CalendarView onGrab={() => {}} onDetail={() => {}} />);
+    render(() => (
+      <CalendarView mode="movies" onGrab={() => {}} onDetail={() => {}} />
+    ));
 
     // The item renders (bucketed into the day-15 cell). Empty posterPath means
     // the title shows in both the TextPoster fallback and the card title.
@@ -71,10 +71,16 @@ describe("CalendarView", () => {
       throw new Error("unexpected fetch: " + url);
     });
 
-    render(() => <CalendarView onGrab={() => {}} onDetail={() => {}} />);
+    render(() => (
+      <CalendarView mode="movies" onGrab={() => {}} onDetail={() => {}} />
+    ));
 
-    // Initial month fetched (both modes → at least one calendar call).
     await vi.waitFor(() => expect(calendarCalls(calls).length).toBeGreaterThan(0));
+    expect(
+      calendarCalls(calls).every((c) =>
+        c.url.includes("/api/modes/movies/discover/calendar"),
+      ),
+    ).toBe(true);
     const firstFrom = fromParam(calendarCalls(calls)[0]!.url);
     const beforeCount = calendarCalls(calls).length;
 
@@ -88,5 +94,35 @@ describe("CalendarView", () => {
       calendarCalls(calls)[calendarCalls(calls).length - 1]!.url,
     );
     expect(laterFrom).not.toBe(firstFrom);
+  });
+
+  it("fetches TV premieres on the Series tab, not movie releases", async () => {
+    const now = new Date();
+    const day = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-15`;
+    const show = movie({
+      id: 9,
+      title: "Bucketed Show",
+      releaseDate: day,
+      mediaType: "tv",
+    });
+    const calls = stubFetch((url) => {
+      if (url.includes("/api/modes/series/discover/calendar"))
+        return jsonResponse([show]);
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    render(() => (
+      <CalendarView mode="series" onGrab={() => {}} onDetail={() => {}} />
+    ));
+
+    expect(
+      (await screen.findAllByText("Bucketed Show")).length,
+    ).toBeGreaterThan(0);
+    expect(calendarCalls(calls).length).toBeGreaterThan(0);
+    expect(
+      calendarCalls(calls).every((c) =>
+        c.url.includes("/api/modes/series/discover/calendar"),
+      ),
+    ).toBe(true);
   });
 });

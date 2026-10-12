@@ -256,6 +256,9 @@ const RESOLUTION_OPTIONS = MAX_RESOLUTIONS.map(String);
 const RESOLUTION_LABELS: Record<string, string> = Object.fromEntries(
   MAX_RESOLUTIONS.map((r) => [String(r), r === 0 ? "No cap" : `${r}p`]),
 );
+const FLOOR_RUNGS = ["480", "720", "1080", "2160"] as const;
+const synthesizeFloors = (floor: string): Record<string, string> =>
+  Object.fromEntries(FLOOR_RUNGS.map((r) => [r, floor]));
 const PROTOCOL_OPTIONS = ["", "usenet", "torrent"];
 const PROTOCOL_LABELS: Record<string, string> = {
   "": "No preference",
@@ -273,6 +276,9 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
   // value, since the backend substitutes the same default when nothing is
   // stored.
   const [undoDepth, setUndoDepth] = createSignal(10);
+  const [resFloors, setResFloors] = createSignal<Record<string, string>>(
+    synthesizeFloors("high"),
+  );
   const [dirty, setDirty] = createSignal(false);
   const expandFloor = (floor: string): string[] => {
     const idx = QUALITY_TIERS.indexOf(floor);
@@ -281,7 +287,14 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
   createEffect(
     on(prefs, (p) => {
       if (p) {
-        setTiers(p.tiers?.length ? [...p.tiers] : expandFloor(p.tier));
+        const nextTiers = p.tiers?.length ? [...p.tiers] : expandFloor(p.tier);
+        setTiers(nextTiers);
+        const floor =
+          QUALITY_TIERS.find((t) => nextTiers.includes(t)) ?? p.tier ?? "high";
+        setResFloors({
+          ...synthesizeFloors(floor),
+          ...(p.resolutionFloors ?? {}),
+        });
         setMaxRes(p.maxResolution);
         setProtocol(p.protocol);
         setUndoDepth(p.undoDepth);
@@ -356,6 +369,7 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
         maxResolution: maxRes(),
         protocol: protocol(),
         undoDepth: undoDepth(),
+        resolutionFloors: resFloors(),
       });
       setDirty(false);
       status.saved();
@@ -390,6 +404,25 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
             )}
           </For>
         </div>
+      </div>
+      <div class="mb-3">
+        <span class={labelClass}>Bitrate floor by resolution</span>
+        <For each={FLOOR_RUNGS}>
+          {(r) => (
+            <div role="group" aria-label={`${r}p bitrate floor`}>
+              <PillSelector
+                label={`${r}p`}
+                options={QUALITY_TIERS}
+                optionLabels={QUALITY_TIER_LABELS}
+                selected={resFloors()[r] ?? "high"}
+                onSelect={(t) => {
+                  setResFloors((prev) => ({ ...prev, [r]: t }));
+                  setDirty(true);
+                }}
+              />
+            </div>
+          )}
+        </For>
       </div>
       <PillSelector
         label="Maximum resolution"
@@ -447,11 +480,11 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
         <SaveStatus text={status.status().text} error={status.status().error} />
       </div>
       <Muted class="mt-2">
-        Accepted tiers are a floor you can narrow: a stored High starts as
-        High+Lossless, and unchecking Lossless means auto-grab will not
-        require a remux. Auto-grab tries the remaining tiers highest first
-        and grabs the best qualifying release. Tier never changes which
-        resolution is preferred. Maximum resolution softly prefers
+        Accepted tiers rank Search results. Auto-grab bitrate floors are per
+        resolution: a 480p release is compared to the 480p floor, not the
+        1080p floor, so SD DVDRips can use Low while 1080p stays Medium.
+        Auto-grab tries tiers at that resolution highest first and grabs the
+        best qualifying release. Maximum resolution softly prefers
         at-or-below-cap results, falling back to whatever's available if
         nothing meets it. Protocol is the Discover popup's default pick when
         both are available; it still falls back to whichever protocol

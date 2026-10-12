@@ -1955,6 +1955,10 @@ export interface AIModelRequest {
  * treats Tier as a floor and expands (high → high+lossless). GET always
  * returns the effective set; Tier on the response is the lowest accepted
  * value so older clients still see a single floor.
+ * ResolutionFloors is the per-rung auto-grab bitrate floor (keys "480",
+ * "720", "1080", "2160" → "low"/"medium"/"high"/"lossless"). A 480p release
+ * is graded against the 480p floor, not the 1080p one. GET always returns
+ * all four rungs, synthesizing from the lowest accepted tier when unset.
  */
 export interface QualityPrefsResponse {
   tier: string;
@@ -1962,6 +1966,7 @@ export interface QualityPrefsResponse {
   maxResolution: number /* int */;
   protocol: string;
   undoDepth: number /* int */;
+  resolutionFloors: { [key: string]: string};
 }
 /**
  * UndoDepth is a POINTER here and a plain int on the response, deliberately.
@@ -1979,6 +1984,7 @@ export interface QualityPrefsRequest {
   maxResolution: number /* int */;
   protocol: string;
   undoDepth?: number /* int */;
+  resolutionFloors?: { [key: string]: string};
 }
 /**
  * NamingPresetResponse / NamingPresetRequest back

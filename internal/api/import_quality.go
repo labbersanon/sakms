@@ -12,7 +12,6 @@ import (
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
-	"github.com/labbersanon/sakms/internal/quality"
 	"github.com/labbersanon/sakms/internal/release"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenet"
@@ -36,7 +35,8 @@ func refuseImportBelowFloor(ctx context.Context, libStore *library.Store, settin
 	if !ok {
 		return nil
 	}
-	floor := quality.Lowest(resolveAutoGrabTiersForTitle(ctx, libStore, settingsStore, g.Mode, g.TMDBID))
+	floors := resolveAutoGrabFloorsForTitle(ctx, libStore, settingsStore, g.Mode, g.TMDBID)
+	floor := autograb.FloorForResolution(floors, c)
 	gr := autograb.GradeCandidate(c, floor, 0)
 	if !gr.BitrateKnown {
 		return nil

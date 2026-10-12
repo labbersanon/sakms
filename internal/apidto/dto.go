@@ -1993,12 +1993,18 @@ type AIModelRequest struct {
 // treats Tier as a floor and expands (high → high+lossless). GET always
 // returns the effective set; Tier on the response is the lowest accepted
 // value so older clients still see a single floor.
+//
+// ResolutionFloors is the per-rung auto-grab bitrate floor (keys "480",
+// "720", "1080", "2160" → "low"/"medium"/"high"/"lossless"). A 480p release
+// is graded against the 480p floor, not the 1080p one. GET always returns
+// all four rungs, synthesizing from the lowest accepted tier when unset.
 type QualityPrefsResponse struct {
-	Tier          string   `json:"tier"`
-	Tiers         []string `json:"tiers"`
-	MaxResolution int      `json:"maxResolution"`
-	Protocol      string   `json:"protocol"`
-	UndoDepth     int      `json:"undoDepth"`
+	Tier             string            `json:"tier"`
+	Tiers            []string          `json:"tiers"`
+	MaxResolution    int               `json:"maxResolution"`
+	Protocol         string            `json:"protocol"`
+	UndoDepth        int               `json:"undoDepth"`
+	ResolutionFloors map[string]string `json:"resolutionFloors"`
 }
 
 // Claude 2026-08-10: added UndoDepth to both quality-prefs DTOs.
@@ -2023,11 +2029,12 @@ type QualityPrefsResponse struct {
 // leave the stored value alone", which is NOT the same as an explicit value and
 // must not be collapsed into a default (see putQualityPrefsHandler).
 type QualityPrefsRequest struct {
-	Tier          string   `json:"tier"`
-	Tiers         []string `json:"tiers,omitempty"`
-	MaxResolution int      `json:"maxResolution"`
-	Protocol      string   `json:"protocol"`
-	UndoDepth     *int     `json:"undoDepth,omitempty"`
+	Tier             string            `json:"tier"`
+	Tiers            []string          `json:"tiers,omitempty"`
+	MaxResolution    int               `json:"maxResolution"`
+	Protocol         string            `json:"protocol"`
+	UndoDepth        *int              `json:"undoDepth,omitempty"`
+	ResolutionFloors map[string]string `json:"resolutionFloors,omitempty"`
 }
 
 // NamingPresetResponse / NamingPresetRequest back

@@ -114,6 +114,104 @@ var floorTable = map[quality.Tier]map[int]float64{
 	quality.Lossless: {480: 2.8, 720: 7, 1080: 18, 2160: 70},
 }
 
+// FloorRungs is the resolution axis of floorTable, lowest first. Settings
+// persists one quality-tier floor per rung so 480p bitrate comparison is not
+// the 1080p comparison.
+func FloorRungs() []int { return []int{480, 720, 1080, 2160} }
+
+// Claude 2026-10-12: snap SD-ish parses onto a floorTable rung.
+// Reason: Looney Tunes DVDRips parse as Resolution 0 (or 540/576 PAL) and
+//   GradeCandidate returned StatusUnknownResolution, so they never auto-grabbed
+//   even when a 480p Low floor would have accepted them. dvdrip/xvid/divx/vhs
+//   without a height token is SD, not "unknown".
+// Troubleshooting: drain "no candidate cleared the quality floor" on DVDRip
+//   shorts; Honey-Mousers ~67MB / 15 min ≈ 0.50 Mbps after padding vs Low@480
+//   0.3 / Medium@480 0.8.
+// Review if: release.Parse starts inferring 480 from dvdrip (then this snap
+//   is redundant for that source, still needed for 540/576).
+// Related files: internal/api/library.go resolveResolutionFloors; Settings
+//   QualityPrefsSection per-resolution pills.
+
+// SnapFloorResolution maps a candidate onto a floorTable rung. 2160+/1080+/
+// 720+/480+ (including 540/576) snap down to the matching rung. Missing
+// height with an SD source/codec/title (dvdrip, xvid, divx, vhs) snaps to
+// 480. Anything else stays 0 (unknown — GradeCandidate stays neutral).
+func SnapFloorResolution(c Candidate) int {
+	switch {
+	case c.Resolution >= 2160:
+		return 2160
+	case c.Resolution >= 1080:
+		return 1080
+	case c.Resolution >= 720:
+		return 720
+	case c.Resolution >= 480:
+		return 480
+	}
+	src := strings.ToLower(c.Source)
+	codec := strings.ToLower(c.Codec)
+	title := strings.ToLower(c.Title)
+	if src == "dvdrip" || codec == "xvid" || codec == "divx" {
+		return 480
+	}
+	if strings.Contains(title, "vhs") || strings.Contains(title, "dvdrip") || strings.Contains(title, "dvd-rip") || strings.Contains(title, "divx") {
+		return 480
+	}
+	return 0
+}
+
+// UniformFloors puts the same tier on every floorTable rung. Title overrides
+// still apply one floor to all resolutions; mode Settings uses a per-rung map.
+func UniformFloors(floor quality.Tier) map[int]quality.Tier {
+	if quality.Rank(floor) <= 0 {
+		floor = quality.Default
+	}
+	out := make(map[int]quality.Tier, 4)
+	for _, r := range FloorRungs() {
+		out[r] = floor
+	}
+	return out
+}
+
+// AcceptedFromFloors expands each rung's floor with TiersAtOrAbove so auto-grab
+// still tries highest-first within that resolution.
+func AcceptedFromFloors(floors map[int]quality.Tier) map[int][]quality.Tier {
+	out := make(map[int][]quality.Tier, 4)
+	for _, r := range FloorRungs() {
+		floor := floors[r]
+		if quality.Rank(floor) <= 0 {
+			floor = quality.Default
+		}
+		out[r] = quality.TiersAtOrAbove(floor)
+	}
+	return out
+}
+
+// UniformAccepted repeats one accepted set on every rung (title override).
+func UniformAccepted(accepted []quality.Tier) map[int][]quality.Tier {
+	out := make(map[int][]quality.Tier, 4)
+	for _, r := range FloorRungs() {
+		out[r] = accepted
+	}
+	return out
+}
+
+// FloorForResolution is the tier GradeCandidate should use for c: the rung
+// matching SnapFloorResolution, or the lowest configured rung when height is
+// still unknown (fail-open rather than inventing High).
+func FloorForResolution(floors map[int]quality.Tier, c Candidate) quality.Tier {
+	res := SnapFloorResolution(c)
+	if t, ok := floors[res]; ok && quality.Rank(t) > 0 {
+		return t
+	}
+	var all []quality.Tier
+	for _, r := range FloorRungs() {
+		if t := floors[r]; quality.Rank(t) > 0 {
+			all = append(all, t)
+		}
+	}
+	return quality.Lowest(all)
+}
+
 // Status is why a candidate did or didn't auto-qualify — carried through so
 // the UI-wiring wave can label the manual pick list ("mislabeled", "below
 // floor", etc.) rather than showing a bare rejected/accepted flag.
@@ -160,8 +258,9 @@ type Candidate struct {
 	// RuntimeSeconds is the TMDB/TPDB known runtime. 0/unknown → implied
 	// bitrate unknown (neutral).
 	RuntimeSeconds float64
-	// Resolution is 720/1080/2160 (from release.Parse); 0 or any other value
-	// is treated as unknown resolution (neutral).
+	// Resolution is 480/720/1080/2160 (from release.Parse) or a nearby
+	// parse like 540/576. GradeCandidate snaps onto a floorTable rung;
+	// 0 with no SD hint stays unknown (neutral).
 	Resolution int
 	// Codec is "x264"/"x265"/"av1" (from release.Parse); anything else,
 	// including "", falls back to the x264 baseline multiplier.
@@ -210,11 +309,14 @@ func codecMultiplier(codec string) float64 {
 func isAV1(codec string) bool { return strings.EqualFold(codec, "av1") }
 
 // GradeCandidate evaluates one candidate against tier's floor. minSeeders <= 0
-// falls back to DefaultMinSeeders.
+// falls back to DefaultMinSeeders. Resolution is snapped onto a floorTable
+// rung first (540/576/dvdrip → 480) so SD encodes are graded, not parked as
+// StatusUnknownResolution.
 func GradeCandidate(c Candidate, tier quality.Tier, minSeeders int) Grade {
 	if minSeeders <= 0 {
 		minSeeders = DefaultMinSeeders
 	}
+	c.Resolution = SnapFloorResolution(c)
 	g := Grade{Candidate: c}
 
 	// Missing-input handling: Size==0 or runtime unknown → implied bitrate
@@ -349,6 +451,41 @@ func SelectBest(candidates []Candidate, accepted []quality.Tier, minSeeders int)
 		}
 	}
 	return last
+}
+
+// SelectBestByResolution grades each candidate against the accepted set for
+// its snapped resolution, then picks the highest Score among those that
+// qualify. A 480p release is compared to the 480p floor, not the 1080p one.
+// Missing rungs / unknown resolution fall through to SelectBest's empty-list
+// Default expansion, which still cannot auto-qualify an unsnappable height.
+func SelectBestByResolution(candidates []Candidate, accepted map[int][]quality.Tier, minSeeders int) Selection {
+	grades := make([]Grade, len(candidates))
+	pick := -1
+	for i, c := range candidates {
+		res := SnapFloorResolution(c)
+		one := SelectBest([]Candidate{c}, accepted[res], minSeeders)
+		if len(one.Grades) == 1 {
+			grades[i] = one.Grades[0]
+		} else {
+			grades[i] = GradeCandidate(c, quality.Default, minSeeders)
+		}
+		if grades[i].Qualified && (pick == -1 || grades[i].Score > grades[pick].Score) {
+			pick = i
+		}
+	}
+	ranked := make([]int, len(grades))
+	for i := range ranked {
+		ranked[i] = i
+	}
+	sort.SliceStable(ranked, func(a, b int) bool {
+		return grades[ranked[a]].Score > grades[ranked[b]].Score
+	})
+	return Selection{
+		Grades:    grades,
+		PickIndex: pick,
+		Fallback:  pick == -1,
+		Ranked:    ranked,
+	}
 }
 
 // RuntimeMismatch is the pure post-grab mislabel check: it compares the

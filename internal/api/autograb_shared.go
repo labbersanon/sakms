@@ -509,7 +509,6 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 		//   one show fall to 480p after HD STAT misses.
 		// Troubleshooting: library_quality_prefs; resolveAutoGrabTiersForTitle.
 		// Review if: AutoGrabRequest carries explicit tiers from the Grab pills.
-		tiers := resolveAutoGrabTiersForTitle(ctx, deps.LibStore, deps.SettingsStore, req.Mode, req.TMDBID)
 		minRes := resolveMinResolutionForTitle(ctx, deps.LibStore, req.Mode, req.TMDBID)
 		// Claude 2026-10-10: filter releases and candidates together.
 		// Reason: requireMinResolution dropped below-min candidates but left
@@ -519,7 +518,13 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 		// Troubleshooting: dispatch title resolution must match grade res=.
 		// Review if: another scoreOnePhase filter mutates candidates only.
 		pr.releases, candidates = keepAlignedMinResolution(pr.releases, candidates, minRes)
-		pr.sel = autograb.SelectBest(candidates, tiers, minSeedersFor(req.Mode))
+		// Claude 2026-10-12: per-resolution bitrate floors.
+		// Reason: a mode-wide Medium floor rejected 480p DVDRips (0.50 vs 0.8)
+		//   while 1080p still needs Medium. SelectBestByResolution grades each
+		//   candidate against its snapped rung.
+		// Troubleshooting: Looney Tunes Honey-Mousers DVDRip vs Medium@480.
+		// Review if: title overrides grow their own per-rung map.
+		pr.sel = selectAutoGrabBest(ctx, deps.LibStore, deps.SettingsStore, req.Mode, req.TMDBID, candidates)
 		return pr, nil
 	}
 

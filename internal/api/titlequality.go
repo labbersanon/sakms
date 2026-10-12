@@ -215,6 +215,31 @@ func resolveAutoGrabTiersForTitle(ctx context.Context, lib *library.Store, setti
 	return resolveQualityTiers(ctx, settingsStore, m)
 }
 
+// resolveAutoGrabFloorsForTitle is the per-rung bitrate floor map. A title
+// override still applies one floor (Lowest of its set) to every rung; inherited
+// mode Settings uses the per-resolution map.
+func resolveAutoGrabFloorsForTitle(ctx context.Context, lib *library.Store, settingsStore *settings.Store, m mode.Mode, tmdbID int) map[int]quality.Tier {
+	if lib != nil && tmdbID > 0 {
+		if stored, err := lib.GetTitleQualityPrefs(ctx, m, tmdbID); err == nil && stored.HasOverride && len(stored.Tiers) > 0 {
+			return autograb.UniformFloors(quality.Lowest(stored.Tiers))
+		}
+	}
+	return resolveResolutionFloors(ctx, settingsStore, m)
+}
+
+// resolveAutoGrabAcceptedByResolution is the accepted set auto-grab walks
+// highest-first, keyed by floorTable rung. Title overrides keep their explicit
+// set (Lossless may stay unchecked); inherited mode Settings expands each
+// rung's floor with TiersAtOrAbove.
+func resolveAutoGrabAcceptedByResolution(ctx context.Context, lib *library.Store, settingsStore *settings.Store, m mode.Mode, tmdbID int) map[int][]quality.Tier {
+	if lib != nil && tmdbID > 0 {
+		if stored, err := lib.GetTitleQualityPrefs(ctx, m, tmdbID); err == nil && stored.HasOverride && len(stored.Tiers) > 0 {
+			return autograb.UniformAccepted(stored.Tiers)
+		}
+	}
+	return autograb.AcceptedFromFloors(resolveResolutionFloors(ctx, settingsStore, m))
+}
+
 // resolveMinResolutionForTitle returns the hard resolution floor for a title
 // override (0 = any). Mode Settings soft-max is NOT inherited here — different
 // semantics; unattended title grabs only enforce an explicit title minimum.
@@ -297,6 +322,13 @@ func queueQualityUpgrades(ctx context.Context, deps titleQualityDeps, m mode.Mod
 		}
 	}
 	return queued
+}
+
+func fileQualityFloor(filePath string, floors map[int]quality.Tier) quality.Tier {
+	info := release.Parse(filepath.Base(filePath))
+	return autograb.FloorForResolution(floors, autograb.Candidate{
+		Title: filepath.Base(filePath), Resolution: info.Resolution, Source: info.Source, Codec: info.Codec,
+	})
 }
 
 func fileNeedsQualityUpgrade(filePath, stampedTier string, floor quality.Tier, minRes int) bool {

@@ -223,10 +223,10 @@ func TestUnknownInputNeutral(t *testing.T) {
 		t.Fatalf("unknown-runtime implied bitrate = %.3f, want 0", zeroRuntime.ImpliedMbps)
 	}
 
-	// Bitrate known but resolution unrecognized (e.g. 540p) → also neutral.
+	// Bitrate known but no height and no SD hint → still unknown resolution.
 	oddRes := GradeCandidate(Candidate{
 		Protocol: "usenet", SizeBytes: bytesForMbps(5, testRuntime), RuntimeSeconds: testRuntime,
-		Resolution: 540, Codec: "x264",
+		Resolution: 0, Codec: "x264",
 	}, quality.High, 0)
 	if oddRes.Status != StatusUnknownResolution || oddRes.Qualified {
 		t.Fatalf("unknown resolution status=%s qualified=%v, want %s/false", oddRes.Status, oddRes.Qualified, StatusUnknownResolution)
@@ -402,5 +402,105 @@ func TestLiveAHSS13E06EliteIsBelowMedium1080(t *testing.T) {
 	}
 	if g.Score >= 5 {
 		t.Fatalf("score=%.2f must stay under the 5 Mbps Medium/1080 floor", g.Score)
+	}
+}
+
+func TestSnapFloorResolution(t *testing.T) {
+	cases := []struct {
+		name string
+		c    Candidate
+		want int
+	}{
+		{"1080 stays", Candidate{Resolution: 1080}, 1080},
+		{"2160 stays", Candidate{Resolution: 2160}, 2160},
+		{"720 stays", Candidate{Resolution: 720}, 720},
+		{"480 stays", Candidate{Resolution: 480}, 480},
+		{"540 snaps to 480", Candidate{Resolution: 540}, 480},
+		{"576 snaps to 480", Candidate{Resolution: 576}, 480},
+		{"dvdrip source without height", Candidate{Source: "dvdrip"}, 480},
+		{"xvid codec without height", Candidate{Codec: "xvid"}, 480},
+		{"vhs in title", Candidate{Title: "Looney.Tunes.VHSRip"}, 480},
+		{"divx in title", Candidate{Title: "Short.DIVX"}, 480},
+		{"unknown stays 0", Candidate{Title: "Show.S01E01", Codec: "x264"}, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SnapFloorResolution(tc.c); got != tc.want {
+				t.Fatalf("SnapFloorResolution(%+v) = %d, want %d", tc.c, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGradeCandidateSnaps540pOnto480Floor(t *testing.T) {
+	// High@480 floor is 1.6. x264 at 5 Mbps padded = 4.0, qualifies.
+	g := GradeCandidate(Candidate{
+		Protocol: "usenet", SizeBytes: bytesForMbps(5, testRuntime), RuntimeSeconds: testRuntime,
+		Resolution: 540, Codec: "x264",
+	}, quality.High, 0)
+	if g.Candidate.Resolution != 480 {
+		t.Fatalf("snapped resolution = %d, want 480", g.Candidate.Resolution)
+	}
+	if !g.Qualified || g.Status != StatusQualified {
+		t.Fatalf("540p at 5 Mbps vs High@480 1.6: status=%s qualified=%v", g.Status, g.Qualified)
+	}
+}
+
+func TestHoneyMousersDVDRipClearsLow480NotMedium480(t *testing.T) {
+	// Live Looney Tunes S1956E28 "The Honey-Mousers" DVDRip ~67 MiB / 15 min
+	// TMDB runtime. Implied ≈ 0.62 Mbps; x264 padding → ≈ 0.50. Low@480 is
+	// 0.3 (pass); Medium@480 is 0.8 (fail). Inferring 480 alone is not enough
+	// — the per-resolution floor is the product lever.
+	c := Candidate{
+		Title:    "Looney.Tunes.S1956E28.The.Honey.Mousers.DVDRip.x264",
+		Protocol: "usenet", SizeBytes: 67 * 1024 * 1024, RuntimeSeconds: 15 * 60,
+		Source: "dvdrip", Codec: "x264",
+	}
+	low := GradeCandidate(c, quality.Low, 0)
+	if low.Candidate.Resolution != 480 {
+		t.Fatalf("dvdrip snap = %d, want 480", low.Candidate.Resolution)
+	}
+	if !low.Qualified || low.Status != StatusQualified {
+		t.Fatalf("Low@480: status=%s qualified=%v score=%.3f floor=%.3f", low.Status, low.Qualified, low.Score, low.FloorMbps)
+	}
+	med := GradeCandidate(c, quality.Medium, 0)
+	if med.Qualified || med.Status != StatusBelowFloor {
+		t.Fatalf("Medium@480: status=%s qualified=%v score=%.3f floor=%.3f, want below-floor", med.Status, med.Qualified, med.Score, med.FloorMbps)
+	}
+}
+
+func TestSelectBestByResolutionUsesPerRungFloor(t *testing.T) {
+	dvdrip := Candidate{
+		Title: "short-dvdrip", Protocol: "usenet",
+		SizeBytes: 67 * 1024 * 1024, RuntimeSeconds: 15 * 60,
+		Source: "dvdrip", Codec: "x264",
+	}
+	tiny1080 := Candidate{
+		Title: "tiny-1080", Protocol: "usenet",
+		SizeBytes: 67 * 1024 * 1024, RuntimeSeconds: 15 * 60,
+		Resolution: 1080, Codec: "x264",
+	}
+	ok1080 := Candidate{
+		Title: "ok-1080", Protocol: "usenet",
+		SizeBytes: bytesForMbps(8, testRuntime), RuntimeSeconds: testRuntime,
+		Resolution: 1080, Codec: "x264",
+	}
+
+	floors := map[int]quality.Tier{480: quality.Low, 720: quality.Medium, 1080: quality.Medium, 2160: quality.Medium}
+	accepted := AcceptedFromFloors(floors)
+
+	sdOnly := SelectBestByResolution([]Candidate{dvdrip, tiny1080}, accepted, 0)
+	if sdOnly.Fallback || sdOnly.Grades[sdOnly.PickIndex].Candidate.Title != "short-dvdrip" {
+		t.Fatalf("480p Low should pick the DVDRip and reject the tiny 1080p, fallback=%v pick=%+v", sdOnly.Fallback, sdOnly)
+	}
+
+	both := SelectBestByResolution([]Candidate{dvdrip, tiny1080, ok1080}, accepted, 0)
+	if both.Fallback || both.Grades[both.PickIndex].Candidate.Title != "ok-1080" {
+		t.Fatalf("when a 1080p clears Medium it outranks a 480p Low, fallback=%v pick=%+v", both.Fallback, both)
+	}
+
+	allMedium := SelectBestByResolution([]Candidate{dvdrip}, AcceptedFromFloors(UniformFloors(quality.Medium)), 0)
+	if !allMedium.Fallback {
+		t.Fatal("a Medium-everywhere map must still reject the Honey-Mousers-sized DVDRip")
 	}
 }

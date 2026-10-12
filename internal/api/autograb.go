@@ -595,6 +595,10 @@ func autoGrabTiers(ctx context.Context, settingsStore *settings.Store, m mode.Mo
 	return resolveQualityTiers(ctx, settingsStore, m)
 }
 
+func selectAutoGrabBest(ctx context.Context, lib *library.Store, settingsStore *settings.Store, m mode.Mode, tmdbID int, cands []autograb.Candidate) autograb.Selection {
+	return autograb.SelectBestByResolution(cands, resolveAutoGrabAcceptedByResolution(ctx, lib, settingsStore, m, tmdbID), minSeedersFor(m))
+}
+
 // autoGrabRootFolder resolves {mode}'s configured library root folder — where
 // an auto-grabbed download is imported (checkImportHandler relocates into it).
 // A missing root folder is a 400, the same guard the old frontend enforced

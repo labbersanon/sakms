@@ -18,6 +18,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@solidjs/testing-library";
 import { QualityPrefsSection, SeriesNewSeasonDiscoverySection } from "./Library";
 import { jsonResponse, noContent } from "../../testing/http";
@@ -177,6 +178,12 @@ describe("Settings → Library — quality prefs: Rename Undo depth", () => {
       maxResolution: 1080,
       protocol: "usenet",
       undoDepth: 3,
+      resolutionFloors: {
+        "480": "medium",
+        "720": "medium",
+        "1080": "medium",
+        "2160": "medium",
+      },
     });
   });
 
@@ -224,6 +231,12 @@ describe("Settings → Library — quality prefs: Rename Undo depth", () => {
       maxResolution: 1080,
       protocol: "usenet",
       undoDepth: 7,
+      resolutionFloors: {
+        "480": "medium",
+        "720": "medium",
+        "1080": "medium",
+        "2160": "medium",
+      },
     });
   });
 
@@ -257,5 +270,32 @@ describe("Settings → Library — quality prefs: Rename Undo depth", () => {
       tier: "medium",
       tiers: ["medium", "high"],
     });
+  });
+
+  it("PUTs a Low 480p floor without lowering the 1080p floor", async () => {
+    const calls = stubQualityFetch(10);
+    render(() => <QualityPrefsSection mode={() => "movies"} />);
+    await waitFor(() => expect(depthField().value).toBe("10"));
+
+    const group = screen.getByRole("group", { name: "480p bitrate floor" });
+    fireEvent.click(within(group).getByRole("button", { name: "Low" }));
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(calls.some((c) => c.method === "PUT")).toBe(true));
+    expect(calls.find((c) => c.method === "PUT")!.body).toMatchObject({
+      resolutionFloors: {
+        "480": "low",
+        "720": "medium",
+        "1080": "medium",
+        "2160": "medium",
+      },
+    });
+  });
+
+  it("explains that bitrate floors vary by resolution", async () => {
+    stubQualityFetch(10);
+    render(() => <QualityPrefsSection mode={() => "movies"} />);
+    expect(
+      await screen.findByText(/a 480p release is compared to the 480p floor/i),
+    ).toBeInTheDocument();
   });
 });

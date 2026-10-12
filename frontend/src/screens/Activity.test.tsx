@@ -112,6 +112,9 @@ describe("Activity screen", () => {
     const items = screen.getAllByRole("listitem");
     expect(items[0]!.textContent).toContain("New Show S01E01");
     expect(items[1]!.textContent).toContain("Old Movie");
+    expect(screen.getByRole("list").parentElement?.className).toContain(
+      "bg-surface",
+    );
   });
 
   it("search matches title, status, and reason", async () => {
@@ -166,6 +169,8 @@ describe("Activity screen", () => {
   it("renders the empty copy when nothing matches", async () => {
     stubGrabs({ movies: [] });
     render(() => <Activity />);
-    expect(await screen.findByText("No matching activity.")).toBeInTheDocument();
+    const empty = await screen.findByText("No matching activity.");
+    expect(empty).toBeInTheDocument();
+    expect(empty.parentElement?.className).toContain("bg-surface");
   });
 });

@@ -1,7 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/apidto"
@@ -75,6 +79,66 @@ func TestResolveAutoGrabFloorsForTitle_OverrideUsesQualityFloor(t *testing.T) {
 	accepted := resolveAutoGrabAcceptedByResolution(ctx, libStore, settingsStore, mode.Series, 333432)
 	if quality.Lowest(accepted[480]) != quality.Low || quality.Highest(accepted[1080]) != quality.High {
 		t.Fatalf("override accepted=%v, want Low–High on every rung", accepted)
+	}
+}
+
+func TestResolveCodecRankForTitle_IgnoresStoredTitleRank(t *testing.T) {
+	ctx := context.Background()
+	_, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	if err := settingsStore.Set(ctx, codecRankKey(mode.Series), `["x264","x265","av1"]`); err != nil {
+		t.Fatal(err)
+	}
+	if err := libStore.SetTitleQualityPrefs(ctx, library.TitleQualityPrefs{
+		Mode: mode.Series, TMDBID: 333432, Tiers: quality.TiersAtOrAbove(quality.High),
+		CodecRank: []string{"av1", "x265", "x264"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := resolveCodecRankForTitle(ctx, libStore, settingsStore, mode.Series, 333432)
+	if len(got) < 1 || got[0] != "x264" {
+		t.Fatalf("title codec rank=%v, want Settings x264 first", got)
+	}
+	out := effectiveTitleQualityPrefs(ctx, titleQualityDeps{lib: libStore, settings: settingsStore}, mode.Series, 333432)
+	if len(out.CodecRank) < 1 || out.CodecRank[0] != "x264" {
+		t.Fatalf("GET codecRank=%v, want Settings x264 first", out.CodecRank)
+	}
+}
+
+func TestPutTitleQualityPrefs_ClearsCodecRank(t *testing.T) {
+	lib, srv := newTrackedTestServer(t)
+	ctx := context.Background()
+	if err := lib.SetTitleQualityPrefs(ctx, library.TitleQualityPrefs{
+		Mode: mode.Movies, TMDBID: 42, Tiers: quality.TiersAtOrAbove(quality.High),
+		CodecRank: []string{"x264", "x265", "av1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(apidto.TitleQualityPrefsRequest{
+		Floor: "high", Ceiling: "lossless", MinResolution: 0,
+		CodecRank: []string{"x264", "av1", "x265"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPut, srv.URL+"/api/modes/movies/library/tmdb/42/quality-prefs", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("PUT = %d (%s), want 200", resp.StatusCode, b)
+	}
+	got, err := lib.GetTitleQualityPrefs(ctx, mode.Movies, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.CodecRank) != 0 {
+		t.Fatalf("stored codec rank=%v, want empty", got.CodecRank)
 	}
 }
 

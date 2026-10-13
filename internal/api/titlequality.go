@@ -156,11 +156,15 @@ func putTitleQualityPrefs(w http.ResponseWriter, r *http.Request, deps titleQual
 	}
 	floors := autograb.UniformFloors(quality.Lowest(tiers))
 
+	// Claude 2026-10-13: title PUT always writes empty codec_rank.
+	// Reason: preferred codecs are Settings-only; leftover title ranks must clear.
+	// Troubleshooting: req.CodecRank is ignored; resolveCodecRankForTitle uses Settings.
+	// Review if: title-level codec order is added back as an explicit override.
 	prefs := library.TitleQualityPrefs{
 		Mode: m, TMDBID: tmdbID, Tiers: tiers,
 		MinResolution: req.MinResolution, MinResolutionSet: true,
 		MaxResolution: req.MaxResolution, MaxResolutionSet: true,
-		ResolutionFloors: floors, CodecRank: req.CodecRank,
+		ResolutionFloors: floors,
 	}
 	if req.FeatureUpgrade != nil {
 		prefs.FeatureUpgrade = req.FeatureUpgrade
@@ -239,15 +243,11 @@ func effectiveTitleQualityPrefs(ctx context.Context, deps titleQualityDeps, m mo
 	if stored.MaxResolutionSet {
 		maxRes = stored.MaxResolution
 	}
-	rank := modeRank
-	if len(stored.CodecRank) > 0 {
-		rank = stored.CodecRank
-	}
 	feat := modeFeat
 	if stored.FeatureUpgrade != nil {
 		feat = *stored.FeatureUpgrade
 	}
-	return titlePrefsResponse(tiers, minRes, maxRes, false, titleOverrideFloors(stored), rank, feat)
+	return titlePrefsResponse(tiers, minRes, maxRes, false, titleOverrideFloors(stored), modeRank, feat)
 }
 
 func titlePrefsResponse(tiers []quality.Tier, minRes, maxRes int, inherited bool, floors map[int]quality.Tier, codecRank []string, featureUpgrade bool) apidto.TitleQualityPrefsResponse {
@@ -323,14 +323,12 @@ func resolveResolutionBandForTitle(ctx context.Context, lib *library.Store, sett
 	return minRes, maxRes
 }
 
-func resolveCodecRankForTitle(ctx context.Context, lib *library.Store, settingsStore *settings.Store, m mode.Mode, tmdbID int) []string {
-	rank := resolveCodecRank(ctx, settingsStore, m)
-	if lib != nil && tmdbID > 0 {
-		if stored, err := lib.GetTitleQualityPrefs(ctx, m, tmdbID); err == nil && stored.HasOverride && len(stored.CodecRank) > 0 {
-			return quality.NormalizeCodecRank(stored.CodecRank)
-		}
-	}
-	return rank
+// Claude 2026-10-13: title auto-grab always uses Settings codec rank.
+// Reason: leftover library_quality_prefs.codec_rank must not change ranking.
+// Troubleshooting: PUT writes empty codec_rank; GET still reports Settings order.
+// Review if: title-level codec order is added back as an explicit override.
+func resolveCodecRankForTitle(ctx context.Context, _ *library.Store, settingsStore *settings.Store, m mode.Mode, _ int) []string {
+	return resolveCodecRank(ctx, settingsStore, m)
 }
 
 func resolveFeatureUpgradeForTitle(ctx context.Context, lib *library.Store, settingsStore *settings.Store, m mode.Mode, tmdbID int) bool {

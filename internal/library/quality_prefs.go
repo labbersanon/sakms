@@ -39,7 +39,8 @@ type TitleQualityPrefs struct {
 	// ResolutionFloors is the per-rung bitrate floor (480/720/1080/2160).
 	// Nil/empty means synthesize UniformFloors(Lowest(Tiers)) at the caller.
 	ResolutionFloors map[int]quality.Tier
-	// CodecRank empty means inherit mode Settings. NormalizeCodecRank at use.
+	// CodecRank leftover from when titles could override Settings order.
+	// API PUT writes empty; grade time ignores stored values.
 	CodecRank []string
 	// FeatureUpgrade nil means inherit mode Settings.
 	FeatureUpgrade *bool

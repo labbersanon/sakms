@@ -3538,6 +3538,9 @@ export interface TitleQualityPrefsResponse {
   maxResolution: number /* int */;
   inherited: boolean;
   resolutionFloors: { [key: string]: string};
+  /**
+   * CodecRank is always the mode Settings order. Titles do not override it.
+   */
   codecRank: string[];
   featureUpgrade: boolean;
   upgradeQueued?: number /* int */;
@@ -3571,6 +3574,7 @@ export interface MovieUpgradeWatchResponse {
  * ResolutionFloors, when sent, is the per-rung auto-grab floor (same keys
  * and values as mode Settings). Omitted/empty synthesizes UniformFloors
  * from Floor so older clients keep one floor on every rung.
+ * CodecRank is ignored: preferred codecs live on Settings only.
  */
 export interface TitleQualityPrefsRequest {
   floor?: string;

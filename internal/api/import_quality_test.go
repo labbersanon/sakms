@@ -71,13 +71,10 @@ func TestRefuseImportBelowFloor_FailOpenWithoutRuntime(t *testing.T) {
 	}
 }
 
-func TestRefuseImportBelowFloor_DVDRipPassesLow480NotMedium1080(t *testing.T) {
+func TestRefuseImportBelowFloor_DVDRipPassesLow480NotLow1080(t *testing.T) {
 	ctx := context.Background()
 	_, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
-	if err := settingsStore.Set(ctx, qualityTiersKey(mode.Series), `["medium","high","lossless"]`); err != nil {
-		t.Fatal(err)
-	}
-	if err := settingsStore.Set(ctx, qualityResolutionFloorsKey(mode.Series), `{"480":"low","720":"medium","1080":"medium","2160":"medium"}`); err != nil {
+	if err := settingsStore.Set(ctx, qualityTiersKey(mode.Series), `["low","medium","high","lossless"]`); err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
@@ -102,7 +99,7 @@ func TestRefuseImportBelowFloor_DVDRipPassesLow480NotMedium1080(t *testing.T) {
 		height: 1080, codec: "h264", duration: 15 * 60,
 	})
 	if err == nil || !errors.Is(err, autograb.ErrBelowQualityFloor) {
-		t.Fatalf("same bytes at 1080p must still fail Medium@1080, got %v", err)
+		t.Fatalf("same bytes at 1080p must still fail Low@1080, got %v", err)
 	}
 }
 

@@ -337,19 +337,18 @@ func TestQualityPrefs_ResolutionFloorsRoundTripAndValidation(t *testing.T) {
 		t.Fatalf("expected 204, got %d", code)
 	}
 	got := get()
-	if got.ResolutionFloors["480"] != "low" || got.ResolutionFloors["720"] != "medium" ||
-		got.ResolutionFloors["1080"] != "medium" || got.ResolutionFloors["2160"] != "high" {
-		t.Fatalf("resolution floors round-trip, got %v", got.ResolutionFloors)
+	if got.ResolutionFloors["480"] != "medium" || got.ResolutionFloors["720"] != "medium" ||
+		got.ResolutionFloors["1080"] != "medium" || got.ResolutionFloors["2160"] != "medium" {
+		t.Fatalf("mixed resolutionFloors must store the quality floor on every rung, got %v", got.ResolutionFloors)
 	}
 
-	// Older client omits the map: stored floors stay put.
 	body, _ = json.Marshal(qualityPrefsRequest{Tier: "high", Tiers: []string{"high", "lossless"}, MaxResolution: 0, Protocol: ""})
 	if code := put(body); code != http.StatusNoContent {
 		t.Fatalf("omit floors: expected 204, got %d", code)
 	}
 	got = get()
-	if got.ResolutionFloors["480"] != "low" || got.Tier != "high" {
-		t.Fatalf("omitted floors must leave 480=low stored, got %+v", got)
+	if got.ResolutionFloors["480"] != "high" || got.Tier != "high" {
+		t.Fatalf("omitted floors must rewrite every rung to this PUT's floor, got %+v", got)
 	}
 
 	badKey, _ := json.Marshal(qualityPrefsRequest{Tier: "high", ResolutionFloors: map[string]string{"540": "low"}})

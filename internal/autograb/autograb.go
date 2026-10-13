@@ -171,8 +171,8 @@ func SnapFloorResolution(c Candidate) int {
 	return 0
 }
 
-// UniformFloors puts the same tier on every floorTable rung. Title overrides
-// still apply one floor to all resolutions; mode Settings uses a per-rung map.
+// UniformFloors puts the same quality-slider floor on every floorTable rung.
+// Mbps still differ by resolution (Medium@480 vs Medium@1080).
 func UniformFloors(floor quality.Tier) map[int]quality.Tier {
 	if quality.Rank(floor) <= 0 {
 		floor = quality.Default

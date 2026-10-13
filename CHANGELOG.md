@@ -10752,3 +10752,33 @@ status stays active.
 | `internal/api/discover_availability_test.go` | hi2160 size 20e9 → 28e9 |
 | `internal/autograb/autograb_test.go` | pin 20 GB miss vs 28 GB pass at Lossless@2160 HDR Atmos |
 
+## 2026-10-13 — Dual sliders for quality and resolution bands
+
+**Problem:** Settings stacked quality floor/ceiling pills, four per-resolution quality picks, and min/max resolution pills. The operator asked for one dual slider for quality and one for resolution.
+**Root cause:** Per-rung quality pills came from the first “vary by resolution” request; floor/ceiling was added beside them instead of replacing them. Pills were reused instead of a range control.
+**Fix:** DualRangeSlider for quality (Low–Lossless) and resolution (480–2160). Operator no longer picks a different quality *tier* per resolution. Internal `floorTable` still uses different Mbps at 480 vs 1080 for the same named tier. PUT writes UniformFloors(floor); auto-grab accepted set is TiersBetween(floor, ceiling).
+**Outcome:** Settings and title overrides share the two sliders. A full resolution span (480p–2160p) stores min/max 0 (open). Mixed leftover 480=low/1080=medium maps are ignored at grade time.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/components/ui.tsx` | DualRangeSlider |
+| `frontend/src/screens/settings/Library.tsx` | two sliders; drop per-rung quality pills |
+| `frontend/src/components/TitleQualityPrefs.tsx` | matching title sliders |
+| `internal/api/library.go` | always UniformFloors(quality floor) |
+| `internal/api/titlequality.go` | UniformAccepted(floor–ceiling) |
+
+## 2026-10-13 — Import DVDRip fixture uses quality-floor Low, not mixed rungs
+
+**Problem:** CI on #155 failed `TestRefuseImportBelowFloor_DVDRipPassesLow480NotMedium1080`.
+**Root cause:** The fixture stored 480=low / 1080=medium. Grade time now uses UniformFloors(Lowest(accepted)), so Medium@480 (0.8) rejected Honey-Mousers (0.50).
+**Fix:** Accepted band Low–Lossless. DVDRip still passes Low@480 (0.3); same bytes at 1080p fail Low@1080 (2).
+**Outcome:** Import gate matches the dual-slider model.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/import_quality_test.go` | Low floor everywhere; 1080p tiny still below-floor |
+

@@ -1,6 +1,5 @@
-// TitleQualityPrefs — per-resolution bitrate floors + minimum height for one
-// monitored/tracked title. Inherited lights up from mode Settings (same 480/
-// 720/1080/2160 pills); resolution minimum defaults to Any (0). Saving a
+// TitleQualityPrefs — quality and resolution dual sliders for one
+// monitored/tracked title. Inherited lights up from mode Settings. Saving a
 // higher floor queues upgrades for on-disk files below it.
 
 import {
@@ -20,8 +19,16 @@ import {
   putTitleQualityPrefs,
   type TitleQualityKey,
 } from "../api/titlequality";
-import { MAX_RESOLUTIONS, QUALITY_TIERS } from "../api/settings";
-import { ErrorText, Muted, PillSelector, Switch } from "./ui";
+import { QUALITY_TIERS } from "../api/settings";
+import {
+  DualRangeSlider,
+  ErrorText,
+  Muted,
+  RESOLUTION_SLIDER_STOPS,
+  Switch,
+  resolutionStopsFromWire,
+  resolutionStopsToWire,
+} from "./ui";
 
 const TIER_LABELS: Record<string, string> = {
   low: "Low",
@@ -29,10 +36,6 @@ const TIER_LABELS: Record<string, string> = {
   high: "High",
   lossless: "Lossless",
 };
-const RESOLUTION_OPTIONS = MAX_RESOLUTIONS.map(String);
-const RESOLUTION_LABELS: Record<string, string> = Object.fromEntries(
-  MAX_RESOLUTIONS.map((r) => [String(r), r === 0 ? "Any" : `${r}p+`]),
-);
 const FLOOR_RUNGS = ["480", "720", "1080", "2160"] as const;
 const CODEC_RANK_DEFAULT = ["av1", "x265", "x264"];
 const CODEC_LABELS: Record<string, string> = {
@@ -40,13 +43,14 @@ const CODEC_LABELS: Record<string, string> = {
   x265: "x265",
   x264: "x264",
 };
-const MAX_RESOLUTION_LABELS: Record<string, string> = Object.fromEntries(
-  MAX_RESOLUTIONS.map((r) => [String(r), r === 0 ? "No cap" : `${r}p`]),
-);
+const RESOLUTION_SLIDER_LABELS: Record<string, string> = {
+  "480": "480p",
+  "720": "720p",
+  "1080": "1080p",
+  "2160": "2160p",
+};
 const synthesizeFloors = (floor: string): Record<string, string> =>
   Object.fromEntries(FLOOR_RUNGS.map((r) => [r, floor]));
-const floorsEqual = (a: Record<string, string>, b: Record<string, string>) =>
-  FLOOR_RUNGS.every((r) => (a[r] ?? "") === (b[r] ?? ""));
 
 export const TitleQualityPrefs: Component<{
   mode: Mode;
@@ -62,9 +66,6 @@ export const TitleQualityPrefs: Component<{
   const [maxRes, setMaxRes] = createSignal(0);
   const [codecRank, setCodecRank] = createSignal<string[]>([...CODEC_RANK_DEFAULT]);
   const [featureUpgrade, setFeatureUpgrade] = createSignal(false);
-  const [resFloors, setResFloors] = createSignal<Record<string, string>>(
-    synthesizeFloors("high"),
-  );
   const [busy, setBusy] = createSignal(false);
   const [writeError, setWriteError] = createSignal("");
   const [upgradeNote, setUpgradeNote] = createSignal("");
@@ -75,10 +76,6 @@ export const TitleQualityPrefs: Component<{
       const nextFloor = p.floor || "high";
       setFloor(nextFloor);
       setCeiling(p.ceiling || "lossless");
-      setResFloors({
-        ...synthesizeFloors(nextFloor),
-        ...(p.resolutionFloors ?? {}),
-      });
       setMinRes(p.minResolution ?? 0);
       setMaxRes(p.maxResolution ?? 0);
       setCodecRank(p.codecRank?.length ? [...p.codecRank] : [...CODEC_RANK_DEFAULT]);
@@ -87,12 +84,6 @@ export const TitleQualityPrefs: Component<{
       setUpgradeNote("");
     }),
   );
-
-  const savedFloors = () => {
-    const p = prefs();
-    if (!p) return synthesizeFloors("high");
-    return { ...synthesizeFloors(p.floor || "high"), ...(p.resolutionFloors ?? {}) };
-  };
 
   const dirty = () => {
     const p = prefs();
@@ -103,8 +94,7 @@ export const TitleQualityPrefs: Component<{
       maxRes() !== (p.maxResolution ?? 0) ||
       ceiling() !== (p.ceiling || "lossless") ||
       featureUpgrade() !== (p.featureUpgrade === true) ||
-      codecRank().join(",") !== (p.codecRank ?? CODEC_RANK_DEFAULT).join(",") ||
-      !floorsEqual(resFloors(), savedFloors())
+      codecRank().join(",") !== (p.codecRank ?? CODEC_RANK_DEFAULT).join(",")
     );
   };
 
@@ -118,7 +108,7 @@ export const TitleQualityPrefs: Component<{
         ceiling: ceiling(),
         minResolution: minRes(),
         maxResolution: maxRes(),
-        resolutionFloors: resFloors(),
+        resolutionFloors: synthesizeFloors(floor()),
         codecRank: codecRank(),
         featureUpgrade: featureUpgrade(),
       });
@@ -183,52 +173,36 @@ export const TitleQualityPrefs: Component<{
       <Show when={!prefs.loading && prefs()}>
         <Muted class="mb-2">
           {prefs()!.inherited
-            ? "Using Settings bitrate floors per resolution — resolution minimum is Any until you override."
-            : "Bitrate floors per resolution and minimum height for unattended grabs of this title."}
+            ? "Using Settings quality and resolution bands until you override."
+            : "Quality and resolution bands for unattended grabs of this title."}
         </Muted>
-        <PillSelector
-          label="Quality floor"
+        <DualRangeSlider
+          label="Quality"
           options={[...QUALITY_TIERS]}
           optionLabels={TIER_LABELS}
-          selected={floor()}
-          onSelect={setFloor}
+          low={floor()}
+          high={ceiling()}
+          lowAriaLabel="Quality floor"
+          highAriaLabel="Quality ceiling"
+          onChange={(lo, hi) => {
+            setFloor(lo);
+            setCeiling(hi);
+          }}
         />
-        <PillSelector
-          label="Quality ceiling"
-          options={[...QUALITY_TIERS]}
-          optionLabels={TIER_LABELS}
-          selected={ceiling()}
-          onSelect={setCeiling}
+        <DualRangeSlider
+          label="Resolution"
+          options={[...RESOLUTION_SLIDER_STOPS]}
+          optionLabels={RESOLUTION_SLIDER_LABELS}
+          low={resolutionStopsFromWire(minRes(), maxRes()).low}
+          high={resolutionStopsFromWire(minRes(), maxRes()).high}
+          lowAriaLabel="Minimum resolution"
+          highAriaLabel="Maximum resolution"
+          onChange={(lo, hi) => {
+            const next = resolutionStopsToWire(lo, hi);
+            setMinRes(next.min);
+            setMaxRes(next.max);
+          }}
         />
-        <PillSelector
-          label="Minimum resolution"
-          options={RESOLUTION_OPTIONS}
-          optionLabels={RESOLUTION_LABELS}
-          selected={String(minRes())}
-          onSelect={(r) => setMinRes(Number(r))}
-        />
-        <PillSelector
-          label="Maximum resolution"
-          options={RESOLUTION_OPTIONS}
-          optionLabels={MAX_RESOLUTION_LABELS}
-          selected={String(maxRes())}
-          onSelect={(r) => setMaxRes(Number(r))}
-        />
-        <div class="mb-2">
-          <For each={FLOOR_RUNGS}>
-            {(r) => (
-              <div role="group" aria-label={`${r}p bitrate floor`}>
-                <PillSelector
-                  label={`${r}p`}
-                  options={[...QUALITY_TIERS]}
-                  optionLabels={TIER_LABELS}
-                  selected={resFloors()[r] ?? "high"}
-                  onSelect={(t) => setResFloors((prev) => ({ ...prev, [r]: t }))}
-                />
-              </div>
-            )}
-          </For>
-        </div>
         <div class="mb-2">
           <p class="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted">
             Preferred codecs

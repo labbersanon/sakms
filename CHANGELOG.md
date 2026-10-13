@@ -10769,3 +10769,16 @@ status stays active.
 | `internal/api/library.go` | always UniformFloors(quality floor) |
 | `internal/api/titlequality.go` | UniformAccepted(floor–ceiling) |
 
+## 2026-10-13 — Import DVDRip fixture uses quality-floor Low, not mixed rungs
+
+**Problem:** CI on #155 failed `TestRefuseImportBelowFloor_DVDRipPassesLow480NotMedium1080`.
+**Root cause:** The fixture stored 480=low / 1080=medium. Grade time now uses UniformFloors(Lowest(accepted)), so Medium@480 (0.8) rejected Honey-Mousers (0.50).
+**Fix:** Accepted band Low–Lossless. DVDRip still passes Low@480 (0.3); same bytes at 1080p fail Low@1080 (2).
+**Outcome:** Import gate matches the dual-slider model.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/import_quality_test.go` | Low floor everywhere; 1080p tiny still below-floor |
+

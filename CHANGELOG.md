@@ -10738,3 +10738,17 @@ status stays active.
 | `frontend/src/components/TitleQualityPrefs.tsx` | matching title controls |
 | `.omc/specs/deep-interview-quality-thresholds.md` | crystallized spec + addendum |
 
+## 2026-10-13 — Availability grid fixture clears HDR+Atmos Lossless@2160
+
+**Problem:** CI `go-test` failed on PR #154: `TestDiscoverAvailabilityHandler_ResolutionAndTierAxesDistinguished` expected the 2160p AV1 torrent at res2160/lossless.
+**Root cause:** The fixture title includes `DDP5.1.Atmos.HDR`, so the new feature premiums raise Lossless@2160 from 70 to 105 Mbps. 20 GB / 100 min is 76.19 x264-equiv — below-floor.
+**Fix:** Size 20 GB → 28 GB (implied ~37.33 Mbps, AV1 score ~106.67).
+**Outcome:** The two-axis proof still lights every 2160p tier, including Lossless.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/discover_availability_test.go` | hi2160 size 20e9 → 28e9 |
+| `internal/autograb/autograb_test.go` | pin 20 GB miss vs 28 GB pass at Lossless@2160 HDR Atmos |
+

@@ -506,6 +506,33 @@ func TestSelectBestByResolutionUsesPerRungFloor(t *testing.T) {
 	}
 }
 
+func TestAvailabilityGridAV1HDRAtmosClearsLossless2160(t *testing.T) {
+	// Claude 2026-10-13: pin the Discover availability two-axis fixture.
+	// Reason: 20 GB / 100 min AV1 HDR Atmos scored 76.19 vs Lossless@2160 105
+	//   and failed CI; 28 GB is the size that still lights every 2160p tier.
+	// Review if: HDRFloorFactor / Channel71FloorFactor / lossless 2160 rung change.
+	wantFloor := 70 * HDRFloorFactor * Channel71FloorFactor
+	clears := GradeCandidate(Candidate{
+		Protocol: "torrent", SizeBytes: 28_000_000_000, RuntimeSeconds: testRuntime,
+		Resolution: 2160, Codec: "av1", HDR: true, Channels: release.Channels71,
+		Seeders: 50,
+	}, quality.Lossless, 0)
+	if !approx(clears.FloorMbps, wantFloor) {
+		t.Fatalf("floor=%.2f, want %.2f", clears.FloorMbps, wantFloor)
+	}
+	if !clears.Qualified {
+		t.Fatalf("28 GB AV1 HDR Atmos should clear Lossless@2160; status=%s score=%.2f floor=%.2f", clears.Status, clears.Score, clears.FloorMbps)
+	}
+	miss := GradeCandidate(Candidate{
+		Protocol: "torrent", SizeBytes: 20_000_000_000, RuntimeSeconds: testRuntime,
+		Resolution: 2160, Codec: "av1", HDR: true, Channels: release.Channels71,
+		Seeders: 50,
+	}, quality.Lossless, 0)
+	if miss.Qualified {
+		t.Fatal("20 GB AV1 HDR Atmos must stay below Lossless@2160 (CI miss)")
+	}
+}
+
 func TestGradeCandidateHDRRaisesFloor(t *testing.T) {
 	sdr := GradeCandidate(Candidate{
 		Protocol: "usenet", SizeBytes: bytesForMbps(7, testRuntime), RuntimeSeconds: testRuntime,

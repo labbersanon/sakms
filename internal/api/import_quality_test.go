@@ -71,6 +71,41 @@ func TestRefuseImportBelowFloor_FailOpenWithoutRuntime(t *testing.T) {
 	}
 }
 
+func TestRefuseImportBelowFloor_DVDRipPassesLow480NotMedium1080(t *testing.T) {
+	ctx := context.Background()
+	_, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	if err := settingsStore.Set(ctx, qualityTiersKey(mode.Series), `["medium","high","lossless"]`); err != nil {
+		t.Fatal(err)
+	}
+	if err := settingsStore.Set(ctx, qualityResolutionFloorsKey(mode.Series), `{"480":"low","720":"medium","1080":"medium","2160":"medium"}`); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Looney.Tunes.S1956E28.The.Honey.Mousers.DVDRip.x264.mkv")
+	if err := os.WriteFile(path, make([]byte, 67<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := &grabs.Grab{Mode: mode.Series, Title: "Looney Tunes", TMDBID: 333432, SeasonNumber: 28, EpisodeNumber: 28, Protocol: "usenet"}
+	err := refuseImportBelowFloor(ctx, libStore, settingsStore, nil, g, path, importQualityProber{
+		height: 480, codec: "h264", duration: 15 * 60,
+	})
+	if err != nil {
+		t.Fatalf("Low@480 must accept Honey-Mousers-sized DVDRip, got %v", err)
+	}
+
+	tiny1080 := filepath.Join(dir, "Show.S01E01.1080p.x264.mkv")
+	if err := os.WriteFile(tiny1080, make([]byte, 67<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g1080 := &grabs.Grab{Mode: mode.Series, Title: "Show", TMDBID: 1, SeasonNumber: 1, EpisodeNumber: 1, Protocol: "usenet"}
+	err = refuseImportBelowFloor(ctx, libStore, settingsStore, nil, g1080, tiny1080, importQualityProber{
+		height: 1080, codec: "h264", duration: 15 * 60,
+	})
+	if err == nil || !errors.Is(err, autograb.ErrBelowQualityFloor) {
+		t.Fatalf("same bytes at 1080p must still fail Medium@1080, got %v", err)
+	}
+}
+
 func TestRefuseImportBelowFloor_AdultSkipped(t *testing.T) {
 	ctx := context.Background()
 	_, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)

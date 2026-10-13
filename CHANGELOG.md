@@ -10717,3 +10717,38 @@ status stays active.
 | `internal/usenet/pool.go` | nntpDialTimeout around DialTLS/Dial + greeting; live-token released on timeout |
 | `internal/usenet/nntpdeadline_test.go` | blackhole dial timeout; live-token release |
 
+## 2026-10-12 — Multi-criteria quality: HDR/audio premiums, codec rank, hard floor/ceiling
+
+**Problem:** Bitrate floors were one axis. Search could not prefer HDR or more audio channels, codec order was baked into scoring only, Settings max resolution was a soft Search prefer (2160p still auto-grabbed), and title prefs had a min height with no matching max.
+**Root cause:** `GradeCandidate` / `SelectBestByResolution` ranked by padded bitrate `Score` alone. `release.Parse` and `mediainfo.Probe` had no HDR or channel fields. Settings stored accepted-tier checkboxes and a soft max; title stored min only.
+**Fix:** Search parses HDR/Atmos/5.1/7.1 from the title; import overlays Probe (color_transfer / side data / audio channels). Qualified rank is HDR → channel bucket → operator codec list (default av1 > x265 > x264) → bitrate. HDR ×1.25 and 5.1/7.1 ×1.10/×1.20 multiply the existing `floorTable` rung. Settings and title prefs get contiguous quality floor–ceiling pills, hard min and max resolution (drop outside the band), codec Up/Down order, and an opt-in “upgrade for HDR / more channels” switch (default off).
+**Outcome:** Medium@1080 HDR 7.1 must clear 7.5 Mbps equivalent. DVDRip stereo vs Low@480 is unchanged. A 2160p candidate is dropped when max is 1080. Sitting SDR is not hunted unless the new switch is on. Do not merge or deploy until the operator says so.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/release/release.go` | HDR + channel-bucket parse |
+| `internal/mediainfo/mediainfo.go` | Probe HDR + AudioChannels; ffprobe all streams |
+| `internal/autograb/autograb.go` | feature floor multipliers; ranked select |
+| `internal/quality/quality.go` | TiersBetween; codec rank helpers |
+| `internal/api/library.go` | min/max res, ceiling, codecRank, featureUpgrade settings |
+| `internal/library/quality_prefs.go` | title max_resolution, codec_rank, feature_upgrade (0039) |
+| `frontend/src/screens/settings/Library.tsx` | floor/ceiling pills, codec rank, feature-upgrade switch |
+| `frontend/src/components/TitleQualityPrefs.tsx` | matching title controls |
+| `.omc/specs/deep-interview-quality-thresholds.md` | crystallized spec + addendum |
+
+## 2026-10-13 — Availability grid fixture clears HDR+Atmos Lossless@2160
+
+**Problem:** CI `go-test` failed on PR #154: `TestDiscoverAvailabilityHandler_ResolutionAndTierAxesDistinguished` expected the 2160p AV1 torrent at res2160/lossless.
+**Root cause:** The fixture title includes `DDP5.1.Atmos.HDR`, so the new feature premiums raise Lossless@2160 from 70 to 105 Mbps. 20 GB / 100 min is 76.19 x264-equiv — below-floor.
+**Fix:** Size 20 GB → 28 GB (implied ~37.33 Mbps, AV1 score ~106.67).
+**Outcome:** The two-axis proof still lights every 2160p tier, including Lossless.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/discover_availability_test.go` | hi2160 size 20e9 → 28e9 |
+| `internal/autograb/autograb_test.go` | pin 20 GB miss vs 28 GB pass at Lossless@2160 HDR Atmos |
+

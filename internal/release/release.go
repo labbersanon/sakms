@@ -25,6 +25,28 @@ type Info struct {
 	Source     string // e.g. "web-dl", "bluray", "hdtv"; "" if not recognized
 	Codec      string // e.g. "x265", "x264"; "" if not recognized
 	Group      string // release group; "" if not recognized
+	// HDR is true when the title carries an HDR token (HDR10, Dolby Vision, …).
+	HDR bool
+	// Channels is 0 (stereo/unknown), 1 (5.1 / 6ch), or 2 (7.1 / 8ch / Atmos).
+	Channels int
+}
+
+const (
+	ChannelsUnknown = 0
+	Channels51      = 1
+	Channels71      = 2
+)
+
+// ChannelsFromCount maps a probed audio channel count onto the rank buckets.
+func ChannelsFromCount(n int) int {
+	switch {
+	case n >= 8:
+		return Channels71
+	case n >= 6:
+		return Channels51
+	default:
+		return ChannelsUnknown
+	}
 }
 
 var (
@@ -40,6 +62,14 @@ var (
 	// Review if: indexer duplicate suffix is stored as its own field instead of title.
 	// Old: `-([A-Za-z0-9]+)$`
 	groupPattern = regexp.MustCompile(`-([A-Za-z0-9]+)(?:\s+\d+)?$`)
+	// Claude 2026-10-12: HDR / channel tokens for multi-criteria grading.
+	// Reason: search grades title facts; import later overlays Probe.
+	// Troubleshooting: SelectBestByResolution rank HDR then channels.
+	// Review if: release.Parse grows a structured media-info path.
+	hdrPattern   = regexp.MustCompile(`(?i)\b(hdr10\+|hdr10|hdr|dolby[.\-_]?vision|dovi|dv|hlg)\b`)
+	atmosPattern = regexp.MustCompile(`(?i)\batmos\b`)
+	ch71Pattern  = regexp.MustCompile(`(?i)(?:[.\-_]|\b)(?:7[.\-_]?1|8ch)\b|(?i)(?:ddp|dd|dts|truehd)[.\-_]?7[.\-_]?1`)
+	ch51Pattern  = regexp.MustCompile(`(?i)(?:[.\-_]|\b)(?:5[.\-_]?1|6ch)\b|(?i)(?:ddp|dd|dts|truehd)[.\-_]?5[.\-_]?1`)
 )
 
 // sourcePatterns is ordered so a more specific match (e.g. "web-dl") is
@@ -95,6 +125,14 @@ func Parse(title string) Info {
 
 	if m := groupPattern.FindStringSubmatch(title); m != nil {
 		info.Group = m[1]
+	}
+
+	info.HDR = hdrPattern.MatchString(title)
+	switch {
+	case atmosPattern.MatchString(title) || ch71Pattern.MatchString(title):
+		info.Channels = Channels71
+	case ch51Pattern.MatchString(title):
+		info.Channels = Channels51
 	}
 
 	return info

@@ -130,11 +130,9 @@ func runSeriesUpgradeWatch(ctx context.Context, deps AutoGrabDeps, build session
 		if excluded[excludes.Key(string(mode.Series), ser.TMDBID, ser.Title)] {
 			continue
 		}
-		floor := quality.Lowest(resolveAutoGrabTiersForTitle(ctx, libStore, deps.SettingsStore, mode.Series, ser.TMDBID))
-		minRes := resolveMinResolutionForTitle(ctx, libStore, mode.Series, ser.TMDBID)
-		if quality.Rank(floor) <= 0 {
-			continue
-		}
+		floors := resolveAutoGrabFloorsForTitle(ctx, libStore, deps.SettingsStore, mode.Series, ser.TMDBID)
+		minRes := resolveMinResolutionForTitle(ctx, libStore, deps.SettingsStore, mode.Series, ser.TMDBID)
+		feat := resolveFeatureUpgradeForTitle(ctx, libStore, deps.SettingsStore, mode.Series, ser.TMDBID)
 		eps, err := libStore.ListEpisodes(ctx, ser.ID)
 		if err != nil {
 			log.Printf("series upgrade-watch: listing episodes of %q: %v", ser.Title, err)
@@ -147,7 +145,11 @@ func runSeriesUpgradeWatch(ctx context.Context, deps AutoGrabDeps, build session
 			if active[seriesEpisodeKey{tmdbID: ser.TMDBID, season: ep.SeasonNumber, episode: ep.EpisodeNumber}] {
 				continue
 			}
-			if !fileNeedsQualityUpgrade(ep.FilePath, ep.QualityTier, floor, minRes) {
+			floor := fileQualityFloor(ep.FilePath, floors)
+			if quality.Rank(floor) <= 0 {
+				continue
+			}
+			if !fileNeedsQualityUpgrade(ep.FilePath, ep.QualityTier, floor, minRes, feat) {
 				continue
 			}
 			due = append(due, seriesUpgradeDue{series: ser, ep: ep})

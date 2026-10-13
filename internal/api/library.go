@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/labbersanon/sakms/internal/autograb"
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/dedup"
 	"github.com/labbersanon/sakms/internal/library"
@@ -266,6 +267,30 @@ func qualityTiersKey(m mode.Mode) string       { return string(m) + "_quality_ti
 func maxResolutionKey(m mode.Mode) string      { return string(m) + "_max_resolution" }
 func protocolPreferenceKey(m mode.Mode) string { return string(m) + "_protocol_preference" }
 
+// Claude 2026-10-12: per-resolution auto-grab bitrate floors.
+// Reason: one mode-wide Medium floor made 480p DVDRips fail (0.50 vs 0.8) while
+//
+//	lowering Medium globally would also qualify tiny 1080p encodes. Each
+//	floorTable rung now has its own tier so 480p can be Low while 1080p stays
+//	Medium. Search still uses the accepted-tiers union (ProfileFor).
+//
+// Troubleshooting: Looney Tunes drain "no candidate cleared the quality floor".
+// Review if: title overrides grow their own per-rung map (today a title
+//
+//	override still applies one floor to every rung).
+//
+// Related files: internal/autograb/autograb.go SnapFloorResolution;
+//
+//	frontend QualityPrefsSection per-resolution pills.
+func qualityResolutionFloorsKey(m mode.Mode) string {
+	return string(m) + "_quality_resolution_floors"
+}
+
+func minResolutionKey(m mode.Mode) string  { return string(m) + "_min_resolution" }
+func qualityCeilingKey(m mode.Mode) string { return string(m) + "_quality_ceiling" }
+func codecRankKey(m mode.Mode) string      { return string(m) + "_codec_rank" }
+func featureUpgradeKey(m mode.Mode) string { return string(m) + "_feature_upgrade" }
+
 // Claude 2026-08-10: added undoDepthKey / MaxUndoDepth / UndoDepthFor.
 // Reason: deep-interview-rename-undo — Rename Undo needs a per-mode rolling
 //   depth. It rides the flat KV `settings` table with a mode-scoped key, exactly
@@ -309,11 +334,16 @@ func UndoDepthFor(settingsStore *settings.Store) rename.DepthFunc {
 }
 
 type qualityPrefsResponse struct {
-	Tier          string   `json:"tier"`
-	Tiers         []string `json:"tiers"`
-	MaxResolution int      `json:"maxResolution"`
-	Protocol      string   `json:"protocol"`
-	UndoDepth     int      `json:"undoDepth"`
+	Tier             string            `json:"tier"`
+	Tiers            []string          `json:"tiers"`
+	Ceiling          string            `json:"ceiling"`
+	MinResolution    int               `json:"minResolution"`
+	MaxResolution    int               `json:"maxResolution"`
+	Protocol         string            `json:"protocol"`
+	UndoDepth        int               `json:"undoDepth"`
+	ResolutionFloors map[string]string `json:"resolutionFloors"`
+	CodecRank        []string          `json:"codecRank"`
+	FeatureUpgrade   bool              `json:"featureUpgrade"`
 }
 
 // UndoDepth is a POINTER, mirroring apidto.QualityPrefsRequest — see that type
@@ -322,11 +352,16 @@ type qualityPrefsResponse struct {
 // Tiers is omitempty so an older client that only sends Tier still round-trips:
 // empty/omitted Tiers means "treat Tier as a floor and expand".
 type qualityPrefsRequest struct {
-	Tier          string   `json:"tier"`
-	Tiers         []string `json:"tiers,omitempty"`
-	MaxResolution int      `json:"maxResolution"`
-	Protocol      string   `json:"protocol"`
-	UndoDepth     *int     `json:"undoDepth,omitempty"`
+	Tier             string            `json:"tier"`
+	Tiers            []string          `json:"tiers,omitempty"`
+	Ceiling          string            `json:"ceiling,omitempty"`
+	MinResolution    int               `json:"minResolution"`
+	MaxResolution    int               `json:"maxResolution"`
+	Protocol         string            `json:"protocol"`
+	UndoDepth        *int              `json:"undoDepth,omitempty"`
+	ResolutionFloors map[string]string `json:"resolutionFloors,omitempty"`
+	CodecRank        []string          `json:"codecRank,omitempty"`
+	FeatureUpgrade   *bool             `json:"featureUpgrade,omitempty"`
 }
 
 func parseQualityTiers(ss []string) []quality.Tier {
@@ -370,6 +405,101 @@ func resolveQualityTiers(ctx context.Context, settingsStore *settings.Store, m m
 		return quality.TiersAtOrAbove(quality.Default)
 	}
 	return quality.TiersAtOrAbove(quality.Tier(tier))
+}
+
+func resolveModeResolutionBand(ctx context.Context, settingsStore *settings.Store, m mode.Mode) (minRes, maxRes int) {
+	if settingsStore == nil {
+		return 0, 0
+	}
+	if raw, err := settingsStore.Get(ctx, minResolutionKey(m)); err == nil && raw != "" {
+		minRes, _ = strconv.Atoi(raw)
+	}
+	if raw, err := settingsStore.Get(ctx, maxResolutionKey(m)); err == nil && raw != "" {
+		maxRes, _ = strconv.Atoi(raw)
+	}
+	return minRes, maxRes
+}
+
+func resolveCodecRank(ctx context.Context, settingsStore *settings.Store, m mode.Mode) []string {
+	if settingsStore != nil {
+		if raw, err := settingsStore.Get(ctx, codecRankKey(m)); err == nil && raw != "" {
+			var ss []string
+			if json.Unmarshal([]byte(raw), &ss) == nil && len(ss) > 0 {
+				return quality.NormalizeCodecRank(ss)
+			}
+		}
+	}
+	return quality.NormalizeCodecRank(nil)
+}
+
+func resolveFeatureUpgrade(ctx context.Context, settingsStore *settings.Store, m mode.Mode) bool {
+	if settingsStore == nil {
+		return false
+	}
+	raw, err := settingsStore.Get(ctx, featureUpgradeKey(m))
+	return err == nil && strings.EqualFold(raw, "true")
+}
+
+func resolutionFloorsToStrings(floors map[int]quality.Tier) map[string]string {
+	out := make(map[string]string, 4)
+	for _, r := range autograb.FloorRungs() {
+		t := floors[r]
+		if quality.Rank(t) <= 0 {
+			t = quality.Default
+		}
+		out[strconv.Itoa(r)] = string(t)
+	}
+	return out
+}
+
+func parseResolutionFloors(in map[string]string) (map[int]quality.Tier, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	out := make(map[int]quality.Tier, len(in))
+	for k, v := range in {
+		res, err := strconv.Atoi(k)
+		if err != nil {
+			return nil, fmt.Errorf("resolutionFloors keys must be 480, 720, 1080, 2160")
+		}
+		switch res {
+		case 480, 720, 1080, 2160:
+		default:
+			return nil, fmt.Errorf("resolutionFloors keys must be 480, 720, 1080, 2160")
+		}
+		t := quality.Tier(v)
+		if quality.Rank(t) <= 0 {
+			return nil, fmt.Errorf("resolutionFloors values must be one of: low, medium, high, lossless")
+		}
+		out[res] = t
+	}
+	return out, nil
+}
+
+// resolveResolutionFloors returns the per-rung auto-grab floor for mode m.
+// Unset/malformed storage synthesizes every rung from the lowest accepted
+// tier so a pre-field install behaves like today's single floor.
+func resolveResolutionFloors(ctx context.Context, settingsStore *settings.Store, m mode.Mode) map[int]quality.Tier {
+	out := autograb.UniformFloors(quality.Lowest(resolveQualityTiers(ctx, settingsStore, m)))
+	if settingsStore == nil {
+		return out
+	}
+	raw, err := settingsStore.Get(ctx, qualityResolutionFloorsKey(m))
+	if err != nil || raw == "" {
+		return out
+	}
+	var ss map[string]string
+	if json.Unmarshal([]byte(raw), &ss) != nil {
+		return out
+	}
+	parsed, err := parseResolutionFloors(ss)
+	if err != nil || len(parsed) == 0 {
+		return out
+	}
+	for r, t := range parsed {
+		out[r] = t
+	}
+	return out
 }
 
 // getQualityPrefsHandler returns {mode}'s Search scoring preferences —
@@ -427,10 +557,15 @@ func getQualityPrefsHandler(settingsStore *settings.Store) http.HandlerFunc {
 			}
 		}
 
+		minRes, _ := resolveModeResolutionBand(ctx, settingsStore, m)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(qualityPrefsResponse{
 			Tier: tier, Tiers: qualityTiersToStrings(tiers),
-			MaxResolution: maxRes, Protocol: protocol, UndoDepth: undoDepth,
+			Ceiling:       string(quality.Highest(tiers)),
+			MinResolution: minRes, MaxResolution: maxRes, Protocol: protocol, UndoDepth: undoDepth,
+			ResolutionFloors: resolutionFloorsToStrings(resolveResolutionFloors(ctx, settingsStore, m)),
+			CodecRank:        resolveCodecRank(ctx, settingsStore, m),
+			FeatureUpgrade:   resolveFeatureUpgrade(ctx, settingsStore, m),
 		})
 	}
 }
@@ -461,6 +596,8 @@ func putQualityPrefsHandler(settingsStore *settings.Store) http.HandlerFunc {
 			return
 		}
 		var stored []quality.Tier
+		var floor quality.Tier
+		var ceiling quality.Tier
 		if len(req.Tiers) > 0 {
 			for _, s := range req.Tiers {
 				if !validQualityTiers[s] {
@@ -468,23 +605,47 @@ func putQualityPrefsHandler(settingsStore *settings.Store) http.HandlerFunc {
 					return
 				}
 			}
-			stored = parseQualityTiers(req.Tiers)
-			if len(stored) == 0 {
+			parsed := parseQualityTiers(req.Tiers)
+			if len(parsed) == 0 {
 				http.Error(w, "tiers must contain at least one of: low, medium, high, lossless", http.StatusBadRequest)
 				return
 			}
+			floor = quality.Lowest(parsed)
+			ceiling = quality.Highest(parsed)
 		} else {
 			if !validQualityTiers[req.Tier] {
 				http.Error(w, "tier must be one of: low, medium, high, lossless", http.StatusBadRequest)
 				return
 			}
-			stored = quality.TiersAtOrAbove(quality.Tier(req.Tier))
+			floor = quality.Tier(req.Tier)
 		}
-		floor := quality.Lowest(stored)
+		if req.Ceiling != "" {
+			if !validQualityTiers[req.Ceiling] {
+				http.Error(w, "ceiling must be one of: low, medium, high, lossless", http.StatusBadRequest)
+				return
+			}
+			ceiling = quality.Tier(req.Ceiling)
+		}
+		if quality.Rank(ceiling) <= 0 {
+			stored = quality.TiersAtOrAbove(floor)
+		} else {
+			stored = quality.TiersBetween(floor, ceiling)
+		}
+		floor = quality.Lowest(stored)
+		switch req.MinResolution {
+		case 0, 480, 720, 1080, 2160:
+		default:
+			http.Error(w, "minResolution must be one of 480, 720, 1080, 2160, or 0 for any", http.StatusBadRequest)
+			return
+		}
 		switch req.MaxResolution {
 		case 0, 480, 720, 1080, 2160:
 		default:
 			http.Error(w, "maxResolution must be one of 480, 720, 1080, 2160, or 0 for no cap", http.StatusBadRequest)
+			return
+		}
+		if req.MinResolution > 0 && req.MaxResolution > 0 && req.MinResolution > req.MaxResolution {
+			http.Error(w, "minResolution must be <= maxResolution", http.StatusBadRequest)
 			return
 		}
 		if !validProtocolPreferences[req.Protocol] {
@@ -506,6 +667,11 @@ func putQualityPrefsHandler(settingsStore *settings.Store) http.HandlerFunc {
 			http.Error(w, fmt.Sprintf("undoDepth must be between 1 and %d", MaxUndoDepth), http.StatusBadRequest)
 			return
 		}
+		parsedFloors, err := parseResolutionFloors(req.ResolutionFloors)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 
 		ctx := r.Context()
 		if err := settingsStore.Set(ctx, qualityTierKey(m), string(floor)); err != nil {
@@ -521,9 +687,38 @@ func putQualityPrefsHandler(settingsStore *settings.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		if err := settingsStore.Set(ctx, minResolutionKey(m), strconv.Itoa(req.MinResolution)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		if err := settingsStore.Set(ctx, maxResolutionKey(m), strconv.Itoa(req.MaxResolution)); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		if err := settingsStore.Set(ctx, qualityCeilingKey(m), string(quality.Highest(stored))); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if len(req.CodecRank) > 0 {
+			rankJSON, err := json.Marshal(quality.NormalizeCodecRank(req.CodecRank))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if err := settingsStore.Set(ctx, codecRankKey(m), string(rankJSON)); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		if req.FeatureUpgrade != nil {
+			val := "false"
+			if *req.FeatureUpgrade {
+				val = "true"
+			}
+			if err := settingsStore.Set(ctx, featureUpgradeKey(m), val); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 		if err := settingsStore.Set(ctx, protocolPreferenceKey(m), req.Protocol); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -533,6 +728,23 @@ func putQualityPrefsHandler(settingsStore *settings.Store) http.HandlerFunc {
 		// whatever is stored completely untouched (see the validation block).
 		if req.UndoDepth != nil {
 			if err := settingsStore.Set(ctx, undoDepthKey(m), strconv.Itoa(*req.UndoDepth)); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		// omitempty nil/empty leaves stored floors alone (older clients). A
+		// partial map fills missing rungs from this PUT's accepted-tier floor.
+		if len(parsedFloors) > 0 {
+			merged := autograb.UniformFloors(floor)
+			for r, t := range parsedFloors {
+				merged[r] = t
+			}
+			floorsJSON, err := json.Marshal(resolutionFloorsToStrings(merged))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if err := settingsStore.Set(ctx, qualityResolutionFloorsKey(m), string(floorsJSON)); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}

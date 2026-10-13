@@ -1993,12 +1993,22 @@ type AIModelRequest struct {
 // treats Tier as a floor and expands (high → high+lossless). GET always
 // returns the effective set; Tier on the response is the lowest accepted
 // value so older clients still see a single floor.
+//
+// ResolutionFloors is the per-rung auto-grab bitrate floor (keys "480",
+// "720", "1080", "2160" → "low"/"medium"/"high"/"lossless"). A 480p release
+// is graded against the 480p floor, not the 1080p one. GET always returns
+// all four rungs, synthesizing from the lowest accepted tier when unset.
 type QualityPrefsResponse struct {
-	Tier          string   `json:"tier"`
-	Tiers         []string `json:"tiers"`
-	MaxResolution int      `json:"maxResolution"`
-	Protocol      string   `json:"protocol"`
-	UndoDepth     int      `json:"undoDepth"`
+	Tier             string            `json:"tier"`
+	Tiers            []string          `json:"tiers"`
+	Ceiling          string            `json:"ceiling"`
+	MinResolution    int               `json:"minResolution"`
+	MaxResolution    int               `json:"maxResolution"`
+	Protocol         string            `json:"protocol"`
+	UndoDepth        int               `json:"undoDepth"`
+	ResolutionFloors map[string]string `json:"resolutionFloors"`
+	CodecRank        []string          `json:"codecRank"`
+	FeatureUpgrade   bool              `json:"featureUpgrade"`
 }
 
 // Claude 2026-08-10: added UndoDepth to both quality-prefs DTOs.
@@ -2023,11 +2033,16 @@ type QualityPrefsResponse struct {
 // leave the stored value alone", which is NOT the same as an explicit value and
 // must not be collapsed into a default (see putQualityPrefsHandler).
 type QualityPrefsRequest struct {
-	Tier          string   `json:"tier"`
-	Tiers         []string `json:"tiers,omitempty"`
-	MaxResolution int      `json:"maxResolution"`
-	Protocol      string   `json:"protocol"`
-	UndoDepth     *int     `json:"undoDepth,omitempty"`
+	Tier             string            `json:"tier"`
+	Tiers            []string          `json:"tiers,omitempty"`
+	Ceiling          string            `json:"ceiling,omitempty"`
+	MinResolution    int               `json:"minResolution"`
+	MaxResolution    int               `json:"maxResolution"`
+	Protocol         string            `json:"protocol"`
+	UndoDepth        *int              `json:"undoDepth,omitempty"`
+	ResolutionFloors map[string]string `json:"resolutionFloors,omitempty"`
+	CodecRank        []string          `json:"codecRank,omitempty"`
+	FeatureUpgrade   *bool             `json:"featureUpgrade,omitempty"`
 }
 
 // NamingPresetResponse / NamingPresetRequest back
@@ -3503,15 +3518,22 @@ type SetSeasonMonitoredRequest struct {
 // Review if: mode Settings max_resolution adopts the same minimum semantics.
 
 // TitleQualityPrefsResponse is GET for one series or movie title's quality
-// prefs. When Inherited is true, Tiers are the mode defaults and MinResolution
-// is 0 (any) — mode soft-max is a separate Settings control. Floor is the
-// lowest accepted tier (the minimum quality), for single-pill UI binding.
+// prefs. When Inherited is true, Tiers/ResolutionFloors are the mode defaults
+// and MinResolution is 0 (any) — mode soft-max is a separate Settings control.
+// Floor is the lowest accepted tier (the minimum quality), for older clients.
+// ResolutionFloors is the same per-rung bitrate map Settings uses (keys
+// "480"/"720"/"1080"/"2160"); GET always returns all four rungs.
 type TitleQualityPrefsResponse struct {
-	Tiers         []string `json:"tiers"`
-	Floor         string   `json:"floor"`
-	MinResolution int      `json:"minResolution"`
-	Inherited     bool     `json:"inherited"`
-	UpgradeQueued int      `json:"upgradeQueued,omitempty"`
+	Tiers            []string          `json:"tiers"`
+	Floor            string            `json:"floor"`
+	Ceiling          string            `json:"ceiling"`
+	MinResolution    int               `json:"minResolution"`
+	MaxResolution    int               `json:"maxResolution"`
+	Inherited        bool              `json:"inherited"`
+	ResolutionFloors map[string]string `json:"resolutionFloors"`
+	CodecRank        []string          `json:"codecRank"`
+	FeatureUpgrade   bool              `json:"featureUpgrade"`
+	UpgradeQueued    int               `json:"upgradeQueued,omitempty"`
 	// Claude 2026-09-28: upgrade-watch, present only when a library row exists
 	//   for this TMDB id (movies: library_items; series: library_series).
 	// Reason: TitleQualityPrefs is the toggle home; one GET carries prefs + flag.
@@ -3535,11 +3557,19 @@ type MovieUpgradeWatchResponse struct {
 // TitleQualityPrefsRequest is PUT body. Clear=true deletes the override
 // (back to mode defaults). Otherwise Floor (preferred) or Tiers is required;
 // a single Floor is expanded to that tier and above. MinResolution 0 = any.
+// ResolutionFloors, when sent, is the per-rung auto-grab floor (same keys
+// and values as mode Settings). Omitted/empty synthesizes UniformFloors
+// from Floor so older clients keep one floor on every rung.
 type TitleQualityPrefsRequest struct {
-	Floor         string   `json:"floor,omitempty"`
-	Tiers         []string `json:"tiers,omitempty"`
-	MinResolution int      `json:"minResolution"`
-	Clear         bool     `json:"clear,omitempty"`
+	Floor            string            `json:"floor,omitempty"`
+	Ceiling          string            `json:"ceiling,omitempty"`
+	Tiers            []string          `json:"tiers,omitempty"`
+	MinResolution    int               `json:"minResolution"`
+	MaxResolution    int               `json:"maxResolution"`
+	Clear            bool              `json:"clear,omitempty"`
+	ResolutionFloors map[string]string `json:"resolutionFloors,omitempty"`
+	CodecRank        []string          `json:"codecRank,omitempty"`
+	FeatureUpgrade   *bool             `json:"featureUpgrade,omitempty"`
 }
 
 // SeriesNewSeasonDiscoveryResponse / SeriesNewSeasonDiscoveryRequest back

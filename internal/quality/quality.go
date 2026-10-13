@@ -11,7 +11,11 @@
 // resolution they're capped at, not necessarily a lower resolution.
 package quality
 
-import "github.com/labbersanon/sakms/internal/release"
+import (
+	"strings"
+
+	"github.com/labbersanon/sakms/internal/release"
+)
 
 // Tier is a coarse, user-facing bitrate/compression preference.
 type Tier string
@@ -30,6 +34,70 @@ const Default = High
 
 // AllTiers is low→lossless, the Settings checkbox order.
 var AllTiers = []Tier{Low, Medium, High, Lossless}
+
+// DefaultCodecRank is av1 then x265 then x264 — efficiency order, the
+// Settings default until the operator reorders the list.
+var DefaultCodecRank = []string{"av1", "x265", "x264"}
+
+// NormalizeCodecRank keeps known codecs in the given order, then appends
+// any DefaultCodecRank entry the operator omitted so the list is always
+// a full permutation. Unknown names are dropped.
+func NormalizeCodecRank(order []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(DefaultCodecRank))
+	allow := map[string]bool{}
+	for _, c := range DefaultCodecRank {
+		allow[c] = true
+	}
+	for _, c := range order {
+		c = strings.ToLower(strings.TrimSpace(c))
+		if !allow[c] || seen[c] {
+			continue
+		}
+		seen[c] = true
+		out = append(out, c)
+	}
+	for _, c := range DefaultCodecRank {
+		if !seen[c] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// CodecRankIndex is 0 for the most-preferred codec. Unknown codecs sort last.
+func CodecRankIndex(codec string, order []string) int {
+	order = NormalizeCodecRank(order)
+	codec = strings.ToLower(strings.TrimSpace(codec))
+	for i, c := range order {
+		if c == codec {
+			return i
+		}
+	}
+	return len(order)
+}
+
+// TiersBetween is the contiguous accepted band from floor through ceiling.
+// Unrecognized floor → Default; unrecognized ceiling → Lossless; inverted
+// band snaps ceiling up to floor. TiersAtOrAbove is ceiling=Lossless.
+func TiersBetween(floor, ceiling Tier) []Tier {
+	if Rank(floor) <= 0 {
+		floor = Default
+	}
+	if Rank(ceiling) <= 0 {
+		ceiling = Lossless
+	}
+	if Rank(ceiling) < Rank(floor) {
+		ceiling = floor
+	}
+	out := make([]Tier, 0, len(AllTiers))
+	for _, t := range AllTiers {
+		if Rank(t) >= Rank(floor) && Rank(t) <= Rank(ceiling) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
 
 // TiersAtOrAbove expands a stored single-tier floor into the accepted
 // set: low → all four, medium → medium+high+lossless, high →

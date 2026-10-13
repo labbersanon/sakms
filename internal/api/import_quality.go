@@ -12,7 +12,6 @@ import (
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
-	"github.com/labbersanon/sakms/internal/quality"
 	"github.com/labbersanon/sakms/internal/release"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenet"
@@ -36,7 +35,15 @@ func refuseImportBelowFloor(ctx context.Context, libStore *library.Store, settin
 	if !ok {
 		return nil
 	}
-	floor := quality.Lowest(resolveAutoGrabTiersForTitle(ctx, libStore, settingsStore, g.Mode, g.TMDBID))
+	floors := resolveAutoGrabFloorsForTitle(ctx, libStore, settingsStore, g.Mode, g.TMDBID)
+	minRes, maxRes := resolveResolutionBandForTitle(ctx, libStore, settingsStore, g.Mode, g.TMDBID)
+	if minRes > 0 && c.Resolution > 0 && c.Resolution < minRes {
+		return fmt.Errorf("%w: %w", usenet.ErrContentUnusable, autograb.ErrBelowQualityFloor)
+	}
+	if maxRes > 0 && c.Resolution > maxRes {
+		return fmt.Errorf("%w: %w", usenet.ErrContentUnusable, autograb.ErrBelowQualityFloor)
+	}
+	floor := autograb.FloorForResolution(floors, c)
 	gr := autograb.GradeCandidate(c, floor, 0)
 	if !gr.BitrateKnown {
 		return nil
@@ -65,6 +72,8 @@ func importQualityCandidate(ctx context.Context, sess *mode.Session, g *grabs.Gr
 		Resolution: info.Resolution,
 		Codec:      info.Codec,
 		Source:     info.Source,
+		HDR:        info.HDR,
+		Channels:   info.Channels,
 	}
 	if prober != nil {
 		if p, err := prober.Probe(ctx, videoPath); err == nil && p != nil {
@@ -77,6 +86,8 @@ func importQualityCandidate(ctx context.Context, sess *mode.Session, g *grabs.Gr
 			if codec := codecFromProbeName(p.CodecName); codec != "" {
 				c.Codec = codec
 			}
+			c.HDR = p.HDR
+			c.Channels = release.ChannelsFromCount(p.AudioChannels)
 		}
 	}
 	if c.RuntimeSeconds <= 0 && sess != nil && sess.TMDB != nil && g.TMDBID > 0 {

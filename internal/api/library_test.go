@@ -166,6 +166,10 @@ func TestQualityPrefs_DefaultsWhenUnset(t *testing.T) {
 	if len(got.Tiers) != 2 || got.Tiers[0] != "high" || got.Tiers[1] != "lossless" {
 		t.Errorf("expected default floor expansion high→high+lossless, got tiers=%v", got.Tiers)
 	}
+	if got.ResolutionFloors["480"] != "high" || got.ResolutionFloors["720"] != "high" ||
+		got.ResolutionFloors["1080"] != "high" || got.ResolutionFloors["2160"] != "high" {
+		t.Errorf("unset floors should synthesize all rungs from default high, got %v", got.ResolutionFloors)
+	}
 }
 
 // TestQualityPrefs_PutThenGet_RoundTrip_IncludingProtocol_AllModes proves the
@@ -292,5 +296,68 @@ func TestQualityPrefs_TiersMultiSelectAndFloorExpansion(t *testing.T) {
 	}
 	if len(got.Tiers) != 2 || got.Tiers[0] != "medium" || got.Tiers[1] != "high" {
 		t.Fatalf("explicit tiers round-trip, got %v", got.Tiers)
+	}
+}
+
+func TestQualityPrefs_ResolutionFloorsRoundTripAndValidation(t *testing.T) {
+	connStore, propStore, settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, rssFeedsStore := testStores(t)
+	srv := httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nil, nil, nil, nil, nil, nil))
+	defer srv.Close()
+
+	put := func(body []byte) int {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/modes/series/quality-prefs", bytes.NewReader(body))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("PUT failed: %v", err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	get := func() qualityPrefsResponse {
+		t.Helper()
+		resp, err := http.Get(srv.URL + "/api/modes/series/quality-prefs")
+		if err != nil {
+			t.Fatalf("GET failed: %v", err)
+		}
+		defer resp.Body.Close()
+		var got qualityPrefsResponse
+		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+			t.Fatalf("decoding response: %v", err)
+		}
+		return got
+	}
+
+	body, _ := json.Marshal(qualityPrefsRequest{
+		Tier: "medium", Tiers: []string{"medium", "high", "lossless"},
+		MaxResolution: 0, Protocol: "",
+		ResolutionFloors: map[string]string{"480": "low", "720": "medium", "1080": "medium", "2160": "high"},
+	})
+	if code := put(body); code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", code)
+	}
+	got := get()
+	if got.ResolutionFloors["480"] != "low" || got.ResolutionFloors["720"] != "medium" ||
+		got.ResolutionFloors["1080"] != "medium" || got.ResolutionFloors["2160"] != "high" {
+		t.Fatalf("resolution floors round-trip, got %v", got.ResolutionFloors)
+	}
+
+	// Older client omits the map: stored floors stay put.
+	body, _ = json.Marshal(qualityPrefsRequest{Tier: "high", Tiers: []string{"high", "lossless"}, MaxResolution: 0, Protocol: ""})
+	if code := put(body); code != http.StatusNoContent {
+		t.Fatalf("omit floors: expected 204, got %d", code)
+	}
+	got = get()
+	if got.ResolutionFloors["480"] != "low" || got.Tier != "high" {
+		t.Fatalf("omitted floors must leave 480=low stored, got %+v", got)
+	}
+
+	badKey, _ := json.Marshal(qualityPrefsRequest{Tier: "high", ResolutionFloors: map[string]string{"540": "low"}})
+	if code := put(badKey); code != http.StatusBadRequest {
+		t.Fatalf("bad key: expected 400, got %d", code)
+	}
+	badVal, _ := json.Marshal(qualityPrefsRequest{Tier: "high", ResolutionFloors: map[string]string{"480": "ultra"}})
+	if code := put(badVal); code != http.StatusBadRequest {
+		t.Fatalf("bad value: expected 400, got %d", code)
 	}
 }

@@ -732,14 +732,20 @@ func TestDiscoverAvailabilityHandler_Series_WholeSeasonUsesSeasonTotalRuntime(t 
 // conflated.
 func TestDiscoverAvailabilityHandler_ResolutionAndTierAxesDistinguished(t *testing.T) {
 	tmdbSrv := fakeTMDBMovieRuntime(t, 100) // 100 min = 6000 s
-	// 20 GB / 6000 s AV1 2160p: implied ~26.67 Mbps, x264-equiv ~76.19 Mbps
-	// (AV1 divisor 0.35, no non-AV1 padding) — clears every tier's 2160p
-	// floor (8/20/40/70).
+	// Claude 2026-10-13: 28 GB so HDR+Atmos still clears Lossless@2160.
+	// Reason: title tokens DDP5.1.Atmos.HDR raise the 70 Mbps rung to
+	//   70×1.25×1.20 = 105. 20 GB / 6000 s was 76.19 x264-equiv (below-floor).
+	// Troubleshooting: CI TestDiscoverAvailabilityHandler_ResolutionAndTierAxesDistinguished
+	//   expected hi2160 at res2160/lossless.
+	// Review if: HDRFloorFactor / Channel71FloorFactor change.
+	// 28 GB / 6000 s AV1 2160p HDR Atmos: implied ~37.33 Mbps, x264-equiv
+	// ~106.67 Mbps (AV1 divisor 0.35) — clears every 2160p floor including
+	// Lossless 105.
 	//
 	// 375 MB / 6000 s x264 480p: implied 0.5 Mbps, x264-equiv 0.5, padded
 	// score 0.4 — clears ONLY the Low 480p floor (0.3), not Medium (0.8).
 	prowlarr := fakeProwlarr(t, `[
-	  {"guid":"hi2160","title":"Some.Movie.2023.2160p.WEB-DL.DDP5.1.Atmos.HDR.DV.AV1-GROUP","indexer":"I","protocol":"torrent","size":20000000000,"seeders":50,"downloadUrl":"magnet:?xt=urn:btih:AAAAAA1234567890abcdef1234567890abcdef12"},
+	  {"guid":"hi2160","title":"Some.Movie.2023.2160p.WEB-DL.DDP5.1.Atmos.HDR.DV.AV1-GROUP","indexer":"I","protocol":"torrent","size":28000000000,"seeders":50,"downloadUrl":"magnet:?xt=urn:btih:AAAAAA1234567890abcdef1234567890abcdef12"},
 	  {"guid":"lo480","title":"Some.Movie.2023.480p.WEBRip.x264-GROUP","indexer":"I","protocol":"torrent","size":375000000,"seeders":50,"downloadUrl":"magnet:?xt=urn:btih:BBBBBB1234567890abcdef1234567890abcdef12"}
 	]`)
 

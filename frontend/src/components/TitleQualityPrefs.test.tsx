@@ -190,5 +190,29 @@ describe("TitleQualityPrefs movie upgrade-watch", () => {
         "2160": "medium",
       },
     });
+    expect(calls.find((c) => c.method === "PUT")!.body).not.toHaveProperty(
+      "codecRank",
+    );
+  });
+
+  it("does not show preferred codecs", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse({
+          floor: "high",
+          minResolution: 0,
+          tiers: ["high", "lossless"],
+          inherited: true,
+          codecRank: ["av1", "x265", "x264"],
+        }),
+      ),
+    );
+    render(() => (
+      <TitleQualityPrefs mode="movies" titleKey={{ tmdbId: 42 }} />
+    ));
+    await screen.findByLabelText("Minimum resolution");
+    expect(screen.queryByText("Preferred codecs")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Move AV1 up/i })).toBeNull();
   });
 });

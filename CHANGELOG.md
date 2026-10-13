@@ -10782,3 +10782,18 @@ status stays active.
 |---|---|
 | `internal/api/import_quality_test.go` | Low floor everywhere; 1080p tiny still below-floor |
 
+## 2026-10-13 — Title overrides drop preferred codecs
+
+**Problem:** Title quality cards had the same Preferred codecs Up/Down list as Settings. A leftover per-title `codec_rank` could rank auto-grab differently from the global order.
+**Root cause:** Title GET/PUT and `resolveCodecRankForTitle` treated a stored title rank as an override.
+**Fix:** Remove the title codec controls. PUT writes empty `codec_rank` (request `codecRank` is ignored). GET and auto-grab always use Settings codec order.
+**Outcome:** Settings still ranks av1/x265/x264. Title sliders, HDR switch, and upgrade-watch are unchanged.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/components/TitleQualityPrefs.tsx` | drop Preferred codecs |
+| `internal/api/titlequality.go` | ignore/clear title codec_rank; inherit Settings |
+| `internal/api/titlequality_test.go` | leftover rank ignored; PUT clears column |
+

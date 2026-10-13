@@ -3531,9 +3531,10 @@ type TitleQualityPrefsResponse struct {
 	MaxResolution    int               `json:"maxResolution"`
 	Inherited        bool              `json:"inherited"`
 	ResolutionFloors map[string]string `json:"resolutionFloors"`
-	CodecRank        []string          `json:"codecRank"`
-	FeatureUpgrade   bool              `json:"featureUpgrade"`
-	UpgradeQueued    int               `json:"upgradeQueued,omitempty"`
+	// CodecRank is always the mode Settings order. Titles do not override it.
+	CodecRank      []string `json:"codecRank"`
+	FeatureUpgrade bool     `json:"featureUpgrade"`
+	UpgradeQueued  int      `json:"upgradeQueued,omitempty"`
 	// Claude 2026-09-28: upgrade-watch, present only when a library row exists
 	//   for this TMDB id (movies: library_items; series: library_series).
 	// Reason: TitleQualityPrefs is the toggle home; one GET carries prefs + flag.
@@ -3560,6 +3561,7 @@ type MovieUpgradeWatchResponse struct {
 // ResolutionFloors, when sent, is the per-rung auto-grab floor (same keys
 // and values as mode Settings). Omitted/empty synthesizes UniformFloors
 // from Floor so older clients keep one floor on every rung.
+// CodecRank is ignored: preferred codecs live on Settings only.
 type TitleQualityPrefsRequest struct {
 	Floor            string            `json:"floor,omitempty"`
 	Ceiling          string            `json:"ceiling,omitempty"`

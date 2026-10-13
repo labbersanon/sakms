@@ -1,10 +1,15 @@
 // TitleQualityPrefs — quality and resolution dual sliders for one
 // monitored/tracked title. Inherited lights up from mode Settings. Saving a
 // higher floor queues upgrades for on-disk files below it.
+//
+// Claude 2026-10-13: preferred codecs are Settings-only, not a title override.
+// Reason: operator codec order is global; leftover library_quality_prefs.codec_rank
+//   must not rank this title differently.
+// Troubleshooting: PUT writes empty codec_rank; auto-grab uses resolveCodecRank.
+// Review if: title-level codec order is added back as an explicit override.
 
 import {
   type Component,
-  For,
   Show,
   createEffect,
   createResource,
@@ -37,12 +42,6 @@ const TIER_LABELS: Record<string, string> = {
   lossless: "Lossless",
 };
 const FLOOR_RUNGS = ["480", "720", "1080", "2160"] as const;
-const CODEC_RANK_DEFAULT = ["av1", "x265", "x264"];
-const CODEC_LABELS: Record<string, string> = {
-  av1: "AV1",
-  x265: "x265",
-  x264: "x264",
-};
 const RESOLUTION_SLIDER_LABELS: Record<string, string> = {
   "480": "480p",
   "720": "720p",
@@ -64,7 +63,6 @@ export const TitleQualityPrefs: Component<{
   const [ceiling, setCeiling] = createSignal("lossless");
   const [minRes, setMinRes] = createSignal(0);
   const [maxRes, setMaxRes] = createSignal(0);
-  const [codecRank, setCodecRank] = createSignal<string[]>([...CODEC_RANK_DEFAULT]);
   const [featureUpgrade, setFeatureUpgrade] = createSignal(false);
   const [busy, setBusy] = createSignal(false);
   const [writeError, setWriteError] = createSignal("");
@@ -78,7 +76,6 @@ export const TitleQualityPrefs: Component<{
       setCeiling(p.ceiling || "lossless");
       setMinRes(p.minResolution ?? 0);
       setMaxRes(p.maxResolution ?? 0);
-      setCodecRank(p.codecRank?.length ? [...p.codecRank] : [...CODEC_RANK_DEFAULT]);
       setFeatureUpgrade(p.featureUpgrade === true);
       setWriteError("");
       setUpgradeNote("");
@@ -93,8 +90,7 @@ export const TitleQualityPrefs: Component<{
       minRes() !== (p.minResolution ?? 0) ||
       maxRes() !== (p.maxResolution ?? 0) ||
       ceiling() !== (p.ceiling || "lossless") ||
-      featureUpgrade() !== (p.featureUpgrade === true) ||
-      codecRank().join(",") !== (p.codecRank ?? CODEC_RANK_DEFAULT).join(",")
+      featureUpgrade() !== (p.featureUpgrade === true)
     );
   };
 
@@ -109,7 +105,6 @@ export const TitleQualityPrefs: Component<{
         minResolution: minRes(),
         maxResolution: maxRes(),
         resolutionFloors: synthesizeFloors(floor()),
-        codecRank: codecRank(),
         featureUpgrade: featureUpgrade(),
       });
       if (out.upgradeQueued) {
@@ -203,62 +198,6 @@ export const TitleQualityPrefs: Component<{
             setMaxRes(next.max);
           }}
         />
-        <div class="mb-2">
-          <p class="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted">
-            Preferred codecs
-          </p>
-          <ol class="space-y-1">
-            <For each={codecRank()}>
-              {(c, i) => (
-                <li class="flex items-center gap-2">
-                  <span class="w-16 text-sm text-fg">{CODEC_LABELS[c] ?? c}</span>
-                  <button
-                    type="button"
-                    class="rounded px-2 py-0.5 text-xs text-muted hover:text-fg disabled:opacity-40"
-                    aria-label={`Move ${CODEC_LABELS[c] ?? c} up`}
-                    disabled={i() === 0}
-                    onClick={() =>
-                      setCodecRank((prev) => {
-                        const next = [...prev];
-                        const j = i() - 1;
-                        if (j < 0) return prev;
-                        const a = next[i()];
-                        const b = next[j];
-                        if (a === undefined || b === undefined) return prev;
-                        next[i()] = b;
-                        next[j] = a;
-                        return next;
-                      })
-                    }
-                  >
-                    Up
-                  </button>
-                  <button
-                    type="button"
-                    class="rounded px-2 py-0.5 text-xs text-muted hover:text-fg disabled:opacity-40"
-                    aria-label={`Move ${CODEC_LABELS[c] ?? c} down`}
-                    disabled={i() === codecRank().length - 1}
-                    onClick={() =>
-                      setCodecRank((prev) => {
-                        const next = [...prev];
-                        const j = i() + 1;
-                        if (j >= next.length) return prev;
-                        const a = next[i()];
-                        const b = next[j];
-                        if (a === undefined || b === undefined) return prev;
-                        next[i()] = b;
-                        next[j] = a;
-                        return next;
-                      })
-                    }
-                  >
-                    Down
-                  </button>
-                </li>
-              )}
-            </For>
-          </ol>
-        </div>
         <div class="mb-3 flex items-start justify-between gap-3">
           <div>
             <p class="text-xs font-medium text-fg">Upgrade for HDR / more channels</p>

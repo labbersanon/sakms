@@ -2001,10 +2001,14 @@ type AIModelRequest struct {
 type QualityPrefsResponse struct {
 	Tier             string            `json:"tier"`
 	Tiers            []string          `json:"tiers"`
+	Ceiling          string            `json:"ceiling"`
+	MinResolution    int               `json:"minResolution"`
 	MaxResolution    int               `json:"maxResolution"`
 	Protocol         string            `json:"protocol"`
 	UndoDepth        int               `json:"undoDepth"`
 	ResolutionFloors map[string]string `json:"resolutionFloors"`
+	CodecRank        []string          `json:"codecRank"`
+	FeatureUpgrade   bool              `json:"featureUpgrade"`
 }
 
 // Claude 2026-08-10: added UndoDepth to both quality-prefs DTOs.
@@ -2031,10 +2035,14 @@ type QualityPrefsResponse struct {
 type QualityPrefsRequest struct {
 	Tier             string            `json:"tier"`
 	Tiers            []string          `json:"tiers,omitempty"`
+	Ceiling          string            `json:"ceiling,omitempty"`
+	MinResolution    int               `json:"minResolution"`
 	MaxResolution    int               `json:"maxResolution"`
 	Protocol         string            `json:"protocol"`
 	UndoDepth        *int              `json:"undoDepth,omitempty"`
 	ResolutionFloors map[string]string `json:"resolutionFloors,omitempty"`
+	CodecRank        []string          `json:"codecRank,omitempty"`
+	FeatureUpgrade   *bool             `json:"featureUpgrade,omitempty"`
 }
 
 // NamingPresetResponse / NamingPresetRequest back
@@ -3518,9 +3526,13 @@ type SetSeasonMonitoredRequest struct {
 type TitleQualityPrefsResponse struct {
 	Tiers            []string          `json:"tiers"`
 	Floor            string            `json:"floor"`
+	Ceiling          string            `json:"ceiling"`
 	MinResolution    int               `json:"minResolution"`
+	MaxResolution    int               `json:"maxResolution"`
 	Inherited        bool              `json:"inherited"`
 	ResolutionFloors map[string]string `json:"resolutionFloors"`
+	CodecRank        []string          `json:"codecRank"`
+	FeatureUpgrade   bool              `json:"featureUpgrade"`
 	UpgradeQueued    int               `json:"upgradeQueued,omitempty"`
 	// Claude 2026-09-28: upgrade-watch, present only when a library row exists
 	//   for this TMDB id (movies: library_items; series: library_series).
@@ -3550,10 +3562,14 @@ type MovieUpgradeWatchResponse struct {
 // from Floor so older clients keep one floor on every rung.
 type TitleQualityPrefsRequest struct {
 	Floor            string            `json:"floor,omitempty"`
+	Ceiling          string            `json:"ceiling,omitempty"`
 	Tiers            []string          `json:"tiers,omitempty"`
 	MinResolution    int               `json:"minResolution"`
+	MaxResolution    int               `json:"maxResolution"`
 	Clear            bool              `json:"clear,omitempty"`
 	ResolutionFloors map[string]string `json:"resolutionFloors,omitempty"`
+	CodecRank        []string          `json:"codecRank,omitempty"`
+	FeatureUpgrade   *bool             `json:"featureUpgrade,omitempty"`
 }
 
 // SeriesNewSeasonDiscoveryResponse / SeriesNewSeasonDiscoveryRequest back

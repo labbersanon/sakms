@@ -31,6 +31,7 @@ import (
 	"strings"
 
 	"github.com/labbersanon/sakms/internal/quality"
+	"github.com/labbersanon/sakms/internal/release"
 )
 
 // ErrBelowQualityFloor is a downloaded file whose implied bitrate does not
@@ -86,6 +87,17 @@ var CodecMultipliers = map[string]float64{
 	"x265": 0.5,
 	"av1":  0.35,
 }
+
+// Claude 2026-10-12: baked HDR / channel floor premiums (milder stack).
+// Reason: extra features need more bits; operator Settings do not own these.
+// Troubleshooting: Medium@1080 HDR 7.1 floor = 5 × 1.25 × 1.20 = 7.5.
+// Review if: live encodes fail Medium after FileFlows; retune constants.
+// Related files: .omc/specs/deep-interview-quality-thresholds.md
+const (
+	HDRFloorFactor       = 1.25
+	Channel51FloorFactor = 1.10
+	Channel71FloorFactor = 1.20
+)
 
 // floorTable is the tier×resolution minimum x264-equivalent bitrate (Mbps) a
 // release must clear to auto-qualify. Indexed by two INDEPENDENT axes per
@@ -268,6 +280,9 @@ type Candidate struct {
 	// Source is "remux"/"bluray"/... (from release.Parse) — the Lossless-tier
 	// flag that alone qualifies a candidate regardless of bitrate.
 	Source string
+	// HDR and Channels come from title tokens at search, Probe at import.
+	HDR      bool
+	Channels int // release.ChannelsUnknown / Channels51 / Channels71
 }
 
 // Grade is a single candidate's evaluation. Score is the ranking key for the
@@ -349,7 +364,7 @@ func GradeCandidate(c Candidate, tier quality.Tier, minSeeders int) Grade {
 		g.Status = StatusUnknownResolution
 		return g
 	}
-	g.FloorMbps = floor
+	g.FloorMbps = featureFloorMbps(floor, c)
 
 	// Pre-grab mislabel check: implausibly low x264-equivalent bitrate for the
 	// claimed resolution → excluded (fake label, not a preference miss).
@@ -372,7 +387,7 @@ func GradeCandidate(c Candidate, tier quality.Tier, minSeeders int) Grade {
 		return g
 	}
 
-	if g.Score >= floor {
+	if g.Score >= g.FloorMbps {
 		g.Status = StatusQualified
 		g.Qualified = true
 		return g
@@ -381,22 +396,59 @@ func GradeCandidate(c Candidate, tier quality.Tier, minSeeders int) Grade {
 	return g
 }
 
+func featureFloorMbps(base float64, c Candidate) float64 {
+	hdr := 1.0
+	if c.HDR {
+		hdr = HDRFloorFactor
+	}
+	ch := 1.0
+	switch c.Channels {
+	case release.Channels51:
+		ch = Channel51FloorFactor
+	case release.Channels71:
+		ch = Channel71FloorFactor
+	}
+	return base * hdr * ch
+}
+
+func betterQualified(a, b Grade, codecOrder []string) bool {
+	if a.Candidate.HDR != b.Candidate.HDR {
+		return a.Candidate.HDR
+	}
+	if a.Candidate.Channels != b.Candidate.Channels {
+		return a.Candidate.Channels > b.Candidate.Channels
+	}
+	ca := quality.CodecRankIndex(a.Candidate.Codec, codecOrder)
+	cb := quality.CodecRankIndex(b.Candidate.Codec, codecOrder)
+	if ca != cb {
+		return ca < cb
+	}
+	return a.Score > b.Score
+}
+
 // Select grades every candidate and picks the highest-scored qualifying one
 // for auto-grab. When nothing qualifies, Fallback is true and the caller
 // presents Ranked (all candidates, best bitrate score first) as the manual
 // pick list — ranked by this same score, never by release.ScoreCandidate.
 func Select(candidates []Candidate, tier quality.Tier, minSeeders int) Selection {
+	return selectRanked(candidates, tier, minSeeders, nil)
+}
+
+func selectRanked(candidates []Candidate, tier quality.Tier, minSeeders int, codecOrder []string) Selection {
 	grades := make([]Grade, len(candidates))
 	for i, c := range candidates {
 		grades[i] = GradeCandidate(c, tier, minSeeders)
 	}
+	return selectionFromGrades(grades, codecOrder)
+}
 
+func selectionFromGrades(grades []Grade, codecOrder []string) Selection {
 	pick := -1
 	for i := range grades {
 		if !grades[i].Qualified {
 			continue
 		}
-		if pick == -1 || grades[i].Score > grades[pick].Score {
+		if pick == -1 || betterQualified(grades[i], grades[pick], codecOrder) {
 			pick = i
 		}
 	}
@@ -406,7 +458,14 @@ func Select(candidates []Candidate, tier quality.Tier, minSeeders int) Selection
 		ranked[i] = i
 	}
 	sort.SliceStable(ranked, func(a, b int) bool {
-		return grades[ranked[a]].Score > grades[ranked[b]].Score
+		aG, bG := grades[ranked[a]], grades[ranked[b]]
+		if aG.Qualified != bG.Qualified {
+			return aG.Qualified
+		}
+		if aG.Qualified {
+			return betterQualified(aG, bG, codecOrder)
+		}
+		return aG.Score > bG.Score
 	})
 
 	return Selection{
@@ -459,8 +518,13 @@ func SelectBest(candidates []Candidate, accepted []quality.Tier, minSeeders int)
 // Missing rungs / unknown resolution fall through to SelectBest's empty-list
 // Default expansion, which still cannot auto-qualify an unsnappable height.
 func SelectBestByResolution(candidates []Candidate, accepted map[int][]quality.Tier, minSeeders int) Selection {
+	return SelectBestByResolutionRanked(candidates, accepted, minSeeders, nil)
+}
+
+// SelectBestByResolutionRanked is SelectBestByResolution with an operator
+// codec preference list (HDR → channels → codec → bitrate score).
+func SelectBestByResolutionRanked(candidates []Candidate, accepted map[int][]quality.Tier, minSeeders int, codecOrder []string) Selection {
 	grades := make([]Grade, len(candidates))
-	pick := -1
 	for i, c := range candidates {
 		res := SnapFloorResolution(c)
 		one := SelectBest([]Candidate{c}, accepted[res], minSeeders)
@@ -469,23 +533,8 @@ func SelectBestByResolution(candidates []Candidate, accepted map[int][]quality.T
 		} else {
 			grades[i] = GradeCandidate(c, quality.Default, minSeeders)
 		}
-		if grades[i].Qualified && (pick == -1 || grades[i].Score > grades[pick].Score) {
-			pick = i
-		}
 	}
-	ranked := make([]int, len(grades))
-	for i := range ranked {
-		ranked[i] = i
-	}
-	sort.SliceStable(ranked, func(a, b int) bool {
-		return grades[ranked[a]].Score > grades[ranked[b]].Score
-	})
-	return Selection{
-		Grades:    grades,
-		PickIndex: pick,
-		Fallback:  pick == -1,
-		Ranked:    ranked,
-	}
+	return selectionFromGrades(grades, codecOrder)
 }
 
 // RuntimeMismatch is the pure post-grab mislabel check: it compares the

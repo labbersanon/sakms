@@ -547,6 +547,8 @@ func buildAutoGrabCandidates(releases []prowlarr.Release, runtimeSeconds float64
 			Resolution:     info.Resolution,
 			Codec:          info.Codec,
 			Source:         info.Source,
+			HDR:            info.HDR,
+			Channels:       info.Channels,
 		}
 	}
 	return candidates
@@ -596,7 +598,12 @@ func autoGrabTiers(ctx context.Context, settingsStore *settings.Store, m mode.Mo
 }
 
 func selectAutoGrabBest(ctx context.Context, lib *library.Store, settingsStore *settings.Store, m mode.Mode, tmdbID int, cands []autograb.Candidate) autograb.Selection {
-	return autograb.SelectBestByResolution(cands, resolveAutoGrabAcceptedByResolution(ctx, lib, settingsStore, m, tmdbID), minSeedersFor(m))
+	return autograb.SelectBestByResolutionRanked(
+		cands,
+		resolveAutoGrabAcceptedByResolution(ctx, lib, settingsStore, m, tmdbID),
+		minSeedersFor(m),
+		resolveCodecRankForTitle(ctx, lib, settingsStore, m, tmdbID),
+	)
 }
 
 // autoGrabRootFolder resolves {mode}'s configured library root folder — where

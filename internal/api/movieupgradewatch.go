@@ -123,12 +123,13 @@ func runMovieUpgradeWatch(ctx context.Context, deps AutoGrabDeps, build sessionB
 			continue
 		}
 		floors := resolveAutoGrabFloorsForTitle(ctx, libStore, deps.SettingsStore, mode.Movies, item.TMDBID)
-		minRes := resolveMinResolutionForTitle(ctx, libStore, mode.Movies, item.TMDBID)
+		minRes := resolveMinResolutionForTitle(ctx, libStore, deps.SettingsStore, mode.Movies, item.TMDBID)
+		feat := resolveFeatureUpgradeForTitle(ctx, libStore, deps.SettingsStore, mode.Movies, item.TMDBID)
 		floor := fileQualityFloor(item.FilePath, floors)
 		if quality.Rank(floor) <= 0 {
 			continue
 		}
-		if !fileNeedsQualityUpgrade(item.FilePath, item.QualityTier, floor, minRes) {
+		if !fileNeedsQualityUpgrade(item.FilePath, item.QualityTier, floor, minRes, feat) {
 			continue
 		}
 		due = append(due, item)

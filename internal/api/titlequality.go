@@ -139,6 +139,16 @@ func putTitleQualityPrefs(w http.ResponseWriter, r *http.Request, deps titleQual
 		http.Error(w, "minResolution must be one of 480, 720, 1080, 2160, or 0 for any", http.StatusBadRequest)
 		return
 	}
+	switch req.MaxResolution {
+	case 0, 480, 720, 1080, 2160:
+	default:
+		http.Error(w, "maxResolution must be one of 480, 720, 1080, 2160, or 0 for no cap", http.StatusBadRequest)
+		return
+	}
+	if req.MinResolution > 0 && req.MaxResolution > 0 && req.MinResolution > req.MaxResolution {
+		http.Error(w, "minResolution must be <= maxResolution", http.StatusBadRequest)
+		return
+	}
 
 	floors, err := parseResolutionFloors(req.ResolutionFloors)
 	if err != nil {
@@ -155,7 +165,16 @@ func putTitleQualityPrefs(w http.ResponseWriter, r *http.Request, deps titleQual
 		floors = merged
 	}
 
-	if err := deps.lib.SetTitleQualityPrefs(ctx, m, tmdbID, tiers, req.MinResolution, true, floors); err != nil {
+	prefs := library.TitleQualityPrefs{
+		Mode: m, TMDBID: tmdbID, Tiers: tiers,
+		MinResolution: req.MinResolution, MinResolutionSet: true,
+		MaxResolution: req.MaxResolution, MaxResolutionSet: true,
+		ResolutionFloors: floors, CodecRank: req.CodecRank,
+	}
+	if req.FeatureUpgrade != nil {
+		prefs.FeatureUpgrade = req.FeatureUpgrade
+	}
+	if err := deps.lib.SetTitleQualityPrefs(ctx, prefs); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -180,18 +199,30 @@ func writeTitleQualityPrefs(w http.ResponseWriter, ctx context.Context, deps tit
 // titlePrefsTiersFromRequest prefers Floor (minimum tier, expanded upward);
 // otherwise uses the explicit Tiers list, still normalized to floor-and-above.
 func titlePrefsTiersFromRequest(req apidto.TitleQualityPrefsRequest) []quality.Tier {
+	var floor, ceiling quality.Tier
 	if req.Floor != "" {
-		floor := quality.Tier(req.Floor)
+		floor = quality.Tier(req.Floor)
 		if quality.Rank(floor) <= 0 {
 			return nil
 		}
+	} else {
+		parsed := parseQualityTiers(req.Tiers)
+		if len(parsed) == 0 {
+			return nil
+		}
+		floor = quality.Lowest(parsed)
+		ceiling = quality.Highest(parsed)
+	}
+	if req.Ceiling != "" {
+		ceiling = quality.Tier(req.Ceiling)
+		if quality.Rank(ceiling) <= 0 {
+			return nil
+		}
+	}
+	if quality.Rank(ceiling) <= 0 {
 		return quality.TiersAtOrAbove(floor)
 	}
-	parsed := parseQualityTiers(req.Tiers)
-	if len(parsed) == 0 {
-		return nil
-	}
-	return quality.TiersAtOrAbove(quality.Lowest(parsed))
+	return quality.TiersBetween(floor, ceiling)
 }
 
 func effectiveTitleQualityPrefs(ctx context.Context, deps titleQualityDeps, m mode.Mode, tmdbID int) apidto.TitleQualityPrefsResponse {
@@ -199,21 +230,36 @@ func effectiveTitleQualityPrefs(ctx context.Context, deps titleQualityDeps, m mo
 	modeFloors := resolveResolutionFloors(ctx, deps.settings, m)
 
 	stored, err := deps.lib.GetTitleQualityPrefs(ctx, m, tmdbID)
+	modeMin, modeMax := resolveModeResolutionBand(ctx, deps.settings, m)
+	modeRank := resolveCodecRank(ctx, deps.settings, m)
+	modeFeat := resolveFeatureUpgrade(ctx, deps.settings, m)
 	if err != nil || !stored.HasOverride {
-		return titlePrefsResponse(modeTiers, 0, true, modeFloors)
+		return titlePrefsResponse(modeTiers, modeMin, modeMax, true, modeFloors, modeRank, modeFeat)
 	}
 	tiers := stored.Tiers
 	if len(tiers) == 0 {
 		tiers = modeTiers
 	}
-	minRes := 0
+	minRes := modeMin
 	if stored.MinResolutionSet {
 		minRes = stored.MinResolution
 	}
-	return titlePrefsResponse(tiers, minRes, false, titleOverrideFloors(stored))
+	maxRes := modeMax
+	if stored.MaxResolutionSet {
+		maxRes = stored.MaxResolution
+	}
+	rank := modeRank
+	if len(stored.CodecRank) > 0 {
+		rank = stored.CodecRank
+	}
+	feat := modeFeat
+	if stored.FeatureUpgrade != nil {
+		feat = *stored.FeatureUpgrade
+	}
+	return titlePrefsResponse(tiers, minRes, maxRes, false, titleOverrideFloors(stored), rank, feat)
 }
 
-func titlePrefsResponse(tiers []quality.Tier, minRes int, inherited bool, floors map[int]quality.Tier) apidto.TitleQualityPrefsResponse {
+func titlePrefsResponse(tiers []quality.Tier, minRes, maxRes int, inherited bool, floors map[int]quality.Tier, codecRank []string, featureUpgrade bool) apidto.TitleQualityPrefsResponse {
 	if len(floors) == 0 {
 		floors = autograb.UniformFloors(quality.Lowest(tiers))
 	}
@@ -229,8 +275,10 @@ func titlePrefsResponse(tiers []quality.Tier, minRes int, inherited bool, floors
 	}
 	return apidto.TitleQualityPrefsResponse{
 		Tiers: qualityTiersToStrings(tiers), Floor: string(floor),
-		MinResolution: minRes, Inherited: inherited,
+		Ceiling:       string(quality.Highest(tiers)),
+		MinResolution: minRes, MaxResolution: maxRes, Inherited: inherited,
 		ResolutionFloors: resolutionFloorsToStrings(floors),
+		CodecRank:        quality.NormalizeCodecRank(codecRank), FeatureUpgrade: featureUpgrade,
 	}
 }
 
@@ -287,16 +335,49 @@ func resolveAutoGrabAcceptedByResolution(ctx context.Context, lib *library.Store
 	return autograb.AcceptedFromFloors(resolveAutoGrabFloorsForTitle(ctx, lib, settingsStore, m, tmdbID))
 }
 
-// resolveMinResolutionForTitle returns the hard resolution floor for a title
-// override (0 = any). Mode Settings soft-max is NOT inherited here — different
-// semantics; unattended title grabs only enforce an explicit title minimum.
-func resolveMinResolutionForTitle(ctx context.Context, lib *library.Store, m mode.Mode, tmdbID int) int {
+// resolveMinResolutionForTitle is the hard resolution floor (0 = any).
+// Title override wins; otherwise the mode Settings min is used.
+func resolveMinResolutionForTitle(ctx context.Context, lib *library.Store, settingsStore *settings.Store, m mode.Mode, tmdbID int) int {
+	minRes, _ := resolveResolutionBandForTitle(ctx, lib, settingsStore, m, tmdbID)
+	return minRes
+}
+
+func resolveResolutionBandForTitle(ctx context.Context, lib *library.Store, settingsStore *settings.Store, m mode.Mode, tmdbID int) (minRes, maxRes int) {
+	minRes, maxRes = resolveModeResolutionBand(ctx, settingsStore, m)
+	if lib == nil || tmdbID <= 0 {
+		return minRes, maxRes
+	}
+	stored, err := lib.GetTitleQualityPrefs(ctx, m, tmdbID)
+	if err != nil || !stored.HasOverride {
+		return minRes, maxRes
+	}
+	if stored.MinResolutionSet {
+		minRes = stored.MinResolution
+	}
+	if stored.MaxResolutionSet {
+		maxRes = stored.MaxResolution
+	}
+	return minRes, maxRes
+}
+
+func resolveCodecRankForTitle(ctx context.Context, lib *library.Store, settingsStore *settings.Store, m mode.Mode, tmdbID int) []string {
+	rank := resolveCodecRank(ctx, settingsStore, m)
 	if lib != nil && tmdbID > 0 {
-		if stored, err := lib.GetTitleQualityPrefs(ctx, m, tmdbID); err == nil && stored.HasOverride && stored.MinResolutionSet {
-			return stored.MinResolution
+		if stored, err := lib.GetTitleQualityPrefs(ctx, m, tmdbID); err == nil && stored.HasOverride && len(stored.CodecRank) > 0 {
+			return quality.NormalizeCodecRank(stored.CodecRank)
 		}
 	}
-	return 0
+	return rank
+}
+
+func resolveFeatureUpgradeForTitle(ctx context.Context, lib *library.Store, settingsStore *settings.Store, m mode.Mode, tmdbID int) bool {
+	feat := resolveFeatureUpgrade(ctx, settingsStore, m)
+	if lib != nil && tmdbID > 0 {
+		if stored, err := lib.GetTitleQualityPrefs(ctx, m, tmdbID); err == nil && stored.HasOverride && stored.FeatureUpgrade != nil {
+			return *stored.FeatureUpgrade
+		}
+	}
+	return feat
 }
 
 func qualityPrefsRaised(prev, next apidto.TitleQualityPrefsResponse) bool {
@@ -313,6 +394,12 @@ func qualityPrefsRaised(prev, next apidto.TitleQualityPrefsResponse) bool {
 	}
 	// Raising the resolution floor (any → 1080, or 720 → 1080).
 	if next.MinResolution > prev.MinResolution {
+		return true
+	}
+	if prev.MaxResolution > 0 && (next.MaxResolution == 0 || next.MaxResolution > prev.MaxResolution) {
+		return true
+	}
+	if next.FeatureUpgrade && !prev.FeatureUpgrade {
 		return true
 	}
 	for _, r := range autograb.FloorRungs() {
@@ -354,7 +441,7 @@ func queueQualityUpgrades(ctx context.Context, deps titleQualityDeps, m mode.Mod
 			if ep.FilePath == "" {
 				continue
 			}
-			if !fileNeedsQualityUpgrade(ep.FilePath, ep.QualityTier, fileQualityFloor(ep.FilePath, floors), minRes) {
+			if !fileNeedsQualityUpgrade(ep.FilePath, ep.QualityTier, fileQualityFloor(ep.FilePath, floors), minRes, prefs.FeatureUpgrade) {
 				continue
 			}
 			if parkQualityUpgrade(ctx, deps.grabs, m, series.Title, tmdbID, ep.SeasonNumber, ep.EpisodeNumber) {
@@ -369,7 +456,7 @@ func queueQualityUpgrades(ctx context.Context, deps titleQualityDeps, m mode.Mod
 			}
 			return 0
 		}
-		if item.FilePath == "" || !fileNeedsQualityUpgrade(item.FilePath, item.QualityTier, fileQualityFloor(item.FilePath, floors), minRes) {
+		if item.FilePath == "" || !fileNeedsQualityUpgrade(item.FilePath, item.QualityTier, fileQualityFloor(item.FilePath, floors), minRes, prefs.FeatureUpgrade) {
 			return 0
 		}
 		if parkQualityUpgrade(ctx, deps.grabs, m, item.Title, tmdbID, 0, 0) {
@@ -386,7 +473,7 @@ func fileQualityFloor(filePath string, floors map[int]quality.Tier) quality.Tier
 	})
 }
 
-func fileNeedsQualityUpgrade(filePath, stampedTier string, floor quality.Tier, minRes int) bool {
+func fileNeedsQualityUpgrade(filePath, stampedTier string, floor quality.Tier, minRes int, featureUpgrade bool) bool {
 	info := release.Parse(filepath.Base(filePath))
 	// Claude 2026-09-30: unknown parse resolution still fails a set minRes.
 	// Reason: a 720p file named without a height token skipped the floor and
@@ -397,13 +484,23 @@ func fileNeedsQualityUpgrade(filePath, stampedTier string, floor quality.Tier, m
 		return true
 	}
 	if inferred, ok := quality.InferTier(info); ok {
-		return quality.Rank(inferred) < quality.Rank(floor)
+		if quality.Rank(inferred) < quality.Rank(floor) {
+			return true
+		}
+	} else {
+		stamped := quality.Tier(stampedTier)
+		if quality.Rank(stamped) > 0 {
+			if quality.Rank(stamped) < quality.Rank(floor) {
+				return true
+			}
+		} else if quality.Rank(floor) > quality.Rank(quality.Default) {
+			return true
+		}
 	}
-	stamped := quality.Tier(stampedTier)
-	if quality.Rank(stamped) > 0 {
-		return quality.Rank(stamped) < quality.Rank(floor)
+	if featureUpgrade && (!info.HDR || info.Channels < release.Channels71) {
+		return true
 	}
-	return quality.Rank(floor) > quality.Rank(quality.Default)
+	return false
 }
 
 func parkQualityUpgrade(ctx context.Context, grabsStore *grabs.Store, m mode.Mode, title string, tmdbID, season, episode int) bool {
@@ -443,15 +540,29 @@ func parkQualityUpgrade(ctx context.Context, grabsStore *grabs.Store, m mode.Mod
 // any resolution. Unknown resolution (0) is kept — title parse may have failed;
 // the bitrate floor still gates those. No fallback to lower-res releases.
 func requireMinResolution(cands []autograb.Candidate, minRes int) []autograb.Candidate {
-	if minRes <= 0 || len(cands) == 0 {
-		return cands
+	out, _ := requireResolutionBand(cands, minRes, 0)
+	return out
+}
+
+func requireResolutionBand(cands []autograb.Candidate, minRes, maxRes int) ([]autograb.Candidate, []int) {
+	if (minRes <= 0 && maxRes <= 0) || len(cands) == 0 {
+		idx := make([]int, len(cands))
+		for i := range cands {
+			idx[i] = i
+		}
+		return cands, idx
 	}
 	var out []autograb.Candidate
-	for _, c := range cands {
-		if c.Resolution > 0 && c.Resolution < minRes {
+	var keep []int
+	for i, c := range cands {
+		if minRes > 0 && c.Resolution > 0 && c.Resolution < minRes {
+			continue
+		}
+		if maxRes > 0 && c.Resolution > maxRes {
 			continue
 		}
 		out = append(out, c)
+		keep = append(keep, i)
 	}
-	return out
+	return out, keep
 }

@@ -6,6 +6,7 @@ import (
 
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/autograb"
+	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/quality"
 )
@@ -60,7 +61,10 @@ func TestResolveAutoGrabFloorsForTitle_OverridePerRung(t *testing.T) {
 	}
 
 	floors := map[int]quality.Tier{480: quality.Low, 720: quality.Medium, 1080: quality.Medium, 2160: quality.Medium}
-	if err := libStore.SetTitleQualityPrefs(ctx, mode.Series, 333432, quality.TiersAtOrAbove(quality.Low), 0, true, floors); err != nil {
+	if err := libStore.SetTitleQualityPrefs(ctx, library.TitleQualityPrefs{
+		Mode: mode.Series, TMDBID: 333432, Tiers: quality.TiersAtOrAbove(quality.Low),
+		MinResolutionSet: true, ResolutionFloors: floors,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	got := resolveAutoGrabFloorsForTitle(ctx, libStore, settingsStore, mode.Series, 333432)
@@ -78,20 +82,23 @@ func TestResolveAutoGrabFloorsForTitle_OverridePerRung(t *testing.T) {
 
 func TestFileNeedsQualityUpgrade(t *testing.T) {
 	floor := quality.High
-	if !fileNeedsQualityUpgrade("Show.S01E01.480p.WEB.DL.x264-GRP.mkv", "medium", floor, 0) {
+	if !fileNeedsQualityUpgrade("Show.S01E01.480p.WEB.DL.x264-GRP.mkv", "medium", floor, 0, false) {
 		t.Fatal("480p web-dl should need high-floor upgrade")
 	}
-	if !fileNeedsQualityUpgrade("Show.S01E01.720p.WEB.DL.x264-GRP.mkv", "medium", floor, 1080) {
+	if !fileNeedsQualityUpgrade("Show.S01E01.720p.WEB.DL.x264-GRP.mkv", "medium", floor, 1080, false) {
 		t.Fatal("720p should need upgrade when min resolution is 1080")
 	}
-	if fileNeedsQualityUpgrade("Show.S01E01.1080p.BluRay.REMUX.mkv", "medium", floor, 1080) {
+	if fileNeedsQualityUpgrade("Show.S01E01.1080p.BluRay.REMUX.mkv", "medium", floor, 1080, false) {
 		t.Fatal("1080p remux at/above floor must not upgrade")
 	}
-	if !fileNeedsQualityUpgrade("Movie.mkv", "high", floor, 1080) {
+	if !fileNeedsQualityUpgrade("Movie.mkv", "high", floor, 1080, false) {
 		t.Fatal("unknown height with min 1080 must need upgrade")
 	}
-	if fileNeedsQualityUpgrade("Movie.mkv", "high", floor, 0) {
+	if fileNeedsQualityUpgrade("Movie.mkv", "high", floor, 0, false) {
 		t.Fatal("unknown height without a min resolution must not force upgrade")
+	}
+	if !fileNeedsQualityUpgrade("Show.S01E01.1080p.BluRay.REMUX.mkv", "medium", floor, 1080, true) {
+		t.Fatal("SDR remux should need upgrade when feature-upgrade is on")
 	}
 }
 

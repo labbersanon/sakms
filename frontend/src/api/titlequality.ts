@@ -7,9 +7,13 @@ import type { Mode } from "./discover";
 export type TitleQualityPrefsResponse = {
   tiers: string[];
   floor: string;
+  ceiling?: string;
   minResolution: number;
+  maxResolution?: number;
   inherited: boolean;
   resolutionFloors?: Record<string, string>;
+  codecRank?: string[];
+  featureUpgrade?: boolean;
   upgradeQueued?: number;
   upgradeWatch?: boolean;
   upgradeWatchAvailable?: boolean;
@@ -17,10 +21,14 @@ export type TitleQualityPrefsResponse = {
 
 export type TitleQualityPrefsRequest = {
   floor?: string;
+  ceiling?: string;
   tiers?: string[];
   minResolution: number;
+  maxResolution?: number;
   clear?: boolean;
   resolutionFloors?: Record<string, string>;
+  codecRank?: string[];
+  featureUpgrade?: boolean;
 };
 
 export type TitleQualityKey =

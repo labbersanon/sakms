@@ -49,6 +49,7 @@ import {
   ErrorText,
   Muted,
   PillSelector,
+  Switch,
   inputClass,
   labelClass,
 } from "../../components/ui";
@@ -265,11 +266,32 @@ const PROTOCOL_LABELS: Record<string, string> = {
   usenet: "Usenet",
   torrent: "Torrent",
 };
+const CODEC_RANK_DEFAULT = ["av1", "x265", "x264"];
+const CODEC_LABELS: Record<string, string> = {
+  av1: "AV1",
+  x265: "x265",
+  x264: "x264",
+};
+const MIN_RESOLUTION_LABELS: Record<string, string> = Object.fromEntries(
+  MAX_RESOLUTIONS.map((r) => [String(r), r === 0 ? "Any" : `${r}p+`]),
+);
+const expandBand = (floor: string, ceiling: string): string[] => {
+  const a = QUALITY_TIERS.indexOf(floor);
+  const b = QUALITY_TIERS.indexOf(ceiling);
+  if (a < 0 || b < 0) return ["high", "lossless"];
+  const lo = Math.min(a, b);
+  const hi = Math.max(a, b);
+  return QUALITY_TIERS.slice(lo, hi + 1);
+};
 
 export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
   const [prefs] = createResource(props.mode, fetchQualityPrefs);
-  const [tiers, setTiers] = createSignal<string[]>(["high", "lossless"]);
+  const [floor, setFloor] = createSignal("high");
+  const [ceiling, setCeiling] = createSignal("lossless");
+  const [minRes, setMinRes] = createSignal(0);
   const [maxRes, setMaxRes] = createSignal(0);
+  const [codecRank, setCodecRank] = createSignal<string[]>([...CODEC_RANK_DEFAULT]);
+  const [featureUpgrade, setFeatureUpgrade] = createSignal(false);
   const [protocol, setProtocol] = createSignal("");
   // 10 is rename.DefaultUndoDepth (internal/rename/undo_store.go). It is only
   // ever a pre-load placeholder — the mount GET always answers with a real
@@ -288,14 +310,24 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
     on(prefs, (p) => {
       if (p) {
         const nextTiers = p.tiers?.length ? [...p.tiers] : expandFloor(p.tier);
-        setTiers(nextTiers);
-        const floor =
+        const nextFloor =
           QUALITY_TIERS.find((t) => nextTiers.includes(t)) ?? p.tier ?? "high";
+        const nextCeiling =
+          [...QUALITY_TIERS].reverse().find((t) => nextTiers.includes(t)) ??
+          p.ceiling ??
+          "lossless";
+        setFloor(nextFloor);
+        setCeiling(nextCeiling);
         setResFloors({
-          ...synthesizeFloors(floor),
+          ...synthesizeFloors(nextFloor),
           ...(p.resolutionFloors ?? {}),
         });
+        setMinRes(p.minResolution ?? 0);
         setMaxRes(p.maxResolution);
+        setCodecRank(
+          p.codecRank?.length ? [...p.codecRank] : [...CODEC_RANK_DEFAULT],
+        );
+        setFeatureUpgrade(p.featureUpgrade === true);
         setProtocol(p.protocol);
         setUndoDepth(p.undoDepth);
         setDirty(false);
@@ -334,14 +366,26 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
     !Number.isInteger(undoDepth()) ||
     undoDepth() < 1 ||
     undoDepth() > MAX_UNDO_DEPTH;
-  const noTiers = () => tiers().length === 0;
-  const lowestTier = () =>
-    QUALITY_TIERS.find((t) => tiers().includes(t)) ?? "high";
-  const toggleTier = (t: string, on: boolean) => {
-    setTiers((prev) => {
-      if (on) return QUALITY_TIERS.filter((x) => x === t || prev.includes(x));
-      const next = prev.filter((x) => x !== t);
-      return next.length ? next : prev;
+  const bandOk = () => {
+    const a = QUALITY_TIERS.indexOf(floor());
+    const b = QUALITY_TIERS.indexOf(ceiling());
+    return a >= 0 && b >= 0 && a <= b;
+  };
+  const resBandOk = () => {
+    if (minRes() === 0 || maxRes() === 0) return true;
+    return minRes() <= maxRes();
+  };
+  const moveCodec = (i: number, dir: -1 | 1) => {
+    setCodecRank((prev) => {
+      const next = [...prev];
+      const j = i + dir;
+      if (j < 0 || j >= next.length) return prev;
+      const a = next[i];
+      const b = next[j];
+      if (a === undefined || b === undefined) return prev;
+      next[i] = b;
+      next[j] = a;
+      return next;
     });
     setDirty(true);
   };
@@ -357,19 +401,23 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
       status.failed(err);
       throw err;
     }
-    if (noTiers()) {
-      const err = new Error("Select at least one quality tier");
+    if (!bandOk() || !resBandOk()) {
+      const err = new Error("Quality and resolution floor must be at or below the ceiling");
       status.failed(err);
       throw err;
     }
     try {
       await putQualityPrefs(props.mode(), {
-        tier: lowestTier(),
-        tiers: tiers(),
+        tier: floor(),
+        ceiling: ceiling(),
+        tiers: expandBand(floor(), ceiling()),
+        minResolution: minRes(),
         maxResolution: maxRes(),
         protocol: protocol(),
         undoDepth: undoDepth(),
         resolutionFloors: resFloors(),
+        codecRank: codecRank(),
+        featureUpgrade: featureUpgrade(),
       });
       setDirty(false);
       status.saved();
@@ -382,29 +430,31 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
     id: "library-quality",
     label: "quality preferences",
     dirty,
-    valid: () => !undoDepthOutOfRange() && !noTiers(),
+    valid: () => !undoDepthOutOfRange() && bandOk() && resBandOk(),
     save,
   });
   return (
     <Card title={`Search quality preferences (${MODE_LABELS[props.mode()]})`}>
-      <div class="mb-3">
-        <span class={labelClass}>Accepted tiers (bitrate/codec)</span>
-        <div class="mt-1 flex flex-wrap gap-4">
-          <For each={QUALITY_TIERS}>
-            {(t) => (
-              <label class="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  aria-label={`Quality tier ${QUALITY_TIER_LABELS[t]}`}
-                  checked={tiers().includes(t)}
-                  onChange={(e) => toggleTier(t, e.currentTarget.checked)}
-                />
-                <span class="text-sm text-fg">{QUALITY_TIER_LABELS[t]}</span>
-              </label>
-            )}
-          </For>
-        </div>
-      </div>
+      <PillSelector
+        label="Quality floor"
+        options={QUALITY_TIERS}
+        optionLabels={QUALITY_TIER_LABELS}
+        selected={floor()}
+        onSelect={(t) => {
+          setFloor(t);
+          setDirty(true);
+        }}
+      />
+      <PillSelector
+        label="Quality ceiling"
+        options={QUALITY_TIERS}
+        optionLabels={QUALITY_TIER_LABELS}
+        selected={ceiling()}
+        onSelect={(t) => {
+          setCeiling(t);
+          setDirty(true);
+        }}
+      />
       <div class="mb-3">
         <span class={labelClass}>Bitrate floor by resolution</span>
         <For each={FLOOR_RUNGS}>
@@ -425,6 +475,16 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
         </For>
       </div>
       <PillSelector
+        label="Minimum resolution"
+        options={RESOLUTION_OPTIONS}
+        optionLabels={MIN_RESOLUTION_LABELS}
+        selected={String(minRes())}
+        onSelect={(r) => {
+          setMinRes(Number(r));
+          setDirty(true);
+        }}
+      />
+      <PillSelector
         label="Maximum resolution"
         options={RESOLUTION_OPTIONS}
         optionLabels={RESOLUTION_LABELS}
@@ -434,6 +494,57 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
           setDirty(true);
         }}
       />
+      <div class="mb-3">
+        <span class={labelClass}>Preferred codecs</span>
+        <Muted class="mb-1">
+          Among releases that clear the bitrate floor, HDR then audio channels
+          then this order.
+        </Muted>
+        <ol class="mt-1 space-y-1">
+          <For each={codecRank()}>
+            {(c, i) => (
+              <li class="flex items-center gap-2">
+                <span class="w-16 text-sm text-fg">{CODEC_LABELS[c] ?? c}</span>
+                <button
+                  type="button"
+                  class="rounded px-2 py-0.5 text-xs text-muted hover:text-fg disabled:opacity-40"
+                  aria-label={`Move ${CODEC_LABELS[c] ?? c} up`}
+                  disabled={i() === 0}
+                  onClick={() => moveCodec(i(), -1)}
+                >
+                  Up
+                </button>
+                <button
+                  type="button"
+                  class="rounded px-2 py-0.5 text-xs text-muted hover:text-fg disabled:opacity-40"
+                  aria-label={`Move ${CODEC_LABELS[c] ?? c} down`}
+                  disabled={i() === codecRank().length - 1}
+                  onClick={() => moveCodec(i(), 1)}
+                >
+                  Down
+                </button>
+              </li>
+            )}
+          </For>
+        </ol>
+      </div>
+      <div class="mb-3 flex items-start justify-between gap-3">
+        <div>
+          <p class="text-xs font-medium text-fg">Upgrade for HDR / more channels</p>
+          <Muted class="mt-0.5">
+            Off by default. When on, sitting SDR or stereo files still enter
+            upgrade-watch even if they already meet the bitrate floor.
+          </Muted>
+        </div>
+        <Switch
+          checked={featureUpgrade()}
+          ariaLabel="Upgrade for HDR / more channels"
+          onChange={(next) => {
+            setFeatureUpgrade(next);
+            setDirty(true);
+          }}
+        />
+      </div>
       <PillSelector
         label="Protocol"
         options={PROTOCOL_OPTIONS}
@@ -471,7 +582,7 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
         <Show when={!batched()}>
           <Button
             variant="primary"
-            disabled={undoDepthOutOfRange() || noTiers()}
+            disabled={undoDepthOutOfRange() || !bandOk() || !resBandOk()}
             onClick={() => void save().catch(() => {})}
           >
             Save

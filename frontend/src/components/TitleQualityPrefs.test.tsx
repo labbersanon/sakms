@@ -185,7 +185,7 @@ describe("TitleQualityPrefs movie upgrade-watch", () => {
     fireEvent.click(screen.getByText("Save"));
     await waitFor(() => expect(calls.some((c) => c.method === "PUT")).toBe(true));
     expect(calls.find((c) => c.method === "PUT")!.body).toMatchObject({
-      floor: "low",
+      floor: "medium",
       minResolution: 0,
       resolutionFloors: {
         "480": "low",

@@ -46,6 +46,16 @@ func TestParse_TableDriven(t *testing.T) {
 			title: "Some.Movie.2023.2160p.BluRay.REMUX.x265-GROUP",
 			want:  Info{Resolution: 2160, Source: "remux", Codec: "x265", Group: "GROUP"},
 		},
+		{
+			name:  "HDR10 and Atmos",
+			title: "Some.Movie.2023.1080p.WEB-DL.HDR10.Atmos.x265-GROUP",
+			want:  Info{Resolution: 1080, Source: "web-dl", Codec: "x265", Group: "GROUP", HDR: true, Channels: Channels71},
+		},
+		{
+			name:  "5.1 without HDR",
+			title: "Some.Show.S01E01.720p.WEBRip.DDP5.1.x264-GROUP",
+			want:  Info{Resolution: 720, Source: "webrip", Codec: "x264", Group: "GROUP", Channels: Channels51},
+		},
 	}
 
 	for _, tc := range cases {

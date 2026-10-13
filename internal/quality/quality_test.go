@@ -194,7 +194,7 @@ func TestTiersAtOrAboveExpandsFloor(t *testing.T) {
 		{Medium, []Tier{Medium, High, Lossless}},
 		{High, []Tier{High, Lossless}},
 		{Lossless, []Tier{Lossless}},
-		{Tier(""), []Tier{High, Lossless}},     // empty → Default
+		{Tier(""), []Tier{High, Lossless}}, // empty → Default
 		{Tier("bogus"), []Tier{High, Lossless}},
 	}
 	for _, tc := range cases {
@@ -217,5 +217,29 @@ func TestRankAndLowestHighest(t *testing.T) {
 	}
 	if Lowest(nil) != Default || Highest(nil) != Default {
 		t.Errorf("empty Lowest/Highest must fall back to Default")
+	}
+}
+
+func TestTiersBetweenContiguousBand(t *testing.T) {
+	got := TiersBetween(Medium, High)
+	want := []Tier{Medium, High}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("TiersBetween(medium, high) = %v, want %v", got, want)
+	}
+	if !reflect.DeepEqual(TiersBetween(High, Medium), []Tier{High}) {
+		t.Errorf("inverted band must snap ceiling to floor")
+	}
+}
+
+func TestNormalizeCodecRank(t *testing.T) {
+	got := NormalizeCodecRank([]string{"x265", "bogus"})
+	if got[0] != "x265" || len(got) != 3 {
+		t.Fatalf("got %v, want x265 first and full permutation", got)
+	}
+	if CodecRankIndex("av1", []string{"x265", "av1", "x264"}) != 1 {
+		t.Fatal("av1 should be second")
+	}
+	if CodecRankIndex("xvid", nil) < 3 {
+		t.Fatal("unknown codec must sort last")
 	}
 }

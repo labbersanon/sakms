@@ -509,7 +509,7 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 		//   one show fall to 480p after HD STAT misses.
 		// Troubleshooting: library_quality_prefs; resolveAutoGrabTiersForTitle.
 		// Review if: AutoGrabRequest carries explicit tiers from the Grab pills.
-		minRes := resolveMinResolutionForTitle(ctx, deps.LibStore, req.Mode, req.TMDBID)
+		minRes, maxRes := resolveResolutionBandForTitle(ctx, deps.LibStore, deps.SettingsStore, req.Mode, req.TMDBID)
 		// Claude 2026-10-10: filter releases and candidates together.
 		// Reason: requireMinResolution dropped below-min candidates but left
 		//   pr.releases unfiltered. SelectBest PickIndex then indexed the
@@ -517,7 +517,7 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 		//   the grade log showed the 2160p 3.4 GB runner (score 29 / floor 20).
 		// Troubleshooting: dispatch title resolution must match grade res=.
 		// Review if: another scoreOnePhase filter mutates candidates only.
-		pr.releases, candidates = keepAlignedMinResolution(pr.releases, candidates, minRes)
+		pr.releases, candidates = keepAlignedResolutionBand(pr.releases, candidates, minRes, maxRes)
 		// Claude 2026-10-12: per-resolution bitrate floors.
 		// Reason: a mode-wide Medium floor rejected 480p DVDRips (0.50 vs 0.8)
 		//   while 1080p still needs Medium. SelectBestByResolution grades each
@@ -918,13 +918,20 @@ var errCandidateReleaseMismatch = errors.New("auto-grab candidate/release index 
 // keepAlignedMinResolution drops below-min rows from releases and candidates
 // together so Selection indices still map to the NZB that was graded.
 func keepAlignedMinResolution(releases []prowlarr.Release, cands []autograb.Candidate, minRes int) ([]prowlarr.Release, []autograb.Candidate) {
-	if minRes <= 0 || len(cands) == 0 {
+	return keepAlignedResolutionBand(releases, cands, minRes, 0)
+}
+
+func keepAlignedResolutionBand(releases []prowlarr.Release, cands []autograb.Candidate, minRes, maxRes int) ([]prowlarr.Release, []autograb.Candidate) {
+	if (minRes <= 0 && maxRes <= 0) || len(cands) == 0 {
 		return releases, cands
 	}
 	outR := make([]prowlarr.Release, 0, len(cands))
 	outC := make([]autograb.Candidate, 0, len(cands))
 	for i, c := range cands {
-		if c.Resolution > 0 && c.Resolution < minRes {
+		if minRes > 0 && c.Resolution > 0 && c.Resolution < minRes {
+			continue
+		}
+		if maxRes > 0 && c.Resolution > maxRes {
 			continue
 		}
 		outC = append(outC, c)

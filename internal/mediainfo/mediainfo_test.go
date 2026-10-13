@@ -92,6 +92,23 @@ func TestParseFormatTags_TitleYearOnly(t *testing.T) {
 	}
 }
 
+func TestProbe_HDRAndAudioChannels(t *testing.T) {
+	raw := []byte(`{
+		"streams":[
+			{"codec_type":"video","codec_name":"hevc","width":1920,"height":1080,"color_transfer":"smpte2084","bit_rate":"8000000"},
+			{"codec_type":"audio","codec_name":"truehd","channels":8}
+		]
+	}`)
+	p := fakeProber(raw, nil)
+	got, err := p.Probe(context.Background(), "/fake/hdr.mkv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.HDR || got.AudioChannels != 8 {
+		t.Fatalf("HDR=%v channels=%d, want true/8", got.HDR, got.AudioChannels)
+	}
+}
+
 func TestProbe_NoVideoStreamErrors(t *testing.T) {
 	raw := []byte(`{"streams":[]}`)
 	p := fakeProber(raw, nil)

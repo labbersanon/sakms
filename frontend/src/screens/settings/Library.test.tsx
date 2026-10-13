@@ -174,7 +174,9 @@ describe("Settings → Library — quality prefs: Rename Undo depth", () => {
     );
     expect(calls.find((c) => c.method === "PUT")!.body).toEqual({
       tier: "medium",
+      ceiling: "lossless",
       tiers: ["medium", "high", "lossless"],
+      minResolution: 0,
       maxResolution: 1080,
       protocol: "usenet",
       undoDepth: 3,
@@ -184,6 +186,8 @@ describe("Settings → Library — quality prefs: Rename Undo depth", () => {
         "1080": "medium",
         "2160": "medium",
       },
+      codecRank: ["av1", "x265", "x264"],
+      featureUpgrade: false,
     });
   });
 
@@ -227,7 +231,9 @@ describe("Settings → Library — quality prefs: Rename Undo depth", () => {
     );
     expect(calls.find((c) => c.method === "PUT")!.body).toEqual({
       tier: "medium",
+      ceiling: "lossless",
       tiers: ["medium", "high", "lossless"],
+      minResolution: 0,
       maxResolution: 1080,
       protocol: "usenet",
       undoDepth: 7,
@@ -237,6 +243,8 @@ describe("Settings → Library — quality prefs: Rename Undo depth", () => {
         "1080": "medium",
         "2160": "medium",
       },
+      codecRank: ["av1", "x265", "x264"],
+      featureUpgrade: false,
     });
   });
 
@@ -251,23 +259,20 @@ describe("Settings → Library — quality prefs: Rename Undo depth", () => {
     ).toBeInTheDocument();
   });
 
-  it("loads medium as a floor (medium+high+lossless) and unchecking lossless PUTs the remaining set", async () => {
+  it("loads medium as a floor and a High ceiling PUTs medium+high", async () => {
     const calls = stubQualityFetch(10);
     render(() => <QualityPrefsSection mode={() => "movies"} />);
-    await waitFor(() =>
-      expect(
-        screen.getByRole("checkbox", { name: "Quality tier Medium" }),
-      ).toBeChecked(),
-    );
-    expect(screen.getByRole("checkbox", { name: "Quality tier High" })).toBeChecked();
-    expect(screen.getByRole("checkbox", { name: "Quality tier Lossless" })).toBeChecked();
-    expect(screen.getByRole("checkbox", { name: "Quality tier Low" })).not.toBeChecked();
-
-    fireEvent.click(screen.getByRole("checkbox", { name: "Quality tier Lossless" }));
+    await waitFor(() => {
+      const row = screen.getByText("Quality floor").parentElement!;
+      expect(within(row).getByRole("button", { name: "Medium" }).className).toContain("bg-accent");
+    });
+    const ceilingRow = screen.getByText("Quality ceiling").parentElement!;
+    fireEvent.click(within(ceilingRow).getByRole("button", { name: "High" }));
     fireEvent.click(screen.getByText("Save"));
     await waitFor(() => expect(calls.some((c) => c.method === "PUT")).toBe(true));
     expect(calls.find((c) => c.method === "PUT")!.body).toMatchObject({
       tier: "medium",
+      ceiling: "high",
       tiers: ["medium", "high"],
     });
   });
@@ -278,11 +283,10 @@ describe("Settings → Library — quality prefs: Rename Undo depth", () => {
     // 10 is the signal's pre-GET placeholder, so wait on a GET-seeded
     // control instead — otherwise Save would PUT the synthesizeFloors("high")
     // initial map with only 480 flipped.
-    await waitFor(() =>
-      expect(
-        screen.getByRole("checkbox", { name: "Quality tier Medium" }),
-      ).toBeChecked(),
-    );
+    await waitFor(() => {
+      const row = screen.getByText("Quality floor").parentElement!;
+      expect(within(row).getByRole("button", { name: "Medium" }).className).toContain("bg-accent");
+    });
 
     const group = screen.getByRole("group", { name: "480p bitrate floor" });
     fireEvent.click(within(group).getByRole("button", { name: "Low" }));

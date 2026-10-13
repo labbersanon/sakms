@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/quality"
+	"github.com/labbersanon/sakms/internal/release"
 )
 
 // mbps builds a SizeBytes that yields the given raw implied bitrate (Mbps) for
@@ -502,5 +503,49 @@ func TestSelectBestByResolutionUsesPerRungFloor(t *testing.T) {
 	allMedium := SelectBestByResolution([]Candidate{dvdrip}, AcceptedFromFloors(UniformFloors(quality.Medium)), 0)
 	if !allMedium.Fallback {
 		t.Fatal("a Medium-everywhere map must still reject the Honey-Mousers-sized DVDRip")
+	}
+}
+
+func TestGradeCandidateHDRRaisesFloor(t *testing.T) {
+	sdr := GradeCandidate(Candidate{
+		Protocol: "usenet", SizeBytes: bytesForMbps(7, testRuntime), RuntimeSeconds: testRuntime,
+		Resolution: 1080, Codec: "x264",
+	}, quality.Medium, 0)
+	hdr := GradeCandidate(Candidate{
+		Protocol: "usenet", SizeBytes: bytesForMbps(7, testRuntime), RuntimeSeconds: testRuntime,
+		Resolution: 1080, Codec: "x264", HDR: true, Channels: release.Channels71,
+	}, quality.Medium, 0)
+	if !sdr.Qualified {
+		t.Fatalf("SDR 7 Mbps vs Medium 5: %s score=%.2f", sdr.Status, sdr.Score)
+	}
+	if !approx(hdr.FloorMbps, 5*HDRFloorFactor*Channel71FloorFactor) {
+		t.Fatalf("HDR 7.1 floor = %.3f, want %.3f", hdr.FloorMbps, 5*HDRFloorFactor*Channel71FloorFactor)
+	}
+	if hdr.Qualified {
+		t.Fatal("7 Mbps implied must fail 7.5 Mbps HDR 7.1 Medium@1080 after padding")
+	}
+}
+
+func TestSelectRanksHDRThenChannelsThenCodec(t *testing.T) {
+	sdr := Candidate{
+		Title: "sdr", Protocol: "usenet", SizeBytes: bytesForMbps(12, testRuntime), RuntimeSeconds: testRuntime,
+		Resolution: 1080, Codec: "x264",
+	}
+	hdrStereo := Candidate{
+		Title: "hdr", Protocol: "usenet", SizeBytes: bytesForMbps(12, testRuntime), RuntimeSeconds: testRuntime,
+		Resolution: 1080, Codec: "x264", HDR: true,
+	}
+	hdrAtmosX264 := Candidate{
+		Title: "hdr-atmos-x264", Protocol: "usenet", SizeBytes: bytesForMbps(12, testRuntime), RuntimeSeconds: testRuntime,
+		Resolution: 1080, Codec: "x264", HDR: true, Channels: release.Channels71,
+	}
+	hdrAtmosAV1 := Candidate{
+		Title: "hdr-atmos-av1", Protocol: "usenet", SizeBytes: bytesForMbps(12, testRuntime), RuntimeSeconds: testRuntime,
+		Resolution: 1080, Codec: "av1", HDR: true, Channels: release.Channels71,
+	}
+	accepted := AcceptedFromFloors(UniformFloors(quality.Medium))
+	got := SelectBestByResolutionRanked([]Candidate{sdr, hdrStereo, hdrAtmosX264, hdrAtmosAV1}, accepted, 0, []string{"av1", "x265", "x264"})
+	if got.Fallback || got.Grades[got.PickIndex].Candidate.Title != "hdr-atmos-av1" {
+		t.Fatalf("want HDR Atmos AV1, pick=%+v", got.Grades[got.PickIndex].Candidate)
 	}
 }

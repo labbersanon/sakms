@@ -1963,10 +1963,14 @@ export interface AIModelRequest {
 export interface QualityPrefsResponse {
   tier: string;
   tiers: string[];
+  ceiling: string;
+  minResolution: number /* int */;
   maxResolution: number /* int */;
   protocol: string;
   undoDepth: number /* int */;
   resolutionFloors: { [key: string]: string};
+  codecRank: string[];
+  featureUpgrade: boolean;
 }
 /**
  * UndoDepth is a POINTER here and a plain int on the response, deliberately.
@@ -1981,10 +1985,14 @@ export interface QualityPrefsResponse {
 export interface QualityPrefsRequest {
   tier: string;
   tiers?: string[];
+  ceiling?: string;
+  minResolution: number /* int */;
   maxResolution: number /* int */;
   protocol: string;
   undoDepth?: number /* int */;
   resolutionFloors?: { [key: string]: string};
+  codecRank?: string[];
+  featureUpgrade?: boolean;
 }
 /**
  * NamingPresetResponse / NamingPresetRequest back
@@ -3525,9 +3533,13 @@ export interface SetSeasonMonitoredRequest {
 export interface TitleQualityPrefsResponse {
   tiers: string[];
   floor: string;
+  ceiling: string;
   minResolution: number /* int */;
+  maxResolution: number /* int */;
   inherited: boolean;
   resolutionFloors: { [key: string]: string};
+  codecRank: string[];
+  featureUpgrade: boolean;
   upgradeQueued?: number /* int */;
   /**
    * Claude 2026-09-28: upgrade-watch, present only when a library row exists
@@ -3562,10 +3574,14 @@ export interface MovieUpgradeWatchResponse {
  */
 export interface TitleQualityPrefsRequest {
   floor?: string;
+  ceiling?: string;
   tiers?: string[];
   minResolution: number /* int */;
+  maxResolution: number /* int */;
   clear?: boolean;
   resolutionFloors?: { [key: string]: string};
+  codecRank?: string[];
+  featureUpgrade?: boolean;
 }
 /**
  * SeriesNewSeasonDiscoveryResponse / SeriesNewSeasonDiscoveryRequest back

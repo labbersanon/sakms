@@ -24,6 +24,11 @@ type Probe struct {
 	Height    int
 	BitRate   int64
 	Duration  float64
+	// HDR is true when the video stream reports PQ/HLG transfer, Dolby Vision
+	// side data, or mastering-display / content-light metadata.
+	HDR bool
+	// AudioChannels is the first audio stream's channel count (0 if none).
+	AudioChannels int
 	// Tags are best-effort identity hints from format.tags (title/year/ids).
 	// Empty when the container has none — callers must fall through to NFO/filename.
 	Tags Tags
@@ -57,11 +62,14 @@ func New() *Prober {
 }
 
 func runFFprobe(ctx context.Context, path string) ([]byte, error) {
+	// Claude 2026-10-12: probe every stream, not v:0 only.
+	// Reason: import grades HDR + audio channels from Probe; v:0 hid audio.
+	// Troubleshooting: refuseImportBelowFloor used title HDR while the file was SDR.
+	// Review if: a second ffprobe for audio-only is added instead.
 	cmd := exec.CommandContext(ctx, "ffprobe",
 		"-v", "error",
 		"-print_format", "json",
 		"-show_streams",
-		"-select_streams", "v:0",
 		"-show_format",
 		path,
 	)
@@ -73,10 +81,17 @@ func runFFprobe(ctx context.Context, path string) ([]byte, error) {
 }
 
 type ffprobeStream struct {
-	CodecName string `json:"codec_name"`
-	Width     int    `json:"width"`
-	Height    int    `json:"height"`
-	BitRate   string `json:"bit_rate"`
+	CodecType      string `json:"codec_type"`
+	CodecName      string `json:"codec_name"`
+	Width          int    `json:"width"`
+	Height         int    `json:"height"`
+	BitRate        string `json:"bit_rate"`
+	Channels       int    `json:"channels"`
+	ColorTransfer  string `json:"color_transfer"`
+	ColorPrimaries string `json:"color_primaries"`
+	SideDataList   []struct {
+		SideDataType string `json:"side_data_type"`
+	} `json:"side_data_list"`
 }
 
 type ffprobeFormat struct {
@@ -106,11 +121,10 @@ func (p *Prober) Probe(ctx context.Context, path string) (*Probe, error) {
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, fmt.Errorf("parsing ffprobe output: %w", err)
 	}
-	if len(out.Streams) == 0 {
+	s, ok := pickVideoStream(out.Streams)
+	if !ok {
 		return nil, fmt.Errorf("no video stream found in %s", path)
 	}
-
-	s := out.Streams[0]
 	var bitRate int64
 	if s.BitRate != "" {
 		// Best-effort: some containers/codecs don't report a stream-level
@@ -127,19 +141,66 @@ func (p *Prober) Probe(ctx context.Context, path string) (*Probe, error) {
 		duration, _ = strconv.ParseFloat(out.Format.Duration, 64)
 	}
 
+	audio, _ := pickAudioStream(out.Streams)
 	return &Probe{
-		CodecName: s.CodecName,
-		Width:     s.Width,
-		Height:    s.Height,
-		BitRate:   bitRate,
-		Duration:  duration,
-		Tags:      ParseFormatTags(out.Format.Tags),
+		CodecName:     s.CodecName,
+		Width:         s.Width,
+		Height:        s.Height,
+		BitRate:       bitRate,
+		Duration:      duration,
+		HDR:           streamIsHDR(s),
+		AudioChannels: audio.Channels,
+		Tags:          ParseFormatTags(out.Format.Tags),
 	}, nil
 }
 
+func pickVideoStream(streams []ffprobeStream) (ffprobeStream, bool) {
+	for _, s := range streams {
+		if strings.EqualFold(s.CodecType, "video") {
+			return s, true
+		}
+	}
+	// Fixtures (and some muxers) omit codec_type; a stream with a frame
+	// size is the video track.
+	for _, s := range streams {
+		if s.Width > 0 && s.Height > 0 {
+			return s, true
+		}
+	}
+	if len(streams) > 0 {
+		return streams[0], true
+	}
+	return ffprobeStream{}, false
+}
+
+func pickAudioStream(streams []ffprobeStream) (ffprobeStream, bool) {
+	for _, s := range streams {
+		if strings.EqualFold(s.CodecType, "audio") {
+			return s, true
+		}
+	}
+	return ffprobeStream{}, false
+}
+
+func streamIsHDR(s ffprobeStream) bool {
+	t := strings.ToLower(s.ColorTransfer)
+	if strings.Contains(t, "smpte2084") || t == "arib-std-b67" || strings.Contains(t, "smpte2094") {
+		return true
+	}
+	for _, sd := range s.SideDataList {
+		u := strings.ToLower(sd.SideDataType)
+		if strings.Contains(u, "dovi") || strings.Contains(u, "dolby") ||
+			strings.Contains(u, "hdr") || strings.Contains(u, "mastering display") ||
+			strings.Contains(u, "content light") {
+			return true
+		}
+	}
+	return false
+}
+
 var (
-	imdbIDRe  = regexp.MustCompile(`(?i)\b(tt\d{7,8})\b`)
-	tmdbIDRe  = regexp.MustCompile(`(?i)(?:tmdb[:\s-]*)?(\d{1,8})\b`)
+	imdbIDRe   = regexp.MustCompile(`(?i)\b(tt\d{7,8})\b`)
+	tmdbIDRe   = regexp.MustCompile(`(?i)(?:tmdb[:\s-]*)?(\d{1,8})\b`)
 	yearOnlyRe = regexp.MustCompile(`^(19|20)\d{2}$`)
 	yearPrefRe = regexp.MustCompile(`^(19|20)\d{2}`)
 )

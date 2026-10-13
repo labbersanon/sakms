@@ -33,24 +33,34 @@ type TitleQualityPrefs struct {
 	Tiers            []quality.Tier
 	MinResolution    int
 	MinResolutionSet bool
+	MaxResolution    int
+	MaxResolutionSet bool
 	HasOverride      bool
 	// ResolutionFloors is the per-rung bitrate floor (480/720/1080/2160).
 	// Nil/empty means synthesize UniformFloors(Lowest(Tiers)) at the caller.
 	ResolutionFloors map[int]quality.Tier
+	// CodecRank empty means inherit mode Settings. NormalizeCodecRank at use.
+	CodecRank []string
+	// FeatureUpgrade nil means inherit mode Settings.
+	FeatureUpgrade *bool
 }
 
 // GetTitleQualityPrefs loads a title override. ErrNotFound when no row exists
 // (not an error for callers that treat absence as inherit).
 func (s *Store) GetTitleQualityPrefs(ctx context.Context, m mode.Mode, tmdbID int) (TitleQualityPrefs, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT quality_tiers, min_resolution, resolution_floors
+		SELECT quality_tiers, min_resolution, resolution_floors,
+		       max_resolution, codec_rank, feature_upgrade
 		FROM library_quality_prefs
 		WHERE mode = ? AND tmdb_id = ?
 	`, string(m), tmdbID)
 	var tiersRaw string
 	var minRes sql.NullInt64
 	var floorsRaw string
-	if err := row.Scan(&tiersRaw, &minRes, &floorsRaw); err != nil {
+	var maxRes sql.NullInt64
+	var codecRankRaw string
+	var featureUp sql.NullInt64
+	if err := row.Scan(&tiersRaw, &minRes, &floorsRaw, &maxRes, &codecRankRaw, &featureUp); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return TitleQualityPrefs{}, ErrNotFound
 		}
@@ -60,10 +70,19 @@ func (s *Store) GetTitleQualityPrefs(ctx context.Context, m mode.Mode, tmdbID in
 		Mode: m, TMDBID: tmdbID, HasOverride: true,
 		Tiers:            parseStoredTiers(tiersRaw),
 		ResolutionFloors: parseStoredFloors(floorsRaw),
+		CodecRank:        parseStoredCodecRank(codecRankRaw),
 	}
 	if minRes.Valid {
 		out.MinResolution = int(minRes.Int64)
 		out.MinResolutionSet = true
+	}
+	if maxRes.Valid {
+		out.MaxResolution = int(maxRes.Int64)
+		out.MaxResolutionSet = true
+	}
+	if featureUp.Valid {
+		v := featureUp.Int64 != 0
+		out.FeatureUpgrade = &v
 	}
 	return out, nil
 }
@@ -77,36 +96,58 @@ func (s *Store) GetTitleQualityPrefs(ctx context.Context, m mode.Mode, tmdbID in
 //
 // Reason: title override must grade 480p vs 1080p independently.
 // Troubleshooting: library_quality_prefs.resolution_floors; TitleQualityPrefs pills.
-func (s *Store) SetTitleQualityPrefs(ctx context.Context, m mode.Mode, tmdbID int, tiers []quality.Tier, minResolution int, minResolutionSet bool, floors map[int]quality.Tier) error {
-	if tmdbID <= 0 {
+func (s *Store) SetTitleQualityPrefs(ctx context.Context, prefs TitleQualityPrefs) error {
+	if prefs.TMDBID <= 0 {
 		return fmt.Errorf("library: tmdb id required for quality prefs")
 	}
-	if len(tiers) == 0 {
+	if len(prefs.Tiers) == 0 {
 		return fmt.Errorf("library: quality tiers required for quality prefs")
 	}
-	raw, err := json.Marshal(tiersToStrings(tiers))
+	raw, err := json.Marshal(tiersToStrings(prefs.Tiers))
 	if err != nil {
 		return fmt.Errorf("encoding quality tiers: %w", err)
 	}
-	floorsRaw, err := floorsToJSON(floors)
+	floorsRaw, err := floorsToJSON(prefs.ResolutionFloors)
 	if err != nil {
 		return fmt.Errorf("encoding resolution floors: %w", err)
 	}
+	codecRaw, err := codecRankToJSON(prefs.CodecRank)
+	if err != nil {
+		return fmt.Errorf("encoding codec rank: %w", err)
+	}
 	var minArg any
-	if minResolutionSet {
-		minArg = minResolution
+	if prefs.MinResolutionSet {
+		minArg = prefs.MinResolution
+	}
+	var maxArg any
+	if prefs.MaxResolutionSet {
+		maxArg = prefs.MaxResolution
+	}
+	var featArg any
+	if prefs.FeatureUpgrade != nil {
+		if *prefs.FeatureUpgrade {
+			featArg = 1
+		} else {
+			featArg = 0
+		}
 	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO library_quality_prefs (mode, tmdb_id, quality_tiers, min_resolution, resolution_floors)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO library_quality_prefs (
+			mode, tmdb_id, quality_tiers, min_resolution, resolution_floors,
+			max_resolution, codec_rank, feature_upgrade
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(mode, tmdb_id) DO UPDATE SET
 			quality_tiers = excluded.quality_tiers,
 			min_resolution = excluded.min_resolution,
 			resolution_floors = excluded.resolution_floors,
+			max_resolution = excluded.max_resolution,
+			codec_rank = excluded.codec_rank,
+			feature_upgrade = excluded.feature_upgrade,
 			updated_at = sakms_now()
-	`, string(m), tmdbID, string(raw), minArg, floorsRaw)
+	`, string(prefs.Mode), prefs.TMDBID, string(raw), minArg, floorsRaw, maxArg, codecRaw, featArg)
 	if err != nil {
-		return fmt.Errorf("upserting quality prefs for %s/%d: %w", m, tmdbID, err)
+		return fmt.Errorf("upserting quality prefs for %s/%d: %w", prefs.Mode, prefs.TMDBID, err)
 	}
 	return nil
 }
@@ -180,6 +221,28 @@ func parseStoredFloors(raw string) map[int]quality.Tier {
 		return nil
 	}
 	return out
+}
+
+func parseStoredCodecRank(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	var ss []string
+	if json.Unmarshal([]byte(raw), &ss) != nil {
+		return nil
+	}
+	return quality.NormalizeCodecRank(ss)
+}
+
+func codecRankToJSON(rank []string) (string, error) {
+	if len(rank) == 0 {
+		return "", nil
+	}
+	b, err := json.Marshal(quality.NormalizeCodecRank(rank))
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 func floorsToJSON(floors map[int]quality.Tier) (string, error) {

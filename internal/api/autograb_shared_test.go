@@ -11,6 +11,7 @@ import (
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/autograb"
 	"github.com/labbersanon/sakms/internal/grabs"
+	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/prowlarr"
 	"github.com/labbersanon/sakms/internal/quality"
@@ -703,8 +704,11 @@ func TestRunAutoGrab_MinResolutionDoesNotDispatchDroppedRelease(t *testing.T) {
 	if err := settingsStore.Set(ctx, moviesLibraryRootFolderKey, "/movies"); err != nil {
 		t.Fatal(err)
 	}
-	if err := libStore.SetTitleQualityPrefs(ctx, mode.Movies, 42,
-		[]quality.Tier{quality.Medium, quality.High, quality.Lossless}, 1080, true, nil); err != nil {
+	if err := libStore.SetTitleQualityPrefs(ctx, library.TitleQualityPrefs{
+		Mode: mode.Movies, TMDBID: 42,
+		Tiers:         []quality.Tier{quality.Medium, quality.High, quality.Lossless},
+		MinResolution: 1080, MinResolutionSet: true,
+	}); err != nil {
 		t.Fatal(err)
 	}
 

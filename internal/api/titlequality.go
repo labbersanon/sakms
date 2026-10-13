@@ -150,20 +150,11 @@ func putTitleQualityPrefs(w http.ResponseWriter, r *http.Request, deps titleQual
 		return
 	}
 
-	floors, err := parseResolutionFloors(req.ResolutionFloors)
-	if err != nil {
+	if _, err := parseResolutionFloors(req.ResolutionFloors); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if len(floors) == 0 {
-		floors = autograb.UniformFloors(quality.Lowest(tiers))
-	} else {
-		merged := autograb.UniformFloors(quality.Lowest(tiers))
-		for r, t := range floors {
-			merged[r] = t
-		}
-		floors = merged
-	}
+	floors := autograb.UniformFloors(quality.Lowest(tiers))
 
 	prefs := library.TitleQualityPrefs{
 		Mode: m, TMDBID: tmdbID, Tiers: tiers,
@@ -264,15 +255,6 @@ func titlePrefsResponse(tiers []quality.Tier, minRes, maxRes int, inherited bool
 		floors = autograb.UniformFloors(quality.Lowest(tiers))
 	}
 	floor := quality.Lowest(tiers)
-	var rungTiers []quality.Tier
-	for _, r := range autograb.FloorRungs() {
-		if t := floors[r]; quality.Rank(t) > 0 {
-			rungTiers = append(rungTiers, t)
-		}
-	}
-	if len(rungTiers) > 0 {
-		floor = quality.Lowest(rungTiers)
-	}
 	return apidto.TitleQualityPrefsResponse{
 		Tiers: qualityTiersToStrings(tiers), Floor: string(floor),
 		Ceiling:       string(quality.Highest(tiers)),
@@ -283,13 +265,7 @@ func titlePrefsResponse(tiers []quality.Tier, minRes, maxRes int, inherited bool
 }
 
 func titleOverrideFloors(stored library.TitleQualityPrefs) map[int]quality.Tier {
-	out := autograb.UniformFloors(quality.Lowest(stored.Tiers))
-	for r, t := range stored.ResolutionFloors {
-		if quality.Rank(t) > 0 {
-			out[r] = t
-		}
-	}
-	return out
+	return autograb.UniformFloors(quality.Lowest(stored.Tiers))
 }
 
 // resolveAutoGrabTiersForTitle returns title override tiers when present,
@@ -303,22 +279,10 @@ func resolveAutoGrabTiersForTitle(ctx context.Context, lib *library.Store, setti
 	return resolveQualityTiers(ctx, settingsStore, m)
 }
 
-// Claude 2026-10-12: title override floors are per-rung, matching Settings.
-// Reason: UniformFloors(Lowest(tiers)) made a Looney override Medium at 480p
-//
-//	and 1080p; the operator asked overrides to follow the same rules.
-//
-// Troubleshooting: library_quality_prefs.resolution_floors; TitleQualityPrefs
-//
-//	480p/1080p pills. Empty stored map (pre-0038 rows) still UniformFloors.
-//
-// Review if: Inherited GET stops copying mode floors onto the title card.
-// Related files: migrations/0038_title_quality_resolution_floors.sql
-//
-// resolveAutoGrabFloorsForTitle is the per-rung bitrate floor map. A title
-// override uses its stored per-resolution map (same rules as mode Settings);
-// a pre-column override with empty floors still applies Lowest(tiers) to every
-// rung. Inherited titles use the mode Settings map.
+// Claude 2026-10-13: title override bitrate floor is UniformFloors(quality floor).
+// Reason: dual slider, same as Settings; mixed 480/1080 maps are ignored.
+// Troubleshooting: library_quality_prefs.resolution_floors leftover from #154.
+// Review if: that column is dropped.
 func resolveAutoGrabFloorsForTitle(ctx context.Context, lib *library.Store, settingsStore *settings.Store, m mode.Mode, tmdbID int) map[int]quality.Tier {
 	if lib != nil && tmdbID > 0 {
 		if stored, err := lib.GetTitleQualityPrefs(ctx, m, tmdbID); err == nil && stored.HasOverride {
@@ -328,11 +292,10 @@ func resolveAutoGrabFloorsForTitle(ctx context.Context, lib *library.Store, sett
 	return resolveResolutionFloors(ctx, settingsStore, m)
 }
 
-// resolveAutoGrabAcceptedByResolution is the accepted set auto-grab walks
-// highest-first, keyed by floorTable rung. Title overrides expand each rung's
-// floor with TiersAtOrAbove, matching mode Settings.
+// resolveAutoGrabAcceptedByResolution is the accepted quality band (floor
+// through ceiling) on every floorTable rung.
 func resolveAutoGrabAcceptedByResolution(ctx context.Context, lib *library.Store, settingsStore *settings.Store, m mode.Mode, tmdbID int) map[int][]quality.Tier {
-	return autograb.AcceptedFromFloors(resolveAutoGrabFloorsForTitle(ctx, lib, settingsStore, m, tmdbID))
+	return autograb.UniformAccepted(resolveAutoGrabTiersForTitle(ctx, lib, settingsStore, m, tmdbID))
 }
 
 // resolveMinResolutionForTitle is the hard resolution floor (0 = any).

@@ -715,6 +715,126 @@ export const Switch: Component<{
 // popup passes `(v) => !resolutionEnabled(v)` etc. — its own predicates are
 // phrased as "enabled," so they're inverted at the call site to match this
 // prop's "disabled" phrasing.
+export const RESOLUTION_SLIDER_STOPS = ["480", "720", "1080", "2160"] as const;
+
+export function resolutionStopsFromWire(
+  min: number,
+  max: number,
+): { low: string; high: string } {
+  return {
+    low: min === 0 ? "480" : String(min),
+    high: max === 0 ? "2160" : String(max),
+  };
+}
+
+export function resolutionStopsToWire(
+  low: string,
+  high: string,
+): { min: number; max: number } {
+  return {
+    min: low === "480" ? 0 : Number(low),
+    max: high === "2160" ? 0 : Number(high),
+  };
+}
+
+// DualRangeSlider is the floor–ceiling control for Settings quality prefs:
+// two thumbs on one discrete track (quality tiers or 480/720/1080/2160).
+export function DualRangeSlider<T extends string>(props: {
+  label: string;
+  options: T[];
+  optionLabels: Record<T, string>;
+  low: T;
+  high: T;
+  onChange: (low: T, high: T) => void;
+  lowAriaLabel: string;
+  highAriaLabel: string;
+}): JSX.Element {
+  const maxIdx = () => Math.max(0, props.options.length - 1);
+  const idxOf = (v: T) => {
+    const i = props.options.indexOf(v);
+    return i < 0 ? 0 : i;
+  };
+  const lowIdx = () => idxOf(props.low);
+  const highIdx = () => idxOf(props.high);
+  const fillLeft = () =>
+    maxIdx() === 0 ? 0 : (Math.min(lowIdx(), highIdx()) / maxIdx()) * 100;
+  const fillWidth = () =>
+    maxIdx() === 0 ? 100 : (Math.abs(highIdx() - lowIdx()) / maxIdx()) * 100;
+  const labelOf = (v: T) => props.optionLabels[v] ?? String(v);
+
+  const commit = (nextLow: number, nextHigh: number) => {
+    const cap = maxIdx();
+    const lo = Math.max(0, Math.min(nextLow, cap));
+    const hi = Math.max(0, Math.min(nextHigh, cap));
+    const a = props.options[lo];
+    const b = props.options[hi];
+    if (a === undefined || b === undefined) return;
+    if (a === props.low && b === props.high) return;
+    props.onChange(a, b);
+  };
+
+  return (
+    <div class="mb-3">
+      <div class="mb-1 flex items-baseline justify-between gap-2">
+        <div class={labelClass}>{props.label}</div>
+        <span class="text-xs text-fg">
+          {labelOf(props.low)} – {labelOf(props.high)}
+        </span>
+      </div>
+      <div class="relative h-6">
+        <div class="absolute top-1/2 h-1 w-full -translate-y-1/2 rounded-full bg-surface-2" />
+        <div
+          class="absolute top-1/2 h-1 -translate-y-1/2 rounded-full bg-accent"
+          style={{ left: `${fillLeft()}%`, width: `${fillWidth()}%` }}
+        />
+        <input
+          type="range"
+          class="dual-range-thumb"
+          min={0}
+          max={maxIdx()}
+          step={1}
+          value={lowIdx()}
+          aria-valuemin={0}
+          aria-valuemax={maxIdx()}
+          aria-valuenow={lowIdx()}
+          aria-valuetext={labelOf(props.low)}
+          aria-label={props.lowAriaLabel}
+          style={{ "z-index": lowIdx() > maxIdx() - lowIdx() ? 5 : 4 }}
+          onInput={(e) => {
+            const v = Number(e.currentTarget.value);
+            commit(Math.min(v, highIdx()), highIdx());
+          }}
+        />
+        <input
+          type="range"
+          class="dual-range-thumb"
+          min={0}
+          max={maxIdx()}
+          step={1}
+          value={highIdx()}
+          aria-valuemin={0}
+          aria-valuemax={maxIdx()}
+          aria-valuenow={highIdx()}
+          aria-valuetext={labelOf(props.high)}
+          aria-label={props.highAriaLabel}
+          style={{ "z-index": 5 }}
+          onInput={(e) => {
+            const v = Number(e.currentTarget.value);
+            commit(lowIdx(), Math.max(v, lowIdx()));
+          }}
+        />
+      </div>
+      <div class="mt-1 flex justify-between">
+        <For each={props.options}>
+          {(opt) => (
+            <span class="text-[10px] text-muted">{labelOf(opt)}</span>
+          )}
+        </For>
+      </div>
+    </div>
+  );
+}
+
 export function PillSelector<T extends string>(props: {
   label: string;
   options: T[];

@@ -267,21 +267,20 @@ func qualityTiersKey(m mode.Mode) string       { return string(m) + "_quality_ti
 func maxResolutionKey(m mode.Mode) string      { return string(m) + "_max_resolution" }
 func protocolPreferenceKey(m mode.Mode) string { return string(m) + "_protocol_preference" }
 
-// Claude 2026-10-12: per-resolution auto-grab bitrate floors.
-// Reason: one mode-wide Medium floor made 480p DVDRips fail (0.50 vs 0.8) while
+// Claude 2026-10-13: stored map is UniformFloors(quality floor), not operator
 //
-//	lowering Medium globally would also qualify tiny 1080p encodes. Each
-//	floorTable rung now has its own tier so 480p can be Low while 1080p stays
-//	Medium. Search still uses the accepted-tiers union (ProfileFor).
+//	per-rung tiers.
 //
-// Troubleshooting: Looney Tunes drain "no candidate cleared the quality floor".
-// Review if: title overrides grow their own per-rung map (today a title
+// Reason: Settings is a dual slider (floor–ceiling). floorTable still uses a
 //
-//	override still applies one floor to every rung).
+//	different Mbps at 480 vs 1080 for the same named tier.
 //
-// Related files: internal/autograb/autograb.go SnapFloorResolution;
+// Troubleshooting: mixed 480=low/1080=medium maps from #154; next PUT rewrites
 //
-//	frontend QualityPrefsSection per-resolution pills.
+//	every rung to the quality-slider floor.
+//
+// Review if: the KV is dropped once no install still has a mixed map.
+// Related files: frontend DualRangeSlider; autograb.UniformFloors.
 func qualityResolutionFloorsKey(m mode.Mode) string {
 	return string(m) + "_quality_resolution_floors"
 }
@@ -476,30 +475,10 @@ func parseResolutionFloors(in map[string]string) (map[int]quality.Tier, error) {
 	return out, nil
 }
 
-// resolveResolutionFloors returns the per-rung auto-grab floor for mode m.
-// Unset/malformed storage synthesizes every rung from the lowest accepted
-// tier so a pre-field install behaves like today's single floor.
+// resolveResolutionFloors is the bitrate-veto tier at every floorTable rung.
+// The operator picks one quality floor; Mbps still come from floorTable[tier][rung].
 func resolveResolutionFloors(ctx context.Context, settingsStore *settings.Store, m mode.Mode) map[int]quality.Tier {
-	out := autograb.UniformFloors(quality.Lowest(resolveQualityTiers(ctx, settingsStore, m)))
-	if settingsStore == nil {
-		return out
-	}
-	raw, err := settingsStore.Get(ctx, qualityResolutionFloorsKey(m))
-	if err != nil || raw == "" {
-		return out
-	}
-	var ss map[string]string
-	if json.Unmarshal([]byte(raw), &ss) != nil {
-		return out
-	}
-	parsed, err := parseResolutionFloors(ss)
-	if err != nil || len(parsed) == 0 {
-		return out
-	}
-	for r, t := range parsed {
-		out[r] = t
-	}
-	return out
+	return autograb.UniformFloors(quality.Lowest(resolveQualityTiers(ctx, settingsStore, m)))
 }
 
 // getQualityPrefsHandler returns {mode}'s Search scoring preferences —
@@ -667,8 +646,7 @@ func putQualityPrefsHandler(settingsStore *settings.Store) http.HandlerFunc {
 			http.Error(w, fmt.Sprintf("undoDepth must be between 1 and %d", MaxUndoDepth), http.StatusBadRequest)
 			return
 		}
-		parsedFloors, err := parseResolutionFloors(req.ResolutionFloors)
-		if err != nil {
+		if _, err := parseResolutionFloors(req.ResolutionFloors); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -732,22 +710,17 @@ func putQualityPrefsHandler(settingsStore *settings.Store) http.HandlerFunc {
 				return
 			}
 		}
-		// omitempty nil/empty leaves stored floors alone (older clients). A
-		// partial map fills missing rungs from this PUT's accepted-tier floor.
-		if len(parsedFloors) > 0 {
-			merged := autograb.UniformFloors(floor)
-			for r, t := range parsedFloors {
-				merged[r] = t
-			}
-			floorsJSON, err := json.Marshal(resolutionFloorsToStrings(merged))
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			if err := settingsStore.Set(ctx, qualityResolutionFloorsKey(m), string(floorsJSON)); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
+		// Claude 2026-10-13: always UniformFloors(quality floor).
+		// Reason: mixed per-rung maps are no longer an operator control.
+		// parsedFloors is only validated (400 on garbage); its values are ignored.
+		floorsJSON, err := json.Marshal(resolutionFloorsToStrings(autograb.UniformFloors(floor)))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := settingsStore.Set(ctx, qualityResolutionFloorsKey(m), string(floorsJSON)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}

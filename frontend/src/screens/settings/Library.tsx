@@ -27,7 +27,6 @@ import {
 } from "../../api/seasons";
 import {
   LIBRARY_MODE_SERVICES,
-  MAX_RESOLUTIONS,
   NAMING_PRESETS,
   QUALITY_TIERS,
   fetchKidsRootPath,
@@ -48,7 +47,11 @@ import {
   Button,
   ErrorText,
   Muted,
+  DualRangeSlider,
   PillSelector,
+  RESOLUTION_SLIDER_STOPS,
+  resolutionStopsFromWire,
+  resolutionStopsToWire,
   Switch,
   inputClass,
   labelClass,
@@ -242,21 +245,20 @@ export const LibraryRootFolderSection: Component<{ mode: () => Mode }> = (
 
 // ---- Per-mode: quality preferences ----------------------------------------
 
-// QUALITY_TIER_LABELS/RESOLUTION_LABELS/PROTOCOL_OPTIONS/PROTOCOL_LABELS give
-// PillSelector its display text — QUALITY_TIERS/MAX_RESOLUTIONS themselves
-// (api/settings.ts) are the wire values (lowercase tier strings, numeric
-// resolutions with 0 for "no cap"), reused as-is for the request body so
-// there's exactly one source of truth for what's valid.
+// QUALITY_TIER_LABELS/PROTOCOL_LABELS label DualRangeSlider and PillSelector.
+// QUALITY_TIERS (api/settings.ts) are the wire values.
 const QUALITY_TIER_LABELS: Record<string, string> = {
   low: "Low",
   medium: "Medium",
   high: "High",
   lossless: "Lossless",
 };
-const RESOLUTION_OPTIONS = MAX_RESOLUTIONS.map(String);
-const RESOLUTION_LABELS: Record<string, string> = Object.fromEntries(
-  MAX_RESOLUTIONS.map((r) => [String(r), r === 0 ? "No cap" : `${r}p`]),
-);
+const RESOLUTION_SLIDER_LABELS: Record<string, string> = {
+  "480": "480p",
+  "720": "720p",
+  "1080": "1080p",
+  "2160": "2160p",
+};
 const FLOOR_RUNGS = ["480", "720", "1080", "2160"] as const;
 const synthesizeFloors = (floor: string): Record<string, string> =>
   Object.fromEntries(FLOOR_RUNGS.map((r) => [r, floor]));
@@ -272,9 +274,6 @@ const CODEC_LABELS: Record<string, string> = {
   x265: "x265",
   x264: "x264",
 };
-const MIN_RESOLUTION_LABELS: Record<string, string> = Object.fromEntries(
-  MAX_RESOLUTIONS.map((r) => [String(r), r === 0 ? "Any" : `${r}p+`]),
-);
 const expandBand = (floor: string, ceiling: string): string[] => {
   const a = QUALITY_TIERS.indexOf(floor);
   const b = QUALITY_TIERS.indexOf(ceiling);
@@ -298,9 +297,6 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
   // value, since the backend substitutes the same default when nothing is
   // stored.
   const [undoDepth, setUndoDepth] = createSignal(10);
-  const [resFloors, setResFloors] = createSignal<Record<string, string>>(
-    synthesizeFloors("high"),
-  );
   const [dirty, setDirty] = createSignal(false);
   const expandFloor = (floor: string): string[] => {
     const idx = QUALITY_TIERS.indexOf(floor);
@@ -318,10 +314,6 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
           "lossless";
         setFloor(nextFloor);
         setCeiling(nextCeiling);
-        setResFloors({
-          ...synthesizeFloors(nextFloor),
-          ...(p.resolutionFloors ?? {}),
-        });
         setMinRes(p.minResolution ?? 0);
         setMaxRes(p.maxResolution);
         setCodecRank(
@@ -415,7 +407,7 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
         maxResolution: maxRes(),
         protocol: protocol(),
         undoDepth: undoDepth(),
-        resolutionFloors: resFloors(),
+        resolutionFloors: synthesizeFloors(floor()),
         codecRank: codecRank(),
         featureUpgrade: featureUpgrade(),
       });
@@ -435,62 +427,32 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
   });
   return (
     <Card title={`Search quality preferences (${MODE_LABELS[props.mode()]})`}>
-      <PillSelector
-        label="Quality floor"
-        options={QUALITY_TIERS}
+      <DualRangeSlider
+        label="Quality"
+        options={[...QUALITY_TIERS]}
         optionLabels={QUALITY_TIER_LABELS}
-        selected={floor()}
-        onSelect={(t) => {
-          setFloor(t);
+        low={floor()}
+        high={ceiling()}
+        lowAriaLabel="Quality floor"
+        highAriaLabel="Quality ceiling"
+        onChange={(lo, hi) => {
+          setFloor(lo);
+          setCeiling(hi);
           setDirty(true);
         }}
       />
-      <PillSelector
-        label="Quality ceiling"
-        options={QUALITY_TIERS}
-        optionLabels={QUALITY_TIER_LABELS}
-        selected={ceiling()}
-        onSelect={(t) => {
-          setCeiling(t);
-          setDirty(true);
-        }}
-      />
-      <div class="mb-3">
-        <span class={labelClass}>Bitrate floor by resolution</span>
-        <For each={FLOOR_RUNGS}>
-          {(r) => (
-            <div role="group" aria-label={`${r}p bitrate floor`}>
-              <PillSelector
-                label={`${r}p`}
-                options={QUALITY_TIERS}
-                optionLabels={QUALITY_TIER_LABELS}
-                selected={resFloors()[r] ?? "high"}
-                onSelect={(t) => {
-                  setResFloors((prev) => ({ ...prev, [r]: t }));
-                  setDirty(true);
-                }}
-              />
-            </div>
-          )}
-        </For>
-      </div>
-      <PillSelector
-        label="Minimum resolution"
-        options={RESOLUTION_OPTIONS}
-        optionLabels={MIN_RESOLUTION_LABELS}
-        selected={String(minRes())}
-        onSelect={(r) => {
-          setMinRes(Number(r));
-          setDirty(true);
-        }}
-      />
-      <PillSelector
-        label="Maximum resolution"
-        options={RESOLUTION_OPTIONS}
-        optionLabels={RESOLUTION_LABELS}
-        selected={String(maxRes())}
-        onSelect={(r) => {
-          setMaxRes(Number(r));
+      <DualRangeSlider
+        label="Resolution"
+        options={[...RESOLUTION_SLIDER_STOPS]}
+        optionLabels={RESOLUTION_SLIDER_LABELS}
+        low={resolutionStopsFromWire(minRes(), maxRes()).low}
+        high={resolutionStopsFromWire(minRes(), maxRes()).high}
+        lowAriaLabel="Minimum resolution"
+        highAriaLabel="Maximum resolution"
+        onChange={(lo, hi) => {
+          const next = resolutionStopsToWire(lo, hi);
+          setMinRes(next.min);
+          setMaxRes(next.max);
           setDirty(true);
         }}
       />
@@ -591,16 +553,15 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
         <SaveStatus text={status.status().text} error={status.status().error} />
       </div>
       <Muted class="mt-2">
-        Accepted tiers rank Search results. Auto-grab bitrate floors are per
-        resolution: a 480p release is compared to the 480p floor, not the
-        1080p floor, so SD DVDRips can use Low while 1080p stays Medium.
-        Auto-grab tries tiers at that resolution highest first and grabs the
-        best qualifying release. Maximum resolution softly prefers
-        at-or-below-cap results, falling back to whatever's available if
-        nothing meets it. Protocol is the Discover popup's default pick when
+        The quality slider is the accepted band (floor through ceiling).
+        Auto-grab compares each release to that floor’s bitrate at the
+        release’s resolution — Medium at 480p is a lower Mbps bar than
+        Medium at 1080p. The resolution slider is a hard min/max; a full
+        span (480p–2160p) leaves both open. Auto-grab tries accepted tiers
+        highest first. Protocol is the Discover popup’s default pick when
         both are available; it still falls back to whichever protocol
         actually has a release. Undoable recent Applies (1–100) is how many
-        recent Applies stay undoable before the oldest is pruned — Rename's
+        recent Applies stay undoable before the oldest is pruned — Rename’s
         “Recently Applied” list shows them. Lowering it shrinks that list
         immediately, though the entries it stops showing stay undoable until
         a later Apply actually evicts them.

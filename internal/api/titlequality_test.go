@@ -46,37 +46,35 @@ func TestQualityPrefsRaised(t *testing.T) {
 	}
 }
 
-func TestResolveAutoGrabFloorsForTitle_OverridePerRung(t *testing.T) {
+func TestResolveAutoGrabFloorsForTitle_OverrideUsesQualityFloor(t *testing.T) {
 	ctx := context.Background()
 	_, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
-	if err := settingsStore.Set(ctx, qualityTiersKey(mode.Series), `["medium","high","lossless"]`); err != nil {
-		t.Fatal(err)
-	}
-	if err := settingsStore.Set(ctx, qualityResolutionFloorsKey(mode.Series), `{"480":"medium","720":"medium","1080":"medium","2160":"medium"}`); err != nil {
+	if err := settingsStore.Set(ctx, qualityTiersKey(mode.Series), `["medium","high"]`); err != nil {
 		t.Fatal(err)
 	}
 	inherited := resolveAutoGrabFloorsForTitle(ctx, libStore, settingsStore, mode.Series, 333432)
 	if inherited[480] != quality.Medium || inherited[1080] != quality.Medium {
-		t.Fatalf("inherited floors=%v, want medium on 480 and 1080", inherited)
+		t.Fatalf("inherited floors=%v, want medium on every rung", inherited)
+	}
+	acceptedMode := resolveAutoGrabAcceptedByResolution(ctx, libStore, settingsStore, mode.Series, 333432)
+	if quality.Highest(acceptedMode[1080]) != quality.High {
+		t.Fatalf("mode ceiling must cap accepted tiers, got %v", acceptedMode[1080])
 	}
 
-	floors := map[int]quality.Tier{480: quality.Low, 720: quality.Medium, 1080: quality.Medium, 2160: quality.Medium}
 	if err := libStore.SetTitleQualityPrefs(ctx, library.TitleQualityPrefs{
-		Mode: mode.Series, TMDBID: 333432, Tiers: quality.TiersAtOrAbove(quality.Low),
-		MinResolutionSet: true, ResolutionFloors: floors,
+		Mode: mode.Series, TMDBID: 333432, Tiers: quality.TiersBetween(quality.Low, quality.High),
+		MinResolutionSet: true,
+		ResolutionFloors: map[int]quality.Tier{480: quality.Low, 1080: quality.Medium},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	got := resolveAutoGrabFloorsForTitle(ctx, libStore, settingsStore, mode.Series, 333432)
-	if got[480] != quality.Low || got[1080] != quality.Medium {
-		t.Fatalf("override floors=%v, want 480=low 1080=medium", got)
+	if got[480] != quality.Low || got[1080] != quality.Low {
+		t.Fatalf("override floors=%v, want Low on every rung", got)
 	}
 	accepted := resolveAutoGrabAcceptedByResolution(ctx, libStore, settingsStore, mode.Series, 333432)
-	if quality.Lowest(accepted[480]) != quality.Low {
-		t.Fatalf("480 accepted=%v, want Low as floor", accepted[480])
-	}
-	if quality.Lowest(accepted[1080]) != quality.Medium {
-		t.Fatalf("1080 accepted=%v, want Medium as floor", accepted[1080])
+	if quality.Lowest(accepted[480]) != quality.Low || quality.Highest(accepted[1080]) != quality.High {
+		t.Fatalf("override accepted=%v, want Low–High on every rung", accepted)
 	}
 }
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { TitleQualityPrefs } from "./TitleQualityPrefs";
 import { jsonResponse } from "../testing/http";
 
@@ -24,7 +24,7 @@ describe("TitleQualityPrefs movie upgrade-watch", () => {
     render(() => (
       <TitleQualityPrefs mode="movies" titleKey={{ tmdbId: 42 }} />
     ));
-    await screen.findByText("Minimum resolution");
+    await screen.findByLabelText("Minimum resolution");
     expect(
       screen.queryByRole("switch", { name: "Watch for better release" }),
     ).toBeNull();
@@ -95,7 +95,7 @@ describe("TitleQualityPrefs movie upgrade-watch", () => {
     render(() => (
       <TitleQualityPrefs mode="series" titleKey={{ seriesID: 7 }} />
     ));
-    await screen.findByText("Minimum resolution");
+    await screen.findByLabelText("Minimum resolution");
     expect(
       screen.queryByRole("switch", { name: "Watch for better release" }),
     ).toBeNull();
@@ -151,7 +151,7 @@ describe("TitleQualityPrefs movie upgrade-watch", () => {
     });
   });
 
-  it("PUTs a Low 480p floor without lowering the 1080p floor", async () => {
+  it("PUTs a High ceiling without changing the Medium floor", async () => {
     const calls: { url: string; method: string; body?: unknown }[] = [];
     vi.stubGlobal(
       "fetch",
@@ -165,30 +165,26 @@ describe("TitleQualityPrefs movie upgrade-watch", () => {
         });
         return jsonResponse({
           floor: "medium",
+          ceiling: "lossless",
           minResolution: 0,
+          maxResolution: 0,
           tiers: ["medium", "high", "lossless"],
           inherited: true,
-          resolutionFloors: {
-            "480": "medium",
-            "720": "medium",
-            "1080": "medium",
-            "2160": "medium",
-          },
         });
       }),
     );
     render(() => (
       <TitleQualityPrefs mode="series" titleKey={{ tmdbId: 333432 }} />
     ));
-    const group = await screen.findByRole("group", { name: "480p bitrate floor" });
-    fireEvent.click(within(group).getByRole("button", { name: "Low" }));
+    const ceiling = await screen.findByLabelText("Quality ceiling");
+    fireEvent.input(ceiling, { target: { value: "2" } });
     fireEvent.click(screen.getByText("Save"));
     await waitFor(() => expect(calls.some((c) => c.method === "PUT")).toBe(true));
     expect(calls.find((c) => c.method === "PUT")!.body).toMatchObject({
       floor: "medium",
-      minResolution: 0,
+      ceiling: "high",
       resolutionFloors: {
-        "480": "low",
+        "480": "medium",
         "720": "medium",
         "1080": "medium",
         "2160": "medium",

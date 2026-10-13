@@ -195,7 +195,7 @@ func pickPersistedAdultEnclosure(ctx context.Context, store *adultnewest.Release
 	}
 
 	cands := buildAutoGrabCandidates(filtered, float64(req.DurationSeconds), false)
-	sel := autograb.SelectBestByResolutionRanked(cands, autograb.AcceptedFromFloors(resolveResolutionFloors(ctx, settingsStore, mode.Adult)), minSeedersFor(mode.Adult), resolveCodecRank(ctx, settingsStore, mode.Adult))
+	sel := autograb.SelectBestByResolutionRanked(cands, autograb.UniformAccepted(resolveQualityTiers(ctx, settingsStore, mode.Adult)), minSeedersFor(mode.Adult), resolveCodecRank(ctx, settingsStore, mode.Adult))
 	if sel.Fallback {
 		return prowlarr.Release{}, false
 	}

@@ -191,6 +191,24 @@ describe("Import", () => {
     });
   });
 
+  it("highlights Series when that library chip is clicked", () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({ path: "", entries: [] })),
+    );
+
+    render(() => <Import />);
+    const movies = screen.getByRole("button", { name: "Movies" });
+    const series = screen.getByRole("button", { name: "Series" });
+    expect(movies).toHaveClass("bg-accent");
+    expect(series).not.toHaveClass("bg-accent");
+
+    fireEvent.click(series);
+
+    expect(series).toHaveClass("bg-accent");
+    expect(movies).not.toHaveClass("bg-accent");
+  });
+
   it("clears a previous scan when the library chip changes", async () => {
     vi.stubGlobal(
       "fetch",

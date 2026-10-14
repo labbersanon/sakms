@@ -112,14 +112,25 @@ export function Button(props: ButtonProps): JSX.Element {
   const [local, rest] = splitProps(props, ["variant", "class", "type"]);
   const base =
     "rounded-md px-4 py-2 text-sm font-medium transition disabled:opacity-50";
-  const variant =
-    local.variant === "primary"
-      ? "bg-accent text-accent-fg hover:opacity-90"
-      : "border border-border bg-surface-2 text-fg hover:opacity-90";
+  // Claude 2026-10-02: variant classes are applied in JSX, not snapshotted here.
+  // Reason: Solid runs the component once; a const class string kept Movies
+  //   highlighted on Import after Series was clicked.
+  // Troubleshooting: Import Series chip click did not look selected.
+  // Review if: Button is rebuilt around a classList memo.
+  // was:
+  // const variant =
+  //   local.variant === "primary"
+  //     ? "bg-accent text-accent-fg hover:opacity-90"
+  //     : "border border-border bg-surface-2 text-fg hover:opacity-90";
   return (
     <button
       type={local.type ?? "button"}
-      class={`${base} ${variant} ${local.class ?? ""}`}
+      class={`${base} ${local.class ?? ""}`}
+      classList={{
+        "bg-accent text-accent-fg hover:opacity-90": local.variant === "primary",
+        "border border-border bg-surface-2 text-fg hover:opacity-90":
+          local.variant !== "primary",
+      }}
       {...rest}
     />
   );

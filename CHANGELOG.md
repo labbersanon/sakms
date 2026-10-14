@@ -10935,3 +10935,18 @@ status stays active.
 | `internal/api/usenetcontent.go` | stalled-release retry reason |
 | `internal/usenet/resume.go` | refuse/compact duplicate yEnc n/offset |
 | `internal/usenet/manager.go` | assemble skip by yEnc n |
+
+## 2026-10-02 — Import Series chip highlights when selected
+
+**Problem:** Organize Import's Series (and Adult) library chips did not look selected after click; Movies stayed highlighted.
+**Root cause:** `Button` computed its variant class once in the component body. Solid does not re-run that, so a reactive `variant={mode() === "series" ? "primary" : "secondary"}` never updated the DOM class.
+**Fix:** Apply primary/secondary classes in JSX via `classList` so `variant` is tracked.
+**Outcome:** Clicking Series highlights Series and drops Movies; same for Adult. Downloads pause fill tracks pause state too.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/components/ui.tsx` | reactive Button variant classes |
+| `frontend/src/components/ui.Button.test.tsx` | variant class updates after click |
+| `frontend/src/screens/Import.test.tsx` | Series chip gains `bg-accent` when clicked |

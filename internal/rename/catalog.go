@@ -76,8 +76,9 @@ func catalogMovieAtPath(ctx context.Context, libStore *library.Store, videoPath,
 }
 
 // catalogEpisodeAtPath writes series + episode rows in place. Show id comes
-// from a folder-corroborated nfo (TMDB or TVDB→TMDB) or [tmdbid-N]. Episode
-// numbers come from sequential SxxExx or year-season shorts nesting.
+// from a folder-corroborated nfo (TMDB or TVDB→TMDB), [tmdbid-N], or a
+// `{tvdb N}` / `[tvdbid-N]` show-folder tag. Episode numbers come from
+// sequential SxxExx or year-season shorts nesting.
 func catalogEpisodeAtPath(ctx context.Context, sess *mode.Session, libStore *library.Store, videoPath, foundRoot string, roots []string) (bool, error) {
 	if libStore == nil || videoPath == "" {
 		return false, nil
@@ -87,6 +88,9 @@ func catalogEpisodeAtPath(ctx context.Context, sess *mode.Session, libStore *lib
 	}
 	showFolder := showFolderName(videoPath, roots)
 	hint := trustedSeriesSidecar(videoPath, showFolder, foundRoot)
+	if hint.TVDBID <= 0 {
+		hint.TVDBID = naming.TVDBIDFromPath(videoPath)
+	}
 	tmdbID := catalogShowTMDBID(ctx, sess, hint, videoPath)
 	pathTMDB := tmdbID
 	season, eps, parsed := library.ParseEpisodeNumbersNested(videoPath, foundRoot)
@@ -94,6 +98,9 @@ func catalogEpisodeAtPath(ctx context.Context, sess *mode.Session, libStore *lib
 		parsed = false
 	}
 	title := strings.TrimSpace(hint.Title)
+	if title == "" {
+		title = titleFromShowFolder(showFolder)
+	}
 	if title == "" {
 		title = showFolder
 	}
@@ -170,11 +177,25 @@ func catalogEpisodeAtPath(ctx context.Context, sess *mode.Session, libStore *lib
 		recordNestIdentification(ctx, libStore, parent, season, epNum, videoPath, foundRoot, prior)
 		return true, nil
 	}
-	return upsertCatalogedEpisode(ctx, sess, libStore, catalogEpisode{
+	// Claude 2026-10-13: sequential SxxExx under `{tvdb N}` attaches to TMDB
+	//   and retires the web-authority card that already claimed the file.
+	// Reason: If I Were an Animal E01–E04 were tracked as their own series
+	//   while 98333 already had empty slots for those episodes.
+	// Troubleshooting: extra "If I Were an Animal..." Library cards after Save.
+	// Review if: Scan skips already-cataloged paths before this runs.
+	stray, straySer, _ := libStore.EpisodeOwningFile(ctx, videoPath)
+	cataloged, err := upsertCatalogedEpisode(ctx, sess, libStore, catalogEpisode{
 		TMDBID: tmdbID, TVDBID: hint.TVDBID, Title: title, Year: hint.Year,
 		Season: season, Episodes: eps, VideoPath: videoPath, FoundRoot: foundRoot,
 		AttachExtra: true,
 	})
+	if err != nil || !cataloged {
+		return cataloged, err
+	}
+	if stray != nil && straySer != nil {
+		retireStrayWebAuthorityShort(ctx, libStore, stray, straySer, videoPath, tmdbID)
+	}
+	return true, nil
 }
 
 func firstEpisode(eps []int) int {

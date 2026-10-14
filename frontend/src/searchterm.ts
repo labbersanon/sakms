@@ -97,7 +97,9 @@ const cqNoiseRe = /\bcq\d+\b/gi;
 const trailingJunkRe = /[\s-]+$/;
 const yearParenStripRe = /\s*\((19\d{2}|20\d{2})\)/g;
 const yearBareEndRe = /\s+\b(19\d{2}|20\d{2})\b\s*$/i;
-const catalogIdTagRe = /\[(?:tmdb|tvdb)id-\d+\]/gi;
+// Claude 2026-10-13: also strip Kodi `{tvdb N}` show-folder tags.
+// Reason: If I Were An Animal - {tvdb 779667} kept the brace tag in Search.
+const catalogIdTagRe = /\[(?:tmdb|tvdb)id-\d+\]|\{tvdb(?:id)?[\s-]+\d+\}/gi;
 const seasonDirRe = /^(season\s*\d+|specials)$/i;
 const leadingEpisodeRangeRe = /^\d{1,2}-\d{1,2}\s+/;
 const commaPersonRe = /^(.+?)\s+([^,]+),\s*([^,]+)$/i;

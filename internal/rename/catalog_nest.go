@@ -27,8 +27,13 @@ func dummyMovieEpisodeParse(season int, eps []int) bool {
 }
 
 var (
-	showFolderYearRe  = regexp.MustCompile(`\((\d{4})\)`)
-	showFolderTMDBRe  = regexp.MustCompile(`(?i)\[tmdbid-?-?\d+\]`)
+	showFolderYearRe = regexp.MustCompile(`\((\d{4})\)`)
+	showFolderTMDBRe = regexp.MustCompile(`(?i)\[tmdbid-?-?\d+\]`)
+	// Claude 2026-10-13: strip `{tvdb N}` / `[tvdbid-N]` from show-folder titles.
+	// Reason: title fallback used the raw `{tvdb 779667}` folder name.
+	// Troubleshooting: Library card titled "If I Were An Animal - {tvdb …}".
+	// Review if: no `{tvdb N}` folders remain on disk.
+	showFolderTVDBRe  = regexp.MustCompile(`(?i)(?:\[tvdbid-\d+\]|\{tvdb(?:id)?[\s-]+\d+\})`)
 	showFolderYearPar = regexp.MustCompile(`\s*\(\d{4}\)\s*`)
 )
 
@@ -43,8 +48,9 @@ func yearFromShowFolder(name string) int {
 
 func titleFromShowFolder(name string) string {
 	s := showFolderTMDBRe.ReplaceAllString(name, "")
+	s = showFolderTVDBRe.ReplaceAllString(s, "")
 	s = showFolderYearPar.ReplaceAllString(s, " ")
-	return strings.TrimSpace(s)
+	return strings.Trim(s, " -")
 }
 
 func episodeTitleKey(s string) string {

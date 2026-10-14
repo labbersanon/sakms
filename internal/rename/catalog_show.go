@@ -104,14 +104,22 @@ func readSeriesSidecarNested(videoPath, root string) nfo.SeriesNFO {
 }
 
 // catalogShowTMDBID keeps a sidecar TMDB id when it is anything other than 0,
-// including a negative anthology synthetic. Path [tmdbid-N] and TVDB→TMDB
-// run only when the nfo has no TMDB id at all.
+// including a negative anthology synthetic. Path [tmdbid-N], `{tvdb N}` /
+// `[tvdbid-N]`, and nfo TVDB→TMDB run only when the nfo has no TMDB id at all.
 //
 // Claude 2026-09-23: do not treat anthology synthetic ids as missing.
 // Reason: Laurel & Hardy (1919) tvshow.nfo stores tmdb -1498833576 / tvdb
 //  73910. FindTVByTVDBID(73910) previously returned the 1966 cartoon.
 //
 // Review if: a real positive TMDB TV id exists for the 1919 shorts series.
+//
+// Claude 2026-10-13: folder `{tvdb N}` is a show id when nfo has none.
+// Reason: If I Were an Animal SxxExx files under `{tvdb 779667}` stayed
+//
+//	untracked, then Scan web-matched E01–E04 as extra series cards.
+//
+// Troubleshooting: kids `{tvdb N}` folders stay untracked after Save.
+// Review if: SAK writes only [tmdbid-N] show folders and no {tvdb N} remain.
 func catalogShowTMDBID(ctx context.Context, sess *mode.Session, hint nfo.SeriesNFO, videoPath string) int {
 	if hint.TMDBID != 0 {
 		return hint.TMDBID
@@ -122,8 +130,12 @@ func catalogShowTMDBID(ctx context.Context, sess *mode.Session, hint nfo.SeriesN
 	if id := naming.TMDBIDFromPath(filepath.Dir(videoPath)); id != 0 {
 		return id
 	}
+	tvdbID := hint.TVDBID
+	if tvdbID <= 0 {
+		tvdbID = naming.TVDBIDFromPath(videoPath)
+	}
 	if sess != nil && sess.TMDB != nil {
-		return resolveTMDBFromTVDB(ctx, sess.TMDB, hint.TVDBID)
+		return resolveTMDBFromTVDB(ctx, sess.TMDB, tvdbID)
 	}
 	return 0
 }

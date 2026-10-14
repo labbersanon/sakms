@@ -10827,3 +10827,22 @@ status stays active.
 | `frontend/src/screens/discover/DetailPopup.tsx` | Replace → autograb + in-row pick list |
 | `frontend/src/screens/discover/DetailPopup.test.tsx` | asserts POST season/episode + Grab this |
 
+## 2026-10-13 — `{tvdb N}` kids folders pin to one TMDB series
+
+**Problem:** If I Were an Animal showed as extra Library cards (ellipsis 2017/2023/2026 plus If I Were a Great Pyrenees) while the real TMDB 98333 series had empty E01–E04.
+**Root cause:** Files lived under `If I Were An Animal - {tvdb 779667}` with SxxExx names. Catalog/Scan only read `[tmdbid-N]` and tvshow.nfo, so those four files web-matched as their own title+year series. `{tvdb N}` also stayed in the search term.
+**Fix:** Parse `{tvdb N}` / `[tvdbid-N]` as a show id, resolve TMDB via FindTVByTVDBID, attach the file to that series, and retire the web-authority card. Strip `{tvdb N}` from search terms.
+**Outcome:** Tests pass. Live E01–E04 relinked onto 98333; stray series 2805/2807/2821/2822 removed. Not deployed.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/naming/schema.go` | `TVDBIDFromPath` for `{tvdb N}` / `[tvdbid-N]` |
+| `internal/rename/catalog_show.go` | folder TVDB → TMDB |
+| `internal/rename/catalog.go` | sequential catalog retires web-authority strays |
+| `internal/rename/rename.go` | Scan treats folder TVDB as a show id |
+| `internal/rename/catalog_nest.go` | strip `{tvdb N}` from show-folder titles |
+| `internal/searchterm/searchterm.go` | strip `{tvdb N}` from FromName |
+| `frontend/src/searchterm.ts` | same strip |
+

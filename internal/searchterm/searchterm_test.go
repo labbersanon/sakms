@@ -194,4 +194,8 @@ func TestFromName_StripsCatalogIdTag(t *testing.T) {
 	if got != "Phineas and Ferb (2007)" {
 		t.Fatalf("FromName(show folder) = %q, want the title and year without tmdbid", got)
 	}
+	got = FromName("If I Were An Animal - {tvdb 779667}")
+	if got != "If I Were An Animal" {
+		t.Fatalf("FromName({tvdb} folder) = %q, want the title without the tvdb tag", got)
+	}
 }

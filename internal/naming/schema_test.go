@@ -36,6 +36,25 @@ func TestTMDBIDFromPath(t *testing.T) {
 	}
 }
 
+func TestTVDBIDFromPath(t *testing.T) {
+	cases := []struct {
+		path string
+		want int
+	}{
+		{"/media/Series (Kids)/If I Were An Animal - {tvdb 779667}/If I Were a Fox - s01e02.mp4", 779667},
+		{"/media/Series/Some Show [tvdbid-7266]/Season 01/Some Show S01E01.mkv", 7266},
+		{"Show {tvdbid-42}/file.mkv", 42},
+		{"Show [tvdb-99]/file.mkv", 99},
+		{"/media/Series/Some Show (2019) [tmdbid-555]/Season 01/Some Show S01E01.mkv", 0},
+		{"", 0},
+	}
+	for _, tc := range cases {
+		if got := TVDBIDFromPath(tc.path); got != tc.want {
+			t.Errorf("TVDBIDFromPath(%q)=%d, want %d", tc.path, got, tc.want)
+		}
+	}
+}
+
 func TestMatchesMovieSchema(t *testing.T) {
 	t.Run("conformant Jellyfin folder+file matches", func(t *testing.T) {
 		root := t.TempDir()

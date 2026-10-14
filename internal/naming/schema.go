@@ -43,6 +43,13 @@ var (
 	// this is the sole conformance marker MatchesAdultSchema checks for.
 	adultPhashTag = regexp.MustCompile(`\[phash-[^\]]+\]`)
 	tmdbIDTag     = regexp.MustCompile(`(?i)\[tmdbid-(\d+)\]`)
+	// Claude 2026-10-13: folder TVDB tags — Jellyfin [tvdbid-N] and Kodi {tvdb N}.
+	// Reason: If I Were an Animal lived under `{tvdb 779667}` with SxxExx files;
+	//   only [tmdbid-N] was parsed, so Scan web-matched E01–E04 as their own
+	//   title+year series.
+	// Troubleshooting: kids `{tvdb N}` folders mint extra Library cards.
+	// Review if: SAK writes only [tmdbid-N] show folders and no {tvdb N} remain.
+	tvdbIDTag = regexp.MustCompile(`(?i)(?:\{tvdb(?:id)?[\s-]+(\d+)\}|\[tvdb(?:id)?-(\d+)\])`)
 )
 
 // TMDBIDFromPath returns the first usable [tmdbid-N] tag in path — folder or
@@ -53,6 +60,22 @@ func TMDBIDFromPath(path string) int {
 	for _, m := range tmdbIDTag.FindAllStringSubmatch(path, -1) {
 		if n, err := strconv.Atoi(m[1]); err == nil && n > 0 {
 			return n
+		}
+	}
+	return 0
+}
+
+// TVDBIDFromPath returns the first usable TVDB series id in path — `{tvdb N}`,
+// `{tvdbid-N}`, `[tvdbid-N]`, or `[tvdb-N]` — or 0 if there is none.
+func TVDBIDFromPath(path string) int {
+	for _, m := range tvdbIDTag.FindAllStringSubmatch(path, -1) {
+		for _, g := range m[1:] {
+			if g == "" {
+				continue
+			}
+			if n, err := strconv.Atoi(g); err == nil && n > 0 {
+				return n
+			}
 		}
 	}
 	return 0

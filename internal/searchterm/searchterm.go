@@ -51,7 +51,7 @@ var (
 	creditBeforeYearRe = regexp.MustCompile(`(?i)^(.+?)\s*-\s+.+\((\d{4})\)\s*$`)
 	cqNoiseRe          = regexp.MustCompile(`(?i)\bcq\d+\b`)
 	trailingJunkRe     = regexp.MustCompile(`[\s\-]+$`)
-	catalogIdTagRe     = regexp.MustCompile(`(?i)\[(?:tmdb|tvdb)id-\d+\]`)
+	catalogIdTagRe     = regexp.MustCompile(`(?i)(?:\[(?:tmdb|tvdb)id-\d+\]|\{tvdb(?:id)?[\s-]+\d+\})`)
 )
 
 // FromName derives a search term from a raw orphaned file/folder name.
@@ -95,6 +95,12 @@ func FromName(name string) string {
 	// Troubleshooting: Series Search for a Season-NN dual file must query
 	//   "Phineas and Ferb", not the episode title or the id tag.
 	// Review if: callers strip catalog id tags before FromName.
+	//
+	// Claude 2026-10-13: also strip Kodi `{tvdb N}` show-folder tags.
+	// Reason: If I Were An Animal - {tvdb 779667} kept the brace tag in the
+	//   TMDB query, so some SxxExx files web-matched as other years.
+	// Troubleshooting: kids `{tvdb N}` folders split into extra series cards.
+	// Review if: no `{tvdb N}` folders remain on disk.
 	s = catalogIdTagRe.ReplaceAllString(s, " ")
 
 	s = noiseTokenRe.ReplaceAllString(s, " ")
@@ -175,4 +181,3 @@ func SearchQueries(name string) []string {
 	// corroboration on missing metadata.
 	return out
 }
-

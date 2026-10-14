@@ -12,6 +12,12 @@ describe("fromName", () => {
     expect(fromName("Night.Owl.mp4")).toBe("Night Owl");
   });
 
+  it("strips Kodi {tvdb N} show-folder tags", () => {
+    expect(fromName("If I Were An Animal - {tvdb 779667}")).toBe(
+      "If I Were An Animal",
+    );
+  });
+
   it("strips scene noise the way Scan does", () => {
     expect(fromName("9.11.Truth.Lies.and.Conspiracies.WEB.x264-spamTV")).toBe(
       "9 11 Truth Lies and Conspiracies",

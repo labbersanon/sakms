@@ -286,6 +286,110 @@ func TestTitleFromShowFolder(t *testing.T) {
 	if yearFromShowFolder("Night Owls (1930) [tmdbid-48889]") != 1930 {
 		t.Fatal("year")
 	}
+	got = titleFromShowFolder("If I Were An Animal - {tvdb 779667}")
+	if got != "If I Were An Animal" {
+		t.Fatalf("tvdb folder title = %q", got)
+	}
+}
+
+func TestCatalogEpisodeAtPath_FolderTVDBTagAttachesAndRetiresStray(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	showDir := filepath.Join(root, "If I Were An Animal - {tvdb 779667}")
+	if err := os.MkdirAll(showDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(showDir, "If I Were a Fox - s01e02.mp4")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tmdbClient, _ := fakeTMDBTVDBFallbackServer(t, []tvdbFallbackCandidate{{
+		TVDBID: 779667, TMDBID: 98333, TMDBName: "If I Were an Animal", EpisodeRuntimeMin: 11,
+	}})
+	libStore := newTestLibraryStore(t)
+	parent, err := libStore.UpsertSeries(ctx, library.Series{
+		TMDBID: 98333, Title: "If I Were an Animal", Year: 2018, RootFolderPath: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: parent.ID, SeasonNumber: 1, EpisodeNumber: 2, Title: "If I Were a Fox",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	strayID := WebAuthorityTMDBID("If I Were an Animal...", 2026)
+	stray, err := libStore.UpsertSeries(ctx, library.Series{
+		TMDBID: strayID, Title: "If I Were an Animal...", Year: 2026, RootFolderPath: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := libStore.UpsertEpisode(ctx, library.Episode{
+		SeriesID: stray.ID, SeasonNumber: 1, EpisodeNumber: 2, FilePath: video, Size: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := catalogEpisodeAtPath(ctx, &mode.Session{Mode: mode.Series, TMDB: tmdbClient}, libStore, video, root, []string{root})
+	if err != nil || !ok {
+		t.Fatalf("catalog ok=%v err=%v", ok, err)
+	}
+	ep, err := libStore.GetEpisode(ctx, parent.ID, 1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ep.FilePath != video {
+		t.Fatalf("canonical path = %q", ep.FilePath)
+	}
+	if ep.Title != "If I Were a Fox" {
+		t.Fatalf("title overwritten: %q", ep.Title)
+	}
+	if _, err := libStore.GetSeriesByTMDBID(ctx, strayID); err == nil {
+		t.Fatal("web-authority stray series must be retired")
+	}
+}
+
+func TestScanLibrarySeries_FolderTVDBTagPinsToTMDB(t *testing.T) {
+	root := t.TempDir()
+	showDir := filepath.Join(root, "If I Were An Animal - {tvdb 779667}")
+	if err := os.MkdirAll(showDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	video := filepath.Join(showDir, "If I Were a Fox - s01e02.mp4")
+	if err := os.WriteFile(video, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tmdbClient, _ := fakeTMDBTVDBFallbackServer(t, []tvdbFallbackCandidate{{
+		TVDBID: 779667, TMDBID: 98333, TMDBName: "If I Were an Animal", EpisodeRuntimeMin: 11,
+	}})
+	sess := &mode.Session{Mode: mode.Series, TMDB: tmdbClient}
+	libStore := newTestLibraryStore(t)
+	got, err := ScanLibrarySeries(context.Background(), sess, libStore, root, naming.Jellyfin, DefaultMatchConfig(), &fakeProber{durations: map[string]float64{video: 480}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, err := libStore.GetSeriesByTMDBID(context.Background(), 98333)
+	if err != nil {
+		t.Fatalf("catalog parent: %v (proposals=%+v)", err, got)
+	}
+	if parent.TMDBID != 98333 || parent.TVDBID != 779667 {
+		t.Fatalf("parent = %+v", parent)
+	}
+	ep, err := libStore.GetEpisode(context.Background(), parent.ID, 1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ep.FilePath != video {
+		t.Fatalf("path = %q", ep.FilePath)
+	}
+	for _, p := range got {
+		if p.TMDBID < 0 {
+			t.Fatalf("synthetic series proposal: %+v", p)
+		}
+		if p.Status == proposals.Pending && p.TMDBID != 98333 {
+			t.Fatalf("pending tmdb=%d title=%q", p.TMDBID, p.Title)
+		}
+	}
 }
 
 func seedLaurelHardyParent(t *testing.T, libStore *library.Store, root string) library.Series {

@@ -1171,7 +1171,16 @@ func proposeOneEpisodeLibrary(
 	episode := episodes[0]
 	extraEpisodes := episodes[1:]
 
-	if hint := trustedSeriesSidecar(videoPath, showFolderName(videoPath, roots), foundRoot); hint.TMDBID != 0 || hint.TVDBID != 0 {
+	hint := trustedSeriesSidecar(videoPath, showFolderName(videoPath, roots), foundRoot)
+	// Claude 2026-10-13: `{tvdb N}` / `[tvdbid-N]` on the show folder is a show id.
+	// Reason: If I Were an Animal SxxExx files under `{tvdb 779667}` had no nfo
+	//   and no [tmdbid-N], so Scan web-matched E01–E04 as separate series.
+	// Troubleshooting: kids `{tvdb N}` folders split into extra Library cards.
+	// Review if: SAK writes only [tmdbid-N] show folders and no {tvdb N} remain.
+	if hint.TVDBID <= 0 {
+		hint.TVDBID = naming.TVDBIDFromPath(videoPath)
+	}
+	if hint.TMDBID != 0 || hint.TVDBID != 0 {
 		if hint.TMDBID == 0 && sess != nil && sess.TMDB != nil {
 			hint.TMDBID = resolveTMDBFromTVDB(ctx, sess.TMDB, hint.TVDBID)
 		}
@@ -1246,6 +1255,7 @@ func proposeOneEpisodeLibrary(
 				p.Status = proposals.Pending
 				p.Title = det.Title
 				p.TMDBID = hint.TMDBID
+				p.TVDBID = hint.TVDBID
 				p.Year = hint.Year
 				p.SeasonNumber = season
 				p.EpisodeNumber = episode

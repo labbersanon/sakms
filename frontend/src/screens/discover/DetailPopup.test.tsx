@@ -135,6 +135,28 @@ const adultScene = (over: Partial<AdultDiscoverItem> = {}): AdultDiscoverItem =>
 // while lying about what the component did.
 const emptyDescription = () => jsonResponse({ text: "", source: "" });
 
+const replaceFallback = () =>
+  jsonResponse({
+    grabbed: false,
+    fallback: true,
+    message: "Pick a release to grab.",
+    candidates: [
+      {
+        guid: "g-replace",
+        title: "Replacement.1080p",
+        indexer: "IndexerA",
+        protocol: "usenet",
+        size: 1000,
+        seeders: 0,
+        status: "below-floor",
+        score: 1,
+        impliedMbps: 5,
+        floorMbps: 10,
+        qualified: false,
+      },
+    ],
+  });
+
 // overviewParagraphs/descriptionParagraphs separate the popup's two <p>s. Both
 // carry line-clamp-4; only the margin differs (mt-1 for the item's own
 // overview/`studio · year` summary, mt-3 for the Adult description block). A
@@ -2159,6 +2181,7 @@ describe("DetailPopup — owned Rematch and Replace", () => {
       if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
       if (url.includes("/quality-prefs"))
         return jsonResponse({ tier: "high", maxResolution: 1080 });
+      if (url.includes("/autograb")) return replaceFallback();
       throw new Error("unexpected fetch: " + url);
     });
     render(() => (
@@ -2190,6 +2213,7 @@ describe("DetailPopup — owned Rematch and Replace", () => {
       if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
       if (url.includes("/quality-prefs"))
         return jsonResponse({ tier: "high", maxResolution: 1080 });
+      if (url.includes("/autograb")) return replaceFallback();
       if (url.includes("/library/") && /\/seasons$/.test(url)) {
         return jsonResponse([
           {
@@ -2234,17 +2258,18 @@ describe("DetailPopup — owned Rematch and Replace", () => {
     ).toBeNull();
     expect(await screen.findByRole("button", { name: "Replace" })).toBeInTheDocument();
     expect(await screen.findByTestId("replace-search")).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: "Grab" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Grab this" })).toBeInTheDocument();
   });
 
   it("episode Replace opens search under that row instead of below the list", async () => {
-    stubFetch((url) => {
+    const calls = stubFetch((url) => {
       if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
       if (url.includes("/discover/detail"))
         return jsonResponse({ seasons: [seasonFixture(1)] });
       if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
       if (url.includes("/quality-prefs"))
         return jsonResponse({ tier: "high", maxResolution: 1080 });
+      if (url.includes("/autograb")) return replaceFallback();
       if (url.includes("/library/") && /\/seasons$/.test(url)) {
         return jsonResponse([
           {
@@ -2288,8 +2313,17 @@ describe("DetailPopup — owned Rematch and Replace", () => {
     fireEvent.click(replace[1]!);
     const search = await screen.findByTestId("replace-search");
     expect(search).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: "Grab" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Grab this" })).toBeInTheDocument();
     expect(replace[1]!.parentElement?.contains(search)).toBe(true);
+    const grabCall = calls.find((c) => c.url.includes("/autograb"));
+    expect(grabCall?.method).toBe("POST");
+    expect(grabCall?.body).toMatchObject({
+      title: "Love Is Blind",
+      tmdbId: 99353,
+      seasonNumber: 1,
+      episodeNumber: 2,
+      seasonSpecified: true,
+    });
   });
 });
 

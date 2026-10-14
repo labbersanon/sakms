@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Lubber theme mock-up — SAK Media Server</title>
+  <!--
+    Claude 2026-10-14: static landside theme mock-up for off-LAN review.
+    Reason: Cursor screenshots stay in the agent transcript; this file is a
+      single-page stand-in of auth + shell + tokens using the live palette.
+    Troubleshooting: open the rendered HTML (not the GitHub blob). Relative
+      assets are inlined on purpose so htmlpreview/raw.githack work.
+    Review if: the product is renamed from SAK, or this mock is replaced by
+      a deployed preview.
+  -->
+  <style>
+    :root {
+      --bg: #e6dfd2;
+      --surface: #ffffff;
+      --surface-2: #d9d0c0;
+      --border: #b49d78;
+      --fg: #1a2c30;
+      --muted: #5f6d69;
+      --accent: #c9a43a;
+      --accent-fg: #1a2c30;
+      --danger: #b24332;
+      --ok: #3d6b4f;
+      --warn: #b07a28;
+      --status-blue: #266b8a;
+      --status-red: #9b2e24;
+      --chrome: #173036;
+      --chrome-fg: #e6dfd2;
+      --chrome-2: #0e1c1f;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+    }
+    .preview-bar {
+      position: sticky; top: 0; z-index: 40;
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+      padding: 10px 14px;
+      background: var(--chrome);
+      color: var(--chrome-fg);
+    }
+    .preview-bar strong { font-size: 13px; letter-spacing: .04em; }
+    .preview-bar .note { font-size: 12px; opacity: .75; flex: 1 1 180px; }
+    .tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+    .tabs button {
+      border: 1px solid rgba(230,223,210,.25);
+      background: transparent;
+      color: var(--chrome-fg);
+      border-radius: 8px;
+      padding: 6px 10px;
+      font: 600 13px/1 inherit;
+      cursor: pointer;
+    }
+    .tabs button[aria-selected="true"] {
+      background: var(--accent);
+      color: var(--accent-fg);
+      border-color: var(--accent);
+    }
+    .view { display: none; min-height: calc(100dvh - 52px); }
+    .view.active { display: block; }
+
+    /* Auth */
+    .auth {
+      min-height: calc(100dvh - 52px);
+      display: flex; align-items: center; justify-content: center;
+      padding: 24px;
+      background: var(--bg);
+    }
+    .auth-card {
+      width: 100%; max-width: 28rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 25px 50px rgba(23,48,54,.18);
+    }
+    .logo { width: 100%; height: auto; display: block; margin: 0 auto 16px; }
+    .auth-card h1 { margin: 0 0 12px; font-size: 18px; }
+    label { display: block; font-size: 14px; margin-bottom: 4px; }
+    input {
+      width: 100%; margin-bottom: 12px; padding: 8px 10px;
+      border: 1px solid var(--border); border-radius: 8px;
+      background: var(--surface); color: var(--fg); font: inherit;
+    }
+    .btn {
+      border: 0; border-radius: 6px; padding: 8px 16px;
+      font: 600 14px/1.2 inherit; cursor: default;
+    }
+    .btn-primary { background: var(--accent); color: var(--accent-fg); }
+    .btn-secondary {
+      background: var(--surface-2); color: var(--fg);
+      border: 1px solid var(--border);
+    }
+    .muted { color: var(--muted); font-size: 14px; }
+
+    /* Shell */
+    .shell { display: flex; height: calc(100dvh - 52px); overflow: hidden; }
+    .sidebar {
+      width: 192px; flex: none;
+      background: linear-gradient(to right, var(--chrome), var(--chrome-2));
+      color: var(--chrome-fg);
+      padding: 16px 10px;
+      box-shadow: 0 20px 25px rgba(0,0,0,.25);
+    }
+    .nav { margin-top: 18px; display: flex; flex-direction: column; gap: 4px; }
+    .nav a, .nav span {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 10px; border-radius: 8px;
+      color: inherit; text-decoration: none; font-size: 14px; opacity: .85;
+    }
+    .nav .on { background: rgba(230,223,210,.12); opacity: 1; }
+    .nav svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+    .col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+    header.chrome {
+      display: flex; align-items: center; gap: 12px;
+      padding: 12px 20px;
+      background: linear-gradient(to bottom right, var(--chrome), var(--chrome-2));
+      color: var(--chrome-fg);
+      box-shadow: 0 20px 25px rgba(0,0,0,.25);
+    }
+    header.chrome img, header.chrome .mark { width: 24px; height: 24px; }
+    header.chrome .title { font-weight: 600; flex: 1; }
+    .hamburger { display: none; background: none; border: 0; color: inherit; padding: 4px; }
+    main.stage {
+      flex: 1; overflow: auto; padding: 20px 24px 40px;
+      background-color: var(--bg);
+      background-image:
+        repeating-linear-gradient(to bottom, transparent 0 54px, rgba(217,208,192,.55) 54px 56px),
+        linear-gradient(to bottom, transparent 72%, #d5ccbc 72%);
+    }
+    .piling-row {
+      position: sticky; top: 180px; height: 0; pointer-events: none;
+    }
+    .piling {
+      position: absolute; left: 48px; top: 0;
+      width: 18px; height: 280px;
+      background: rgba(26,44,48,.10);
+      border-radius: 2px 2px 0 0;
+    }
+    .piling:nth-child(2) { left: 84px; top: 28px; height: 252px; }
+    .piling:nth-child(3) { left: 122px; top: -20px; height: 300px; }
+    .piling i {
+      display: block; width: 26px; height: 10px; margin: -6px 0 0 -4px;
+      background: rgba(201,164,58,.22); border-radius: 50%;
+    }
+    .row-head {
+      display: flex; align-items: baseline; justify-content: space-between;
+      margin: 0 0 12px; position: relative;
+    }
+    .row-head h2 { margin: 0; font-size: 18px; }
+    .chip {
+      display: inline-block; border: 1px solid var(--border);
+      background: color-mix(in srgb, var(--surface) 95%, transparent);
+      padding: 4px 10px; border-radius: 6px; font-size: 13px; font-weight: 600;
+    }
+    .posters { display: flex; gap: 12px; overflow: auto; padding-bottom: 8px; position: relative; }
+    .poster {
+      flex: none; width: 140px; height: 210px; border-radius: 10px;
+      display: flex; align-items: flex-end; padding: 10px;
+      color: #f6f3ec; font-size: 13px; font-weight: 700;
+      text-shadow: 0 1px 2px rgba(0,0,0,.45);
+    }
+    .card {
+      margin-top: 20px; max-width: 560px;
+      background: color-mix(in srgb, var(--surface) 95%, transparent);
+      border: 1px solid var(--border);
+      border-radius: 12px; padding: 18px 20px;
+      backdrop-filter: blur(8px);
+      position: relative;
+    }
+    .card h3 { margin: 0 0 6px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+    .danger { color: var(--danger); font-weight: 600; }
+    .pill {
+      display: inline-block; border-radius: 999px; padding: 2px 8px;
+      font-size: 11px; font-weight: 600; background: var(--surface);
+    }
+
+    /* Palette */
+    .palette { padding: 24px; max-width: 900px; margin: 0 auto; }
+    .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
+    .swatch {
+      border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+      background: var(--surface);
+    }
+    .chip-color { height: 64px; }
+    .swatch figcaption { padding: 8px 10px; font-size: 12px; }
+    .swatch code { display: block; color: var(--muted); }
+
+    @media (max-width: 720px) {
+      .sidebar { display: none; }
+      .sidebar.open {
+        display: block; position: fixed; inset: 52px auto 0 0; z-index: 30;
+      }
+      .hamburger { display: block; }
+      .poster { width: 120px; height: 180px; }
+      main.stage { padding: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="preview-bar">
+    <strong>Lubber mock-up</strong>
+    <span class="note">Static preview. Name stays SAK until release. Not the live app.</span>
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" aria-selected="true" data-view="auth">Login</button>
+      <button type="button" role="tab" aria-selected="false" data-view="shell">App shell</button>
+      <button type="button" role="tab" aria-selected="false" data-view="palette">Palette</button>
+    </div>
+  </div>
+
+  <section id="auth" class="view active" role="tabpanel">
+    <div class="auth">
+      <div class="auth-card">
+        <svg class="logo" viewBox="0 0 700 500" xmlns="http://www.w3.org/2000/svg" aria-label="SAK Media Server">
+          <rect x="40" y="90" width="620" height="280" rx="10" fill="#E6DFD2" stroke="#1A2C30" stroke-width="3"/>
+          <g fill="#C9A43A" stroke="#1A2C30" stroke-width="1.25">
+            <circle cx="62" cy="112" r="7"/>
+            <circle cx="638" cy="112" r="7"/>
+            <circle cx="62" cy="348" r="7"/>
+            <circle cx="638" cy="348" r="7"/>
+          </g>
+          <line x1="190" y1="90" x2="190" y2="370" stroke="#1A2C30" stroke-width="2"/>
+          <rect x="76" y="128" width="24" height="168" rx="3" fill="#1A2C30"/>
+          <rect x="118" y="148" width="24" height="148" rx="3" fill="#173036"/>
+          <ellipse cx="88" cy="128" rx="15" ry="6" fill="#C9A43A"/>
+          <ellipse cx="130" cy="148" rx="15" ry="6" fill="#C9A43A"/>
+          <path d="M88 200 C 88 236, 130 236, 130 272" fill="none" stroke="#B49D78" stroke-width="5" stroke-linecap="round"/>
+          <path d="M88 220 C 108 220, 108 240, 88 240" fill="none" stroke="#B49D78" stroke-width="3" stroke-linecap="round"/>
+          <text x="115" y="332" text-anchor="middle" font-family="'Courier New', monospace" font-weight="700" font-size="13" letter-spacing="1" fill="#1A2C30">DRY DOCK</text>
+          <rect x="230" y="108" width="380" height="28" fill="#B24332"/>
+          <text x="420" y="127" text-anchor="middle" font-family="'Courier New', monospace" font-weight="700" font-size="14" letter-spacing="6" fill="#E6DFD2">LANDSIDE</text>
+          <text x="420" y="240" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-weight="700" font-size="60" letter-spacing="1" fill="#1A2C30">SAK MEDIA</text>
+          <text x="420" y="278" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="700" font-size="22" letter-spacing="10" fill="#B24332">SERVER</text>
+          <text x="610" y="352" text-anchor="end" font-family="'Courier New', monospace" font-size="12" letter-spacing="1" fill="#5F6D69">NO. 000001</text>
+          <text x="230" y="352" text-anchor="start" font-family="'Courier New', monospace" font-size="12" letter-spacing="1" fill="#5F6D69">GOOD FOR ONE STREAM, ANY SCREEN</text>
+        </svg>
+        <h1>Log in to SAK</h1>
+        <label for="user">Username</label>
+        <input id="user" value="wade" readonly />
+        <label for="pass">Password</label>
+        <input id="pass" type="password" value="••••••••" readonly />
+        <button class="btn btn-primary" type="button">Log in</button>
+        <p class="muted" style="margin:12px 0 0">Buttons are brass. Destructive actions stay rust, not gold.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="shell" class="view" role="tabpanel">
+    <div class="shell">
+      <aside class="sidebar" id="sidebar">
+        <strong>SAK</strong>
+        <nav class="nav">
+          <span><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg> Dashboard</span>
+          <span class="on"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polygon points="15.5 8.5 11 11 8.5 15.5 13 13"/></svg> Discover</span>
+          <span><svg viewBox="0 0 24 24"><path d="M12 3v10"/><path d="m8 11 4 4 4-4"/><path d="M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2"/></svg> Queue</span>
+          <span><svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg> Organize</span>
+          <span><svg viewBox="0 0 24 24"><rect x="2" y="7" width="16" height="13" rx="2"/><path d="M6 7V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-2"/></svg> Collections</span>
+          <span><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/></svg> Settings</span>
+        </nav>
+      </aside>
+      <div class="col">
+        <header class="chrome">
+          <button class="hamburger" type="button" id="menu" aria-label="Open navigation">☰</button>
+          <svg class="mark" viewBox="0 0 100 100" aria-hidden="true">
+            <rect x="8" y="8" width="84" height="84" rx="20" fill="#E6DFD2"/>
+            <rect x="24" y="22" width="14" height="56" rx="2" fill="#1A2C30"/>
+            <rect x="44" y="28" width="14" height="50" rx="2" fill="#173036"/>
+            <ellipse cx="31" cy="22" rx="9" ry="4" fill="#C9A43A"/>
+            <ellipse cx="51" cy="28" rx="9" ry="4" fill="#C9A43A"/>
+            <polygon points="66,38 66,66 88,52" fill="#1A2C30"/>
+          </svg>
+          <span class="title">SAK Media Server</span>
+          <button class="btn btn-primary" type="button">Log out</button>
+        </header>
+        <main class="stage">
+          <div class="piling-row" aria-hidden="true">
+            <div class="piling"><i></i></div>
+            <div class="piling"><i></i></div>
+            <div class="piling"><i></i></div>
+          </div>
+          <div class="row-head">
+            <h2>Trending</h2>
+            <span class="chip">View all</span>
+          </div>
+          <div class="posters">
+            <div class="poster" style="background:#173036">Harbor Light</div>
+            <div class="poster" style="background:#1a2c30">Dry Land</div>
+            <div class="poster" style="background:#266b8a">Pier 4</div>
+            <div class="poster" style="background:#3d6b4f">Salt Marsh</div>
+            <div class="poster" style="background:#b24332">Rust Belt</div>
+          </div>
+          <div class="card">
+            <h3>Availability</h3>
+            <p class="muted" style="margin:0">White cards sit on sand wallpaper. Nav “View all” is a surface chip so brass type never sits on the grain.</p>
+            <p class="danger" style="margin:10px 0 0">Remove from library stays rust.</p>
+            <div class="actions">
+              <span class="pill" style="color:var(--status-blue)">Downloading</span>
+              <span class="pill" style="color:var(--warn)">Precheck</span>
+              <span class="pill" style="color:var(--status-red)">Stalled</span>
+              <span class="pill" style="color:var(--ok)">Grabbed</span>
+            </div>
+            <div class="actions">
+              <button class="btn btn-primary" type="button">Grab</button>
+              <button class="btn btn-secondary" type="button">Cancel</button>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+  </section>
+
+  <section id="palette" class="view" role="tabpanel">
+    <div class="palette">
+      <h2 style="margin-top:0">Tokens</h2>
+      <p class="muted">Same values as <code>frontend/src/index.css</code> <code>@theme</code>. Chrome is night-dock; the page is salt-fog linen; accent is brass hardware, not cinema gold.</p>
+      <div class="swatches">
+        <figure class="swatch"><div class="chip-color" style="background:#e6dfd2"></div><figcaption>bg<code>#e6dfd2</code></figcaption></figure>
+        <figure class="swatch"><div class="chip-color" style="background:#ffffff;border-bottom:1px solid #b49d78"></div><figcaption>surface<code>#ffffff</code></figcaption></figure>
+        <figure class="swatch"><div class="chip-color" style="background:#d9d0c0"></div><figcaption>surface-2<code>#d9d0c0</code></figcaption></figure>
+        <figure class="swatch"><div class="chip-color" style="background:#b49d78"></div><figcaption>border<code>#b49d78</code></figcaption></figure>
+        <figure class="swatch"><div class="chip-color" style="background:#1a2c30"></div><figcaption>fg<code>#1a2c30</code></figcaption></figure>
+        <figure class="swatch"><div class="chip-color" style="background:#5f6d69"></div><figcaption>muted<code>#5f6d69</code></figcaption></figure>
+        <figure class="swatch"><div class="chip-color" style="background:#c9a43a"></div><figcaption>accent<code>#c9a43a</code></figcaption></figure>
+        <figure class="swatch"><div class="chip-color" style="background:#b24332"></div><figcaption>danger<code>#b24332</code></figcaption></figure>
+        <figure class="swatch"><div class="chip-color" style="background:#3d6b4f"></div><figcaption>ok<code>#3d6b4f</code></figcaption></figure>
+        <figure class="swatch"><div class="chip-color" style="background:#b07a28"></div><figcaption>warn<code>#b07a28</code></figcaption></figure>
+        <figure class="swatch"><div class="chip-color" style="background:#173036"></div><figcaption>chrome<code>#173036</code></figcaption></figure>
+        <figure class="swatch"><div class="chip-color" style="background:#0e1c1f"></div><figcaption>chrome-2<code>#0e1c1f</code></figcaption></figure>
+      </div>
+    </div>
+  </section>
+
+  <script>
+    const tabs = document.querySelectorAll("[data-view]");
+    const views = document.querySelectorAll(".view");
+    function show(id) {
+      const next = id === "shell" || id === "palette" ? id : "auth";
+      tabs.forEach((t) => t.setAttribute("aria-selected", String(t.dataset.view === next)));
+      views.forEach((v) => v.classList.toggle("active", v.id === next));
+      if (location.hash.slice(1) !== next) history.replaceState(null, "", "#" + next);
+    }
+    tabs.forEach((tab) => {
+      tab.addEventListener("click", () => show(tab.dataset.view));
+    });
+    window.addEventListener("hashchange", () => show(location.hash.slice(1)));
+    show(location.hash.slice(1));
+    const sidebar = document.getElementById("sidebar");
+    document.getElementById("menu").addEventListener("click", () => {
+      sidebar.classList.toggle("open");
+    });
+  </script>
+</body>
+</html>

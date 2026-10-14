@@ -10975,3 +10975,15 @@ status stays active.
 | `frontend/src/screens/Downloads.tsx` | phase-pill contrast comment |
 | `frontend/src/screens/PurgeRulesCard.tsx` | sand-form comments |
 | `frontend/src/components/TrackedPlayback.tsx` | fullscreen pillarbox comment |
+
+## 2026-10-14 — Off-LAN Lubber theme mock-up
+
+**Problem:** The landside re-theme could only be reviewed on wade-pc; screenshots lived in the agent transcript.
+**Fix:** Added a single-file HTML mock-up (auth, app shell, token swatches) with the live palette inlined so it renders from a public GitHub HTML preview URL.
+**Outcome:** The mock can be opened in any browser, including away from the LAN.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `docs/lubber-theme-mockup.html` | static Login / App shell / Palette preview |

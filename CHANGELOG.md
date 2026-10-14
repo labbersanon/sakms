@@ -10987,3 +10987,21 @@ status stays active.
 | File | Change |
 |---|---|
 | `docs/lubber-theme-mockup.html` | static Login / App shell / Palette preview |
+
+## 2026-10-14 — Landside sidebar names
+
+**Problem:** The Lubber look still said Dashboard / Discover / Queue / Organize / Collections / Settings — *arr-style operator words, not landside.
+**Fix:** Visible labels now come from `SECTION_LABELS`: Dock, Lighthouse, Wharf, Dry dock, Locker, Harbormaster. Route paths are unchanged. Nested tools (Rename, Downloads, …) stay operational; Settings children that named a parent became “Dry dock scans” and “Lighthouse UI”.
+**Outcome:** Sidebar, lock overlay, and PIN checkboxes share one glossary. Mock-up Palette tab shows the mapping.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/api/sectionLock.ts` | Dock / Lighthouse / Wharf / Dry dock / Locker / Harbormaster |
+| `frontend/src/screens/AppShell.tsx` | NAV_ITEMS + group aria labels from `sectionLabel` |
+| `frontend/src/screens/settingsTabs.ts` | Dry dock scans, Lighthouse UI |
+| `frontend/src/screens/settings/UI.tsx` | Lighthouse subsection heading |
+| `frontend/src/screens/discover/RowView.tsx` | Back to Lighthouse |
+| `docs/lubber-theme-mockup.html` | sidebar names + glossary |
+| tests | match the new labels |

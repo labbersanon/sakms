@@ -15,12 +15,12 @@ import {
 import { AdultModeContext } from "../components/ui";
 
 const NAV_LABELS = [
-  "Dashboard",
-  "Discover",
-  "Queue",
-  "Organize",
-  "Collections",
-  "Settings",
+  "Dock",
+  "Lighthouse",
+  "Wharf",
+  "Dry dock",
+  "Locker",
+  "Harbormaster",
 ];
 
 const ORGANIZE_CHILDREN = ["Rename", "Clean-up", "Dedup", "Browse", "Import", "Discs"];
@@ -29,9 +29,9 @@ const SETTINGS_CHILDREN = [
   "Roots",
   "Metadata",
   "Quality",
-  "Organize scans",
+  "Dry dock scans",
   "Download",
-  "Discover UI",
+  "Lighthouse UI",
   "AI",
   "Auth",
   "Notifications",
@@ -40,7 +40,7 @@ const SETTINGS_CHILDREN = [
   "Global",
 ];
 const MEDIA_CHILDREN = ["Mainstream", "Adult"];
-const GROUP_LABELS = ["Discover", "Queue", "Organize", "Settings"];
+const GROUP_LABELS = ["Lighthouse", "Wharf", "Dry dock", "Harbormaster"];
 
 // renderSidebar mounts the Sidebar inside a Router (its <A> links need router
 // context) with its collapsed state owned by the persisted-bool helper — the
@@ -123,7 +123,7 @@ describe("Sidebar", () => {
   it("expanding after collapsing restores labels", () => {
     renderSidebar();
     fireEvent.click(screen.getByLabelText("Collapse sidebar"));
-    expect(screen.queryByText("Discover")).not.toBeInTheDocument();
+    expect(screen.queryByText("Lighthouse")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText("Expand sidebar"));
     for (const label of NAV_LABELS) {
@@ -158,7 +158,7 @@ describe("Sidebar", () => {
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, "true");
     const { container } = renderSidebar();
 
-    expect(screen.queryByText("Discover")).not.toBeInTheDocument();
+    expect(screen.queryByText("Lighthouse")).not.toBeInTheDocument();
     expect(container.querySelectorAll("svg").length).toBe(7);
     expect(screen.getByLabelText("Expand sidebar")).toBeInTheDocument();
   });
@@ -166,9 +166,9 @@ describe("Sidebar", () => {
   it("icon-collapsed Organize opens a flyout with workflow links", () => {
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, "true");
     renderSidebar();
-    fireEvent.click(screen.getByLabelText("Organize"));
+    fireEvent.click(screen.getByLabelText("Dry dock"));
     expect(
-      screen.getByRole("menu", { name: "Organize workflows" }),
+      screen.getByRole("menu", { name: "Dry dock workflows" }),
     ).toBeInTheDocument();
     for (const label of ORGANIZE_CHILDREN) {
       expect(screen.getByRole("menuitem", { name: label })).toBeInTheDocument();
@@ -178,9 +178,9 @@ describe("Sidebar", () => {
   it("icon-collapsed Settings opens a flyout with screen links", () => {
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, "true");
     renderSidebar();
-    fireEvent.click(screen.getByLabelText("Settings"));
+    fireEvent.click(screen.getByLabelText("Harbormaster"));
     expect(
-      screen.getByRole("menu", { name: "Settings screens" }),
+      screen.getByRole("menu", { name: "Harbormaster screens" }),
     ).toBeInTheDocument();
     for (const label of SETTINGS_CHILDREN) {
       expect(screen.getByRole("menuitem", { name: label })).toBeInTheDocument();
@@ -190,9 +190,9 @@ describe("Sidebar", () => {
   it("icon-collapsed Queue opens a flyout with section links", () => {
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, "true");
     renderSidebar();
-    fireEvent.click(screen.getByLabelText("Queue"));
+    fireEvent.click(screen.getByLabelText("Wharf"));
     expect(
-      screen.getByRole("menu", { name: "Queue sections" }),
+      screen.getByRole("menu", { name: "Wharf sections" }),
     ).toBeInTheDocument();
     for (const label of QUEUE_CHILDREN) {
       expect(screen.getByRole("menuitem", { name: label })).toBeInTheDocument();
@@ -202,9 +202,9 @@ describe("Sidebar", () => {
   it("icon-collapsed Discover opens a flyout with media sections", () => {
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, "true");
     renderSidebar();
-    fireEvent.click(screen.getByLabelText("Discover"));
+    fireEvent.click(screen.getByLabelText("Lighthouse"));
     expect(
-      screen.getByRole("menu", { name: "Discover sections" }),
+      screen.getByRole("menu", { name: "Lighthouse sections" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Mainstream" })).toHaveAttribute(
       "href",
@@ -290,7 +290,7 @@ describe("Sidebar mobile drawer", () => {
 
   it("calls onCloseMobile when a nav link is clicked", () => {
     const { onCloseMobile } = renderMobileSidebar();
-    fireEvent.click(screen.getByText("Queue"));
+    fireEvent.click(screen.getByText("Wharf"));
     expect(onCloseMobile).toHaveBeenCalledOnce();
   });
 

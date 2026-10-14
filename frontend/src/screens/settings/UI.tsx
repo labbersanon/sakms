@@ -29,7 +29,7 @@ export const UISection: Component = () => {
 
   return (
     <div>
-      <h3 class="mb-3 text-base font-semibold text-fg">Discover</h3>
+      <h3 class="mb-3 text-base font-semibold text-fg">Lighthouse</h3>
       {/* Spec-mandated exact behavior (Critic finding, see
           ralplan-adult-disable-switch.md step 8): when Adult mode is
           disabled, do not render ScreenTabBar at all — a filtered-to-one-entry

@@ -33,6 +33,6 @@ describe("settingsTabs", () => {
 
   it("builds Organize-style hrefs and labels", () => {
     expect(settingsHref("metadata")).toBe("/settings?tab=metadata");
-    expect(settingsTabLabel("scans")).toBe("Organize scans");
+    expect(settingsTabLabel("scans")).toBe("Dry dock scans");
   });
 });

@@ -69,7 +69,7 @@ const WRAP = MEDIA_POSTER_GRID_CLASS;
 // Review if: DISCOVER_NAV_LINK_CLASS is retired.
 const BackLink: Component<{ href: string }> = (props) => (
   <A href={props.href} class={`${DISCOVER_NAV_LINK_CLASS} mb-3`}>
-    Back to Discover
+    Back to Lighthouse
   </A>
 );
 

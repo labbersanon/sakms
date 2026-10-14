@@ -83,14 +83,22 @@ export const ALL_LOCKABLE_SECTIONS: string[] = [
 
 // SECTION_LABELS is the display name per section id. Kept beside the id list
 // so a new section can never render as a bare slug.
+//
+// Claude 2026-10-14: landside Lubber names on the sidebar.
+// Reason: Dock/Lighthouse/Wharf/Dry dock/Locker/Harbormaster is shore
+//   vocabulary (off the *arr ship), not pirate kitsch. Route paths stay
+//   /dashboard /discover /queue /organize /collections /settings.
+// Troubleshooting: sidebar, lock overlay, and PIN checkboxes all read here.
+//   Nested workflow names (Rename, Downloads, …) stay operational.
+// Review if: the product is renamed from SAK.
 const SECTION_LABELS: Record<string, string> = {
-  dashboard: "Dashboard",
-  discover: "Discover",
+  dashboard: "Dock",
+  discover: "Lighthouse",
   library: "Library",
-  queue: "Queue",
-  organize: "Organize",
-  collections: "Collections",
-  settings: "Settings",
+  queue: "Wharf",
+  organize: "Dry dock",
+  collections: "Locker",
+  settings: "Harbormaster",
   "adult-content": "Adult content",
 };
 

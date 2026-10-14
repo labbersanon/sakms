@@ -65,7 +65,7 @@ describe("TmdbRowView", () => {
     const poster = screen.getByRole("button", { name: "Trend Movie" });
     expect(poster.parentElement?.className).toContain("w-full");
     expect(poster.parentElement?.className).not.toContain("w-[140px]");
-    const back = screen.getByText("Back to Discover");
+    const back = screen.getByText("Back to Lighthouse");
     expect(back).toBeInTheDocument();
     expect(back.className).toContain("bg-surface/95");
     expect(back.className).toContain("text-fg");

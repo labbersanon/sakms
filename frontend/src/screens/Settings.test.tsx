@@ -341,7 +341,9 @@ const SECTION_ALIAS: Record<string, SettingsTabId> = {
   Connections: "connections",
   Global: "global",
   "Organize scans": "scans",
+  "Dry dock scans": "scans",
   "Discover UI": "discover",
+  "Lighthouse UI": "discover",
 };
 
 const goToSection = (name: keyof typeof SECTION_ALIAS) => {
@@ -2783,7 +2785,7 @@ describe("Settings screens", () => {
     // Mainstream is the default inner sub-tab: the slider editor is on screen.
     expect(await screen.findByText("+ New slider")).toBeInTheDocument();
     // Both inner sub-tabs render; the Discover subsection heading is present.
-    expect(screen.getByText("Discover")).toBeInTheDocument();
+    expect(screen.getByText("Lighthouse")).toBeInTheDocument();
     expect(screen.getByText("Mainstream")).toBeInTheDocument();
     expect(screen.getByText("Adult")).toBeInTheDocument();
     // Trakt moved here, next to the other Discover-shaping controls.

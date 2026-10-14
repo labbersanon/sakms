@@ -1,7 +1,7 @@
-// The authed app shell. Past auth it renders a LEFT SIDEBAR (Dashboard /
-// Discover / Queue / Organize / Collections / Settings, each
+// The authed app shell. Past auth it renders a LEFT SIDEBAR (Dock /
+// Lighthouse / Wharf / Dry dock / Locker / Harbormaster, each
 // an icon + label) beside the client-side router; the landing view is
-// Discover. The sidebar collapses to icon-only and persists that choice in
+// Lighthouse. The sidebar collapses to icon-only and persists that choice in
 // localStorage. The router must never claim an /api/* path (see APP_ROUTES).
 //
 // LAYOUT (2026-07-14 mobile-responsive pass): the shell root is a fixed-height
@@ -280,17 +280,17 @@ type NavItem = {
 // note on LOCKABLE_TAB_SECTIONS for why the two lists are authored
 // independently rather than derived one from the other.
 export const NAV_ITEMS: NavItem[] = [
-  { href: "/dashboard", label: "Dashboard", icon: IconDashboard, section: "dashboard" },
-  { href: "/discover/mainstream", label: "Discover", icon: IconDiscover, section: "discover", group: "discover" },
+  { href: "/dashboard", label: sectionLabel("dashboard"), icon: IconDashboard, section: "dashboard" },
+  { href: "/discover/mainstream", label: sectionLabel("discover"), icon: IconDiscover, section: "discover", group: "discover" },
   // Claude 2026-09-24: Library sidebar group removed — owned catalog is
   //   Discover In library (?view=library). /library* redirects.
   // Reason: one page, code reduction, Dashboard/search share Discover.
   // Review if: a dedicated Library route is restored.
   // { href: "/library/mainstream", label: "Library", icon: IconLibrary, section: "library", group: "library" },
-  { href: "/queue", label: "Queue", icon: IconQueue, section: "queue" },
-  { href: "/organize", label: "Organize", icon: IconRename, section: "organize" },
-  { href: "/collections", label: "Collections", icon: IconCollections, section: "collections" },
-  { href: "/settings", label: "Settings", icon: IconSettings, section: "settings" },
+  { href: "/queue", label: sectionLabel("queue"), icon: IconQueue, section: "queue" },
+  { href: "/organize", label: sectionLabel("organize"), icon: IconRename, section: "organize" },
+  { href: "/collections", label: sectionLabel("collections"), icon: IconCollections, section: "collections" },
+  { href: "/settings", label: sectionLabel("settings"), icon: IconSettings, section: "settings" },
 ];
 
 // Sidebar is the presentational left nav. `collapsed` is an accessor so the
@@ -688,8 +688,8 @@ const OrganizeNavGroup: Component<{
     >
       <button
         type="button"
-        title="Organize"
-        aria-label="Organize"
+        title={sectionLabel("organize")}
+        aria-label={sectionLabel("organize")}
         aria-expanded={props.collapsed() ? flyoutOpen() : groupOpen()}
         aria-haspopup={props.collapsed() ? "menu" : undefined}
         onClick={() => {
@@ -707,7 +707,7 @@ const OrganizeNavGroup: Component<{
           <IconRename />
         </span>
         <Show when={!props.collapsed()}>
-          <span class="flex-1 text-left">Organize</span>
+          <span class="flex-1 text-left">{sectionLabel("organize")}</span>
           <span
             class="flex shrink-0 items-center text-chrome-fg/60"
             onClick={(e) => {
@@ -722,8 +722,8 @@ const OrganizeNavGroup: Component<{
         <Show when={props.locked}>
           <span
             class="ml-auto flex shrink-0 items-center text-chrome-fg/70"
-            title="Organize is locked"
-            aria-label="Organize is locked"
+            title={`${sectionLabel("organize")} is locked`}
+            aria-label={`${sectionLabel("organize")} is locked`}
           >
             <LockGlyph />
           </span>
@@ -756,7 +756,7 @@ const OrganizeNavGroup: Component<{
       <Show when={props.collapsed() && flyoutOpen()}>
         <div
           role="menu"
-          aria-label="Organize workflows"
+          aria-label={`${sectionLabel("organize")} workflows`}
           class="absolute left-full top-0 z-50 ml-1 min-w-[9rem] rounded-md border border-border bg-chrome p-1 shadow-lg"
           onMouseEnter={openFlyout}
           onMouseLeave={scheduleCloseFlyout}
@@ -870,8 +870,8 @@ const SettingsNavGroup: Component<{
     >
       <button
         type="button"
-        title="Settings"
-        aria-label="Settings"
+        title={sectionLabel("settings")}
+        aria-label={sectionLabel("settings")}
         aria-expanded={props.collapsed() ? flyoutOpen() : groupOpen()}
         aria-haspopup={props.collapsed() ? "menu" : undefined}
         onClick={() => {
@@ -889,7 +889,7 @@ const SettingsNavGroup: Component<{
           <IconSettings />
         </span>
         <Show when={!props.collapsed()}>
-          <span class="flex-1 text-left">Settings</span>
+          <span class="flex-1 text-left">{sectionLabel("settings")}</span>
           <span
             class="flex shrink-0 items-center text-chrome-fg/60"
             onClick={(e) => {
@@ -904,8 +904,8 @@ const SettingsNavGroup: Component<{
         <Show when={props.locked}>
           <span
             class="ml-auto flex shrink-0 items-center text-chrome-fg/70"
-            title="Settings is locked"
-            aria-label="Settings is locked"
+            title={`${sectionLabel("settings")} is locked`}
+            aria-label={`${sectionLabel("settings")} is locked`}
           >
             <LockGlyph />
           </span>
@@ -938,7 +938,7 @@ const SettingsNavGroup: Component<{
       <Show when={props.collapsed() && flyoutOpen()}>
         <div
           role="menu"
-          aria-label="Settings screens"
+          aria-label={`${sectionLabel("settings")} screens`}
           class="absolute left-full top-0 z-50 ml-1 min-w-[9rem] rounded-md border border-border bg-chrome p-1 shadow-lg"
           onMouseEnter={openFlyout}
           onMouseLeave={scheduleCloseFlyout}
@@ -1051,8 +1051,8 @@ const QueueNavGroup: Component<{
     >
       <button
         type="button"
-        title="Queue"
-        aria-label="Queue"
+        title={sectionLabel("queue")}
+        aria-label={sectionLabel("queue")}
         aria-expanded={props.collapsed() ? flyoutOpen() : groupOpen()}
         aria-haspopup={props.collapsed() ? "menu" : undefined}
         onClick={() => {
@@ -1070,7 +1070,7 @@ const QueueNavGroup: Component<{
           <IconQueue />
         </span>
         <Show when={!props.collapsed()}>
-          <span class="flex-1 text-left">Queue</span>
+          <span class="flex-1 text-left">{sectionLabel("queue")}</span>
           <span
             class="flex shrink-0 items-center text-chrome-fg/60"
             onClick={(e) => {
@@ -1085,8 +1085,8 @@ const QueueNavGroup: Component<{
         <Show when={props.locked}>
           <span
             class="ml-auto flex shrink-0 items-center text-chrome-fg/70"
-            title="Queue is locked"
-            aria-label="Queue is locked"
+            title={`${sectionLabel("queue")} is locked`}
+            aria-label={`${sectionLabel("queue")} is locked`}
           >
             <LockGlyph />
           </span>
@@ -1119,7 +1119,7 @@ const QueueNavGroup: Component<{
       <Show when={props.collapsed() && flyoutOpen()}>
         <div
           role="menu"
-          aria-label="Queue sections"
+          aria-label={`${sectionLabel("queue")} sections`}
           class="absolute left-full top-0 z-50 ml-1 min-w-[9rem] rounded-md border border-border bg-chrome p-1 shadow-lg"
           onMouseEnter={openFlyout}
           onMouseLeave={scheduleCloseFlyout}

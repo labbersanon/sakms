@@ -29,6 +29,7 @@
 import { type Component, createSignal, Show } from "solid-js";
 import MonitorPlay from "lucide-solid/icons/monitor-play";
 import { Modal } from "../screens/discover/shared";
+import { PlaybackVideo } from "./PlaybackVideo";
 import { Button } from "./ui";
 
 // SourcePreviewVideo is THE definition of this feature's video conventions
@@ -48,12 +49,11 @@ import { Button } from "./ui";
 export const SourcePreviewVideo: Component<{ src: string; label: string }> = (
   props,
 ) => (
-  <video
+  <PlaybackVideo
     class="w-full rounded bg-surface-2"
-    controls
     preload="none"
     src={props.src}
-    aria-label={`Preview of ${props.label}`}
+    ariaLabel={`Preview of ${props.label}`}
   />
 );
 

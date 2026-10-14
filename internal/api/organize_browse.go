@@ -19,6 +19,7 @@ import (
 	"github.com/labbersanon/sakms/internal/dedup"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/organizeevents"
+	"github.com/labbersanon/sakms/internal/playback"
 	"github.com/labbersanon/sakms/internal/settings"
 )
 
@@ -399,8 +400,26 @@ func organizeBrowseVideoHandler() http.HandlerFunc {
 	}
 }
 
+func organizeBrowseVideoHLSHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		full, st, ok := lstatBrowsableParam(w, r)
+		if !ok {
+			return
+		}
+		if st.IsDir() {
+			http.Error(w, "path is a directory", http.StatusBadRequest)
+			return
+		}
+		if !config.IsVideoFile(full) {
+			http.Error(w, "not a video file", http.StatusBadRequest)
+			return
+		}
+		serveResolvedHLS(w, r, full, "browse")
+	}
+}
+
 func browseVideoURL(path string) string {
-	return "/api/organize/browse/video?path=" + url.QueryEscape(path)
+	return playback.VideoURL("/api/organize/browse/video?path="+url.QueryEscape(path), path)
 }
 
 func browseDirStats(ctx context.Context, root string) (items, total int64, truncated bool, err error) {

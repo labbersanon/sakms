@@ -19,14 +19,17 @@ subprocess.
 ## FFmpeg
 
 **What SAK uses it for.** FFmpeg (`ffmpeg`/`ffprobe`) is invoked purely as a
-command-line subprocess for read-only media analysis:
+command-line subprocess (never linked):
 
 - Movies/Series perceptual-hash frame extraction and duration probing
-  (`internal/phash`).
-- Adult/StashDB perceptual-hash extraction (`internal/videophash`).
+  (`internal/phash`) — decode-only.
+- Adult/StashDB perceptual-hash extraction (`internal/videophash`) — decode-only.
 - VMAF perceptual-quality scoring for Dedup (`internal/vmaf`, shelling out
   to `ffmpeg -lavfi libvmaf` — see the "Packaging status" note at the end of
-  this section for which FFmpeg build supplies this filter and why).
+  this section for which FFmpeg build supplies this filter and why) — decode-only.
+- In-app browser Play (`internal/playback`) — Direct Play needs no ffmpeg;
+  HLS remux is stream-copy; Direct Stream encodes AAC; Transcode encodes
+  H.264 (+ AAC). See "In-app HLS playback" below.
 
 **Invocation pattern: subprocess, never linking.** SAK builds with
 `CGO_ENABLED=0` (the SQLite driver is pure-Go `modernc.org/sqlite`), so the
@@ -95,11 +98,36 @@ facts that SAK is **free, AGPL-3.0, non-commercial**, and that libvmaf itself
 carries an explicit patent grant, the VMAF feature sits well clear of the
 codec-royalty exposure a real transcoding feature would face.
 
-**This decode-only argument does NOT extend to encoding.** A future native
-transcoding/TV-app player (see `docs/ROADMAP.md`) would perform real
-re-encoding — a genuinely different and higher risk profile that this
-section's decode-only rationale explicitly does not cover, and that would
-need its own analysis before it ships.
+**This decode-only argument does NOT extend to encoding.** In-app HLS
+Direct Stream / Transcode (below) and a future native TV-app player (see
+`docs/ROADMAP.md`) perform real re-encoding — a genuinely different and
+higher risk profile that this section's decode-only rationale explicitly
+does not cover.
+
+## In-app HLS playback (browser)
+
+SAK's Library / Series / Organize Play path matches Jellyfin's web player:
+
+1. **Direct Play** — mp4/m4v/webm/mov via `http.ServeContent` (no ffmpeg).
+2. **Remux** — codecs already browser-safe (H.264/AV1/VP8/VP9 + AAC/MP3/Opus);
+   ffmpeg `-c copy` into fragmented-MP4 HLS.
+3. **Direct Stream** — video copy-safe, audio is not (AC3/DTS/TrueHD/…);
+   ffmpeg copies video and encodes stereo AAC.
+4. **Transcode** — video is not MSE-safe in Chrome/Firefox (HEVC, MPEG-2,
+   MPEG-4 ASP, VC-1, …); ffmpeg encodes H.264 (`h264_nvenc` when the
+   container's ffmpeg reports that encoder, else `libx264`) plus AAC.
+
+This is **personal, non-commercial, AGPL-3.0 homelab playback of files the
+operator already owns**, the same subprocess-ffmpeg pattern Jellyfin uses
+for its web client. It is not a public streaming service, not a commercial
+encoder product, and not a native TV-app distribution channel.
+
+**Native TV / mobile apps** (Android TV, tvOS, Roku, Fire TV) remain a
+separate, still-gated ROADMAP item. This section covers the in-app browser
+player only. The codec-royalty pools FFmpeg warns commercial encoders about
+are not analyzed here as a legal opinion — this records the intended use
+and the operator's explicit "Match jellyfin" go-ahead (2026-10-14) after
+the four-mode explanation.
 
 ## Scope and honesty caveats
 

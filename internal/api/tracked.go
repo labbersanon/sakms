@@ -7,13 +7,13 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/playback"
 )
 
 // libraryTrackedItem is Movies' shape for the Tag workflow's item picker —
@@ -97,26 +97,16 @@ type libraryTrackedFile struct {
 	VideoCodec  string  `json:"videoCodec,omitempty"`
 	BitRate     int64   `json:"bitrate,omitempty"`
 	DurationSec float64 `json:"durationSec,omitempty"`
-	// Claude 2026-08-14: per-file in-app playback URL for Library Movies.
-	// Reason: GET /tracked/{id}/video now serves movies; the list must say
-	// which files a <video> element can actually decode (same omit-when-mkv
-	// rule as Adult's item-level videoUrl).
-	// Review if: transcoding lands and every container becomes playable.
+	// Claude 2026-10-14: per-file in-app Play URL (Jellyfin web path).
+	// Reason: Direct Play mp4/m4v/webm/mov; other library videos HLS.
+	// Review if: device profiles start varying by User-Agent.
 	VideoURL string `json:"videoUrl,omitempty"`
 }
 
-// browserPlayableVideo reports whether a <video> element can decode the file at
-// path. A tracked Adult scene or Movies file in a container no browser plays
-// (mkv, avi, wmv…) gets no videoUrl at all rather than one that renders as a
-// broken element — Adult falls back to the title tile; Movies shows a format
-// note in the Files list instead of a Play control.
+// browserPlayableVideo reports whether in-app Play can be offered. Direct Play
+// containers stream as-is; every other library video (mkv/avi/wmv/…) is HLS.
 func browserPlayableVideo(path string) bool {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".mp4", ".m4v", ".webm", ".mov":
-		return true
-	default:
-		return false
-	}
+	return playback.PlayableInApp(path)
 }
 
 // Claude 2026-09-15: activeGrabKeys hoists the grab list for ONE mode into a set of request keys
@@ -212,7 +202,10 @@ func listTrackedHandler(libStore *library.Store, grabsStore *grabs.Store) http.H
 						VideoCodec: f.VideoCodec, BitRate: f.BitRate, DurationSec: f.DurationSec,
 					}
 					if browserPlayableVideo(f.FilePath) {
-						trackedFiles[j].VideoURL = fmt.Sprintf("/api/modes/movies/tracked/%d/video?fileId=%d", item.ID, f.ID)
+						trackedFiles[j].VideoURL = playback.VideoURL(
+							fmt.Sprintf("/api/modes/movies/tracked/%d/video?fileId=%d", item.ID, f.ID),
+							f.FilePath,
+						)
 					}
 					if !seenTier[ft] {
 						seenTier[ft] = true
@@ -231,7 +224,10 @@ func listTrackedHandler(libStore *library.Store, grabsStore *grabs.Store) http.H
 				}
 				itemVideoURL := ""
 				if primaryPath != "" && browserPlayableVideo(primaryPath) {
-					itemVideoURL = fmt.Sprintf("/api/modes/movies/tracked/%d/video", item.ID)
+					itemVideoURL = playback.VideoURL(
+						fmt.Sprintf("/api/modes/movies/tracked/%d/video", item.ID),
+						primaryPath,
+					)
 				}
 				out[i] = libraryTrackedItem{
 					ID: item.ID, Title: item.Title, Tags: tags, TMDBID: item.TMDBID, Year: item.Year,
@@ -342,7 +338,10 @@ func listTrackedHandler(libStore *library.Store, grabsStore *grabs.Store) http.H
 					Monitored: activeAdult[requestKey(mode.Adult, 0, sc.Title)],
 				}
 				if sc.FilePath != "" && browserPlayableVideo(sc.FilePath) {
-					out[i].VideoURL = fmt.Sprintf("/api/modes/adult/tracked/%d/video", sc.ID)
+					out[i].VideoURL = playback.VideoURL(
+						fmt.Sprintf("/api/modes/adult/tracked/%d/video", sc.ID),
+						sc.FilePath,
+					)
 				}
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -368,90 +367,94 @@ func listTrackedHandler(libStore *library.Store, grabsStore *grabs.Store) http.H
 // Claude 2026-09-24: series episode stream via ?episodeId=&fileId=; no Adult lock.
 // Reason: a show is not one file; Play Show / episode Play reuse serveLocalVideoFile.
 // Troubleshooting: unknown-mode 400 used to also catch series ("adult scenes and movies").
-// Review if: transcoding lands and this handler starts returning HLS.
+// Review if: device profiles start varying Direct Play by User-Agent.
 func trackedVideoHandler(libStore *library.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		m := mode.Mode(r.PathValue("mode"))
-		switch m {
-		case mode.Adult:
-			serveAdultTrackedVideo(w, r, libStore)
-		case mode.Movies:
-			serveMoviesTrackedVideo(w, r, libStore)
-		case mode.Series:
-			serveSeriesTrackedVideo(w, r, libStore)
-		default:
-			http.Error(w, "tracked video is only supported for adult scenes, movies, and series episodes", http.StatusBadRequest)
+		path, kind, ok := resolveTrackedVideoPath(w, r, libStore)
+		if !ok {
+			return
 		}
+		serveLocalVideoFile(w, r, path, kind)
 	}
 }
 
-func serveAdultTrackedVideo(w http.ResponseWriter, r *http.Request, libStore *library.Store) {
-	if denyIfAdultLocked(w, r) {
-		return
-	}
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		http.Error(w, "invalid tracked id", http.StatusBadRequest)
-		return
-	}
-	scene, err := libStore.GetSceneByID(r.Context(), id)
-	if err != nil {
-		if errors.Is(err, library.ErrNotFound) {
-			http.Error(w, "no tracked scene with that id", http.StatusNotFound)
+// trackedVideoHLSHandler is GET .../tracked/{id}/video/hls/{file}.
+// {file} is allowlisted in playback.AllowedSegment; the source path is
+// resolved the same way as trackedVideoHandler (library id, never a client path).
+func trackedVideoHLSHandler(libStore *library.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path, kind, ok := resolveTrackedVideoPath(w, r, libStore)
+		if !ok {
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		serveResolvedHLS(w, r, path, kind)
 	}
-	serveLocalVideoFile(w, r, scene.FilePath, "scene")
 }
 
-func serveMoviesTrackedVideo(w http.ResponseWriter, r *http.Request, libStore *library.Store) {
+func resolveTrackedVideoPath(w http.ResponseWriter, r *http.Request, libStore *library.Store) (path, kind string, ok bool) {
+	m := mode.Mode(r.PathValue("mode"))
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		http.Error(w, "invalid tracked id", http.StatusBadRequest)
-		return
+		return "", "", false
 	}
-	fileID, ok := parseOptionalFileID(w, r)
-	if !ok {
-		return
-	}
-	path, err := movieTrackedVideoPath(r.Context(), libStore, id, fileID)
-	if err != nil {
-		if errors.Is(err, library.ErrNotFound) {
-			http.Error(w, "no tracked movie video with that id", http.StatusNotFound)
-			return
+	switch m {
+	case mode.Adult:
+		if denyIfAdultLocked(w, r) {
+			return "", "", false
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		scene, err := libStore.GetSceneByID(r.Context(), id)
+		if err != nil {
+			writeTrackedVideoErr(w, err, "scene")
+			return "", "", false
+		}
+		return scene.FilePath, "scene", true
+	case mode.Movies:
+		fileID, ok := parseOptionalFileID(w, r)
+		if !ok {
+			return "", "", false
+		}
+		path, err := movieTrackedVideoPath(r.Context(), libStore, id, fileID)
+		if err != nil {
+			writeTrackedVideoErr(w, err, "movie")
+			return "", "", false
+		}
+		return path, "movie", true
+	case mode.Series:
+		episodeID, ok := parseRequiredEpisodeID(w, r)
+		if !ok {
+			return "", "", false
+		}
+		fileID, ok := parseOptionalFileID(w, r)
+		if !ok {
+			return "", "", false
+		}
+		path, err := seriesTrackedVideoPath(r.Context(), libStore, id, episodeID, fileID)
+		if err != nil {
+			writeTrackedVideoErr(w, err, "episode")
+			return "", "", false
+		}
+		return path, "episode", true
+	default:
+		http.Error(w, "tracked video is only supported for adult scenes, movies, and series episodes", http.StatusBadRequest)
+		return "", "", false
 	}
-	serveLocalVideoFile(w, r, path, "movie")
 }
 
-func serveSeriesTrackedVideo(w http.ResponseWriter, r *http.Request, libStore *library.Store) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		http.Error(w, "invalid tracked id", http.StatusBadRequest)
+func writeTrackedVideoErr(w http.ResponseWriter, err error, kind string) {
+	if errors.Is(err, library.ErrNotFound) {
+		http.Error(w, "no tracked "+kind+" video with that id", http.StatusNotFound)
 		return
 	}
-	episodeID, ok := parseRequiredEpisodeID(w, r)
-	if !ok {
+	http.Error(w, err.Error(), http.StatusInternalServerError)
+}
+
+func serveResolvedHLS(w http.ResponseWriter, r *http.Request, path, kind string) {
+	if path == "" {
+		http.Error(w, "tracked "+kind+" has no video file", http.StatusNotFound)
 		return
 	}
-	fileID, ok := parseOptionalFileID(w, r)
-	if !ok {
-		return
-	}
-	path, err := seriesTrackedVideoPath(r.Context(), libStore, id, episodeID, fileID)
-	if err != nil {
-		if errors.Is(err, library.ErrNotFound) {
-			http.Error(w, "no tracked series video with that id", http.StatusNotFound)
-			return
-		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	serveLocalVideoFile(w, r, path, "episode")
+	playback.ServeHLS(w, r, path, r.PathValue("file"))
 }
 
 // parseRequiredEpisodeID reads ?episodeId=. Missing or invalid 400 — series
@@ -557,20 +560,31 @@ func seriesTrackedVideoPath(ctx context.Context, libStore *library.Store, series
 }
 
 // seriesEpisodeVideoURL is the in-app stream path for one episode. fileID 0
-// omits ?fileId= (primary / denormalized path).
-func seriesEpisodeVideoURL(seriesID, episodeID, fileID int64) string {
+// omits ?fileId= (primary / denormalized path). HLS when the file is not a
+// Direct Play container.
+func seriesEpisodeVideoURL(seriesID, episodeID, fileID int64, filePath string) string {
 	u := fmt.Sprintf("/api/modes/series/tracked/%d/video?episodeId=%d", seriesID, episodeID)
 	if fileID > 0 {
 		u += fmt.Sprintf("&fileId=%d", fileID)
 	}
-	return u
+	return playback.VideoURL(u, filePath)
 }
 
 // serveLocalVideoFile opens path and hands it to http.ServeContent (Range/seek
-// works). kind is only for the error string ("scene" / "movie" / "episode").
+// works) for Direct Play containers. kind is only for the error string
+// ("scene" / "movie" / "episode" / "source" / "browse").
+//
+// Claude 2026-10-14: non-Direct-Play files 302 to .../video/hls/index.m3u8.
+// Reason: list URLs already point at HLS; this keeps old /video bookmarks working.
+// Troubleshooting: GET mkv /video → 302; playlist is a separate handler.
+// Review if: Direct Play starts probing codecs at list time.
 func serveLocalVideoFile(w http.ResponseWriter, r *http.Request, path, kind string) {
 	if path == "" {
 		http.Error(w, "tracked "+kind+" has no video file", http.StatusNotFound)
+		return
+	}
+	if !playback.DirectPlayContainer(path) {
+		http.Redirect(w, r, playback.PlaylistURL(r.URL.RequestURI()), http.StatusFound)
 		return
 	}
 	f, err := os.Open(path)

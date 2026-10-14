@@ -4,8 +4,6 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strconv"
 
 	"github.com/labbersanon/sakms/internal/mode"
@@ -41,10 +39,9 @@ import (
 // client-controlled symlink-traversal surface here — consistent with the
 // existing resolveBrowsablePath precedent elsewhere in this codebase.
 //
-// Serving uses http.ServeContent against an os.Open handle so range/seek
-// requests (video scrubbing) work and nothing is buffered in memory — unlike
-// imageProxyHandler, which buffers whole external images and is the wrong
-// template for a local video file.
+// Serving uses serveLocalVideoFile: Direct Play containers ServeContent
+// (Range/seek); other library videos 302 to .../video/hls/{file}. Unlike
+// imageProxyHandler, nothing is buffered in memory.
 //
 // Shape dispatch: this handler never switches on p.Workflow. The proposals
 // table has exactly two SHAPES — candidate-indexed (Dedup: len(p.Candidates)
@@ -84,64 +81,64 @@ import (
 // §2.1 for the full route-shape analysis.
 func proposalVideoHandler(propStore *proposals.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		m := mode.Mode(r.PathValue("mode"))
-		if m != mode.Movies && m != mode.Series && m != mode.Adult {
-			http.Error(w, "unknown mode", http.StatusBadRequest)
+		path, ok := resolveProposalVideo(w, r, propStore)
+		if !ok {
 			return
 		}
-		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-		if err != nil {
-			http.Error(w, "invalid proposal id", http.StatusBadRequest)
-			return
-		}
-
-		ctx := r.Context()
-		prop, err := propStore.Get(ctx, id)
-		if err != nil {
-			// AC14(a): an unknown proposal id is an explicit client error (400),
-			// never a silent empty response. The client picked a bad id.
-			if errors.Is(err, proposals.ErrNotFound) {
-				http.Error(w, "no proposal with that id", http.StatusBadRequest)
-				return
-			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// SECURITY: Layer 3, FIRST thing after the row is known and BEFORE any
-		// other answer is written. See the file doc comment.
-		if prop.Mode == mode.Adult && denyIfAdultLocked(w, r) {
-			return
-		}
-
-		if prop.Mode != m {
-			http.Error(w, "proposal does not belong to that mode", http.StatusBadRequest)
-			return
-		}
-		path, badReq := proposalVideoPath(*prop, r.URL.Query())
-		if badReq != "" {
-			http.Error(w, badReq, http.StatusBadRequest)
-			return
-		}
-
-		f, err := os.Open(path)
-		if err != nil {
-			// A valid proposal+index whose file has vanished/changed on disk
-			// since the scan — not a client error, and not tested by AC14.
-			http.Error(w, "source file is not available", http.StatusInternalServerError)
-			return
-		}
-		defer f.Close()
-		info, err := f.Stat()
-		if err != nil || info.IsDir() {
-			http.Error(w, "source file is not available", http.StatusInternalServerError)
-			return
-		}
-
-		// *os.File is an io.ReadSeeker, so ServeContent handles Range/If-Range
-		// requests (seeking, 206 Partial Content) itself — no in-memory buffer.
-		http.ServeContent(w, r, filepath.Base(path), info.ModTime(), f)
+		// Claude 2026-10-14: proposal preview uses serveLocalVideoFile.
+		// Reason: Dedup/Rename click-to-play hits the same Direct Play / HLS path as Library.
+		// Troubleshooting: mp4 ServeContent+Range; mkv/avi 302 to HLS.
+		// Review if: proposal preview grows a separate transcode path.
+		serveLocalVideoFile(w, r, path, "source")
 	}
+}
+
+func proposalVideoHLSHandler(propStore *proposals.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path, ok := resolveProposalVideo(w, r, propStore)
+		if !ok {
+			return
+		}
+		serveResolvedHLS(w, r, path, "source")
+	}
+}
+
+func resolveProposalVideo(w http.ResponseWriter, r *http.Request, propStore *proposals.Store) (string, bool) {
+	m := mode.Mode(r.PathValue("mode"))
+	if m != mode.Movies && m != mode.Series && m != mode.Adult {
+		http.Error(w, "unknown mode", http.StatusBadRequest)
+		return "", false
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid proposal id", http.StatusBadRequest)
+		return "", false
+	}
+	ctx := r.Context()
+	prop, err := propStore.Get(ctx, id)
+	if err != nil {
+		if errors.Is(err, proposals.ErrNotFound) {
+			http.Error(w, "no proposal with that id", http.StatusBadRequest)
+			return "", false
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return "", false
+	}
+	// SECURITY: Layer 3, FIRST thing after the row is known and BEFORE any
+	// other answer is written. See the file doc comment.
+	if prop.Mode == mode.Adult && denyIfAdultLocked(w, r) {
+		return "", false
+	}
+	if prop.Mode != m {
+		http.Error(w, "proposal does not belong to that mode", http.StatusBadRequest)
+		return "", false
+	}
+	path, badReq := proposalVideoPath(*prop, r.URL.Query())
+	if badReq != "" {
+		http.Error(w, badReq, http.StatusBadRequest)
+		return "", false
+	}
+	return path, true
 }
 
 // proposalVideoPath resolves WHICH file this request names, from the proposal's

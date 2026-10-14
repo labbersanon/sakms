@@ -379,7 +379,7 @@ func TestOrganizeBrowseStat_FileProbeAndDirWalk(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &fileStat); err != nil {
 		t.Fatal(err)
 	}
-	if fileStat.Size != 4 || fileStat.IsDir || fileStat.Playable {
+	if fileStat.Size != 4 || fileStat.IsDir || !fileStat.Playable || !strings.Contains(fileStat.VideoURL, "/hls/index.m3u8") {
 		t.Fatalf("mkv stat = %+v", fileStat)
 	}
 	if fileStat.Probe == nil || fileStat.Probe.Width != 1920 || fileStat.Probe.Codec != "h264" {

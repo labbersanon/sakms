@@ -1,6 +1,7 @@
 // Organize shared helpers — page size localStorage + activity log fetch.
 // Used by Rename / Dedup / Purge (deep-interview-organize-pagination-log).
 
+import { inAppVideoSrc } from "../playback";
 import { api } from "./client";
 import type { OrganizeEvent, Proposal, ProposalPage } from "@dto";
 import type { Mode } from "./discover";
@@ -98,11 +99,14 @@ export function proposalVideoUrl(
   mode: Mode,
   id: number,
   candidateIndex?: number,
+  filePath?: string,
 ): string {
   const base = `/api/modes/${mode}/proposals/${id}/video`;
-  return candidateIndex === undefined
-    ? base
-    : `${base}?candidateIndex=${candidateIndex}`;
+  const url =
+    candidateIndex === undefined
+      ? base
+      : `${base}?candidateIndex=${candidateIndex}`;
+  return inAppVideoSrc(url, filePath);
 }
 
 /** Streaming apply-batch with live progress callbacks. */

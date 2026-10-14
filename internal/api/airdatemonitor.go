@@ -1067,13 +1067,13 @@ func seasonEpisodeDTO(seriesID int64, ep library.Episode, files []library.Episod
 			DurationSec: f.DurationSec,
 		}
 		if owned && browserPlayableVideo(f.FilePath) {
-			tf.VideoURL = seriesEpisodeVideoURL(seriesID, ep.ID, f.ID)
-			out.VideoURL = seriesEpisodeVideoURL(seriesID, ep.ID, 0)
+			tf.VideoURL = seriesEpisodeVideoURL(seriesID, ep.ID, f.ID, f.FilePath)
+			out.VideoURL = seriesEpisodeVideoURL(seriesID, ep.ID, 0, f.FilePath)
 		}
 		out.Files = append(out.Files, tf)
 	}
 	if out.VideoURL == "" && owned && browserPlayableVideo(ep.FilePath) {
-		out.VideoURL = seriesEpisodeVideoURL(seriesID, ep.ID, 0)
+		out.VideoURL = seriesEpisodeVideoURL(seriesID, ep.ID, 0, ep.FilePath)
 	}
 	return out
 }

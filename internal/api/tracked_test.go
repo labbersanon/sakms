@@ -17,6 +17,7 @@ import (
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/playback"
 )
 
 // newTrackedMux wires a mux over a fresh store set and returns the library store
@@ -645,9 +646,9 @@ func TestListTracked_Movies_SetsVideoURLWhenPlayable(t *testing.T) {
 	}
 }
 
-func TestListTracked_Movies_OmitsVideoURLForMkv(t *testing.T) {
+func TestListTracked_Movies_SetsHLSVideoURLForMkv(t *testing.T) {
 	libStore, srv := newTrackedTestServer(t)
-	seedMovie(t, libStore, library.Item{
+	item := seedMovie(t, libStore, library.Item{
 		Mode: mode.Movies, TMDBID: 27205, Title: "Inception", Year: 2010,
 		FilePath: "/movies/Inception/Inception.mkv", RootFolderPath: "/movies",
 	})
@@ -656,11 +657,32 @@ func TestListTracked_Movies_OmitsVideoURLForMkv(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 item, got %+v", got)
 	}
-	if got[0].VideoURL != "" {
-		t.Fatalf("expected item videoUrl omitted for mkv, got %q", got[0].VideoURL)
+	wantItem := fmt.Sprintf("/api/modes/movies/tracked/%d/video/hls/index.m3u8", item.ID)
+	if got[0].VideoURL != wantItem {
+		t.Fatalf("item videoUrl = %q, want %q", got[0].VideoURL, wantItem)
 	}
-	if len(got[0].Files) != 1 || got[0].Files[0].VideoURL != "" {
-		t.Fatalf("expected file videoUrl omitted for mkv, got %+v", got[0].Files)
+	if len(got[0].Files) != 1 || !strings.Contains(got[0].Files[0].VideoURL, "/hls/index.m3u8") {
+		t.Fatalf("expected HLS file videoUrl for mkv, got %+v", got[0].Files)
+	}
+}
+
+func TestListTracked_Movies_SetsHLSVideoURLForAvi(t *testing.T) {
+	libStore, srv := newTrackedTestServer(t)
+	item := seedMovie(t, libStore, library.Item{
+		Mode: mode.Movies, TMDBID: 27205, Title: "Inception", Year: 2010,
+		FilePath: "/movies/Inception/Inception.avi", RootFolderPath: "/movies",
+	})
+
+	got := getTrackedItems(t, srv, "movies")
+	if len(got) != 1 {
+		t.Fatalf("expected 1 item, got %+v", got)
+	}
+	wantItem := fmt.Sprintf("/api/modes/movies/tracked/%d/video/hls/index.m3u8", item.ID)
+	if got[0].VideoURL != wantItem {
+		t.Fatalf("item videoUrl = %q, want %q", got[0].VideoURL, wantItem)
+	}
+	if len(got[0].Files) != 1 || !strings.Contains(got[0].Files[0].VideoURL, "/hls/index.m3u8") {
+		t.Fatalf("expected HLS file videoUrl for avi, got %+v", got[0].Files)
 	}
 }
 
@@ -684,6 +706,94 @@ func TestTrackedVideoHandler_MoviesServesPrimaryFile(t *testing.T) {
 	}
 	if got := resp.Header.Get("Cache-Control"); got != "private, max-age=3600" {
 		t.Fatalf("Cache-Control = %q, want private max-age", got)
+	}
+}
+
+func TestTrackedVideoHandler_MoviesMKVRedirectsToHLS(t *testing.T) {
+	libStore, srv := newTrackedTestServer(t)
+	path := filepath.Join(t.TempDir(), "movie.mkv")
+	if err := os.WriteFile(path, []byte("mkv-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	item := seedMovie(t, libStore, library.Item{
+		Mode: mode.Movies, TMDBID: 1, Title: "Some Movie", Year: 2020,
+		FilePath: path, RootFolderPath: filepath.Dir(path),
+	})
+
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := client.Get(fmt.Sprintf("%s/api/modes/movies/tracked/%d/video", srv.URL, item.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("expected 302, got %d body=%q", resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), "mkv-bytes") {
+		t.Fatalf("must not leak raw matroska: %q", body)
+	}
+	loc := resp.Header.Get("Location")
+	if !strings.Contains(loc, "/hls/index.m3u8") {
+		t.Fatalf("Location = %q, want HLS playlist", loc)
+	}
+}
+
+func TestTrackedVideoHLS_MoviesServesPlaylist(t *testing.T) {
+	h := playback.NewFakeHub(
+		func(context.Context, string) (string, string, error) {
+			return "h264", "aac", nil
+		},
+		func(ctx context.Context, src, outDir string, d playback.Decision) error {
+			return os.WriteFile(filepath.Join(outDir, "index.m3u8"), []byte("#EXTM3U\n"), 0o644)
+		},
+	)
+	t.Cleanup(playback.ReplaceHub(h))
+
+	libStore, srv := newTrackedTestServer(t)
+	path := filepath.Join(t.TempDir(), "movie.mkv")
+	if err := os.WriteFile(path, []byte("mkv-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	item := seedMovie(t, libStore, library.Item{
+		Mode: mode.Movies, TMDBID: 1, Title: "Some Movie", Year: 2020,
+		FilePath: path, RootFolderPath: filepath.Dir(path),
+	})
+
+	resp, err := http.Get(fmt.Sprintf("%s/api/modes/movies/tracked/%d/video/hls/index.m3u8", srv.URL, item.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "#EXTM3U") {
+		t.Fatalf("body = %q", body)
+	}
+}
+
+func TestTrackedVideoHLS_RejectsTraversalFile(t *testing.T) {
+	libStore, srv := newTrackedTestServer(t)
+	path := filepath.Join(t.TempDir(), "movie.mkv")
+	if err := os.WriteFile(path, []byte("mkv-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	item := seedMovie(t, libStore, library.Item{
+		Mode: mode.Movies, TMDBID: 1, Title: "Some Movie", Year: 2020,
+		FilePath: path, RootFolderPath: filepath.Dir(path),
+	})
+	resp, err := http.Get(fmt.Sprintf("%s/api/modes/movies/tracked/%d/video/hls/secret.txt", srv.URL, item.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d body=%q, want 400", resp.StatusCode, body)
 	}
 }
 

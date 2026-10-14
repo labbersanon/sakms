@@ -10846,3 +10846,38 @@ status stays active.
 | `internal/searchterm/searchterm.go` | strip `{tvdb N}` from FromName |
 | `frontend/src/searchterm.ts` | same strip |
 
+## 2026-10-14 — In-app Play remuxes MKV to fragmented MP4
+
+**Problem:** Library / Series / Organize / Dedup Play hid `.mkv` files ("This format cannot play in the browser") even though most of the library is Matroska until FileFlows remuxes to MP4.
+**Root cause:** `browserPlayableVideo` only listed mp4/m4v/webm/mov. `<video>` cannot decode Matroska. HLS transcode is a separate, legal-gated ROADMAP item and is not this change.
+**Fix:** Treat `.mkv` as playable. `GET .../video` stream-copies the first video (+ first audio if any) through ffmpeg into fragmented MP4 (`-c copy`, `-movflags frag_keyframe+empty_moov+default_base_moof`). No video/audio encode. avi/wmv still omit Play. Seek on the remux pipe has no byte ranges (Accept-Ranges: none).
+**Outcome:** Tests pass. Not deployed.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/videoremux/remux.go` | ffmpeg copy → fMP4 pipe |
+| `internal/api/tracked.go` | `.mkv` playable; remux in `serveLocalVideoFile` |
+| `internal/api/proposal_video.go` | Dedup/Rename preview uses the same serve path |
+| `frontend/src/screens/Library.test.tsx` | mkv Play; avi still format-note |
+
+## 2026-10-14 — In-app Play matches Jellyfin web (HLS remux / AAC / H.264)
+
+**Problem:** The same-day fMP4 pipe remux let Chrome open MKV, but seek had no byte ranges, AC3/DTS stayed unplayable, HEVC in Chrome still failed, and avi/wmv still hid Play.
+**Root cause:** Matching Jellyfin's *web* path needs HLS (independently fetchable segments) plus StreamBuilder ranking — Direct Play, remux (copy), Direct Stream (copy video + AAC), then H.264 transcode — not a single copy pipe.
+**Fix:** Direct Play mp4/m4v/webm/mov via ServeContent. Every other library video gets `.../video/hls/index.m3u8`. Session ffmpeg writes fMP4 HLS after a probe: remux copy, or AAC, or h264_nvenc/libx264. `{file}` allowlist `index.m3u8`/`init.mp4`/`segN.m4s`. hls.js in TrackedPlayback / SourcePreview / Dedup. NOTICE records the encode path. Native TV apps stay ROADMAP.
+**Outcome:** Tests pass. Not deployed.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/playback/decide.go` | Direct Play vs HLS URL; Remux/DirectStream/Transcode |
+| `internal/playback/hls.go` | ffmpeg HLS sessions keyed by path+mtime |
+| `internal/mediainfo/mediainfo.go` | Probe.AudioCodec |
+| `internal/api/tracked.go` | HLS routes; mkv/avi videoUrl; /video 302 to playlist |
+| `internal/videoremux/*` | removed — superseded by HLS |
+| `frontend/src/components/PlaybackVideo.tsx` | hls.js attach |
+| `NOTICE.md` | In-app HLS playback encode note |
+

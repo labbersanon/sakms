@@ -923,7 +923,7 @@ export const DetailPopup: Component<{
 
   const [preview] = createResource(
     () =>
-      allowGrab() && ready()
+      allowGrab() && ready() && !replaceOpen()
         ? { m: mode(), i: item(), se: seasonEpisode() }
         : null,
     ({ m, i, se }) => {
@@ -1233,6 +1233,193 @@ export const DetailPopup: Component<{
     }
   };
 
+  // Claude 2026-10-13: Replace starts operator autograb under that episode.
+  // Reason: Love Is Blind S01E10 searched availability 3× and never POSTed
+  //   /autograb — the grid+Grab sat below tags/cast, so the tap looked dead.
+  // Troubleshooting: in-row "Searching replacements…" then Grab this list.
+  // Review if: owned Replace should keep the resolution/tier pills instead.
+  const [replaceKey, setReplaceKey] = createSignal("");
+  const runReplaceGrab = async (se?: { season: number; episode: number }) => {
+    setGrabError("");
+    setGrabbed(false);
+    setGrabbedTitle("");
+    setFallback(null);
+    setGrabbing(true);
+    try {
+      const res = await autoGrab(mode(), {
+        title: item().title,
+        tmdbId: (item() as DiscoverItem).id,
+        seasonNumber: mode() === "series" ? se?.season : undefined,
+        episodeNumber: mode() === "series" ? se?.episode : undefined,
+        seasonSpecified: mode() === "series" ? true : undefined,
+      });
+      if (res.fallback) {
+        setFallback(res);
+        return;
+      }
+      if (res.grabbed) {
+        setGrabbedTitle(res.grab?.title || item().title);
+        setGrabbed(true);
+        return;
+      }
+      setGrabError(res.message || "No replacement grabbed");
+    } catch (e) {
+      setGrabError((e as Error).message);
+    } finally {
+      setGrabbing(false);
+    }
+  };
+  createEffect(() => {
+    if (!replaceOpen()) {
+      setReplaceKey("");
+      return;
+    }
+    if (mode() === "series") {
+      const se = seasonEpisode();
+      if (!se) return;
+      const key = `s:${se.season}:${se.episode}`;
+      if (replaceKey() === key) return;
+      setReplaceKey(key);
+      void runReplaceGrab(se);
+      return;
+    }
+    if (mode() !== "movies") return;
+    const key = `t:${(item() as DiscoverItem).id}`;
+    if (replaceKey() === key) return;
+    setReplaceKey(key);
+    void runReplaceGrab();
+  });
+
+  // Claude 2026-10-13: one grab grid, in-row when replacing an owned episode.
+  // Reason: Library episode Replace left this block under tags/cast.
+  // Troubleshooting: two call sites; only one Show is true at a time.
+  // Review if: Discover grab moves into the episode list too.
+  let replaceSearchEl: HTMLDivElement | undefined;
+  createEffect(() => {
+    if (!replaceOpen()) return;
+    if (mode() === "series" && !seasonEpisode()) return;
+    queueMicrotask(() => {
+      replaceSearchEl?.scrollIntoView?.({
+        block: "center",
+        behavior: "smooth",
+      });
+    });
+  });
+  const ReplaceSearchPanel: Component = () => (
+    <div
+      ref={(el) => {
+        replaceSearchEl = el;
+      }}
+      data-testid="replace-search"
+    >
+      <Show when={grabbing()}>
+        <Muted class="mt-2">Searching replacements…</Muted>
+      </Show>
+      <Show when={!grabbing() && grabError() && !fallback()}>
+        <ErrorText>{grabError()}</ErrorText>
+      </Show>
+      <Show when={!grabbing() && fallback()}>
+        {(res) => (
+          <FallbackPickList
+            response={res()}
+            onPick={(c) => void pickFallback(c)}
+            grabbing={manualPicking()}
+            error={grabError()}
+          />
+        )}
+      </Show>
+      <Show when={!grabbing() && grabbed()}>
+        <div class="mt-2 text-sm text-ok">
+          Grabbed “{grabbedTitle()}”. Check Calendar History.
+        </div>
+      </Show>
+    </div>
+  );
+  const AvailabilityGrab: Component = () => (
+        <Show when={allowGrab()}>
+        <Show
+          when={!preview.loading}
+          fallback={<Muted class="mt-3">Checking availability…</Muted>}
+        >
+          <Show
+            when={!preview.error}
+            fallback={
+              <ErrorText>{(preview.error as Error)?.message}</ErrorText>
+            }
+          >
+            <div class="mt-3">
+              <Show when={emptyMessage()}>
+                <Muted class="mb-2">{emptyMessage()}</Muted>
+              </Show>
+
+              <PillSelector
+                label="Resolution"
+                options={RESOLUTION_DISPLAY_STR}
+                optionLabels={RESOLUTION_LABELS_STR}
+                selected={resolution() !== null ? String(resolution()) : null}
+                onSelect={(r) => setResolution(Number(r))}
+                isDisabled={(r) => !resolutionEnabled(Number(r))}
+              />
+
+              <PillSelector
+                label="Quality tier"
+                options={TIERS}
+                optionLabels={TIER_LABELS}
+                selected={tier()}
+                onSelect={setTier}
+                isDisabled={(t) => !tierEnabled(t)}
+              />
+
+              <PillSelector
+                label="Protocol"
+                options={PROTOCOLS}
+                optionLabels={PROTOCOL_LABELS}
+                selected={protocol()}
+                onSelect={setProtocol}
+                isDisabled={(pr) => !protocolEnabled(pr)}
+              />
+
+              <div class="mt-4 flex flex-col gap-3">
+                <Show when={fallback()}>
+                  {(res) => (
+                    <FallbackPickList
+                      response={res()}
+                      onPick={(c) => void pickFallback(c)}
+                      grabbing={manualPicking()}
+                      error={grabError()}
+                    />
+                  )}
+                </Show>
+                <div class="flex items-center justify-end gap-3">
+                <Show when={grabError() && !fallback()}>
+                  <ErrorText>{grabError()}</ErrorText>
+                </Show>
+                <Show
+                  when={!grabbed()}
+                  fallback={
+                    <div class="text-sm text-ok">
+                      Grabbed “{grabbedTitle() || selectedCandidate()?.title}”.
+                    </div>
+                  }
+                >
+                  <Show when={!fallback()}>
+                    <Button
+                      variant="primary"
+                      onClick={() => void grab()}
+                      disabled={grabDisabled()}
+                    >
+                      {grabbing() ? "Grabbing…" : "Grab"}
+                    </Button>
+                  </Show>
+                </Show>
+                </div>
+              </div>
+            </div>
+          </Show>
+        </Show>
+        </Show>
+  );
+
   return (
     <>
     <Modal title={item().title} onClose={props.onClose}>
@@ -1481,13 +1668,29 @@ export const DetailPopup: Component<{
           Troubleshooting: SeasonsPanel/TitleQualityPrefs used to mount above
           the header tile.
           Review if: Library stops nesting DetailPanel under this popup. */}
-      <Show when={allowGrab() && (mode() === "movies" || mode() === "series")}>
+      <Show when={replaceOpen() && mode() === "movies"}>
+        <ReplaceSearchPanel />
+      </Show>
+      <Show
+        when={
+          allowGrab() &&
+          !replaceOpen() &&
+          (mode() === "movies" || mode() === "series")
+        }
+      >
         <TitleQualityPrefs
           mode={mode() as "movies" | "series"}
           titleKey={qualityTitleKey()}
         />
       </Show>
-      <Show when={allowGrab() && mode() === "series" && hasCatalogTmdb()}>
+      <Show
+        when={
+          allowGrab() &&
+          !replaceOpen() &&
+          mode() === "series" &&
+          hasCatalogTmdb()
+        }
+      >
         <SeasonsPanel tmdbId={(item() as DiscoverItem).id} />
       </Show>
       <Show when={(ownedSeriesID() ?? 0) > 0}>
@@ -1495,6 +1698,7 @@ export const DetailPopup: Component<{
           seriesID={ownedSeriesID()!}
           seasons={ownedSeasons.error ? [] : (ownedSeasons() ?? [])}
           loading={ownedSeasons.loading}
+          replacing={replaceOpen() ? seasonEpisode() ?? undefined : undefined}
           onReplace={
             props.canReplace
               ? (season, episode) => {
@@ -1503,7 +1707,11 @@ export const DetailPopup: Component<{
                 }
               : undefined
           }
-        />
+        >
+          <Show when={replaceOpen() && ready()}>
+            <ReplaceSearchPanel />
+          </Show>
+        </SeriesEpisodesPanel>
       </Show>
       {/* Claude 2026-09-22: Library children (quality/seasons/files/tags) follow
           poster + Discover quality/seasons so the info screen stays top-down.
@@ -1561,102 +1769,8 @@ export const DetailPopup: Component<{
           </div>
         </Show>
 
-        <Show when={allowGrab()}>
-        <Show
-          when={!preview.loading}
-          fallback={<Muted class="mt-3">Checking availability…</Muted>}
-        >
-          <Show
-            when={!preview.error}
-            fallback={
-              <ErrorText>{(preview.error as Error)?.message}</ErrorText>
-            }
-          >
-            {/* No further Show(when={preview()}) wrapper here — the two
-                Shows above already guard !loading && !error, so preview() is
-                settled by this point; resolutionEnabled/tierEnabled/
-                protocolEnabled/selectedCandidate all independently
-                null-guard against a transient unsettled read anyway. */}
-            <div class="mt-3">
-              {/* An empty grid used to render as three rows of
-                  silently-disabled pills with no explanation at all, and the
-                  two reasons a grid can be empty (nothing found vs. found and
-                  all rejected) were indistinguishable. The message is ADDITIVE
-                  — the selectors and Grab button below render exactly as they
-                  always have, in every case. */}
-              <Show when={emptyMessage()}>
-                <Muted class="mb-2">{emptyMessage()}</Muted>
-              </Show>
-
-              <PillSelector
-                label="Resolution"
-                options={RESOLUTION_DISPLAY_STR}
-                optionLabels={RESOLUTION_LABELS_STR}
-                selected={resolution() !== null ? String(resolution()) : null}
-                onSelect={(r) => setResolution(Number(r))}
-                isDisabled={(r) => !resolutionEnabled(Number(r))}
-              />
-
-              <PillSelector
-                label="Quality tier"
-                options={TIERS}
-                optionLabels={TIER_LABELS}
-                selected={tier()}
-                onSelect={setTier}
-                isDisabled={(t) => !tierEnabled(t)}
-              />
-
-              <PillSelector
-                label="Protocol"
-                options={PROTOCOLS}
-                optionLabels={PROTOCOL_LABELS}
-                selected={protocol()}
-                onSelect={setProtocol}
-                isDisabled={(pr) => !protocolEnabled(pr)}
-              />
-
-              <div class="mt-4 flex flex-col gap-3">
-                <Show when={fallback()}>
-                  {(res) => (
-                    <FallbackPickList
-                      response={res()}
-                      onPick={(c) => void pickFallback(c)}
-                      grabbing={manualPicking()}
-                      error={grabError()}
-                    />
-                  )}
-                </Show>
-                <div class="flex items-center justify-end gap-3">
-                {/* Trailer button now lives in the header action row (next
-                    to "More on TMDB") as a sibling of this whole
-                    availability/grab block, not nested inside it — see the
-                    comment there for why. */}
-                <Show when={grabError() && !fallback()}>
-                  <ErrorText>{grabError()}</ErrorText>
-                </Show>
-                <Show
-                  when={!grabbed()}
-                  fallback={
-                    <div class="text-sm text-ok">
-                      Grabbed “{grabbedTitle() || selectedCandidate()?.title}”.
-                    </div>
-                  }
-                >
-                  <Show when={!fallback()}>
-                    <Button
-                      variant="primary"
-                      onClick={() => void grab()}
-                      disabled={grabDisabled()}
-                    >
-                      {grabbing() ? "Grabbing…" : "Grab"}
-                    </Button>
-                  </Show>
-                </Show>
-                </div>
-              </div>
-            </div>
-          </Show>
-        </Show>
+        <Show when={allowGrab() && !replaceOpen()}>
+          <AvailabilityGrab />
         </Show>
 
         {/* F1 rich detail (Movies/Series only). Every image below resolves via

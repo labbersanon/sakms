@@ -10797,3 +10797,33 @@ status stays active.
 | `internal/api/titlequality.go` | ignore/clear title codec_rank; inherit Settings |
 | `internal/api/titlequality_test.go` | leftover rank ignored; PUT clears column |
 
+## 2026-10-13 — Episode Replace search opens under the tapped row
+
+**Problem:** Tapping Replace on an owned episode (Love Is Blind S01E10 / S06E03) looked like a no-op.
+**Root cause:** The click did set the episode and open replace mode, but the availability/Grab block stayed under tags and cast, below a long season list, outside the tap viewport. The Replace control was also an 11px underline.
+**Fix:** Mount the grab grid under the replacing episode, highlight that row, scroll it into view, and use a 44px tap target. Discover Grab (not replacing) stays where it was.
+**Outcome:** Replace on an episode shows Checking availability / Grab next to that row. Not deployed.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/components/SeriesEpisodesPanel.tsx` | in-row replace slot; larger Replace control |
+| `frontend/src/screens/discover/DetailPopup.tsx` | grab grid under the replacing episode |
+| `frontend/src/components/SeriesEpisodesPanel.test.tsx` | replacing season + slot |
+| `frontend/src/screens/discover/DetailPopup.test.tsx` | click Replace asserts in-row Grab |
+
+## 2026-10-13 — Episode Replace starts autograb and shows Grab this in-row
+
+**Problem:** Live Love Is Blind S01E10 Replace searched availability three times and never POSTed `/autograb`. Tapping Replace still looked dead.
+**Root cause:** Replace only opened the quality grid. Grab sat below tags/cast, so the operator never clicked it. High/Lossless floors also reject the WEB-DLs (5.2 Mbps vs 10+).
+**Fix:** Replace POSTs operator `/autograb` for that S/E immediately and renders Searching replacements… then the Grab this list under the row. Skip the below-the-fold pills on that path.
+**Outcome:** Tests pass. Not deployed (Ancient Aliens Usenet BODY in progress).
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/discover/DetailPopup.tsx` | Replace → autograb + in-row pick list |
+| `frontend/src/screens/discover/DetailPopup.test.tsx` | asserts POST season/episode + Grab this |
+

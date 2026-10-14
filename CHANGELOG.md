@@ -10862,3 +10862,22 @@ status stays active.
 | `internal/api/proposal_video.go` | Dedup/Rename preview uses the same serve path |
 | `frontend/src/screens/Library.test.tsx` | mkv Play; avi still format-note |
 
+## 2026-10-14 — In-app Play matches Jellyfin web (HLS remux / AAC / H.264)
+
+**Problem:** The same-day fMP4 pipe remux let Chrome open MKV, but seek had no byte ranges, AC3/DTS stayed unplayable, HEVC in Chrome still failed, and avi/wmv still hid Play.
+**Root cause:** Matching Jellyfin's *web* path needs HLS (independently fetchable segments) plus StreamBuilder ranking — Direct Play, remux (copy), Direct Stream (copy video + AAC), then H.264 transcode — not a single copy pipe.
+**Fix:** Direct Play mp4/m4v/webm/mov via ServeContent. Every other library video gets `.../video/hls/index.m3u8`. Session ffmpeg writes fMP4 HLS after a probe: remux copy, or AAC, or h264_nvenc/libx264. `{file}` allowlist `index.m3u8`/`init.mp4`/`segN.m4s`. hls.js in TrackedPlayback / SourcePreview / Dedup. NOTICE records the encode path. Native TV apps stay ROADMAP.
+**Outcome:** Tests pass. Not deployed.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/playback/decide.go` | Direct Play vs HLS URL; Remux/DirectStream/Transcode |
+| `internal/playback/hls.go` | ffmpeg HLS sessions keyed by path+mtime |
+| `internal/mediainfo/mediainfo.go` | Probe.AudioCodec |
+| `internal/api/tracked.go` | HLS routes; mkv/avi videoUrl; /video 302 to playlist |
+| `internal/videoremux/*` | removed — superseded by HLS |
+| `frontend/src/components/PlaybackVideo.tsx` | hls.js attach |
+| `NOTICE.md` | In-app HLS playback encode note |
+

@@ -1,4 +1,5 @@
 import { api } from "./client";
+import { inAppVideoSrc } from "../playback";
 import type {
   OrganizeBrowseOpResponse,
   OrganizeBrowseResponse,
@@ -30,7 +31,10 @@ export function fetchOrganizeBrowseStat(path: string): Promise<OrganizeBrowseSta
 // it. Same-origin session cookie, not api() — a <video> streams with Range.
 // Route stays under /api/organize/ so Layer 1 classifies it {organize}.
 export function browseVideoUrl(path: string): string {
-  return `/api/organize/browse/video?path=${encodeURIComponent(path)}`;
+  return inAppVideoSrc(
+    `/api/organize/browse/video?path=${encodeURIComponent(path)}`,
+    path,
+  );
 }
 
 export function renameOrganizeBrowse(

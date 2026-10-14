@@ -603,8 +603,8 @@ const DetailPanel: Component<{
       </Show>
 
       {/* Files — Movies primary + alternates (bitrate/codec/resolution) */}
-      {/* Play + Fullscreen live on each playable file row. avi/wmv omit
-          videoUrl and get a format note; mkv is remuxed server-side. */}
+      {/* Play + Fullscreen live on each playable file row. Missing videoUrl
+          (iso/non-video) still shows the format note; mkv/avi/wmv are HLS. */}
       <Show when={props.mode === "movies" && (props.item.files ?? []).length > 0}>
         <div class="mb-3">
           <p class="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted">Files</p>

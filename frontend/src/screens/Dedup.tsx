@@ -85,6 +85,7 @@ import {
   savePageSize,
   saveShowHistory,
 } from "../api/organize";
+import { PlaybackVideo } from "../components/PlaybackVideo";
 import {
   BatchResultSummary,
   Button,
@@ -897,13 +898,12 @@ const DedupView: Component<{ mode: Mode; adultAspect: AdultOrganizeAspect }> = (
                                         the operator hits play (AC3, click-to-play).
                                         muted default; each <video> is independent so
                                         unmuting one does not affect others (AC4). */}
-                                    <video
+                                    <PlaybackVideo
                                       class="mb-2 w-full rounded bg-surface-2"
-                                      controls
                                       muted
                                       preload="none"
-                                      src={proposalVideoUrl(props.mode, p.id, i())}
-                                      aria-label={`Preview ${c.label}`}
+                                      src={proposalVideoUrl(props.mode, p.id, i(), c.path)}
+                                      ariaLabel={`Preview ${c.label}`}
                                     />
                                     <div class="mb-2 flex items-center justify-between gap-2">
                                       <CandidateMeta c={c} />

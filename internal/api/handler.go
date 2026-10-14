@@ -183,6 +183,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("GET /api/ollama/models", ollamaModelsHandler(connStore, httpClient))
 
 	mux.HandleFunc("GET /api/modes/{mode}/tracked", listTrackedHandler(libStore, grabsStore))
+	mux.HandleFunc("GET /api/modes/{mode}/tracked/{id}/video/hls/{file}", trackedVideoHLSHandler(libStore))
 	mux.HandleFunc("GET /api/modes/{mode}/tracked/{id}/video", trackedVideoHandler(libStore))
 	// Claude 2026-09-24: owned Rematch. {id} is the library row, not TMDB/box.
 	// Reason: SearchTakeover fourth caller writes identity, not a Rename proposal.
@@ -313,6 +314,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	}))
 	mux.HandleFunc("GET /api/organize/discs/extract", organizeDiscUnpackStatusHandler())
 	mux.HandleFunc("GET /api/organize/browse/stat", organizeBrowseStatHandler(libStore, prober))
+	mux.HandleFunc("GET /api/organize/browse/video/hls/{file}", organizeBrowseVideoHLSHandler())
 	mux.HandleFunc("GET /api/organize/browse/video", organizeBrowseVideoHandler())
 	// Claude 2026-09-29: Organize Import — Movies/Series/Adult confirm-to-MOVE.
 	// Reason: prefix /api/organize/ stays {organize}; Adult hasher is body-mode
@@ -423,6 +425,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// for this route (see internal/sectionlock/routes.go's "proposals" case) —
 	// proposalVideoHandler's own doc comment explains why this route must never
 	// move to /api/proposals/{id}/video.
+	mux.HandleFunc("GET /api/modes/{mode}/proposals/{id}/video/hls/{file}", proposalVideoHLSHandler(propStore))
 	mux.HandleFunc("GET /api/modes/{mode}/proposals/{id}/video", proposalVideoHandler(propStore))
 
 	// Discover is a read-only proxy against TMDB (trending/popular titles,

@@ -585,7 +585,7 @@ const ProposalFileNames: Component<{
             )}
           >
             <SourcePreviewPopout
-              src={proposalVideoUrl(props.mode, p().id)}
+              src={proposalVideoUrl(props.mode, p().id, undefined, p().sourcePath || p().sourceName)}
               label={p().sourceName}
             />
           </Show>
@@ -1054,7 +1054,7 @@ const TitleReviewDialog: Component<{
             </div>
           </fieldset>
           <SourcePreviewDisclosure
-            src={proposalVideoUrl(props.mode, p.id)}
+            src={proposalVideoUrl(props.mode, p.id, undefined, p.sourcePath || p.sourceName)}
             label={p.sourceName}
           />
           <Show when={confirmError()}>
@@ -1301,7 +1301,7 @@ const AdultReviewDialog: Component<{
                 </Show>
 
                 <SourcePreviewDisclosure
-                  src={proposalVideoUrl(props.mode, p.id)}
+                  src={proposalVideoUrl(props.mode, p.id, undefined, p.sourcePath || p.sourceName)}
                   label={p.sourceName}
                 />
               </>
@@ -2169,7 +2169,7 @@ const RenameQueue: Component<{ mode: Mode; adultAspect: AdultOrganizeAspect }> =
               // visible failure — see .omc/plans/autopilot-impl-rename-preview.md §6.3.
               preview={
                 <SourcePreviewDisclosure
-                  src={proposalVideoUrl(props.mode, p.id)}
+                  src={proposalVideoUrl(props.mode, p.id, undefined, p.sourcePath || p.sourceName)}
                   label={p.sourceName}
                 />
               }

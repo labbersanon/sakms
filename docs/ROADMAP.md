@@ -2198,6 +2198,12 @@ authorize building it — it's the approved-but-pending follow-up the VMAF
 backend clears the way for.
 
 ### Native TV-app player enabling real transcoding — future, DIFFERENT and higher legal-risk profile, needs its own scoping
+**UPDATED 2026-10-14 — in-app *browser* Play now matches Jellyfin's web
+path** (Direct Play / HLS remux / AAC Direct Stream / H.264 transcode;
+`internal/playback`, NOTICE "In-app HLS playback"). That is not this
+entry. Native TV/mobile apps (Android TV, tvOS, Roku, Fire TV) remain
+future work sharing a backend, each with its own deep-interview.
+
 A Jellyfin/Stash-like native TV app player for SAK's library, which would
 enable **real transcoding** (actual H.264/HEVC/etc. re-encoding, not just
 decoding). Flagged explicitly as a **materially different and higher
@@ -2205,16 +2211,14 @@ legal-risk profile than the VMAF work**: VMAF is decode-only and never
 encodes, so it stays outside the codec patent-royalty territory FFmpeg's own
 legal page warns commercial encoders about (see `NOTICE.md`). A transcoding
 player crosses into real encoding — real codec-royalty exposure — a
-genuinely different risk analysis that `NOTICE.md`'s current decode-only
-rationale does NOT cover and would have to be extended for. Captured here as
-a future item per the VMAF spec's explicit instruction
-(`.omc/specs/deep-interview-vmaf-backend.md` Follow-ups); **not designed or
-scoped here** — it needs its own future scoping effort before any work
-starts. Cross-reference: this is the deliberate future reconsideration of the
-"Hardware acceleration for transcoding/thumbnails" item in "Dropped from
-scope" below (dropped because SAK doesn't transcode *today*) — as a player
-feature, with the legal caveat above attached, not a silent reversal of that
-drop.
+genuinely different risk analysis that `NOTICE.md`'s VMAF decode-only
+rationale does NOT cover (the in-app HLS section now records the browser
+path). Captured here as a future item per the VMAF spec's explicit instruction
+(`.omc/specs/deep-interview-vmaf-backend.md` Follow-ups); native apps are
+**not designed or scoped here**. Cross-reference: this is the deliberate
+future reconsideration of the "Hardware acceleration for transcoding/thumbnails"
+item in "Dropped from scope" below — as a player feature, with the legal
+caveat above attached, not a silent reversal of that drop.
 
 ### Frontend redesign — fully shipped 2026-07-19
 Shell shipped 2026-07-13; bulk-apply tables + system dashboard shipped

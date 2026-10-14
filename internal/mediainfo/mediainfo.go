@@ -29,6 +29,8 @@ type Probe struct {
 	HDR bool
 	// AudioChannels is the first audio stream's channel count (0 if none).
 	AudioChannels int
+	// AudioCodec is the first audio stream's codec_name (empty if none).
+	AudioCodec string
 	// Tags are best-effort identity hints from format.tags (title/year/ids).
 	// Empty when the container has none — callers must fall through to NFO/filename.
 	Tags Tags
@@ -150,6 +152,7 @@ func (p *Prober) Probe(ctx context.Context, path string) (*Probe, error) {
 		Duration:      duration,
 		HDR:           streamIsHDR(s),
 		AudioChannels: audio.Channels,
+		AudioCodec:    audio.CodecName,
 		Tags:          ParseFormatTags(out.Format.Tags),
 	}, nil
 }

@@ -104,8 +104,8 @@ func TestProbe_HDRAndAudioChannels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.HDR || got.AudioChannels != 8 {
-		t.Fatalf("HDR=%v channels=%d, want true/8", got.HDR, got.AudioChannels)
+	if !got.HDR || got.AudioChannels != 8 || got.AudioCodec != "truehd" {
+		t.Fatalf("HDR=%v channels=%d codec=%q, want true/8/truehd", got.HDR, got.AudioChannels, got.AudioCodec)
 	}
 }
 

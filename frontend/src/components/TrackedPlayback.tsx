@@ -16,6 +16,7 @@
 //   Video player for {label}        on the <video>
 import { type Component, createSignal, onCleanup, Show } from "solid-js";
 import Maximize2 from "lucide-solid/icons/maximize-2";
+import { PlaybackVideo } from "./PlaybackVideo";
 import { Button } from "./ui";
 
 export type VideoProgress = {
@@ -149,15 +150,14 @@ export const PlayFullscreenLink: Component<{
         {/* Claude 2026-08-14: bg-black so fullscreen pillarbox is not cream.
             Reason: bg-surface-2 painted the unused fullscreen area.
             Review if: a themed player chrome is added. */}
-        <video
+        <PlaybackVideo
           ref={bindVideo}
           class="mt-2 w-full rounded bg-black"
-          controls
           autoplay
           playsinline
           preload="metadata"
           src={props.src}
-          aria-label={`Fullscreen player for ${props.title}`}
+          ariaLabel={`Fullscreen player for ${props.title}`}
         />
       </Show>
     </>
@@ -222,13 +222,13 @@ export const TrackedPlayback: Component<{
       </div>
       <Show when={open()}>
         <div class="mt-2">
-          <video
+          <PlaybackVideo
             ref={bindVideo}
             class="w-full rounded bg-black"
-            controls
             preload="none"
+            playsinline
             src={props.src}
-            aria-label={`Video player for ${props.label}`}
+            ariaLabel={`Video player for ${props.label}`}
           />
         </div>
       </Show>

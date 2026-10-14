@@ -1579,13 +1579,13 @@ describe("Library — in-app movie playback", () => {
     stubFetch(
       makeHandler([
         inception({
-          videoUrl: "/api/modes/movies/tracked/10/video",
+          videoUrl: "/api/modes/movies/tracked/10/video/hls/index.m3u8",
           files: [
             {
               id: 4,
               filePath: "/movies/Inception/Inception.mkv",
               isPrimary: true,
-              videoUrl: "/api/modes/movies/tracked/10/video?fileId=4",
+              videoUrl: "/api/modes/movies/tracked/10/video/hls/index.m3u8?fileId=4",
             },
           ],
         }),
@@ -1602,15 +1602,17 @@ describe("Library — in-app movie playback", () => {
     ).toBeNull();
   });
 
-  it("avi files get a format note and no Play control", async () => {
+  it("avi files with HLS videoUrl get Play like mkv", async () => {
     stubFetch(
       makeHandler([
         inception({
+          videoUrl: "/api/modes/movies/tracked/10/video/hls/index.m3u8",
           files: [
             {
               id: 4,
               filePath: "/movies/Inception/Inception.avi",
               isPrimary: true,
+              videoUrl: "/api/modes/movies/tracked/10/video/hls/index.m3u8?fileId=4",
             },
           ],
         }),
@@ -1620,12 +1622,11 @@ describe("Library — in-app movie playback", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
     const dialog = await screen.findByRole("dialog", { name: "Inception" });
     expect(
-      within(dialog).getByText("This format cannot play in the browser"),
+      within(dialog).getByRole("button", { name: "Play Inception" }),
     ).toBeInTheDocument();
     expect(
-      within(dialog).queryByRole("button", { name: "Play Inception" }),
+      within(dialog).queryByText("This format cannot play in the browser"),
     ).toBeNull();
-    expect(within(dialog).queryByText("Play Movie →")).toBeNull();
   });
 
   it("puts Play Movie under Watch Trailer", async () => {

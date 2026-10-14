@@ -1758,8 +1758,9 @@ func TestSeasonStates_PlayableEpisodeGetsVideoURL(t *testing.T) {
 	if !mkv.HasFile {
 		t.Fatalf("mkv episode should still hasFile: %+v", mkv)
 	}
-	if mkv.VideoURL == "" {
-		t.Fatalf("mkv episode should set videoUrl, got %+v", mkv)
+	wantHLS := fmt.Sprintf("/api/modes/series/tracked/%d/video/hls/index.m3u8?episodeId=%d", series.ID, mkv.ID)
+	if mkv.VideoURL != wantHLS {
+		t.Fatalf("mkv videoUrl = %q, want %q", mkv.VideoURL, wantHLS)
 	}
 	missing := st.Episodes[2]
 	if missing.HasFile || missing.VideoURL != "" {

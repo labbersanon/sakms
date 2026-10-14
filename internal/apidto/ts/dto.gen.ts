@@ -1835,10 +1835,9 @@ export interface TrackedItemFile {
   bitrate?: number /* int64 */;
   durationSec?: number /* float64 */;
   /**
-   * VideoURL is set only when the file's container is one a <video>
-   * element can decode (mp4/m4v/webm/mov). mkv/avi/wmv omit it so the
-   * Library player does not mount a broken element. GET the URL for
-   * bytes; optional fileId is already in the path's query when present.
+   * VideoURL is set for every library video. Direct Play containers
+   * (mp4/m4v/webm/mov) point at GET .../video; others at
+   * .../video/hls/index.m3u8 (query string preserved).
    */
   videoUrl?: string;
 }
@@ -2407,9 +2406,9 @@ export interface OrganizeBrowseEntry {
    */
   tracked: boolean;
   /**
-   * Playable is true when a browser <video> element can decode this file
-   * (.mp4/.m4v/.webm/.mov). mkv and other containers stay false so the UI
-   * can omit Play rather than mount a broken player.
+   * Playable is true for library video files (Jellyfin VideoExts minus iso/img).
+   * mp4/m4v/webm/mov Direct Play; other containers use HLS (videoUrl ends in
+   * /hls/index.m3u8).
    */
   playable: boolean;
 }

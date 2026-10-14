@@ -10797,3 +10797,19 @@ status stays active.
 | `internal/api/titlequality.go` | ignore/clear title codec_rank; inherit Settings |
 | `internal/api/titlequality_test.go` | leftover rank ignored; PUT clears column |
 
+## 2026-10-13 — Episode Replace search opens under the tapped row
+
+**Problem:** Tapping Replace on an owned episode (Love Is Blind S01E10 / S06E03) looked like a no-op.
+**Root cause:** The click did set the episode and open replace mode, but the availability/Grab block stayed under tags and cast, below a long season list, outside the tap viewport. The Replace control was also an 11px underline.
+**Fix:** Mount the grab grid under the replacing episode, highlight that row, scroll it into view, and use a 44px tap target. Discover Grab (not replacing) stays where it was.
+**Outcome:** Replace on an episode shows Checking availability / Grab next to that row. Not deployed.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/components/SeriesEpisodesPanel.tsx` | in-row replace slot; larger Replace control |
+| `frontend/src/screens/discover/DetailPopup.tsx` | grab grid under the replacing episode |
+| `frontend/src/components/SeriesEpisodesPanel.test.tsx` | replacing season + slot |
+| `frontend/src/screens/discover/DetailPopup.test.tsx` | click Replace asserts in-row Grab |
+

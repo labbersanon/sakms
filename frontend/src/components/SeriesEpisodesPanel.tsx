@@ -1,7 +1,7 @@
 // SeriesEpisodesPanel is the owned-series play list: season chips + episode
 // rows with TrackedPlayback. SeasonsPanel stays monitor-only.
 
-import { type Component, For, Show, createSignal } from "solid-js";
+import { type Component, type JSX, For, Show, createSignal } from "solid-js";
 import type { SeasonEpisode, SeasonState } from "@dto";
 import { TrackedPlayback } from "./TrackedPlayback";
 import { Muted } from "./ui";
@@ -18,10 +18,17 @@ export const SeriesEpisodesPanel: Component<{
   seasons: SeasonState[];
   loading?: boolean;
   onReplace?: (season: number, episode: number) => void;
+  // Claude 2026-10-13: in-row replace search, not below the episode list.
+  // Reason: Love Is Blind Replace looked like a no-op — grab UI was under
+  //   tags/cast, past a long season list, outside the tap viewport.
+  // Troubleshooting: tapping Replace must show search next to that episode.
+  // Review if: Library popup no longer mounts episodes above the grab block.
+  replacing?: { season: number; episode: number };
+  children?: JSX.Element;
 }> = (props) => {
   const [picked, setPicked] = createSignal<number | null>(null);
   const selected = () =>
-    picked() ?? defaultSeasonNumber(props.seasons);
+    picked() ?? props.replacing?.season ?? defaultSeasonNumber(props.seasons);
   const episodes = (): SeasonEpisode[] =>
     props.seasons.find((s) => s.seasonNumber === selected())?.episodes ?? [];
 
@@ -60,12 +67,19 @@ export const SeriesEpisodesPanel: Component<{
           <For each={episodes()}>
             {(ep) => {
               const src = episodePlaySrc(ep);
+              const replacingThis = () =>
+                props.replacing?.season === selected() &&
+                props.replacing?.episode === ep.episodeNumber;
               const label = () =>
                 ep.title
                   ? `${episodeCode(selected(), ep.episodeNumber)} · ${ep.title}`
                   : episodeCode(selected(), ep.episodeNumber);
               return (
-                <li class="rounded bg-surface-2 px-2 py-1.5 text-xs text-fg">
+                <li
+                  class={`rounded bg-surface-2 px-2 py-1.5 text-xs text-fg ${
+                    replacingThis() ? "ring-1 ring-accent" : ""
+                  }`}
+                >
                   <p class="font-medium">{label()}</p>
                   <Show when={ep.airDate}>
                     <p class="text-[11px] text-muted">{ep.airDate}</p>
@@ -127,7 +141,8 @@ export const SeriesEpisodesPanel: Component<{
                   <Show when={props.onReplace}>
                     <button
                       type="button"
-                      class="mt-1 text-[11px] text-muted underline hover:text-fg"
+                      class="mt-1 inline-flex min-h-11 min-w-11 items-center text-sm text-muted underline hover:text-fg"
+                      aria-pressed={replacingThis()}
                       onClick={() =>
                         props.onReplace?.(selected(), ep.episodeNumber)
                       }
@@ -135,6 +150,7 @@ export const SeriesEpisodesPanel: Component<{
                       Replace
                     </button>
                   </Show>
+                  <Show when={replacingThis()}>{props.children}</Show>
                 </li>
               );
             }}

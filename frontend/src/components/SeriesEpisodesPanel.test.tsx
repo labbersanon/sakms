@@ -88,4 +88,23 @@ describe("SeriesEpisodesPanel", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "Replace" })[0]!);
     expect(seen).toEqual([{ season: 1, episode: 1 }]);
   });
+
+  it("renders replaceSearch under the replacing episode and opens that season", () => {
+    render(() => (
+      <SeriesEpisodesPanel
+        seriesID={77}
+        seasons={seasons}
+        replacing={{ season: 0, episode: 1 }}
+        onReplace={() => undefined}
+      >
+        <div data-testid="replace-search">search</div>
+      </SeriesEpisodesPanel>
+    ));
+    expect(screen.getByRole("button", { name: "Specials" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByTestId("replace-search")).toBeInTheDocument();
+    expect(screen.getByText("S00E01 · Extra")).toBeInTheDocument();
+  });
 });

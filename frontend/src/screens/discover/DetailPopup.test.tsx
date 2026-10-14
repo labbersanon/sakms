@@ -2233,6 +2233,63 @@ describe("DetailPopup — owned Rematch and Replace", () => {
       ),
     ).toBeNull();
     expect(await screen.findByRole("button", { name: "Replace" })).toBeInTheDocument();
+    expect(await screen.findByTestId("replace-search")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Grab" })).toBeInTheDocument();
+  });
+
+  it("episode Replace opens search under that row instead of below the list", async () => {
+    stubFetch((url) => {
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      if (url.includes("/discover/detail"))
+        return jsonResponse({ seasons: [seasonFixture(1)] });
+      if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080 });
+      if (url.includes("/library/") && /\/seasons$/.test(url)) {
+        return jsonResponse([
+          {
+            seasonNumber: 1,
+            episodeCount: 2,
+            missingCount: 0,
+            monitored: true,
+            episodes: [
+              {
+                id: 11,
+                episodeNumber: 1,
+                title: "Pilot",
+                hasFile: true,
+              },
+              {
+                id: 12,
+                episodeNumber: 2,
+                title: "The Affair",
+                hasFile: true,
+              },
+            ],
+          },
+        ]);
+      }
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => (
+      <DetailPopup
+        target={{
+          mode: "series",
+          item: movie({ id: 99353, title: "Love Is Blind", mediaType: "tv" }),
+        }}
+        allowGrab={false}
+        canReplace
+        seriesID={77}
+        onClose={() => {}}
+      />
+    ));
+    const replace = await screen.findAllByRole("button", { name: "Replace" });
+    expect(screen.queryByTestId("replace-search")).toBeNull();
+    fireEvent.click(replace[1]!);
+    const search = await screen.findByTestId("replace-search");
+    expect(search).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Grab" })).toBeInTheDocument();
+    expect(replace[1]!.parentElement?.contains(search)).toBe(true);
   });
 });
 

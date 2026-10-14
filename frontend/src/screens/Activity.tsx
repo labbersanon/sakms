@@ -135,8 +135,8 @@ export const Activity: Component = () => {
         <ErrorText>{(rows.error as Error)?.message}</ErrorText>
       </Show>
       {/* Claude 2026-10-12: wrap the log in bg-surface (white).
-          Reason: Queue pages sit on cream wallpaper (--color-bg); a
-            transparent <ul> lets navy mono show through ticket paper.
+          Reason: Queue pages sit on sand wallpaper (--color-bg); a
+            transparent <ul> lets slate mono show through dock grain.
           Troubleshooting: Activity hard to read — same Browse failure
             (listing must use bg-surface over the wallpaper).
           Review if: Activity rows become per-item Download cards. */}

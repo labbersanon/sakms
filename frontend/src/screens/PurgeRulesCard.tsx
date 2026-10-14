@@ -507,7 +507,7 @@ const RuleForm: Component<{
                 // Troubleshooting: unit select is omitted when the field has no
                 //   units (tag/quality/blank). Chip × uses compact padding so
                 //   it does not dominate the chip. Chips use bg-surface/30 so
-                //   tag names read as pills on the cream form.
+                //   tag names read as pills on the sand form.
                 // Review if: drag-and-drop criterion ordering ships.
                 <div class="space-y-2">
                   <div class="flex flex-wrap items-center gap-2">
@@ -740,7 +740,7 @@ export const PurgeRulesCard: Component<{ mode: Mode }> = (props) => {
 
   return (
     // Claude 2026-08-14: bg-surface/30 on the Rules <details>.
-    // Reason: the card sat on the cream watermark with no fill; chips
+    // Reason: the card sat on the sand watermark with no fill; chips
     //   already use /30 and the operator asked for the same on this section.
     // Troubleshooting: Activity log in OrganizeChrome still has no fill —
     //   do not "align" them. backdrop-blur-sm matches the tag chips.

@@ -1,33 +1,44 @@
 <svg viewBox="0 0 700 500" xmlns="http://www.w3.org/2000/svg">
-  <!-- ticket body -->
-  <rect x="40" y="90" width="620" height="280" rx="12" fill="#F3E9C8" stroke="#1B2A4A" stroke-width="3"/>
+  <!-- Claude 2026-10-14: Lubber dock-sign mark (replaces cinema ticket).
+       Reason: landside identity — pilings, brass rivets, rope — while the
+         SAK MEDIA SERVER wordmark stays until the release rename.
+       Troubleshooting: auth screen is the only full-logo moment (AuthScreen).
+       Review if: the product is renamed from SAK. -->
 
-  <!-- perforation notches top and bottom -->
-  <g fill="#FFFFFF" stroke="#1B2A4A" stroke-width="1.5">
-    <circle cx="70" cy="90" r="9"/><circle cx="130" cy="90" r="9"/><circle cx="190" cy="90" r="9"/><circle cx="250" cy="90" r="9"/><circle cx="310" cy="90" r="9"/><circle cx="370" cy="90" r="9"/><circle cx="430" cy="90" r="9"/><circle cx="490" cy="90" r="9"/><circle cx="550" cy="90" r="9"/><circle cx="610" cy="90" r="9"/>
-    <circle cx="70" cy="370" r="9"/><circle cx="130" cy="370" r="9"/><circle cx="190" cy="370" r="9"/><circle cx="250" cy="370" r="9"/><circle cx="310" cy="370" r="9"/><circle cx="370" cy="370" r="9"/><circle cx="430" cy="370" r="9"/><circle cx="490" cy="370" r="9"/><circle cx="550" cy="370" r="9"/><circle cx="610" cy="370" r="9"/>
+  <!-- sign board -->
+  <rect x="40" y="90" width="620" height="280" rx="10" fill="#E6DFD2" stroke="#1A2C30" stroke-width="3"/>
+
+  <!-- brass corner rivets -->
+  <g fill="#C9A43A" stroke="#1A2C30" stroke-width="1.25">
+    <circle cx="62" cy="112" r="7"/>
+    <circle cx="638" cy="112" r="7"/>
+    <circle cx="62" cy="348" r="7"/>
+    <circle cx="638" cy="348" r="7"/>
   </g>
 
-  <!-- tear line + stub -->
-  <line x1="190" y1="90" x2="190" y2="370" stroke="#1B2A4A" stroke-width="2" stroke-dasharray="7,7"/>
+  <!-- timber seam + left pier bay -->
+  <line x1="190" y1="90" x2="190" y2="370" stroke="#1A2C30" stroke-width="2"/>
 
-  <!-- stub content -->
-  <polygon points="95,150 95,210 135,180" fill="#1B2A4A"/>
-  <text x="115" y="290" text-anchor="middle" font-family="'Courier New', monospace" font-weight="700" font-size="15" letter-spacing="2" fill="#1B2A4A" transform="rotate(-90 115 290)">ADMIT ONE</text>
+  <!-- pilings -->
+  <rect x="76" y="128" width="24" height="168" rx="3" fill="#1A2C30"/>
+  <rect x="118" y="148" width="24" height="148" rx="3" fill="#173036"/>
+  <ellipse cx="88" cy="128" rx="15" ry="6" fill="#C9A43A"/>
+  <ellipse cx="130" cy="148" rx="15" ry="6" fill="#C9A43A"/>
 
-  <!-- feature presentation banner -->
-  <rect x="230" y="108" width="380" height="28" fill="#C1272D"/>
-  <text x="420" y="127" text-anchor="middle" font-family="'Courier New', monospace" font-weight="700" font-size="14" letter-spacing="4" fill="#F3E9C8">FEATURE PRESENTATION</text>
+  <!-- rope hitch between pilings -->
+  <path d="M88 200 C 88 236, 130 236, 130 272" fill="none" stroke="#B49D78" stroke-width="5" stroke-linecap="round"/>
+  <path d="M88 220 C 108 220, 108 240, 88 240" fill="none" stroke="#B49D78" stroke-width="3" stroke-linecap="round"/>
 
-  <!-- stars -->
-  <text x="245" y="248" text-anchor="middle" font-family="Arial" font-size="26" fill="#F2B705">★</text>
-  <text x="595" y="248" text-anchor="middle" font-family="Arial" font-size="26" fill="#F2B705">★</text>
+  <text x="115" y="332" text-anchor="middle" font-family="'Courier New', monospace" font-weight="700" font-size="13" letter-spacing="1" fill="#1A2C30">DRY DOCK</text>
 
-  <!-- wordmark -->
-  <text x="420" y="240" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-weight="700" font-size="60" letter-spacing="1" fill="#1B2A4A">SAK MEDIA</text>
-  <text x="420" y="278" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="700" font-size="22" letter-spacing="10" fill="#C1272D">SERVER</text>
+  <!-- landside banner -->
+  <rect x="230" y="108" width="380" height="28" fill="#B24332"/>
+  <text x="420" y="127" text-anchor="middle" font-family="'Courier New', monospace" font-weight="700" font-size="14" letter-spacing="6" fill="#E6DFD2">LANDSIDE</text>
 
-  <!-- serial + fine print -->
-  <text x="610" y="352" text-anchor="end" font-family="'Courier New', monospace" font-size="12" letter-spacing="1" fill="#5B6472">NO. 000001</text>
-  <text x="230" y="352" text-anchor="start" font-family="'Courier New', monospace" font-size="12" letter-spacing="1" fill="#5B6472">GOOD FOR ONE STREAM, ANY SCREEN</text>
+  <!-- wordmark — SAK until release rename -->
+  <text x="420" y="240" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-weight="700" font-size="60" letter-spacing="1" fill="#1A2C30">SAK MEDIA</text>
+  <text x="420" y="278" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="700" font-size="22" letter-spacing="10" fill="#B24332">SERVER</text>
+
+  <text x="610" y="352" text-anchor="end" font-family="'Courier New', monospace" font-size="12" letter-spacing="1" fill="#5F6D69">NO. 000001</text>
+  <text x="230" y="352" text-anchor="start" font-family="'Courier New', monospace" font-size="12" letter-spacing="1" fill="#5F6D69">GOOD FOR ONE STREAM, ANY SCREEN</text>
 </svg>

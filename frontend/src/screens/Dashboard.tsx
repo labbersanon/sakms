@@ -21,8 +21,8 @@
 // scrolling once several root folders were configured). Two circular arc gauges
 // (CPU, Disk I/O), a compact used/free donut per storage mount, fill bars for
 // Memory and GPU VRAM, and sparkline history for CPU and Network — the sakms
-// cream/navy/gold palette throughout, via the semantic color tokens (never
-// hard-coded hex).
+// Lubber sand/slate/brass palette throughout, via the semantic color tokens
+// (never hard-coded hex).
 
 import {
   type Component,

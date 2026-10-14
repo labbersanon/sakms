@@ -10950,3 +10950,28 @@ status stays active.
 | `frontend/src/components/ui.tsx` | reactive Button variant classes |
 | `frontend/src/components/ui.Button.test.tsx` | variant class updates after click |
 | `frontend/src/screens/Import.test.tsx` | Series chip gains `bg-accent` when clicked |
+
+## 2026-10-14 — Lubber shore/dock visual identity (SAK name unchanged)
+
+**Problem:** The app still wore the 2026-07-14 vintage cinema-ticket look (cream paper, navy ink, gold stars, film-strip favicon, ticket-stub wallpaper). That identity does not match Lubber — landside, off the *arr ship — and the product rename is held until release.
+**Fix:** Re-theme through the existing `@theme` token block plus matching mark and wallpaper. Palette is salt-fog linen, harbor slate chrome, brass accent, rust danger. Logo is a dock sign (pilings, rope, LANDSIDE / DRY DOCK) keeping the SAK MEDIA SERVER wordmark. Favicon is two pilings + play. Wallpaper is quiet plank grain with faint pilings, still two pre-composed 4K WebPs for collapsed/expanded sidebar. No GitHub/module/container rename.
+**Outcome:** Visual identity is landside without pirate kitsch; operators still see SAK until the release rename.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/index.css` | Lubber `@theme` tokens; chrome stays dark-on-sand vs white cards |
+| `frontend/public/logo.svg` | dock-sign mark, SAK wordmark kept |
+| `frontend/public/favicon.svg` | piling + play glyph |
+| `frontend/public/wallpaper-collapsed.webp` | quiet dock grain |
+| `frontend/public/wallpaper-expanded.webp` | same, pilings shifted for expanded sidebar |
+| `frontend/src/screens/AppShell.tsx` | wallpaper comment |
+| `frontend/src/components/ViewAllLink.tsx` | brass-on-sand chip rationale |
+| `frontend/src/screens/Dashboard.tsx` | palette comment |
+| `frontend/src/screens/Activity.tsx` | wallpaper contrast comment |
+| `frontend/src/screens/Browse.tsx` | wallpaper contrast comments |
+| `frontend/src/screens/discover/RowView.tsx` | back-link contrast comment |
+| `frontend/src/screens/Downloads.tsx` | phase-pill contrast comment |
+| `frontend/src/screens/PurgeRulesCard.tsx` | sand-form comments |
+| `frontend/src/components/TrackedPlayback.tsx` | fullscreen pillarbox comment |

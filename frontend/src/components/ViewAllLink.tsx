@@ -8,8 +8,8 @@
 // Review if: those tests wrap a Router and this can become a plain <A>.
 //
 // Claude 2026-08-13: DISCOVER_NAV_LINK_CLASS is a surface chip, not text-accent.
-// Reason: gold #f2b705 on cream wallpaper + diagonal watermarks is unreadable
-// on mobile (live /discover/row). Same class as RowView BackLink.
+// Reason: brass-on-sand wallpaper still fails as raw text-accent on mobile
+// (live /discover/row). Same class as RowView BackLink.
 // Troubleshooting: if links look like bare gold underline, this class was lost.
 // Review if: wallpaper is replaced with a solid dark/light surface.
 

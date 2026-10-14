@@ -112,7 +112,7 @@ const TAG_PILL = "shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium";
 
 const PHASE_BADGE: Record<string, string> = {
   // Claude 2026-09-21: option E — deep solid text, no neon/outline.
-  // Reason: neon+outline still unreadably washed on cream chips.
+  // Reason: neon+outline still unreadably washed on light chips.
   // Troubleshooting: Downloads phase pill contrast.
   // Review if: solid filled chips (B/C/F) are preferred instead.
   stalled: "bg-surface text-status-red font-semibold",

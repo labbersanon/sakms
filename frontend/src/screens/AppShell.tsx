@@ -1385,7 +1385,7 @@ export const AppShell: Component<{
                   as the sidebar/header gradient above, just applied to a
                   background-image instead of a gradient. The two source images
                   are pre-composed per sidebar width (collapsed-56 / expanded-192)
-                  so the ticket art's decorative elements land in the same
+                  so the dock grain's faint pilings land in the same
                   on-screen position regardless of how much room the sidebar
                   takes up next to this column; swap on `collapsed()` accordingly. */}
               <main

@@ -1,54 +1,59 @@
 @import "tailwindcss";
 
 /*
- * Vintage-cinema-ticket palette (2026-07-14), matching sak-logo.svg /
- * sak-favicon.svg: cream ticket paper, navy ink, a gold accent (the logo's
- * stars — used for interactive elements since --color-danger already
- * claims the logo's red for destructive actions, so accent and danger stay
- * visually distinct), and the logo's own muted blue-gray for de-emphasized
- * text. Declaring these under @theme makes Tailwind v4 generate the
- * matching utilities automatically: bg-bg, bg-surface, text-fg, text-muted,
- * border-border, bg-accent, etc. Real view work should reach for these
- * tokens rather than hard-coded hex — replacing this block is the entire
- * re-theme surface (see the one exception this comment used to justify,
- * Discover.tsx's modal backdrop, which stays bg-black/60 regardless of
- * theme — a dark scrim behind a modal is standard even on a light page).
+ * Claude 2026-10-14: Lubber shore/dock palette, matching logo.svg / favicon.svg.
+ * Reason: cinema-ticket cream/navy/gold was a movie-stub identity; Lubber is
+ *   landside (off the *arr ship) — salt-fog linen, harbor slate, brass, rust.
+ *   Product name stays SAK until release; this is visual identity only.
+ *   Not pirate kitsch (no skulls/flags). Accent is brass hardware so it stays
+ *   distinct from rust danger. Tailwind v4 @theme still generates bg-bg,
+ *   bg-surface, text-fg, text-muted, border-border, bg-accent, etc. Real view
+ *   work should reach for these tokens rather than hard-coded hex — replacing
+ *   this block is the entire re-theme surface (Discover modal backdrop stays
+ *   bg-black/60 regardless of theme — a dark scrim behind a modal is standard
+ *   even on a light page).
+ * Troubleshooting: gold-on-cream contrast was the old failure; brass-on-sand
+ *   has the same risk — keep Discover/Organize nav links as surface chips.
+ * Review if: the product is renamed from SAK, or a dark theme is added.
  */
 @theme {
-  --color-bg: #f3e8c7;
+  --color-bg: #e6dfd2;
   --color-surface: #ffffff;
-  --color-surface-2: #eadfb8;
-  --color-border: #c7b584;
-  --color-fg: #1b2a4a;
-  --color-muted: #5b6472;
-  --color-accent: #f2b705;
-  --color-accent-fg: #1b2a4a;
-  --color-danger: #c1272d;
-  --color-ok: #3f7d4a;
-  --color-warn: #c67c1e;
+  --color-surface-2: #d9d0c0;
+  --color-border: #b49d78;
+  --color-fg: #1a2c30;
+  --color-muted: #5f6d69;
+  --color-accent: #c9a43a;
+  --color-accent-fg: #1a2c30;
+  --color-danger: #b24332;
+  --color-ok: #3d6b4f;
+  --color-warn: #b07a28;
   /* Claude 2026-09-21: Downloads phase pill text — deep solid (option E).
      Reason: neon + outline still hard to read on cream; darker non-neon blues/reds.
      Troubleshooting: Downloads Downloading/Stalled pills wash out.
      Review if: phase pills move to solid filled chips (options B/C/F). */
-  --color-status-blue: #0066cc;
-  --color-status-red: #b00020;
+  /* Claude 2026-10-14: retuned to harbor water / rust to match Lubber tokens.
+     Reason: #0066cc / #b00020 were cinema-ticket leftovers.
+     Review if: phase pills move to solid filled chips (options B/C/F). */
+  --color-status-blue: #266b8a;
+  --color-status-red: #9b2e24;
 
   /*
    * chrome/chrome-fg are the persistent app shell's OWN colors (header +
-   * sidebar only) — the logo's navy, raised above the cream page with a
+   * sidebar only) — night-dock slate, raised above the sand page with a
    * shadow rather than blending into it. Deliberately separate from
-   * surface/fg: popups/cards stay white-on-cream (light-on-light), chrome is
-   * dark-on-cream, so they need their own foreground pairing, not a shared
+   * surface/fg: popups/cards stay white-on-sand (light-on-light), chrome
+   * is dark-on-sand, so they need their own foreground pairing, not a shared
    * one that would go illegible on one side or the other.
    */
-  --color-chrome: #1b2a4a;
-  --color-chrome-fg: #f3e8c7;
+  --color-chrome: #173036;
+  --color-chrome-fg: #e6dfd2;
   /* chrome-2 is a darker shade of chrome, used only as a gradient's far
      stop (header: top→bottom, sidebar: left→right) so the seam where chrome
-     meets the cream page reads as an edge actually casting shadow, not a
+     meets the sand page reads as an edge actually casting shadow, not a
      flat color simply stopping — depth from the gradient itself, on top of
      (not instead of) the shadow-xl already on both elements. */
-  --color-chrome-2: #101a30;
+  --color-chrome-2: #0e1c1f;
 }
 
 html {
@@ -122,10 +127,10 @@ body {
   cursor: pointer;
 }
 
-/* Claude 2026-08-14: Library in-app playback fullscreen was cream
+/* Claude 2026-08-14: Library in-app playback fullscreen was page-bg
    (--color-bg / bg-surface-2) in the pillarbox. Native <video> fullscreen
    paints the element's background in unused areas; the backdrop must be
-   black too or the page cream shows through.
+   black too or the sand page shows through.
    Review if: a themed player chrome is added. */
 video:fullscreen,
 video:-webkit-full-screen {

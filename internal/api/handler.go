@@ -443,7 +443,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// internal/autograb — see discover_availability.go.
 	// Claude 2026-08-11: adultNewestReleaseStore threaded in (A3/§4.2) — Adult
 	// availability now resolves cache-first via resolveAdultReleases.
-	mux.HandleFunc("GET /api/modes/{mode}/discover/availability", discoverAvailabilityHandler(httpClient, connStore, scStore, settingsStore, adultNewestReleaseStore))
+	mux.HandleFunc("GET /api/modes/{mode}/discover/availability", discoverAvailabilityHandler(httpClient, connStore, scStore, settingsStore, adultNewestReleaseStore, libStore))
 	// Discover detail popup's "Watch Trailer" link — one-shot per popup open,
 	// Movies/Series only. See discover_trailer.go.
 	mux.HandleFunc("GET /api/modes/{mode}/discover/trailer", discoverTrailerHandler(httpClient, connStore, scStore, settingsStore))

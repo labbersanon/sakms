@@ -597,7 +597,12 @@ func autoGrabTiers(ctx context.Context, settingsStore *settings.Store, m mode.Mo
 	return resolveQualityTiers(ctx, settingsStore, m)
 }
 
-func selectAutoGrabBest(ctx context.Context, lib *library.Store, settingsStore *settings.Store, m mode.Mode, tmdbID int, cands []autograb.Candidate) autograb.Selection {
+func selectAutoGrabBest(ctx context.Context, lib *library.Store, settingsStore *settings.Store, sess *mode.Session, m mode.Mode, tmdbID, tvdbID int, cands []autograb.Candidate) autograb.Selection {
+	// Claude 2026-10-13: Animation genre before bitrate grade.
+	// Reason: 480p cartoons use Low@480 on every named tier; flag is title-level.
+	// Troubleshooting: drain Looney Tunes pending_retry vs Medium@480 0.8.
+	// Review if: 720p Animation is included.
+	applyTitleAnimation(ctx, lib, sess, m, tmdbID, tvdbID, cands)
 	return autograb.SelectBestByResolutionRanked(
 		cands,
 		resolveAutoGrabAcceptedByResolution(ctx, lib, settingsStore, m, tmdbID),

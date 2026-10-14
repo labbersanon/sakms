@@ -470,6 +470,53 @@ func TestHoneyMousersDVDRipClearsLow480NotMedium480(t *testing.T) {
 	}
 }
 
+func TestGradeCandidate480pAnimationUsesLowFloorOnEveryTier(t *testing.T) {
+	// Same Honey-Mousers bytes. Animation+480 uses Low@480 (0.3) even when
+	// the operator's named tier is Medium/High/Lossless. 1080p Animation does not.
+	dvdrip := Candidate{
+		Title:    "Looney.Tunes.S1956E28.The.Honey.Mousers.DVDRip.x264",
+		Protocol: "usenet", SizeBytes: 67 * 1024 * 1024, RuntimeSeconds: 15 * 60,
+		Source: "dvdrip", Codec: "x264", Animation: true,
+	}
+	for _, tier := range []quality.Tier{quality.Low, quality.Medium, quality.High, quality.Lossless} {
+		g := GradeCandidate(dvdrip, tier, 0)
+		if !approx(g.FloorMbps, 0.3) {
+			t.Fatalf("%s@480 animation floor=%.3f, want 0.3", tier, g.FloorMbps)
+		}
+		if !g.Qualified {
+			t.Fatalf("%s@480 animation should qualify Honey-Mousers; status=%s score=%.3f", tier, g.Status, g.Score)
+		}
+	}
+
+	tiny1080 := Candidate{
+		Protocol: "usenet", SizeBytes: 67 * 1024 * 1024, RuntimeSeconds: 15 * 60,
+		Resolution: 1080, Codec: "x264", Animation: true,
+	}
+	med1080 := GradeCandidate(tiny1080, quality.Medium, 0)
+	if approx(med1080.FloorMbps, 0.3) || med1080.Qualified {
+		t.Fatalf("1080p Animation must keep live Medium@1080 (5), got floor=%.3f qualified=%v", med1080.FloorMbps, med1080.Qualified)
+	}
+
+	live480 := dvdrip
+	live480.Animation = false
+	medLive := GradeCandidate(live480, quality.Medium, 0)
+	if medLive.Qualified || !approx(medLive.FloorMbps, 0.8) {
+		t.Fatalf("live-action 480p Medium must stay 0.8/below-floor, floor=%.3f qualified=%v", medLive.FloorMbps, medLive.Qualified)
+	}
+}
+
+func TestSelectBestByResolutionAnimation480ClearsInheritedMedium(t *testing.T) {
+	dvdrip := Candidate{
+		Title: "short-dvdrip", Protocol: "usenet",
+		SizeBytes: 67 * 1024 * 1024, RuntimeSeconds: 15 * 60,
+		Source: "dvdrip", Codec: "x264", Animation: true,
+	}
+	got := SelectBestByResolution([]Candidate{dvdrip}, AcceptedFromFloors(UniformFloors(quality.Medium)), 0)
+	if got.Fallback {
+		t.Fatal("480p Animation must clear inherited Medium using Low@480")
+	}
+}
+
 func TestSelectBestByResolutionUsesPerRungFloor(t *testing.T) {
 	dvdrip := Candidate{
 		Title: "short-dvdrip", Protocol: "usenet",

@@ -52,6 +52,27 @@ func TestGetSeriesByTMDBID_NotFound(t *testing.T) {
 	}
 }
 
+func TestGetSeriesByTVDBID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if _, err := s.GetSeriesByTVDBID(ctx, 0); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("tvdb 0 must not match empty ids, got %v", err)
+	}
+	created, err := s.UpsertSeries(ctx, Series{
+		TMDBID: -42, TVDBID: 7266, Title: "Looney Tunes", Year: 1930, RootFolderPath: "/tv",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetSeriesByTVDBID(ctx, 7266)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != created.ID || got.TMDBID != -42 || got.Title != "Looney Tunes" {
+		t.Fatalf("got %+v, want id %d tmdb -42", got, created.ID)
+	}
+}
+
 func TestUpsertEpisode_TracksMissingAndFound(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

@@ -9,8 +9,10 @@ import (
 
 	"github.com/labbersanon/sakms/internal/autograb"
 	"github.com/labbersanon/sakms/internal/grabs"
+	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mediainfo"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/tvdb"
 	"github.com/labbersanon/sakms/internal/usenet"
 )
 
@@ -100,6 +102,82 @@ func TestRefuseImportBelowFloor_DVDRipPassesLow480NotLow1080(t *testing.T) {
 	})
 	if err == nil || !errors.Is(err, autograb.ErrBelowQualityFloor) {
 		t.Fatalf("same bytes at 1080p must still fail Low@1080, got %v", err)
+	}
+}
+
+func TestRefuseImportBelowFloor_Animation480PassesMedium(t *testing.T) {
+	clearAnimationGenreCache(t)
+	ctx := context.Background()
+	_, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	if err := settingsStore.Set(ctx, qualityTiersKey(mode.Series), `["medium","high","lossless"]`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := libStore.UpsertSeries(ctx, library.Series{
+		TMDBID: 333432, Title: "Looney Tunes", Genres: []string{"Animation"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "Looney.Tunes.S1956E28.The.Honey.Mousers.DVDRip.x264.mkv")
+	if err := os.WriteFile(path, make([]byte, 67<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := &grabs.Grab{Mode: mode.Series, Title: "Looney Tunes", TMDBID: 333432, SeasonNumber: 28, EpisodeNumber: 28, Protocol: "usenet"}
+	if err := refuseImportBelowFloor(ctx, libStore, settingsStore, nil, g, path, importQualityProber{
+		height: 480, codec: "h264", duration: 15 * 60,
+	}); err != nil {
+		t.Fatalf("Medium@480 Animation must accept Honey-Mousers-sized DVDRip, got %v", err)
+	}
+}
+
+func TestRefuseImportBelowFloor_Animation480TVDBAnthology(t *testing.T) {
+	clearAnimationGenreCache(t)
+	ctx := context.Background()
+	_, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	if err := settingsStore.Set(ctx, qualityTiersKey(mode.Series), `["medium","high","lossless"]`); err != nil {
+		t.Fatal(err)
+	}
+	synth := -42
+	if _, err := libStore.UpsertSeries(ctx, library.Series{
+		TMDBID: synth, TVDBID: 7266, Title: "Looney Tunes",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tvdbSrv := fakeTVDBGenreServer(t, 7266, []map[string]any{{"name": "Animation"}})
+	sess := &mode.Session{Mode: mode.Series, TVDB: tvdb.New(tvdb.Config{BaseURL: tvdbSrv.URL, APIKey: "k"}, tvdbSrv.Client())}
+	path := filepath.Join(t.TempDir(), "Looney.Tunes.S1956E28.The.Honey.Mousers.DVDRip.x264.mkv")
+	if err := os.WriteFile(path, make([]byte, 67<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := &grabs.Grab{Mode: mode.Series, Title: "Looney Tunes", TMDBID: synth, TVDBID: 7266, SeasonNumber: 1956, EpisodeNumber: 28, Protocol: "usenet"}
+	if err := refuseImportBelowFloor(ctx, libStore, settingsStore, sess, g, path, importQualityProber{
+		height: 480, codec: "h264", duration: 15 * 60,
+	}); err != nil {
+		t.Fatalf("anthology TMDB + TVDB Animation must accept Honey-Mousers-sized DVDRip, got %v", err)
+	}
+}
+
+func TestRefuseImportBelowFloor_LiveAction480FailsMedium(t *testing.T) {
+	clearAnimationGenreCache(t)
+	ctx := context.Background()
+	_, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	if err := settingsStore.Set(ctx, qualityTiersKey(mode.Series), `["medium","high","lossless"]`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := libStore.UpsertSeries(ctx, library.Series{
+		TMDBID: 1413, Title: "American Horror Story", Genres: []string{"Drama"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "Show.S01E01.DVDRip.x264.mkv")
+	if err := os.WriteFile(path, make([]byte, 67<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := &grabs.Grab{Mode: mode.Series, Title: "Show", TMDBID: 1413, SeasonNumber: 1, EpisodeNumber: 1, Protocol: "usenet"}
+	err := refuseImportBelowFloor(ctx, libStore, settingsStore, nil, g, path, importQualityProber{
+		height: 480, codec: "h264", duration: 15 * 60,
+	})
+	if err == nil || !errors.Is(err, autograb.ErrBelowQualityFloor) {
+		t.Fatalf("live-action 480p Medium must still reject Honey-Mousers-sized file, got %v", err)
 	}
 }
 

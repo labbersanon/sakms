@@ -14,6 +14,7 @@ import (
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/autograb"
 	"github.com/labbersanon/sakms/internal/connections"
+	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/prowlarr"
 	"github.com/labbersanon/sakms/internal/quality"
@@ -61,11 +62,12 @@ var discoverAvailabilityResolutions = []int{2160, 1080, 720, 480}
 //
 // releaseStore backs Adult's cache-first resolution; nil degrades to a live
 // search, which is why non-Adult tests can pass nil.
-func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, releaseStore *adultnewest.ReleaseStore) http.HandlerFunc {
+func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, releaseStore *adultnewest.ReleaseStore, libStore *library.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		ctx := r.Context()
 		q := r.URL.Query()
+		tvdbID := 0
 
 		title := q.Get("title")
 		if title == "" {
@@ -127,6 +129,7 @@ func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections
 			}
 		case mode.Series:
 			req.TMDBID = queryInt(q, "tmdbId", 0)
+			tvdbID = queryInt(q, "tvdbId", 0)
 			req.SeasonNumber = queryInt(q, "season", 0)
 			req.EpisodeNumber = queryInt(q, "episode", 0)
 			// Claude 2026-08-03: set SeasonSpecified from whether the
@@ -247,6 +250,11 @@ func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections
 		// that's the expected, useful result, not something to neutralize.
 		neutralizeSeasonPacks := m == mode.Series && req.EpisodeNumber > 0 && runtimeSeconds > 0
 		candidates := buildAutoGrabCandidates(filtered, runtimeSeconds, neutralizeSeasonPacks)
+		// Claude 2026-10-13: availability grid must use the same 480p Animation floor.
+		// Reason: cartoon DVDRip cells empty if this path skips the Animation flag.
+		// Troubleshooting: Discover 480p Medium cell empty on Looney Tunes.
+		// Review if: frontend sends tvdbId on every series availability fetch.
+		applyTitleAnimation(ctx, libStore, sess, m, req.TMDBID, tvdbID, candidates)
 
 		unrecognizedResolution := 0
 		unknownBitrate := 0

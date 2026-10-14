@@ -524,7 +524,7 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 		//   candidate against its snapped rung.
 		// Troubleshooting: Looney Tunes Honey-Mousers DVDRip vs Medium@480.
 		// Review if: title overrides grow their own per-rung map.
-		pr.sel = selectAutoGrabBest(ctx, deps.LibStore, deps.SettingsStore, req.Mode, req.TMDBID, candidates)
+		pr.sel = selectAutoGrabBest(ctx, deps.LibStore, deps.SettingsStore, sess, req.Mode, req.TMDBID, req.TVDBID, candidates)
 		return pr, nil
 	}
 

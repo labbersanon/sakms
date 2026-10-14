@@ -10881,3 +10881,38 @@ status stays active.
 | `frontend/src/components/PlaybackVideo.tsx` | hls.js attach |
 | `NOTICE.md` | In-app HLS playback encode note |
 
+
+## 2026-10-13 — 480p Animation uses Low bitrate floor on every tier
+
+**Problem:** Cartoon DVDRips (Looney Tunes, Curious George) inheriting series Medium never auto-grabbed. Same perceived quality needs fewer bits than live action.
+**Root cause:** One floorTable for every title. Medium@480 is 0.8 Mbps x264-eq; Honey-Mousers-class encodes score ~0.50.
+**Fix:** If TMDB (or stored library genres) includes Animation and the snapped rung is 480, every named tier uses Low@480 (0.3). 720/1080/2160 unchanged. Missing genre fail-closed. Import and Discover availability use the same flag.
+**Outcome:** Inherited Medium–Lossless on a 480p cartoon can auto-grab. Live-action 480p still needs Medium@480 0.8. Not deployed.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/autograb/autograb.go` | `Candidate.Animation`; `tableFloorMbps` Low@480 for 480p Animation |
+| `internal/api/animation_genre.go` | TMDB/library Animation lookup + process cache |
+| `internal/api/autograb.go` | `selectAutoGrabBest` marks candidates |
+| `internal/api/import_quality.go` | import re-grade sees Animation |
+| `internal/api/discover_availability.go` | availability grid uses the same floor |
+
+## 2026-10-13 — TVDB fallback for Animation genre
+
+**Problem:** Looney Tunes year-season shorts use a synthetic negative TMDB id (`AnthologyTMDBID`). `titleIsAnimation` required `tmdbID > 0`, so those titles never got the 480p Animation floor.
+**Root cause:** Genre lookup was TMDB-only. TVDB series 7266 has Animation; TMDB does not catalog those year-seasons cleanly.
+**Fix:** Series Animation is stored genres, then TMDB (positive ids only), then TVDB `GET /v4/series/{id}` genres. Resolve TVDB from the grab/request, the library row (including negative TMDB), or TMDB ExternalIDs. TMDB errors are not cached before TVDB runs. Movies stay TMDB-only. Black-and-white live action is not given the cartoon floor.
+**Outcome:** Anthology Looney Tunes 480p can use Low@480 on every named tier. Not deployed.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/tvdb/series_genres.go` | `SeriesGenres` from `/v4/series/{id}` |
+| `internal/library/library_series.go` | `GetSeriesByTVDBID` |
+| `internal/api/animation_genre.go` | TVDB fallback; allow negative TMDB |
+| `internal/api/autograb.go` | `selectAutoGrabBest` takes tvdbID |
+| `internal/api/import_quality.go` | import uses grab.TVDBID |
+| `internal/api/discover_availability.go` | `tvdbId` query + library lookup |

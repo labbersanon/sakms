@@ -135,6 +135,31 @@ func (s *Store) GetSeriesByTMDBID(ctx context.Context, tmdbID int) (*Series, err
 	return &series, nil
 }
 
+// GetSeriesByTVDBID looks up a series by its TheTVDB id.
+// Claude 2026-10-13: Animation genre fallback for anthology/synthetic TMDB rows.
+// Reason: AnthologyTMDBID is negative; autograb still has a real tvdb_id.
+// Troubleshooting: empty genres on Looney Tunes — lookup tvdb_id 7266, not TMDB.
+// Review if: tvdb_id is unique-constrained (today several 0s are allowed).
+func (s *Store) GetSeriesByTVDBID(ctx context.Context, tvdbID int) (*Series, error) {
+	if tvdbID <= 0 {
+		return nil, ErrNotFound
+	}
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, tmdb_id, tvdb_id, title, year, root_folder_path,
+		       COALESCE(genres, '[]'), COALESCE("cast", '[]'),
+		       created_at, updated_at, rating, COALESCE(upgrade_watch, false)
+		FROM library_series WHERE tvdb_id = ?
+	`, tvdbID)
+	series, err := scanSeries(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("loading series for tvdb id %d: %w", tvdbID, err)
+	}
+	return &series, nil
+}
+
 // GetSeries looks up a series by its own row id — GetSeriesByTMDBID's sibling
 // for the callers that already hold the library's id rather than TMDB's (the
 // per-season monitored routes, whose path carries {seriesID}, and which need

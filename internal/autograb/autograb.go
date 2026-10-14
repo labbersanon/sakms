@@ -283,6 +283,12 @@ type Candidate struct {
 	// HDR and Channels come from title tokens at search, Probe at import.
 	HDR      bool
 	Channels int // release.ChannelsUnknown / Channels51 / Channels71
+	// Claude 2026-10-13: Animation is a title-level TMDB genre flag.
+	// Reason: 2D cartoons at 480p need fewer bits than live action at the
+	//   same named tier; TMDB has no 2D/3D split, so Animation+480 is the proxy.
+	// Troubleshooting: Looney Tunes DVDRips vs inherited Medium@480 0.8.
+	// Review if: 720p Animation should share this, or 3D/CGI is excluded.
+	Animation bool
 }
 
 // Grade is a single candidate's evaluation. Score is the ranking key for the
@@ -354,11 +360,7 @@ func GradeCandidate(c Candidate, tier quality.Tier, minSeeders int) Grade {
 		g.Score = g.X264EquivMbps / NonAV1PaddingFactor
 	}
 
-	floors, ok := floorTable[tier]
-	if !ok {
-		floors = floorTable[quality.Default] // unrecognized/empty tier → default
-	}
-	floor, hasFloor := floors[c.Resolution]
+	floor, hasFloor := tableFloorMbps(tier, c)
 	if !hasFloor {
 		// Bitrate known, but the claimed resolution isn't gradeable — neutral.
 		g.Status = StatusUnknownResolution
@@ -394,6 +396,25 @@ func GradeCandidate(c Candidate, tier quality.Tier, minSeeders int) Grade {
 	}
 	g.Status = StatusBelowFloor
 	return g
+}
+
+// tableFloorMbps is the named-tier × snapped-resolution Mbps before HDR /
+// channel premiums.
+//
+// Claude 2026-10-13: 480p Animation uses Low@480 for every named tier.
+// Reason: Medium/High/Lossless 480p cartoons keep the Low@480 0.3 veto.
+// Troubleshooting: Honey-Mousers ~0.50 score vs inherited Medium–Lossless.
+// Review if: High-only 480p animation should stay stricter than Low.
+func tableFloorMbps(tier quality.Tier, c Candidate) (float64, bool) {
+	floors, ok := floorTable[tier]
+	if !ok {
+		floors = floorTable[quality.Default]
+	}
+	floor, hasFloor := floors[c.Resolution]
+	if hasFloor && c.Animation && c.Resolution == 480 {
+		return floorTable[quality.Low][480], true
+	}
+	return floor, hasFloor
 }
 
 func featureFloorMbps(base float64, c Candidate) float64 {

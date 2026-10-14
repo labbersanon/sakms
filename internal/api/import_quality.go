@@ -31,7 +31,7 @@ func refuseImportBelowFloor(ctx context.Context, libStore *library.Store, settin
 	if g == nil || g.Mode == mode.Adult {
 		return nil
 	}
-	c, ok := importQualityCandidate(ctx, sess, g, videoPath, prober)
+	c, ok := importQualityCandidate(ctx, libStore, sess, g, videoPath, prober)
 	if !ok {
 		return nil
 	}
@@ -59,7 +59,7 @@ func refuseImportBelowFloor(ctx context.Context, libStore *library.Store, settin
 	}
 }
 
-func importQualityCandidate(ctx context.Context, sess *mode.Session, g *grabs.Grab, videoPath string, prober dedup.Prober) (autograb.Candidate, bool) {
+func importQualityCandidate(ctx context.Context, libStore *library.Store, sess *mode.Session, g *grabs.Grab, videoPath string, prober dedup.Prober) (autograb.Candidate, bool) {
 	size := library.FileSize(videoPath)
 	if size <= 0 {
 		return autograb.Candidate{}, false
@@ -103,6 +103,12 @@ func importQualityCandidate(ctx context.Context, sess *mode.Session, g *grabs.Gr
 	if c.SizeBytes <= 0 || c.RuntimeSeconds <= 0 {
 		return autograb.Candidate{}, false
 	}
+	// Claude 2026-10-13: import re-grade must see Animation for 480p Low floor.
+	// Reason: pre-grab SelectBest uses applyTitleAnimation; import GradeCandidate
+	//   would otherwise keep live Medium@480 and refuse the NZB we just grabbed.
+	// Troubleshooting: journal "import: below quality floor" on cartoon DVDRips.
+	// Review if: 720p Animation shares the 480p discount.
+	c.Animation = titleIsAnimation(ctx, libStore, sess, g.Mode, g.TMDBID, g.TVDBID)
 	return c, true
 }
 

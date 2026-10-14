@@ -10846,3 +10846,19 @@ status stays active.
 | `internal/searchterm/searchterm.go` | strip `{tvdb N}` from FromName |
 | `frontend/src/searchterm.ts` | same strip |
 
+## 2026-10-14 — In-app Play remuxes MKV to fragmented MP4
+
+**Problem:** Library / Series / Organize / Dedup Play hid `.mkv` files ("This format cannot play in the browser") even though most of the library is Matroska until FileFlows remuxes to MP4.
+**Root cause:** `browserPlayableVideo` only listed mp4/m4v/webm/mov. `<video>` cannot decode Matroska. HLS transcode is a separate, legal-gated ROADMAP item and is not this change.
+**Fix:** Treat `.mkv` as playable. `GET .../video` stream-copies the first video (+ first audio if any) through ffmpeg into fragmented MP4 (`-c copy`, `-movflags frag_keyframe+empty_moov+default_base_moof`). No video/audio encode. avi/wmv still omit Play. Seek on the remux pipe has no byte ranges (Accept-Ranges: none).
+**Outcome:** Tests pass. Not deployed.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/videoremux/remux.go` | ffmpeg copy → fMP4 pipe |
+| `internal/api/tracked.go` | `.mkv` playable; remux in `serveLocalVideoFile` |
+| `internal/api/proposal_video.go` | Dedup/Rename preview uses the same serve path |
+| `frontend/src/screens/Library.test.tsx` | mkv Play; avi still format-note |
+

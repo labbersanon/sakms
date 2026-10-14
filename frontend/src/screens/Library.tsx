@@ -603,11 +603,8 @@ const DetailPanel: Component<{
       </Show>
 
       {/* Files — Movies primary + alternates (bitrate/codec/resolution) */}
-      {/* Claude 2026-08-14: Play + Fullscreen live on each playable file row.
-          Reason: GET /tracked/{id}/video now serves movies; the player is
-          inline (Library detail is already a Modal — no nested SourcePreviewPopout).
-          mkv/avi/wmv omit videoUrl and get a format note instead of a broken <video>.
-          Review if: transcoding lands or Series episode playback is added. */}
+      {/* Play + Fullscreen live on each playable file row. avi/wmv omit
+          videoUrl and get a format note; mkv is remuxed server-side. */}
       <Show when={props.mode === "movies" && (props.item.files ?? []).length > 0}>
         <div class="mb-3">
           <p class="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted">Files</p>

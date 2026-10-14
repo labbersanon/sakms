@@ -125,7 +125,7 @@ func TestProposalVideoHandler_ServesEveryCandidateAcrossDirectories(t *testing.T
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", d, err)
 		}
-		p := filepath.Join(d, "video.mkv")
+		p := filepath.Join(d, "video.mp4")
 		if err := os.WriteFile(p, contents[i], 0o644); err != nil {
 			t.Fatalf("write %s: %v", p, err)
 		}
@@ -186,7 +186,7 @@ func TestProposalVideoHandler_ServesRenameProposal(t *testing.T) {
 
 			dir := t.TempDir()
 			want := []byte("rename-proposal-video-bytes-" + string(m) + "-0123456789")
-			path := filepath.Join(dir, "video.mkv")
+			path := filepath.Join(dir, "video.mp4")
 			if err := os.WriteFile(path, want, 0o644); err != nil {
 				t.Fatalf("write fixture: %v", err)
 			}
@@ -236,7 +236,7 @@ func TestProposalVideoHandler_ServesDedupAdultProposal(t *testing.T) {
 
 	dir := t.TempDir()
 	want := []byte("adult-dedup-candidate-video-bytes-0123456789")
-	path := filepath.Join(dir, "video.mkv")
+	path := filepath.Join(dir, "video.mp4")
 	if err := os.WriteFile(path, want, 0o644); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestProposalVideoHandler_AdultLockedRefusesBeforeAnyBytes(t *testing.T) {
 			marker: dedupMarker,
 			seed: func(t *testing.T, srv string, propStore *proposals.Store) string {
 				t.Helper()
-				path := filepath.Join(t.TempDir(), "video.mkv")
+				path := filepath.Join(t.TempDir(), "video.mp4")
 				if err := os.WriteFile(path, []byte(dedupMarker), 0o644); err != nil {
 					t.Fatalf("write fixture: %v", err)
 				}
@@ -303,7 +303,7 @@ func TestProposalVideoHandler_AdultLockedRefusesBeforeAnyBytes(t *testing.T) {
 			marker: renameMarker,
 			seed: func(t *testing.T, srv string, propStore *proposals.Store) string {
 				t.Helper()
-				path := filepath.Join(t.TempDir(), "video.mkv")
+				path := filepath.Join(t.TempDir(), "video.mp4")
 				if err := os.WriteFile(path, []byte(renameMarker), 0o644); err != nil {
 					t.Fatalf("write fixture: %v", err)
 				}
@@ -371,7 +371,7 @@ func TestProposalVideoHandler_AdultUnlockedTicketStillServes(t *testing.T) {
 	srv := httptest.NewServer(withUnlockedAdult(mux))
 	defer srv.Close()
 
-	path := filepath.Join(t.TempDir(), "video.mkv")
+	path := filepath.Join(t.TempDir(), "video.mp4")
 	want := []byte("adult-unlocked-ticket-still-serves-bytes")
 	if err := os.WriteFile(path, want, 0o644); err != nil {
 		t.Fatalf("write fixture: %v", err)

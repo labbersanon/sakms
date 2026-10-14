@@ -1575,14 +1575,41 @@ describe("Library — in-app movie playback", () => {
     expect(screen.getAllByRole("dialog")).toHaveLength(1);
   });
 
-  it("mkv files get a format note and no Play control", async () => {
+  it("mkv files with videoUrl get Play like mp4", async () => {
+    stubFetch(
+      makeHandler([
+        inception({
+          videoUrl: "/api/modes/movies/tracked/10/video",
+          files: [
+            {
+              id: 4,
+              filePath: "/movies/Inception/Inception.mkv",
+              isPrimary: true,
+              videoUrl: "/api/modes/movies/tracked/10/video?fileId=4",
+            },
+          ],
+        }),
+      ]),
+    );
+    renderOwned();
+    fireEvent.click(await screen.findByRole("button", { name: "Inception" }));
+    const dialog = await screen.findByRole("dialog", { name: "Inception" });
+    expect(
+      within(dialog).getByRole("button", { name: "Play Inception" }),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).queryByText("This format cannot play in the browser"),
+    ).toBeNull();
+  });
+
+  it("avi files get a format note and no Play control", async () => {
     stubFetch(
       makeHandler([
         inception({
           files: [
             {
               id: 4,
-              filePath: "/movies/Inception/Inception.mkv",
+              filePath: "/movies/Inception/Inception.avi",
               isPrimary: true,
             },
           ],

@@ -1860,10 +1860,10 @@ type TrackedItemFile struct {
 	VideoCodec  string  `json:"videoCodec,omitempty"`
 	BitRate     int64   `json:"bitrate,omitempty"`
 	DurationSec float64 `json:"durationSec,omitempty"`
-	// VideoURL is set only when the file's container is one a <video>
-	// element can decode (mp4/m4v/webm/mov). mkv/avi/wmv omit it so the
-	// Library player does not mount a broken element. GET the URL for
-	// bytes; optional fileId is already in the path's query when present.
+	// VideoURL is set for mp4/m4v/webm/mov (direct) and mkv (server remux
+	// to fragmented MP4). avi/wmv omit it so the Library player does not
+	// mount a broken element. GET the URL for bytes; optional fileId is
+	// already in the path's query when present.
 	VideoURL string `json:"videoUrl,omitempty"`
 }
 

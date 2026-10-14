@@ -10,10 +10,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/videoremux"
 )
 
 // libraryTrackedItem is Movies' shape for the Tag workflow's item picker —
@@ -99,20 +101,22 @@ type libraryTrackedFile struct {
 	DurationSec float64 `json:"durationSec,omitempty"`
 	// Claude 2026-08-14: per-file in-app playback URL for Library Movies.
 	// Reason: GET /tracked/{id}/video now serves movies; the list must say
-	// which files a <video> element can actually decode (same omit-when-mkv
-	// rule as Adult's item-level videoUrl).
-	// Review if: transcoding lands and every container becomes playable.
+	// which files a <video> element can actually decode.
+	// Review if: avi/wmv gain a remux path, or HLS transcode lands.
 	VideoURL string `json:"videoUrl,omitempty"`
 }
 
-// browserPlayableVideo reports whether a <video> element can decode the file at
-// path. A tracked Adult scene or Movies file in a container no browser plays
-// (mkv, avi, wmv…) gets no videoUrl at all rather than one that renders as a
-// broken element — Adult falls back to the title tile; Movies shows a format
-// note in the Files list instead of a Play control.
+// remuxMatroska stream-copies MKV to fragmented MP4. Tests swap this so GET
+// /video never shells ffmpeg.
+var remuxMatroska = videoremux.ToFragmentedMP4
+
+// browserPlayableVideo reports whether the in-app player can offer a <video>
+// for path. mp4/m4v/webm/mov stream as-is. mkv is remuxed to fMP4 on GET
+// /video (codec copy, not transcode). avi/wmv still omit videoUrl — Adult
+// falls back to the title tile; Movies/Series show a format note.
 func browserPlayableVideo(path string) bool {
 	switch strings.ToLower(filepath.Ext(path)) {
-	case ".mp4", ".m4v", ".webm", ".mov":
+	case ".mp4", ".m4v", ".webm", ".mov", ".mkv":
 		return true
 	default:
 		return false
@@ -567,10 +571,22 @@ func seriesEpisodeVideoURL(seriesID, episodeID, fileID int64) string {
 }
 
 // serveLocalVideoFile opens path and hands it to http.ServeContent (Range/seek
-// works). kind is only for the error string ("scene" / "movie" / "episode").
+// works) for browser-native containers. kind is only for the error string
+// ("scene" / "movie" / "episode" / "source" / "browse").
+//
+// Claude 2026-10-14: .mkv is remuxed to fMP4 (ffmpeg -c copy) instead of
+// served as Matroska.
+// Reason: <video> cannot decode MKV; remux is not the ROADMAP HLS transcode.
+// Troubleshooting: Accept-Ranges is none on the remux pipe — seek may restart
+// from the beginning. ffmpeg missing or copy failure → 500 before any body.
+// Review if: HLS transcode lands, or remux grows audio AAC encode.
 func serveLocalVideoFile(w http.ResponseWriter, r *http.Request, path, kind string) {
 	if path == "" {
 		http.Error(w, "tracked "+kind+" has no video file", http.StatusNotFound)
+		return
+	}
+	if strings.EqualFold(filepath.Ext(path), ".mkv") {
+		serveMatroskaRemux(w, r, path, kind)
 		return
 	}
 	f, err := os.Open(path)
@@ -594,6 +610,43 @@ func serveLocalVideoFile(w http.ResponseWriter, r *http.Request, path, kind stri
 	}
 	w.Header().Set("Cache-Control", "private, max-age=3600")
 	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
+}
+
+type remuxResponse struct {
+	http.ResponseWriter
+	once sync.Once
+	used bool
+}
+
+func (r *remuxResponse) Write(p []byte) (int, error) {
+	r.once.Do(func() {
+		r.used = true
+		r.Header().Set("Content-Type", "video/mp4")
+		r.Header().Set("Cache-Control", "private, max-age=3600")
+		r.Header().Set("Accept-Ranges", "none")
+	})
+	return r.ResponseWriter.Write(p)
+}
+
+func serveMatroskaRemux(w http.ResponseWriter, r *http.Request, path, kind string) {
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			http.Error(w, "tracked "+kind+" video file not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "tracked "+kind+" video file is not accessible", http.StatusInternalServerError)
+		return
+	}
+	out := &remuxResponse{ResponseWriter: w}
+	if err := remuxMatroska(r.Context(), path, out); err != nil {
+		if !out.used {
+			http.Error(w, "tracked "+kind+" mkv remux failed", http.StatusInternalServerError)
+		}
+		return
+	}
+	if !out.used {
+		http.Error(w, "tracked "+kind+" mkv remux failed", http.StatusInternalServerError)
+	}
 }
 
 func parseAdultAspectQuery(r *http.Request) (string, error) {

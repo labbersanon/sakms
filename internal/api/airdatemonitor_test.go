@@ -1758,8 +1758,8 @@ func TestSeasonStates_PlayableEpisodeGetsVideoURL(t *testing.T) {
 	if !mkv.HasFile {
 		t.Fatalf("mkv episode should still hasFile: %+v", mkv)
 	}
-	if mkv.VideoURL != "" {
-		t.Fatalf("mkv episode should omit videoUrl, got %q", mkv.VideoURL)
+	if mkv.VideoURL == "" {
+		t.Fatalf("mkv episode should set videoUrl, got %+v", mkv)
 	}
 	missing := st.Episodes[2]
 	if missing.HasFile || missing.VideoURL != "" {

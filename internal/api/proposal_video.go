@@ -4,8 +4,6 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strconv"
 
 	"github.com/labbersanon/sakms/internal/mode"
@@ -41,10 +39,9 @@ import (
 // client-controlled symlink-traversal surface here — consistent with the
 // existing resolveBrowsablePath precedent elsewhere in this codebase.
 //
-// Serving uses http.ServeContent against an os.Open handle so range/seek
-// requests (video scrubbing) work and nothing is buffered in memory — unlike
-// imageProxyHandler, which buffers whole external images and is the wrong
-// template for a local video file.
+// Serving uses serveLocalVideoFile: mp4/webm ServeContent (Range/seek);
+// mkv remuxes to fragmented MP4. Unlike imageProxyHandler, nothing is
+// buffered in memory.
 //
 // Shape dispatch: this handler never switches on p.Workflow. The proposals
 // table has exactly two SHAPES — candidate-indexed (Dedup: len(p.Candidates)
@@ -124,23 +121,11 @@ func proposalVideoHandler(propStore *proposals.Store) http.HandlerFunc {
 			return
 		}
 
-		f, err := os.Open(path)
-		if err != nil {
-			// A valid proposal+index whose file has vanished/changed on disk
-			// since the scan — not a client error, and not tested by AC14.
-			http.Error(w, "source file is not available", http.StatusInternalServerError)
-			return
-		}
-		defer f.Close()
-		info, err := f.Stat()
-		if err != nil || info.IsDir() {
-			http.Error(w, "source file is not available", http.StatusInternalServerError)
-			return
-		}
-
-		// *os.File is an io.ReadSeeker, so ServeContent handles Range/If-Range
-		// requests (seeking, 206 Partial Content) itself — no in-memory buffer.
-		http.ServeContent(w, r, filepath.Base(path), info.ModTime(), f)
+		// Claude 2026-10-14: proposal preview uses serveLocalVideoFile.
+		// Reason: Dedup/Rename click-to-play hits the same MKV remux as Library.
+		// Troubleshooting: mp4 still ServeContent+Range; mkv remuxes to fMP4.
+		// Review if: proposal preview grows a separate transcode path.
+		serveLocalVideoFile(w, r, path, "source")
 	}
 }
 

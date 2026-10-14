@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -645,9 +646,9 @@ func TestListTracked_Movies_SetsVideoURLWhenPlayable(t *testing.T) {
 	}
 }
 
-func TestListTracked_Movies_OmitsVideoURLForMkv(t *testing.T) {
+func TestListTracked_Movies_SetsVideoURLForMkv(t *testing.T) {
 	libStore, srv := newTrackedTestServer(t)
-	seedMovie(t, libStore, library.Item{
+	item := seedMovie(t, libStore, library.Item{
 		Mode: mode.Movies, TMDBID: 27205, Title: "Inception", Year: 2010,
 		FilePath: "/movies/Inception/Inception.mkv", RootFolderPath: "/movies",
 	})
@@ -656,11 +657,31 @@ func TestListTracked_Movies_OmitsVideoURLForMkv(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 item, got %+v", got)
 	}
+	wantItem := fmt.Sprintf("/api/modes/movies/tracked/%d/video", item.ID)
+	if got[0].VideoURL != wantItem {
+		t.Fatalf("item videoUrl = %q, want %q", got[0].VideoURL, wantItem)
+	}
+	if len(got[0].Files) != 1 || got[0].Files[0].VideoURL == "" {
+		t.Fatalf("expected file videoUrl for mkv, got %+v", got[0].Files)
+	}
+}
+
+func TestListTracked_Movies_OmitsVideoURLForAvi(t *testing.T) {
+	libStore, srv := newTrackedTestServer(t)
+	seedMovie(t, libStore, library.Item{
+		Mode: mode.Movies, TMDBID: 27205, Title: "Inception", Year: 2010,
+		FilePath: "/movies/Inception/Inception.avi", RootFolderPath: "/movies",
+	})
+
+	got := getTrackedItems(t, srv, "movies")
+	if len(got) != 1 {
+		t.Fatalf("expected 1 item, got %+v", got)
+	}
 	if got[0].VideoURL != "" {
-		t.Fatalf("expected item videoUrl omitted for mkv, got %q", got[0].VideoURL)
+		t.Fatalf("expected item videoUrl omitted for avi, got %q", got[0].VideoURL)
 	}
 	if len(got[0].Files) != 1 || got[0].Files[0].VideoURL != "" {
-		t.Fatalf("expected file videoUrl omitted for mkv, got %+v", got[0].Files)
+		t.Fatalf("expected file videoUrl omitted for avi, got %+v", got[0].Files)
 	}
 }
 
@@ -684,6 +705,70 @@ func TestTrackedVideoHandler_MoviesServesPrimaryFile(t *testing.T) {
 	}
 	if got := resp.Header.Get("Cache-Control"); got != "private, max-age=3600" {
 		t.Fatalf("Cache-Control = %q, want private max-age", got)
+	}
+}
+
+func TestTrackedVideoHandler_MoviesRemuxesMKV(t *testing.T) {
+	orig := remuxMatroska
+	t.Cleanup(func() { remuxMatroska = orig })
+	var gotSrc string
+	remuxMatroska = func(ctx context.Context, src string, w io.Writer) error {
+		gotSrc = src
+		_, err := io.WriteString(w, "fmp4-"+filepath.Base(src))
+		return err
+	}
+
+	libStore, srv := newTrackedTestServer(t)
+	path := filepath.Join(t.TempDir(), "movie.mkv")
+	if err := os.WriteFile(path, []byte("mkv-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	item := seedMovie(t, libStore, library.Item{
+		Mode: mode.Movies, TMDBID: 1, Title: "Some Movie", Year: 2020,
+		FilePath: path, RootFolderPath: filepath.Dir(path),
+	})
+
+	resp, body := getModeTrackedVideo(t, srv, "movies", item.ID, "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", resp.StatusCode, body)
+	}
+	if gotSrc != path {
+		t.Fatalf("remux src = %q, want %q", gotSrc, path)
+	}
+	if string(body) != "fmp4-movie.mkv" {
+		t.Fatalf("body = %q", body)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "video/mp4" {
+		t.Fatalf("Content-Type = %q, want video/mp4", ct)
+	}
+	if got := resp.Header.Get("Accept-Ranges"); got != "none" {
+		t.Fatalf("Accept-Ranges = %q, want none", got)
+	}
+}
+
+func TestTrackedVideoHandler_MoviesRemuxErrorIs500(t *testing.T) {
+	orig := remuxMatroska
+	t.Cleanup(func() { remuxMatroska = orig })
+	remuxMatroska = func(ctx context.Context, src string, w io.Writer) error {
+		return errors.New("ffmpeg boom")
+	}
+
+	libStore, srv := newTrackedTestServer(t)
+	path := filepath.Join(t.TempDir(), "movie.mkv")
+	if err := os.WriteFile(path, []byte("mkv-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	item := seedMovie(t, libStore, library.Item{
+		Mode: mode.Movies, TMDBID: 1, Title: "Broken", Year: 2020,
+		FilePath: path, RootFolderPath: filepath.Dir(path),
+	})
+
+	resp, body := getModeTrackedVideo(t, srv, "movies", item.ID, "")
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d body=%q", resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), "mkv-bytes") {
+		t.Fatalf("must not leak raw matroska: %q", body)
 	}
 }
 

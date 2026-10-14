@@ -178,8 +178,8 @@ func TestApplyUsenetFailure_TransportIneligible_NonNZBGID(t *testing.T) {
 	}
 }
 
-// TestApplyUsenetFailure_TransportIneligible_AtCap falls through to the days
-// ladder when TransportRetryCount has reached MaxTransportRetries.
+// TestApplyUsenetFailure_TransportIneligible_AtCap parks for a different NZB
+// when TransportRetryCount has reached MaxTransportRetries (not the days ladder).
 func TestApplyUsenetFailure_TransportIneligible_AtCap(t *testing.T) {
 	ctx := context.Background()
 	deps, grabsStore := transportDeps(t)
@@ -195,6 +195,7 @@ func TestApplyUsenetFailure_TransportIneligible_AtCap(t *testing.T) {
 	if atCap.TransportRetryCount != grabs.MaxTransportRetries {
 		t.Fatalf("pre-condition: transport_retry_count = %d, want %d", atCap.TransportRetryCount, grabs.MaxTransportRetries)
 	}
+	daysBefore := atCap.RetryCount
 
 	failure := fmt.Errorf("pipe: %w", usenet.ErrTransport)
 	_, err := applyUsenetFailure(ctx, deps, *atCap, failure, parkGrabForRetry)
@@ -203,9 +204,23 @@ func TestApplyUsenetFailure_TransportIneligible_AtCap(t *testing.T) {
 	}
 
 	after, _ := grabsStore.Get(ctx, g.ID)
-	// Fell through to days-ladder: GID cleared.
 	if after.DownloadGID != "" {
-		t.Errorf("download_gid = %q, want '' (fell through to days ladder at cap)", after.DownloadGID)
+		t.Errorf("download_gid = %q, want '' (alternate park clears GID)", after.DownloadGID)
+	}
+	if after.TriedReleaseKeys == "" {
+		t.Error("tried_release_keys empty after transport-cap alternate park")
+	}
+	if after.RetryReason != contentStalledReleaseReason {
+		t.Errorf("retry_reason = %q, want %q", after.RetryReason, contentStalledReleaseReason)
+	}
+	if after.RetryCount != daysBefore {
+		t.Errorf("retry_count = %d, want %d (alternate park must not advance days ladder)", after.RetryCount, daysBefore)
+	}
+	if after.TransportRetryCount != 0 {
+		t.Errorf("transport_retry_count = %d, want 0 (alternate park ends the stall episode)", after.TransportRetryCount)
+	}
+	if after.NextSearchScope == "torrent" {
+		t.Errorf("next_search_scope = torrent, want usenet alternate")
 	}
 }
 
@@ -584,6 +599,9 @@ func TestApplyUsenetFailure_ContextCanceled(t *testing.T) {
 	}
 	if got.RetryReason != shutdownResumeReason {
 		t.Errorf("retry_reason = %q, want %q", got.RetryReason, shutdownResumeReason)
+	}
+	if got.TransportRetryCount != 0 {
+		t.Errorf("transport_retry_count = %d, want 0 (shutdown must not burn the stall ladder)", got.TransportRetryCount)
 	}
 	retryT, parseErr := grabs.ParseTime(got.RetryAfter)
 	if parseErr != nil {

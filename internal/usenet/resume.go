@@ -125,6 +125,16 @@ func loadResumeTracker(dir, gid string, disabled bool) *resumeTracker {
 	}
 	loaded.GID = gid
 	t.snap = loaded
+	if dropped := compactResumeDuplicates(&t.snap); dropped > 0 {
+		t.mu.Lock()
+		t.dirty = true
+		if err := t.persistLocked(); err != nil {
+			log.Printf("usenet: resume compact persist %s: %v", dir, err)
+		} else {
+			log.Printf("usenet: compacted %d duplicate yEnc parts in %s", dropped, dir)
+		}
+		t.mu.Unlock()
+	}
 	return t
 }
 
@@ -164,13 +174,15 @@ func (t *resumeTracker) hasSegment(filename, msgID string) bool {
 // Skipping without these checks leaves hollow videos that still import.
 // f may be nil — then only the size check runs (tests / callers without an FD).
 func (t *resumeTracker) segmentCovered(f *os.File, filename, msgID string, fileBytes int64) bool {
+	return t.segmentCoveredN(f, filename, msgID, 0, fileBytes)
+}
+
+// segmentCoveredN is segmentCovered plus a yEnc part number fallback: if this
+// MsgID is missing but another MsgID already recorded the same n, skip it.
+func (t *resumeTracker) segmentCoveredN(f *os.File, filename, msgID string, number int, fileBytes int64) bool {
 	t.mu.Lock()
 	rf := t.snap.Files[filename]
-	var seg ResumeSeg
-	ok := false
-	if rf != nil {
-		seg, ok = rf.Done[msgID]
-	}
+	seg, ok := resumeSegLocked(rf, msgID, number)
 	t.mu.Unlock()
 	if !ok || seg.Length <= 0 {
 		return false
@@ -182,6 +194,69 @@ func (t *resumeTracker) segmentCovered(f *os.File, filename, msgID string, fileB
 		return true
 	}
 	return rangeLooksPopulated(f, seg.Offset, int64(seg.Length))
+}
+
+func resumeSegLocked(rf *ResumeFile, msgID string, number int) (ResumeSeg, bool) {
+	if rf == nil {
+		return ResumeSeg{}, false
+	}
+	if msgID != "" {
+		if seg, ok := rf.Done[msgID]; ok {
+			return seg, true
+		}
+	}
+	if number <= 0 {
+		return ResumeSeg{}, false
+	}
+	for _, seg := range rf.Done {
+		if seg.Number == number {
+			return seg, true
+		}
+	}
+	return ResumeSeg{}, false
+}
+
+// compactResumeDuplicates keeps one MsgID per yEnc part number and per write
+// offset. Duplicate Done entries inflate completed-bytes and hide holes from
+// the stale-progress watchdog. Returns how many entries were dropped.
+//
+// Claude 2026-10-13: one MsgID per yEnc n/offset on load.
+// Reason: obfuscated sets wrote two articles at the same n; skip replay
+// claimed the file complete while a hole never closed.
+// Troubleshooting: sidecar unique_n << done count; grab 1843 125954-0.*.
+// Review if: a poster emits two legitimate ranges at one n.
+func compactResumeDuplicates(snap *ResumeSnapshot) int {
+	if snap == nil {
+		return 0
+	}
+	dropped := 0
+	for _, f := range snap.Files {
+		if f == nil || len(f.Done) == 0 {
+			continue
+		}
+		seenN := make(map[int]struct{}, len(f.Done))
+		seenOff := make(map[int64]struct{}, len(f.Done))
+		keep := make(map[string]ResumeSeg, len(f.Done))
+		fileDropped := 0
+		for id, seg := range f.Done {
+			_, dupN := seenN[seg.Number]
+			_, dupOff := seenOff[seg.Offset]
+			if id == "" || (seg.Number > 0 && dupN) || dupOff {
+				fileDropped++
+				continue
+			}
+			if seg.Number > 0 {
+				seenN[seg.Number] = struct{}{}
+			}
+			seenOff[seg.Offset] = struct{}{}
+			keep[id] = seg
+		}
+		if fileDropped > 0 {
+			f.Done = keep
+			dropped += fileDropped
+		}
+	}
+	return dropped
 }
 
 func (t *resumeTracker) priorFile(firstMsg string) (name string, size int64, done int) {
@@ -206,14 +281,15 @@ func (t *resumeTracker) priorFile(firstMsg string) (name string, size int64, don
 	return "", 0, 0
 }
 
-func (t *resumeTracker) skippedBytes(filename, msgID string, fallback int) int {
+func (t *resumeTracker) skippedBytesN(filename, msgID string, number, fallback int) int {
 	n := 0
 	if t != nil {
 		t.mu.Lock()
-		if rf := t.snap.Files[filename]; rf != nil {
-			n = rf.Done[msgID].Length
-		}
+		seg, ok := resumeSegLocked(t.snap.Files[filename], msgID, number)
 		t.mu.Unlock()
+		if ok {
+			n = seg.Length
+		}
 	}
 	if n <= 0 {
 		n = fallback
@@ -224,16 +300,17 @@ func (t *resumeTracker) skippedBytes(filename, msgID string, fallback int) int {
 	return n
 }
 
-func (t *resumeTracker) skippedOffset(filename, msgID string) int64 {
+func (t *resumeTracker) skippedOffsetN(filename, msgID string, number int) int64 {
 	if t == nil {
 		return 0
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if rf := t.snap.Files[filename]; rf != nil {
-		return rf.Done[msgID].Offset
+	seg, ok := resumeSegLocked(t.snap.Files[filename], msgID, number)
+	if !ok {
+		return 0
 	}
-	return 0
+	return seg.Offset
 }
 
 func (t *resumeTracker) setFileSize(filename string, size int64) {
@@ -279,6 +356,16 @@ func (t *resumeTracker) markSegment(filename, msgID string, number int, offset i
 	}
 	if fileSize > 0 {
 		f.Size = fileSize
+	}
+	// Claude 2026-10-13: one MsgID per yEnc n/offset.
+	// Reason: obfuscated sets wrote two articles at the same n — skip replay
+	//   inflated completed bytes and the 2m watchdog never saw a hole close.
+	// Troubleshooting: sidecar unique_n << done count; grab 1843 125954-0.*.
+	// Review if: a poster emits two legitimate ranges at one n.
+	for _, existing := range f.Done {
+		if (number > 0 && existing.Number == number) || existing.Offset == offset {
+			return nil
+		}
 	}
 	f.Done[msgID] = ResumeSeg{Number: number, Offset: offset, Length: length}
 	// return t.persistLocked()

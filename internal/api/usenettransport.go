@@ -62,19 +62,22 @@ func parkUsenetTransportFailure(ctx context.Context, deps AutoGrabDeps, g grabs.
 	if strings.TrimSpace(g.DownloadURL) == "" {
 		return false, nil
 	}
+	if shutdown {
+		// Due immediately — deploy restart should resume on the next drain tick,
+		// not after the 2m transport backoff meant for live socket flaps.
+		// Do not increment the stall ladder: a recreate is not a hung article.
+		if err := deps.GrabsStore.ParkForShutdownResume(ctx, g.ID, now, shutdownResumeReason); err != nil {
+			return false, fmt.Errorf("shutdown park grab %d: %w", g.ID, err)
+		}
+		log.Printf("usenet transport: grab %d (%s) parked for resume in 0s (shutdown)", g.ID, g.Title)
+		return true, nil
+	}
 	if g.TransportRetryCount >= grabs.MaxTransportRetries {
 		return false, nil
 	}
 	attempt := g.TransportRetryCount + 1
-	reason := transportRetryReason
 	after := now.Add(grabs.TransportBackoff(attempt))
-	if shutdown {
-		// Due immediately — deploy restart should resume on the next drain tick,
-		// not after the 2m transport backoff meant for live socket flaps.
-		reason = shutdownResumeReason
-		after = now
-	}
-	if err := deps.GrabsStore.ParkForTransportResume(ctx, g.ID, after, reason); err != nil {
+	if err := deps.GrabsStore.ParkForTransportResume(ctx, g.ID, after, transportRetryReason); err != nil {
 		return false, fmt.Errorf("transport park grab %d: %w", g.ID, err)
 	}
 	wait := after.Sub(now).Round(time.Second)

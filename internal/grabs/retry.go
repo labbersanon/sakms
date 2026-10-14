@@ -7,8 +7,16 @@ import (
 )
 
 // MaxTransportRetries is the number of times a grab may be short-parked for a
-// transport failure before it is escalated to the days-ladder re-search.
+// transport failure before it is escalated off this NZB.
 // Cap 4 → 2m + 5m + 15m + 30m ≈ 52 minutes of short-park attempts.
+// Live stale-progress parks at the cap try a different release; RelaunchNZB
+// errors at the cap still join the days-ladder re-search.
+//
+// Claude 2026-10-13: live stalls at the cap try a different release.
+// Reason: same-GID resume used to zero the counter, so a hung article never
+// left this NZB. Days-ladder would wait 24h–90d on the same fingerprint.
+// Troubleshooting: grab 1843 Ancient Aliens attempt 1/4 loop.
+// Review if: MaxTransportRetries becomes a settings knob.
 const MaxTransportRetries = 4
 
 // TransportBackoff returns how far ahead a transport-parked row's next resume
@@ -23,7 +31,7 @@ const MaxTransportRetries = 4
 //
 // Claude 2026-09-17: separate ladder from RetryBackoff.
 // Reason: a transport park must not advance retry_count (the days-ladder
-//   driver). These two counters and their ladders are deliberately separate.
+// driver). These two counters and their ladders are deliberately separate.
 // Review if: the ladder shape gains a settings-UI control.
 func TransportBackoff(n int) time.Duration {
 	switch n {

@@ -50,6 +50,13 @@ const (
 	//   switching release group is not.
 	// Review if: dual-path (Usenet alternate then torrent) is wanted after cap.
 	contentArticlesMissingReason = "articles missing on Usenet for this release (430) — trying a different release"
+
+	// Claude 2026-10-13: stale-progress / transport cap → different NZB.
+	// Reason: four short parks on one GID mean this article set is stuck;
+	//   another release has different message-IDs.
+	// Troubleshooting: grab 1843 parked attempt 1/4 forever before the count stuck.
+	// Review if: MaxTransportRetries becomes a settings knob.
+	contentStalledReleaseReason = "this release stalled repeatedly — trying a different release"
 )
 
 // contentUnusableFailure reports whether failure should route to the
@@ -74,6 +81,9 @@ func contentUnusableFailure(err error) bool {
 // contentFailureReason maps a content-unusable failure to its operator-facing
 // reason string.
 func contentFailureReason(failure error) string {
+	if errors.Is(failure, usenet.ErrTransport) {
+		return contentStalledReleaseReason
+	}
 	if errors.Is(failure, usenet.ErrPasswordProtected) {
 		return contentPasswordReason
 	}

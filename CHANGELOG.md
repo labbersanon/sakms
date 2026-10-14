@@ -10916,3 +10916,22 @@ status stays active.
 | `internal/api/autograb.go` | `selectAutoGrabBest` takes tvdbID |
 | `internal/api/import_quality.go` | import uses grab.TVDBID |
 | `internal/api/discover_availability.go` | `tvdbId` query + library lookup |
+
+## 2026-10-13 — Keep transport-retry count across same-GID resume
+
+**Problem:** A stalled NZB (stale-progress watchdog) parked every 2 minutes, resumed into the same staging dir, and logged attempt 1/4 forever. Duplicate yEnc parts in the resume sidecar inflated completed bytes so the hole never closed.
+**Root cause:** `Relaunch` zeroed `transport_retry_count` even when the GID was unchanged. `MaxTransportRetries` was never reached. Sidecar `Done` allowed two MsgIDs at the same yEnc n/offset.
+**Fix:** Same-GID `Relaunch` keeps the count; a new GID still zeros it. Shutdown parks do not increment. Live transport parks at the cap try a different NZB (fingerprint + due-now), not the days ladder. Resume load/mark keep one MsgID per n and per offset; assemble skips by n when the sibling MsgID was compacted.
+**Outcome:** A hung article set escalates after four parks instead of looping. Other titles with the same stall pattern follow the same path.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/grabs/grabs.go` | same-GID Relaunch keeps count; ParkForShutdownResume |
+| `internal/grabs/retry.go` | cap comment: alternate NZB for live stalls |
+| `internal/api/usenettransport.go` | shutdown park does not increment |
+| `internal/api/usenetretry.go` | transport cap → alternate-release park |
+| `internal/api/usenetcontent.go` | stalled-release retry reason |
+| `internal/usenet/resume.go` | refuse/compact duplicate yEnc n/offset |
+| `internal/usenet/manager.go` | assemble skip by yEnc n |

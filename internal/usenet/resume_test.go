@@ -117,6 +117,89 @@ func TestDeleteArchiveMembers_RemovesResumeSidecar(t *testing.T) {
 	}
 }
 
+func TestMarkSegment_RefusesDuplicateNAndOffset(t *testing.T) {
+	dir := t.TempDir()
+	tr := loadResumeTracker(dir, "gid", false)
+	if err := tr.markSegment("a.bin", "<a@x>", 18, 0, 100, 200); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.markSegment("a.bin", "<b@x>", 18, 0, 100, 200); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.markSegment("a.bin", "<c@x>", 19, 0, 100, 200); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.markSegment("a.bin", "<d@x>", 20, 100, 100, 200); err != nil {
+		t.Fatal(err)
+	}
+	tr.mu.Lock()
+	n := len(tr.snap.Files["a.bin"].Done)
+	tr.mu.Unlock()
+	if n != 2 {
+		t.Fatalf("done=%d want 2 (unique n=18 off=0 and n=20 off=100)", n)
+	}
+	if tr.hasSegment("a.bin", "<b@x>") {
+		t.Fatal("duplicate n must not store a second MsgID")
+	}
+	if tr.hasSegment("a.bin", "<c@x>") {
+		t.Fatal("duplicate offset must not store a second MsgID")
+	}
+	if !tr.segmentCoveredN(nil, "a.bin", "<missing@x>", 18, 100) {
+		t.Fatal("covered-by-n should skip the compacted sibling MsgID")
+	}
+}
+
+func TestLoadResumeTracker_CompactsDuplicateYEncParts(t *testing.T) {
+	dir := t.TempDir()
+	snap := ResumeSnapshot{
+		Version: resumeSchemaVersion,
+		GID:     "nzb-dups",
+		Files: map[string]*ResumeFile{
+			"a.bin": {Size: 300, Done: map[string]ResumeSeg{
+				"<a@x>": {Number: 18, Offset: 0, Length: 100},
+				"<b@x>": {Number: 18, Offset: 0, Length: 100},
+				"<c@x>": {Number: 19, Offset: 100, Length: 100},
+			}},
+		},
+	}
+	raw, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ResumeFileName), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tr := loadResumeTracker(dir, "nzb-dups", false)
+	tr.mu.Lock()
+	done := tr.snap.Files["a.bin"].Done
+	tr.mu.Unlock()
+	if len(done) != 2 {
+		t.Fatalf("loaded done=%d want 2 after compact", len(done))
+	}
+	seenN := map[int]int{}
+	for _, seg := range done {
+		seenN[seg.Number]++
+	}
+	for n, count := range seenN {
+		if count != 1 {
+			t.Errorf("n=%d stored %d times, want 1", n, count)
+		}
+	}
+
+	rewritten, err := os.ReadFile(filepath.Join(dir, ResumeFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted ResumeSnapshot
+	if err := json.Unmarshal(rewritten, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if len(persisted.Files["a.bin"].Done) != 2 {
+		t.Fatalf("persisted done=%d want 2", len(persisted.Files["a.bin"].Done))
+	}
+}
+
 func TestSegmentCovered(t *testing.T) {
 	dir := t.TempDir()
 	tr := loadResumeTracker(dir, "gid", false)

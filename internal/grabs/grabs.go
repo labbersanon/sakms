@@ -190,9 +190,11 @@ type Grab struct {
 	// Migration: 0022_grabs_next_search_scope.sql.
 	NextSearchScope string `json:"nextSearchScope,omitempty"`
 	// TransportRetryCount tracks how many times this grab has been short-parked
-	// for a transport failure (dropped socket, broken pipe). Distinct from
-	// RetryCount, which counts genuine re-search attempts. Reset to 0 by any
-	// non-transport park (SetPendingRetry, SetPendingRetryWithScope, Relaunch).
+	// for a transport failure (dropped socket, broken pipe, stale progress).
+	// Distinct from RetryCount, which counts genuine re-search attempts.
+	// Same-GID Relaunch (resume into the same nzb-* dir) keeps the count so
+	// MaxTransportRetries can escalate off a looping NZB. A new GID, days-ladder
+	// park, or alternate-release park resets it. Shutdown parks do not increment.
 	// Migration: 0023_grabs_transport_retry.sql.
 	TransportRetryCount int `json:"transportRetryCount,omitempty"`
 	// Origin is a provenance marker for grabs created outside the normal dispatch
@@ -864,6 +866,11 @@ func (s *Store) Relaunch(ctx context.Context, id int64, d Dispatch) error {
 	if err != nil {
 		return err
 	}
+	// Claude 2026-10-13: same-GID resume keeps transport_retry_count.
+	// Reason: Relaunch used to zero the counter, so a stalled NZB logged
+	//   attempt 1/4 forever and never reached MaxTransportRetries.
+	// Troubleshooting: grab 1843 Ancient Aliens stale-progress loop.
+	// Review if: a progress-reset of the counter is added for healthy remuxes.
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE grabs SET
 			status                = 'queued',
@@ -872,13 +879,13 @@ func (s *Store) Relaunch(ctx context.Context, id int64, d Dispatch) error {
 			download_client       = ?,
 			root_folder_path      = ?,
 			download_url_encrypted = ?,
+			transport_retry_count = CASE WHEN download_gid = ? THEN transport_retry_count ELSE 0 END,
 			download_gid          = ?,
 			retry_after           = '',
 			retry_reason          = '',
-			transport_retry_count = 0,
 			updated_at            = sakms_now()
 		WHERE id = ?
-	`, d.Indexer, d.Protocol, d.DownloadClient, d.RootFolderPath, encrypted, d.GID, id)
+	`, d.Indexer, d.Protocol, d.DownloadClient, d.RootFolderPath, encrypted, d.GID, d.GID, id)
 	if err != nil {
 		return fmt.Errorf("relaunching grab %d: %w", id, err)
 	}
@@ -1155,6 +1162,24 @@ func (s *Store) ParkForTransportResume(ctx context.Context, id int64, after time
 	`, FormatTime(after), reason, id)
 	if err != nil {
 		return fmt.Errorf("parking grab %d for transport resume: %w", id, err)
+	}
+	return dbutil.CheckAffected(res, id, ErrNotFound)
+}
+
+// ParkForShutdownResume is the deploy/restart twin of ParkForTransportResume:
+// GID kept, due immediately, transport_retry_count NOT incremented so a recreate
+// does not burn the stall ladder.
+func (s *Store) ParkForShutdownResume(ctx context.Context, id int64, after time.Time, reason string) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE grabs SET
+			status                = 'pending_retry',
+			retry_after           = ?,
+			retry_reason          = ?,
+			updated_at            = sakms_now()
+		WHERE id = ?
+	`, FormatTime(after), reason, id)
+	if err != nil {
+		return fmt.Errorf("parking grab %d for shutdown resume: %w", id, err)
 	}
 	return dbutil.CheckAffected(res, id, ErrNotFound)
 }

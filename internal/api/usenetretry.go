@@ -462,9 +462,10 @@ func applyUsenetFailure(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, fa
 
 // parkRetrievalFailure routes one retrievable failure to exactly one park
 // track. The order below IS the precedence: transport resume, then alternate
-// release (content + 430), then the days ladder as the catch-all. The
-// transport and content parks each decline (handled=false) when their own
-// fail-closed guards reject the failure, and the next track gets it.
+// release (content + 430 + transport-cap stall), then the days ladder as the
+// catch-all. The transport and content parks each decline (handled=false)
+// when their own fail-closed guards reject the failure, and the next track
+// gets it.
 func parkRetrievalFailure(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, failure error, park grabParker, now time.Time) error {
 	reason := usenetRetrievalReason(failure)
 
@@ -478,6 +479,26 @@ func parkRetrievalFailure(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, 
 		return err
 	}
 
+	var engine contentForgetEngine
+	if deps.NZB != nil {
+		engine = deps.NZB
+	}
+
+	// Claude 2026-10-13: transport ladder exhausted → different NZB, not days ladder.
+	// Reason: same-GID resume used to reset the counter, so a stalled article
+	//   never hit the cap. At cap, days-ladder would clear the GID and wait
+	//   24h–90d. Alternate-release parks due-now, fingerprints this NZB, and
+	//   lets precheck pick another. Shutdown cancel is handled above and never
+	//   reaches here.
+	// Troubleshooting: grab 1843 Ancient Aliens attempt 1/4 loop.
+	// Review if: a healthy remux with four brief blips needs a progress reset.
+	if errors.Is(failure, usenet.ErrTransport) {
+		handled, err := parkUsenetContentFailure(ctx, deps, g, failure, engine)
+		if err != nil || handled {
+			return err
+		}
+	}
+
 	// Claude 2026-09-17: content failure → park for a different-release retry.
 	// Claude 2026-09-19: also 430 (ErrArticleNotFound) — see contentUnusableFailure.
 	// Reason: PAR2/unpack/no-video/password/430-holes are properties of THIS release;
@@ -488,10 +509,6 @@ func parkRetrievalFailure(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, 
 	//   guards reject it (non-nzb- GID, empty URL, cap reached).
 	// Review if: content failures should also be cap-gated per-day.
 	if contentUnusableFailure(failure) {
-		var engine contentForgetEngine
-		if deps.NZB != nil {
-			engine = deps.NZB
-		}
 		handled, err := parkUsenetContentFailure(ctx, deps, g, failure, engine)
 		if err != nil {
 			return err

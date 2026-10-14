@@ -628,6 +628,9 @@ func TestContentNoVideoReason(t *testing.T) {
 	if got := contentFailureReason(wrapped); got != contentPasswordReason {
 		t.Errorf("password wrapped in no-video = %q, want password reason", got)
 	}
+	if got := contentFailureReason(usenet.ErrTransport); got != contentStalledReleaseReason {
+		t.Errorf("contentFailureReason(ErrTransport) = %q, want %q", got, contentStalledReleaseReason)
+	}
 }
 
 func TestParkNZBTitle_DropsMediaTitle(t *testing.T) {

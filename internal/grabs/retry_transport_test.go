@@ -164,8 +164,8 @@ func TestSetPendingRetry_ResetsTransportRetryCount(t *testing.T) {
 	}
 }
 
-// TestRelaunch_ResetsTransportRetryCount confirms Relaunch also clears
-// transport_retry_count when re-arming a row as queued.
+// TestRelaunch_ResetsTransportRetryCount confirms Relaunch clears
+// transport_retry_count when the new GID is different (a different NZB).
 func TestRelaunch_ResetsTransportRetryCount(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -212,6 +212,98 @@ func TestRelaunch_ResetsTransportRetryCount(t *testing.T) {
 	}
 }
 
+// TestRelaunch_KeepsTransportRetryCountSameGID is the stall-loop fix: resume
+// into the same nzb-* dir must not zero the counter, or attempt 1/4 repeats.
+func TestRelaunch_KeepsTransportRetryCountSameGID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 9, 17, 10, 0, 0, 0, time.UTC)
+
+	g, err := s.Create(ctx, Grab{
+		Mode: mode.Movies, Title: "Relaunch Keep", TMDBID: 204,
+		RootFolderPath: "/movies", DownloadURL: "https://indexer.example/nzb?id=46",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	const gid = "nzb-relaunch-same"
+	if err := s.SetDownloadGID(ctx, g.ID, gid); err != nil {
+		t.Fatalf("SetDownloadGID: %v", err)
+	}
+	if err := s.ParkForTransportResume(ctx, g.ID, now.Add(2*time.Minute), "drop"); err != nil {
+		t.Fatalf("ParkForTransportResume: %v", err)
+	}
+	if err := s.ParkForTransportResume(ctx, g.ID, now.Add(5*time.Minute), "drop"); err != nil {
+		t.Fatalf("ParkForTransportResume 2: %v", err)
+	}
+	before, err := s.Get(ctx, g.ID)
+	if err != nil {
+		t.Fatalf("get before relaunch: %v", err)
+	}
+	if before.TransportRetryCount != 2 {
+		t.Fatalf("pre-condition: transport_retry_count = %d, want 2", before.TransportRetryCount)
+	}
+
+	d := Dispatch{
+		Indexer: "I", Protocol: "usenet", DownloadClient: "usenet",
+		RootFolderPath: "/movies", DownloadURL: "https://indexer.example/nzb?id=46",
+		GID: gid,
+	}
+	if err := s.Relaunch(ctx, g.ID, d); err != nil {
+		t.Fatalf("Relaunch: %v", err)
+	}
+	after, err := s.Get(ctx, g.ID)
+	if err != nil {
+		t.Fatalf("get after Relaunch: %v", err)
+	}
+	if after.TransportRetryCount != 2 {
+		t.Errorf("transport_retry_count = %d after same-GID Relaunch, want 2", after.TransportRetryCount)
+	}
+	if after.Status != Queued {
+		t.Errorf("status = %q after Relaunch, want queued", after.Status)
+	}
+}
+
+// TestParkForShutdownResume_DoesNotIncrement confirms a deploy/restart park
+// keeps the GID and does not burn a stall-ladder rung.
+func TestParkForShutdownResume_DoesNotIncrement(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 9, 17, 10, 0, 0, 0, time.UTC)
+
+	g, err := s.Create(ctx, Grab{
+		Mode: mode.Movies, Title: "Shutdown Resume", TMDBID: 205,
+		RootFolderPath: "/movies", DownloadURL: "https://indexer.example/nzb?id=47",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	const gid = "nzb-shutdown-1"
+	if err := s.SetDownloadGID(ctx, g.ID, gid); err != nil {
+		t.Fatalf("SetDownloadGID: %v", err)
+	}
+
+	if err := s.ParkForShutdownResume(ctx, g.ID, now, "restart"); err != nil {
+		t.Fatalf("ParkForShutdownResume: %v", err)
+	}
+	parked, err := s.Get(ctx, g.ID)
+	if err != nil {
+		t.Fatalf("get after park: %v", err)
+	}
+	if parked.DownloadGID != gid {
+		t.Errorf("download_gid = %q, want %q", parked.DownloadGID, gid)
+	}
+	if parked.TransportRetryCount != 0 {
+		t.Errorf("transport_retry_count = %d, want 0 (shutdown must not increment)", parked.TransportRetryCount)
+	}
+	if parked.Status != PendingRetry {
+		t.Errorf("status = %q, want pending_retry", parked.Status)
+	}
+	if parked.RetryAfter != FormatTime(now) {
+		t.Errorf("retry_after = %q, want due immediately (%q)", parked.RetryAfter, FormatTime(now))
+	}
+}
+
 // TestDueForResume_VsDueForRetry_Disjointness proves the two due-sets are
 // structurally disjoint on one fixture set: a transport-parked row (GID
 // non-empty) appears in DueForResume and NOT DueForRetry; a normal-parked row
@@ -219,7 +311,7 @@ func TestRelaunch_ResetsTransportRetryCount(t *testing.T) {
 func TestDueForResume_VsDueForRetry_Disjointness(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	past := time.Date(2026, 9, 17, 8, 0, 0, 0, time.UTC)  // overdue
+	past := time.Date(2026, 9, 17, 8, 0, 0, 0, time.UTC) // overdue
 	now := time.Date(2026, 9, 17, 10, 0, 0, 0, time.UTC)
 
 	// Transport-parked row: has GID.
@@ -241,7 +333,7 @@ func TestDueForResume_VsDueForRetry_Disjointness(t *testing.T) {
 	gNormal, err := s.Create(ctx, Grab{
 		Mode: mode.Movies, Title: "Normal Due", TMDBID: 301,
 		RootFolderPath: "/movies",
-		Status: PendingRetry, RetryAfter: FormatTime(past), RetryReason: "no match",
+		Status:         PendingRetry, RetryAfter: FormatTime(past), RetryReason: "no match",
 	})
 	if err != nil {
 		t.Fatalf("create normal grab: %v", err)

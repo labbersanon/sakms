@@ -2047,8 +2047,13 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 	}
 
 	// Hollow-file guard: sidecar said done but on-disk range is empty → re-fetch.
+	// Claude 2026-10-13: skip by yEnc n when MsgID was compacted as a duplicate.
+	// Reason: obfuscated posters wrote two articles at one n; compact keeps one
+	//   MsgID, so the sibling would otherwise re-fetch the same range.
+	// Troubleshooting: sidecar unique_n << done; grab 1843 125954-0.*.
+	// Review if: a poster emits two legitimate ranges at one n.
 	if seed.data == nil {
-		if resume == nil || resume.disabled || !resume.segmentCovered(f, filename, firstMsg, fileBytes) {
+		if resume == nil || resume.disabled || !resume.segmentCoveredN(f, filename, firstMsg, segs[0].Number, fileBytes) {
 			first, err := m.fetchSegmentAny(ctx, segs[0].MsgID)
 			if err != nil {
 				return "", fmt.Errorf("segment 1: %w", err)
@@ -2065,7 +2070,7 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 			covered[i] = false
 			continue
 		}
-		if resume != nil && !resume.disabled && resume.segmentCovered(f, filename, msgID, fileBytes) {
+		if resume != nil && !resume.disabled && resume.segmentCoveredN(f, filename, msgID, seg.Number, fileBytes) {
 			covered[i] = true
 		}
 	}
@@ -2151,8 +2156,8 @@ func (m *Manager) assembleFile(ctx context.Context, gid string, dl *dlState, nzb
 			n := 0
 			var off int64
 			if resume != nil {
-				n = resume.skippedBytes(filename, msgID, int(seg.Bytes))
-				off = resume.skippedOffset(filename, msgID)
+				n = resume.skippedBytesN(filename, msgID, seg.Number, int(seg.Bytes))
+				off = resume.skippedOffsetN(filename, msgID, seg.Number)
 			}
 			if n <= 0 {
 				writeErr = fmt.Errorf("segment %d: missing decoded length for resume skip", seg.Number)

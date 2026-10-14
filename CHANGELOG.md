@@ -10813,3 +10813,17 @@ status stays active.
 | `frontend/src/components/SeriesEpisodesPanel.test.tsx` | replacing season + slot |
 | `frontend/src/screens/discover/DetailPopup.test.tsx` | click Replace asserts in-row Grab |
 
+## 2026-10-13 — Episode Replace starts autograb and shows Grab this in-row
+
+**Problem:** Live Love Is Blind S01E10 Replace searched availability three times and never POSTed `/autograb`. Tapping Replace still looked dead.
+**Root cause:** Replace only opened the quality grid. Grab sat below tags/cast, so the operator never clicked it. High/Lossless floors also reject the WEB-DLs (5.2 Mbps vs 10+).
+**Fix:** Replace POSTs operator `/autograb` for that S/E immediately and renders Searching replacements… then the Grab this list under the row. Skip the below-the-fold pills on that path.
+**Outcome:** Tests pass. Not deployed (Ancient Aliens Usenet BODY in progress).
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/discover/DetailPopup.tsx` | Replace → autograb + in-row pick list |
+| `frontend/src/screens/discover/DetailPopup.test.tsx` | asserts POST season/episode + Grab this |
+

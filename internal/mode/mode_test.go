@@ -458,6 +458,32 @@ func TestBuild_MainstreamAI_NilWithoutOllamaConnection(t *testing.T) {
 	}
 }
 
+// TestBuild_NilConnStore_DoesNotPanic is the regression for media-admin
+// quality-prefs Save → Bad Gateway: ensureSeriesByTMDB used to call Build
+// with a nil connections.Store while AI was configured, and optionalConn
+// panicked on store.Get.
+func TestBuild_NilConnStore_DoesNotPanic(t *testing.T) {
+	_, settingsStore := newTestStores(t)
+	ctx := context.Background()
+	if err := settingsStore.Set(ctx, AIFallbackEnabledKey, "true"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := settingsStore.Set(ctx, AIModelKey, "qwen2.5:7b"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sess, err := Build(ctx, nil, nil, settingsStore, &http.Client{Timeout: time.Second}, nil, Series)
+	if err != nil {
+		t.Fatalf("Build with nil connStore: %v", err)
+	}
+	if sess.MainstreamAI != nil {
+		t.Error("expected MainstreamAI nil when connStore is nil")
+	}
+	if sess.TMDB != nil {
+		t.Error("expected TMDB nil when connStore is nil")
+	}
+}
+
 // TestBuild_MainstreamAI_NilWithoutModelSetting confirms an Ollama connection
 // alone isn't enough — the AIModelKey setting must also be set, same
 // two-part gate as Adult's Identify.

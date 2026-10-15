@@ -377,8 +377,10 @@ func (p plexPlayer) NotifyMediaUpdated(ctx context.Context, updates []jellyfin.M
 // and the shared search/download pipeline — each left nil/empty when
 // unconfigured.
 //
-// scStore may be nil, which simply yields no players (see buildPlayers) —
-// the same tolerance every other optional client here already has.
+// store and scStore may be nil — nil store means no connections are configured
+// (optionalConn collapses that to absent clients); nil scStore yields no
+// players (see buildPlayers). Same tolerance every other optional client here
+// already has.
 func Build(ctx context.Context, store *connections.Store, scStore *serviceconn.Store, settingsStore *settings.Store, httpClient *http.Client, dl *downloader.Manager, m Mode) (*Session, error) {
 	sess := &Session{Mode: m, Downloader: dl}
 
@@ -876,7 +878,21 @@ func buildWebSearch(ctx context.Context, store *connections.Store, settingsStore
 // optionalConn returns the connection for service, or (nil, nil) if it simply
 // isn't configured — collapsing connections.ErrNotFound into "absent" so
 // callers can treat optional services uniformly. Any other error propagates.
+//
+// Claude 2026-10-14: nil-store guard before store.Get.
+// Reason: callers (e.g. putSeriesQualityPrefsByTMDB → ensureSeriesByTMDB →
+//   Build) may pass a nil *connections.Store; that is "nothing configured,"
+//   not a crash. Without this, AI-enabled installs panic on Save for
+//   TMDB-only series and Traefik surfaces Bad Gateway.
+// Troubleshooting: http panic nil pointer in connections.(*Store).Get from
+//   optionalConn; media-admin quality-prefs Save 502.
+// Review if: every Build/ensureSeriesByTMDB caller always passes a non-nil
+//   store and a typed OptionalStore replaces the pointer.
+// Related files: internal/api/titlequality.go, internal/api/airdatemonitor.go
 func optionalConn(ctx context.Context, store *connections.Store, service string) (*connections.Connection, error) {
+	if store == nil {
+		return nil, nil
+	}
 	conn, err := store.Get(ctx, service)
 	if errors.Is(err, connections.ErrNotFound) {
 		return nil, nil

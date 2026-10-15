@@ -10,6 +10,7 @@ import {
 } from "../api/organize";
 import { Button, ModeTabs, Muted } from "../components/ui";
 import type { OrganizeEvent } from "@dto";
+import { formatLocalStamp } from "../lib/localStamp";
 
 export const PageSizeSelect: Component<{
   value: number;
@@ -110,7 +111,11 @@ export const ActivityLogPanel: Component<{
             <For each={events() ?? []}>
               {(e: OrganizeEvent) => (
                 <li class="border-b border-border/50 py-1 font-mono">
-                  <span class="text-muted">{e.createdAt}</span>{" "}
+                  {/* Claude 2026-10-15: local stamp — same helper as Queue Activity.
+                      Reason: raw createdAt was UTC ISO; device zone is required.
+                      Troubleshooting: Organize activity log times off by offset.
+                      Review if: Calendar History day buckets also go local. */}
+                  <span class="text-muted">{formatLocalStamp(e.createdAt)}</span>{" "}
                   <span class="uppercase">{e.kind}</span>{" "}
                   {e.mode ? `[${e.mode}] ` : ""}
                   {e.message}

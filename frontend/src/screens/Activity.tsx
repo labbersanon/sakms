@@ -27,6 +27,7 @@ import {
   type TabDef,
   useAdultEnabled,
 } from "../components/ui";
+import { formatLocalStamp } from "../lib/localStamp";
 import { matchesQueueSearch, QueueSearchField } from "./queueSearch";
 
 export type ActivityBucket = "all" | "downloaded" | "attempted" | "failed";
@@ -49,8 +50,12 @@ export function grabInBucket(status: string, bucket: ActivityBucket): boolean {
   return FAILED.has(status);
 }
 
+// Claude 2026-10-15: local device timezone, not UTC slice.
+// Reason: operators read Activity against wall clock; UTC looked "wrong".
+// Troubleshooting: stamp lags/leads real grab time by the UTC offset.
+// Review if: formatLocalStamp gains seconds or a timezone abbreviation.
 export function activityStamp(iso: string): string {
-  return (iso ?? "").slice(0, 16).replace("T", " ");
+  return formatLocalStamp(iso);
 }
 
 export function activityStatus(g: Grab): string {

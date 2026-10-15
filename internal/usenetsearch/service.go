@@ -54,6 +54,31 @@ type Config struct {
 	IndexMaxGB    int
 	WindowDays    int
 	CrawlInterval time.Duration
+	// Claude 2026-10-15: crawl-time quality admission kill switch (settings
+	// key usenet_nntp_admission_enabled, default true — see
+	// api.LoadUsenetSearchConfig, Step 4). false (or Service.admit unset)
+	// reproduces the pre-admission upsert-everything crawl byte-for-byte.
+	AdmissionEnabled bool
+}
+
+// GroupModesFor returns the enabled modes (a subset of "movies"/"series"/
+// "adult") whose GroupsForMode includes group — PolicySnapshot.Resolve's
+// groupModes input for a shared newsgroup (e.g. multimedia under both
+// movies and series).
+func (c Config) GroupModesFor(group string) []string {
+	var out []string
+	for _, mode := range []string{"movies", "series", "adult"} {
+		if !c.ModeEnabled(mode) {
+			continue
+		}
+		for _, g := range c.GroupsForMode(mode) {
+			if g == group {
+				out = append(out, mode)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // PackageCeilingForMode returns the crawl/search ceiling step for mode.
@@ -164,6 +189,12 @@ type Service struct {
 	// availCache: mode → last LIST ACTIVE media groups (settings resolve).
 	availCache map[string][]string
 	protectFn  ProtectedGroupsFn
+
+	// admit is nil until SetAdmissionPolicy is called (api wiring, Step 4).
+	// crawlEligibleGroups-selected groups get pruned once each (prunedOnce)
+	// the first crawl pass after admission is enabled.
+	admit      *admitter
+	prunedOnce map[string]bool
 }
 
 // NewService constructs a stopped Service. Call Apply to open the index / start crawl.
@@ -176,6 +207,28 @@ func (s *Service) SetProtectedGroupsFn(fn ProtectedGroupsFn) {
 	s.mu.Lock()
 	s.protectFn = fn
 	s.mu.Unlock()
+}
+
+// SetAdmissionPolicy wires the crawl-time quality admission policy (Step 4,
+// api.NewNNTPAdmissionPolicy). Replacing the policy starts a fresh admitter
+// (snapshot cache + verdict LRU) — call InvalidateAdmissionPolicy instead
+// for a prefs change, which keeps the verdict LRU intact.
+func (s *Service) SetAdmissionPolicy(policy AdmissionPolicy) {
+	s.mu.Lock()
+	s.admit = newAdmitter(policy)
+	s.prunedOnce = nil
+	s.mu.Unlock()
+}
+
+// InvalidateAdmissionPolicy forces the next crawl pass to re-fetch the
+// PolicySnapshot — called on a title/mode quality-prefs PUT or DELETE.
+func (s *Service) InvalidateAdmissionPolicy() {
+	s.mu.Lock()
+	a := s.admit
+	s.mu.Unlock()
+	if a != nil {
+		a.Invalidate()
+	}
 }
 
 // SetHeaderSource updates the NNTP source (e.g. after SetSubscriptions).
@@ -284,12 +337,67 @@ func (s *Service) runProbeAndCrawl(ctx context.Context) CrawlResult {
 	if maxGB <= 0 {
 		maxGB = DefaultIndexMaxGB
 	}
-	c := &Crawler{Src: src, Index: idx, Groups: groups, Window: window, MaxGB: maxGB}
+	s.mu.Lock()
+	admit := s.admit
+	s.mu.Unlock()
+	admissionEnabled := cfg.AdmissionEnabled && admit != nil
+	if admissionEnabled {
+		s.pruneNonMatchingOnce(ctx, groups, cfg, admit, idx)
+	}
+	c := &Crawler{
+		Src: src, Index: idx, Groups: groups, Window: window, MaxGB: maxGB,
+		AdmissionEnabled: admissionEnabled,
+		GroupModesFn:     cfg.GroupModesFor,
+		Admitter:         admit,
+	}
 	cres, err := c.CrawlOnce(ctx)
 	if err != nil {
 		log.Printf("usenetsearch: crawl: %v", err)
 	}
 	return cres
+}
+
+// pruneNonMatchingOnce runs the one-shot prune of already-indexed rows that
+// fail the quality gate (locked decision #8) — once per group, per process,
+// the first crawl pass after admission is enabled. It never rewinds a
+// watermark; it only deletes rows the gate rejects under every candidate
+// mode. No STAT check: pruning is quality-gate-only (plan: "no STAT needed
+// for prune — quality only").
+func (s *Service) pruneNonMatchingOnce(ctx context.Context, groups []string, cfg Config, admit *admitter, idx *Index) {
+	s.mu.Lock()
+	if s.prunedOnce == nil {
+		s.prunedOnce = map[string]bool{}
+	}
+	pending := make([]string, 0, len(groups))
+	for _, g := range groups {
+		if !s.prunedOnce[g] {
+			pending = append(pending, g)
+		}
+	}
+	s.mu.Unlock()
+	if len(pending) == 0 {
+		return
+	}
+	snap, err := admit.Snapshot(ctx)
+	if err != nil || snap == nil {
+		return
+	}
+	for _, group := range pending {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		n, err := pruneGroupNonMatching(ctx, idx, group, cfg.GroupModesFor(group), snap)
+		if err != nil {
+			log.Printf("usenetsearch: prune non-matching %s: %v", group, err)
+			continue // retry on the next crawl pass
+		}
+		s.mu.Lock()
+		s.prunedOnce[group] = true
+		s.mu.Unlock()
+		if n > 0 {
+			log.Printf("usenetsearch: pruned %d non-matching headers for %s (one-shot admission backfill)", n, group)
+		}
+	}
 }
 
 // crawlEligibleGroups is the union of per-mode groups with grade ≤ ceiling.

@@ -9,10 +9,17 @@ import (
 
 func clearDemoteCooldown(t *testing.T, idx *Index, mode, group string) {
 	t.Helper()
-	_, err := idx.db.ExecContext(context.Background(),
-		`UPDATE usenet_nntp_group_grades SET last_failed_at=0 WHERE mode=? AND group_name=?`, mode, group)
+	// Set last_failed_at far enough in the past to pass demoteCooldownLimitSec.
+	past := time.Now().Unix() - demoteCooldownLimitSec - 1
+	res, err := idx.db.ExecContext(context.Background(),
+		`UPDATE usenet_nntp_group_grades SET last_failed_at=? WHERE mode=? AND group_name=?`,
+		past, mode, group)
 	if err != nil {
 		t.Fatal(err)
+	}
+	n, _ := res.RowsAffected()
+	if n != 1 {
+		t.Fatalf("clearDemoteCooldown rows=%d want 1", n)
 	}
 }
 

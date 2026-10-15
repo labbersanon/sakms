@@ -18,8 +18,8 @@ and prune passes (window days + max GiB).
 | Setting | Notes |
 |---|---|
 | Master + per-mode toggles | Movies / Series / Adult AND-ed with master |
-| Per-mode newsgroups | Dual-list toolbox (Unmonitored → Monitored) from provider `LIST ACTIVE`; crawl indexes the union; search uses the active mode's monitored list |
-| Max GiB / window days / crawl interval | Soft size budget, retention, 0 = crawler off |
+| Per-mode newsgroups | Searchable dual-list + Apply recommended (curated seeds filtered to provider `LIST ACTIVE`); first-run pre-fills recommended as unsaved draft |
+| Max GiB / soft age days / idle backoff | Soft size budget; soft age display; idle backoff after catch-up (0 = 60s default). Crawl is continuous when enabled |
 | Probe state/detail | Read-only |
 
 ## Honest limits
@@ -29,6 +29,18 @@ and prune passes (window days + max GiB).
 - Crawl shares the subscription connection pool and yields under download load.
 - Eweka account ceiling may be 50; live `max_conns` is independent.
 - Full `LIST ACTIVE` without wildmats is impractical on large providers — the picker uses mode-scoped wildmats.
+
+## Continuous index
+
+Claude 2026-10-15: **rate-limited continuous crawl** + **liveness monitor**
+(STAT → delete only when the article is gone). No nightly/monthly schedules.
+Soft `window_days` / `index_max_gb` never delete still-available articles for
+age alone. Soft size budget uses row-count × ~200 B/row (`ApproxBytes`), not
+`pg_total_relation_size` (which does not shrink after `DELETE` and previously
+could wipe the index).
+
+Group picking: curated recommended seeds (`internal/usenetsearch/seeds/`) plus
+a searchable provider list with Apply recommended.
 
 ## Spike numbers
 

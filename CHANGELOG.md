@@ -10950,3 +10950,27 @@ status stays active.
 | `frontend/src/components/ui.tsx` | reactive Button variant classes |
 | `frontend/src/components/ui.Button.test.tsx` | variant class updates after click |
 | `frontend/src/screens/Import.test.tsx` | Series chip gains `bg-accent` when clicked |
+
+## 2026-10-15 — Continuous NNTP index: searchable groups + STAT liveness
+
+**Problem:** Native NNTP search needed a usable local index without nightly/monthly schedules, a less-daunting group picker, and a size prune that could wipe the whole header table.
+**Root cause:** Crawl was interval-gated (0=off); Settings exposed a raw dual-list of LIST ACTIVE names; `PruneOldest` measured `pg_total_relation_size` (does not shrink after DELETE) and deleted fixed 5000-row batches.
+**Fix:** Continuous rate-limited OVER catch-up + STAT liveness (delete only when unavailable). Soft age/size budgets never drop still-available headers. Curated recommended seeds, searchable picker, Apply recommended, first-run unsaved pre-fill. Soft size uses row-count × ~200 B with overage-sized prune batches.
+**Outcome:** When native search is enabled, the index crawls continuously (yielding to downloads) and prunes only soft budget pressure / STAT-misses. Operator can Apply recommended groups and Save. Deploy via sakms-auto-update after merge.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/headersource.go` | `StatArticle` (tryOnly borrow) on HeaderSource |
+| `internal/usenetsearch/index.go` | ApproxBytes/CountHeaders; overage-sized PruneOldest; liveness list/delete |
+| `internal/usenetsearch/crawler.go` | CrawlResult; age prune disabled; chunk pause |
+| `internal/usenetsearch/service.go` | continuous loop + idle/busy backoff + liveness |
+| `internal/usenetsearch/monitor.go` | LivenessOnce STAT → delete missing |
+| `internal/usenetsearch/seeds.go` + `seeds/recommended.json` | curated recommended groups |
+| `internal/usenetsearch/mediagroups.go` | movies wildmats: moovee/hdtv.x264; drop warez |
+| `internal/api/usenetnntp.go` | groups API `recommended` + `items` |
+| `frontend/src/screens/settings/Usenet.tsx` | searchable picker, Apply recommended, pre-fill |
+| `frontend/src/api/usenet.ts` | group item types |
+| `docs/usenet-nntp-native.md` | continuous index docs |
+

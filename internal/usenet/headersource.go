@@ -39,6 +39,11 @@ type HeaderSource interface {
 	// ListActive returns group names from LIST ACTIVE [wildmat]. wildmat empty
 	// means the full active list (avoid on large providers — use media wildmats).
 	ListActive(ctx context.Context, wildmat string) ([]string, error)
+	// Claude 2026-10-15: STAT for continuous index liveness (delete only when gone).
+	// Reason: age prune must not drop still-available headers; monitor STATs msgid.
+	// Troubleshooting: ErrBusy → yield (tryOnly); never block download sockets.
+	// Review if: liveness gets a dedicated connection budget separate from OVER.
+	StatArticle(ctx context.Context, msgID string) (found bool, err error)
 }
 
 // HeaderSource returns a HeaderSource bound to this Manager's pools, or nil
@@ -131,6 +136,33 @@ func (h *managerHeaderSource) ListActive(ctx context.Context, wildmat string) ([
 		out = append(out, name)
 	}
 	return out, nil
+}
+
+// StatArticle STATs msgID with tryOnly borrow (never waits on download sockets).
+// found=true on 223; found=false on 430/451; ErrBusy when every pool is busy;
+// other errors are transport/protocol failures (do not treat as missing).
+func (h *managerHeaderSource) StatArticle(ctx context.Context, msgID string) (bool, error) {
+	msgID = strings.TrimSpace(msgID)
+	if msgID == "" {
+		return false, errors.New("usenet: empty message-id")
+	}
+	c, p, err := h.borrow(ctx, true)
+	if err != nil {
+		return false, err
+	}
+	disarm := armNNTPDeadline(c)
+	_, _, serr := c.Stat(ensureAngleMsgID(msgID))
+	mapped := mapNNTPError(serr)
+	missing := errors.Is(mapped, ErrArticleNotFound) || errors.Is(mapped, ErrArticleRemoved)
+	keep := mapped == nil || missing
+	if keep {
+		disarm()
+	}
+	p.put(c, keep)
+	if keep {
+		return !missing, nil
+	}
+	return false, mapped
 }
 
 // ParseListActiveName extracts the group name from one LIST ACTIVE line

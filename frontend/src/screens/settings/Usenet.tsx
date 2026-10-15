@@ -22,6 +22,7 @@ import {
   type Component,
   For,
   Show,
+  createMemo,
   createResource,
   createSignal,
   onMount,
@@ -48,6 +49,7 @@ import {
   putUsenetMaxConcurrentDownloads,
   putUsenetNNTPNative,
   putUsenetSegmentResume,
+  type UsenetNNTPGroupItem,
   type UsenetNNTPNativeSettings,
 } from "../../api/usenet";
 import { fetchAutoGrabSlots, putAutoGrabSlots } from "../../api/autograbSlots";
@@ -849,31 +851,49 @@ const AutoGrabCard: Component = () => {
   );
 };
 
-// Claude 2026-09-18: dual-list toolbox (unmonitored | arrows | monitored).
-// Reason: operator moves groups between LIST ACTIVE leftovers and crawl set;
-//   inputClass truncate must not wrap these lists (overflow:hidden).
-// Troubleshooting: no scrollbar → check for truncate on the <select>.
-// Review if: drag-drop transfer is added (arrows + dblclick stay).
+// Claude 2026-10-15: searchable dual-list + Apply recommended (was raw LIST ACTIVE).
+// Reason: full provider lists are daunting; curated seeds + filter, Save still required.
+// Troubleshooting: recommended empty → provider lacks seed groups; check wildmats.
+// Review if: catalog cache adds perDay/usablePct columns beside the name.
+// Related files: internal/usenetsearch/seeds/, usenetnntp.go groups API
 const listBoxClass =
   "h-48 w-full overflow-y-auto rounded-md border border-border bg-bg px-2 py-1 font-mono text-xs text-fg outline-none focus:border-accent";
 
 const GroupTransferToolbox: Component<{
   title: string;
-  available: string[];
+  items: UsenetNNTPGroupItem[];
+  recommended: UsenetNNTPGroupItem[];
   monitored: string[];
   onChange: (monitored: string[]) => void;
 }> = (props) => {
   const [leftSel, setLeftSel] = createSignal<string[]>([]);
   const [rightSel, setRightSel] = createSignal<string[]>([]);
+  const [query, setQuery] = createSignal("");
 
   const monitoredSet = () => new Set(props.monitored);
+  const itemByName = createMemo(() => {
+    const m = new Map<string, UsenetNNTPGroupItem>();
+    for (const it of props.items) m.set(it.name, it);
+    return m;
+  });
+  const matches = (name: string) => {
+    const needle = query().trim().toLowerCase();
+    if (!needle) return true;
+    if (name.toLowerCase().includes(needle)) return true;
+    return !!itemByName().get(name)?.note?.toLowerCase().includes(needle);
+  };
+  const recommendedFirst = (g: string) =>
+    itemByName().get(g)?.recommended ? 0 : 1;
   const unmonitored = () =>
-    props.available
-      .filter((g) => !monitoredSet().has(g))
-      .slice()
-      .sort((a, b) => a.localeCompare(b));
+    props.items
+      .map((it) => it.name)
+      .filter((g) => !monitoredSet().has(g) && matches(g))
+      .sort(
+        (a, b) =>
+          recommendedFirst(a) - recommendedFirst(b) || a.localeCompare(b),
+      );
   const monitored = () =>
-    props.monitored.slice().sort((a, b) => a.localeCompare(b));
+    props.monitored.filter(matches).sort((a, b) => a.localeCompare(b));
 
   const readSel = (e: Event & { currentTarget: HTMLSelectElement }) =>
     Array.from(e.currentTarget.selectedOptions).map((o) => o.value);
@@ -893,9 +913,40 @@ const GroupTransferToolbox: Component<{
     setRightSel([]);
   };
 
+  const applyRecommended = () =>
+    addToMonitored(props.recommended.map((r) => r.name).filter(Boolean));
+
+  const labelFor = (g: string) => {
+    const it = itemByName().get(g);
+    if (!it?.recommended) return g;
+    return it.note ? `★ ${g} — ${it.note}` : `★ ${g}`;
+  };
+
   return (
     <div class="mb-4">
-      <div class={labelClass + " mb-2"}>{props.title}</div>
+      <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div class={labelClass}>{props.title}</div>
+        <Button
+          class="!px-2 !py-1 !text-xs"
+          disabled={props.recommended.length === 0}
+          title="Add curated recommended groups for this mode"
+          aria-label={`${props.title} apply recommended`}
+          onClick={() => applyRecommended()}
+        >
+          Apply recommended
+        </Button>
+      </div>
+      <label class="mb-2 block min-w-0">
+        <span class={labelClass}>Filter</span>
+        <input
+          type="search"
+          class={inputClass + " font-mono text-sm"}
+          placeholder="Search newsgroups…"
+          aria-label={`${props.title} filter newsgroups`}
+          value={query()}
+          onInput={(e) => setQuery(e.currentTarget.value)}
+        />
+      </label>
       <div class="grid grid-cols-1 items-stretch gap-2 sm:grid-cols-[1fr_auto_1fr] sm:gap-3">
         <label class="block min-w-0">
           <span class={labelClass}>
@@ -915,7 +966,7 @@ const GroupTransferToolbox: Component<{
             <For each={unmonitored()}>
               {(g) => (
                 <option value={g} selected={leftSel().includes(g)}>
-                  {g}
+                  {labelFor(g)}
                 </option>
               )}
             </For>
@@ -934,8 +985,8 @@ const GroupTransferToolbox: Component<{
           <Button
             class="!px-2 !py-1 !text-xs"
             disabled={unmonitored().length === 0}
-            title="Monitor all"
-            aria-label={`${props.title} monitor all`}
+            title="Monitor all filtered"
+            aria-label={`${props.title} monitor all filtered`}
             onClick={() => addToMonitored(unmonitored())}
           >
             &gt;&gt;
@@ -952,8 +1003,8 @@ const GroupTransferToolbox: Component<{
           <Button
             class="!px-2 !py-1 !text-xs"
             disabled={monitored().length === 0}
-            title="Unmonitor all"
-            aria-label={`${props.title} unmonitor all`}
+            title="Unmonitor all filtered"
+            aria-label={`${props.title} unmonitor all filtered`}
             onClick={() => removeFromMonitored(monitored())}
           >
             &lt;&lt;
@@ -976,7 +1027,7 @@ const GroupTransferToolbox: Component<{
             <For each={monitored()}>
               {(g) => (
                 <option value={g} selected={rightSel().includes(g)}>
-                  {g}
+                  {labelFor(g)}
                 </option>
               )}
             </For>
@@ -995,9 +1046,12 @@ const NativeSearchCard: Component = () => {
   const [moviesGroups, setMoviesGroups] = createSignal<string[]>([]);
   const [seriesGroups, setSeriesGroups] = createSignal<string[]>([]);
   const [adultGroups, setAdultGroups] = createSignal<string[]>([]);
-  const [availMovies, setAvailMovies] = createSignal<string[]>([]);
-  const [availSeries, setAvailSeries] = createSignal<string[]>([]);
-  const [availAdult, setAvailAdult] = createSignal<string[]>([]);
+  const [itemsMovies, setItemsMovies] = createSignal<UsenetNNTPGroupItem[]>([]);
+  const [itemsSeries, setItemsSeries] = createSignal<UsenetNNTPGroupItem[]>([]);
+  const [itemsAdult, setItemsAdult] = createSignal<UsenetNNTPGroupItem[]>([]);
+  const [recMovies, setRecMovies] = createSignal<UsenetNNTPGroupItem[]>([]);
+  const [recSeries, setRecSeries] = createSignal<UsenetNNTPGroupItem[]>([]);
+  const [recAdult, setRecAdult] = createSignal<UsenetNNTPGroupItem[]>([]);
   const [groupsError, setGroupsError] = createSignal("");
   const [indexDir, setIndexDir] = createSignal("");
   const [indexMaxGb, setIndexMaxGb] = createSignal(20);
@@ -1015,6 +1069,14 @@ const NativeSearchCard: Component = () => {
       .map((s) => s.trim())
       .filter(Boolean);
 
+  const toItems = (
+    groups: string[] | undefined,
+    items: UsenetNNTPGroupItem[] | undefined,
+  ): UsenetNNTPGroupItem[] => {
+    if (items && items.length > 0) return items;
+    return (groups ?? []).map((name) => ({ name }));
+  };
+
   const apply = (r: UsenetNNTPNativeSettings) => {
     setEnabled(r.enabled);
     setMovies(r.movies);
@@ -1031,7 +1093,26 @@ const NativeSearchCard: Component = () => {
     setProbeDetail(r.probeDetail || "");
   };
 
-  const loadAvailable = async () => {
+  // Claude 2026-10-15: first-run pre-fill recommended as unsaved draft.
+  // Reason: empty monitored lists are a cold start; Save still required.
+  // Troubleshooting: dirty after load with empty saved groups — expected once.
+  // Review if: wizard step sets groups before Settings opens.
+  const prefillRecommendedIfEmpty = (
+    current: string[],
+    recommended: UsenetNNTPGroupItem[],
+    setter: (v: string[]) => void,
+  ): boolean => {
+    if (current.length > 0 || recommended.length === 0) return false;
+    setter(
+      recommended
+        .map((r) => r.name)
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b)),
+    );
+    return true;
+  };
+
+  const loadAvailable = async (opts?: { prefillEmpty?: boolean }) => {
     setGroupsError("");
     try {
       const [m, s, a] = await Promise.all([
@@ -1039,9 +1120,24 @@ const NativeSearchCard: Component = () => {
         fetchUsenetNNTPGroups("series"),
         fetchUsenetNNTPGroups("adult"),
       ]);
-      setAvailMovies(m.groups ?? []);
-      setAvailSeries(s.groups ?? []);
-      setAvailAdult(a.groups ?? []);
+      setItemsMovies(toItems(m.groups, m.items));
+      setItemsSeries(toItems(s.groups, s.items));
+      setItemsAdult(toItems(a.groups, a.items));
+      setRecMovies(m.recommended ?? []);
+      setRecSeries(s.recommended ?? []);
+      setRecAdult(a.recommended ?? []);
+      if (opts?.prefillEmpty) {
+        // Array literal so every mode is pre-filled (no short-circuit).
+        const filled = [
+          prefillRecommendedIfEmpty(moviesGroups(), m.recommended ?? [], setMoviesGroups),
+          prefillRecommendedIfEmpty(seriesGroups(), s.recommended ?? [], setSeriesGroups),
+          prefillRecommendedIfEmpty(adultGroups(), a.recommended ?? [], setAdultGroups),
+        ].includes(true);
+        if (filled) {
+          setDirty(true);
+          status.set("Recommended groups pre-filled — Save to apply");
+        }
+      }
     } catch (e) {
       setGroupsError(e instanceof Error ? e.message : String(e));
     }
@@ -1051,7 +1147,7 @@ const NativeSearchCard: Component = () => {
     void fetchUsenetNNTPNative()
       .then(async (r) => {
         apply(r);
-        await loadAvailable();
+        await loadAvailable({ prefillEmpty: true });
       })
       .catch((e) => setLoadError(e instanceof Error ? e : new Error(String(e))));
   });
@@ -1177,27 +1273,30 @@ const NativeSearchCard: Component = () => {
       </Show>
       <GroupTransferToolbox
         title="Movies"
-        available={availMovies()}
+        items={itemsMovies()}
+        recommended={recMovies()}
         monitored={moviesGroups()}
         onChange={(g) => setGroups(setMoviesGroups, g)}
       />
       <GroupTransferToolbox
         title="Series"
-        available={availSeries()}
+        items={itemsSeries()}
+        recommended={recSeries()}
         monitored={seriesGroups()}
         onChange={(g) => setGroups(setSeriesGroups, g)}
       />
       <GroupTransferToolbox
         title="Adult"
-        available={availAdult()}
+        items={itemsAdult()}
+        recommended={recAdult()}
         monitored={adultGroups()}
         onChange={(g) => setGroups(setAdultGroups, g)}
       />
       <Muted class="mb-3">
-        Unmonitored = available from the provider (LIST ACTIVE). Monitored =
-        crawled and searched for that mode. Use the arrows (or double-click a
-        group) to move. Crawl indexes the union of all monitored groups; search
-        uses only the active mode's monitored list.
+        Filter the provider list, star-mark recommended groups, or Apply
+        recommended. First visit pre-fills recommended as an unsaved draft —
+        Save to commit. Crawl indexes the union of monitored groups; search uses
+        only the active mode&apos;s list.
       </Muted>
       <label class="mb-3 block">
         <span class={labelClass}>Index directory (unused — index is in the SAK Postgres DB)</span>
@@ -1224,7 +1323,7 @@ const NativeSearchCard: Component = () => {
           />
         </label>
         <label class="block">
-          <span class={labelClass}>Retention window (days)</span>
+          <span class={labelClass}>Soft age budget (days)</span>
           <input
             type="number"
             class={inputClass}
@@ -1236,7 +1335,7 @@ const NativeSearchCard: Component = () => {
           />
         </label>
         <label class="block">
-          <span class={labelClass}>Crawl interval (seconds, 0=off)</span>
+          <span class={labelClass}>Idle backoff (seconds, 0=default 60)</span>
           <input
             type="number"
             class={inputClass}
@@ -1248,6 +1347,12 @@ const NativeSearchCard: Component = () => {
           />
         </label>
       </div>
+      <Muted class="mb-2">
+        When enabled, the index crawls continuously (rate-limited) and STATs
+        headers for liveness — articles are removed only when unavailable. Soft
+        age/size budgets never delete still-available headers. Idle backoff is
+        the pause after catch-up.
+      </Muted>
       <Muted>
         Probe: {probeState()}
         {probeDetail() ? ` — ${probeDetail()}` : ""}

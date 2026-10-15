@@ -50,6 +50,19 @@ type usenetNNTPNativeRequest struct {
 type usenetNNTPGroupsResponse struct {
 	Mode   string   `json:"mode"`
 	Groups []string `json:"groups"`
+	// Claude 2026-10-15: recommended + annotated items for searchable picker.
+	// Reason: dual-list of raw names is daunting; seeds mark Apply-recommended.
+	// Troubleshooting: recommended empty → provider lacks curated groups.
+	// Review if: items gain perDay/usablePct from group catalog cache.
+	Recommended []usenetNNTPGroupItem `json:"recommended"`
+	Items       []usenetNNTPGroupItem `json:"items"`
+}
+
+type usenetNNTPGroupItem struct {
+	Name        string `json:"name"`
+	Recommended bool   `json:"recommended"`
+	Tier        string `json:"tier,omitempty"`
+	Note        string `json:"note,omitempty"`
 }
 
 func resolveNNTPNativeService(svc *usenetsearch.Service) *usenetsearch.Service {
@@ -79,7 +92,10 @@ func getUsenetNNTPGroupsHandler(svc *usenetsearch.Service) http.HandlerFunc {
 		}
 		active := resolveNNTPNativeService(svc)
 		if active == nil {
-			writeJSON(w, usenetNNTPGroupsResponse{Mode: mode, Groups: []string{}})
+			writeJSON(w, usenetNNTPGroupsResponse{
+				Mode: mode, Groups: []string{},
+				Recommended: []usenetNNTPGroupItem{}, Items: []usenetNNTPGroupItem{},
+			})
 			return
 		}
 		groups, err := active.ListAvailableGroups(r.Context(), mode)
@@ -90,7 +106,25 @@ func getUsenetNNTPGroupsHandler(svc *usenetsearch.Service) http.HandlerFunc {
 		if groups == nil {
 			groups = []string{}
 		}
-		writeJSON(w, usenetNNTPGroupsResponse{Mode: mode, Groups: groups})
+		seeds := usenetsearch.FilterSeedsToProvider(usenetsearch.RecommendedForMode(mode), groups)
+		recByName := make(map[string]usenetNNTPGroupItem, len(seeds))
+		rec := make([]usenetNNTPGroupItem, 0, len(seeds))
+		for _, s := range seeds {
+			it := usenetNNTPGroupItem{Name: s.Name, Recommended: true, Tier: s.Tier, Note: s.Note}
+			recByName[s.Name] = it
+			rec = append(rec, it)
+		}
+		items := make([]usenetNNTPGroupItem, 0, len(groups))
+		for _, g := range groups {
+			it, ok := recByName[g]
+			if !ok {
+				it = usenetNNTPGroupItem{Name: g}
+			}
+			items = append(items, it)
+		}
+		writeJSON(w, usenetNNTPGroupsResponse{
+			Mode: mode, Groups: groups, Recommended: rec, Items: items,
+		})
 	}
 }
 

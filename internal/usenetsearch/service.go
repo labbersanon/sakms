@@ -105,15 +105,27 @@ func ValidateIndexDir(dir string) string {
 	return ""
 }
 
+// Claude 2026-10-15: continuous crawl defaults (conservative — protect downloads).
+// Reason: no nightly cron; idle only when caught up / busy. CrawlInterval setting
+//   is idle backoff when >0; else defaultIdleBackoff.
+// Troubleshooting: index lag while downloads idle — lower idle; stall downloads — raise.
+// Review if: rates become Settings knobs separate from CrawlInterval.
+const (
+	defaultIdleBackoff = 60 * time.Second
+	busyBackoff        = 5 * time.Second
+	catchUpPause       = 500 * time.Millisecond
+)
+
 // Service owns the index, crawler loop, and probe state.
 type Service struct {
-	mu     sync.Mutex
-	cfg    Config
-	src    usenet.HeaderSource
-	sqlDB  *sql.DB
-	idx    *Index
-	cancel context.CancelFunc
-	probe  Readiness
+	mu             sync.Mutex
+	cfg            Config
+	src            usenet.HeaderSource
+	sqlDB          *sql.DB
+	idx            *Index
+	cancel         context.CancelFunc
+	probe          Readiness
+	livenessOffset int
 }
 
 // NewService constructs a stopped Service. Call Apply to open the index / start crawl.
@@ -166,24 +178,45 @@ func (s *Service) Apply(cfg Config) error {
 }
 
 func (s *Service) loop(ctx context.Context) {
-	s.runProbeAndCrawl(ctx)
-	interval := s.cfg.CrawlInterval
-	if interval <= 0 {
-		return
-	}
-	t := time.NewTicker(interval)
-	defer t.Stop()
+	// Claude 2026-10-15: continuous rate-limited crawl + liveness (no schedules).
+	// Reason: approved plan — OVER catch-up and STAT deletions, idle only when quiet.
+	// Troubleshooting: loop exits only on Apply cancel / disable.
+	// Review if: CrawlInterval is renamed to idle_backoff_seconds in settings KV.
 	for {
+		if ctx.Err() != nil {
+			return
+		}
+		cres := s.runProbeAndCrawl(ctx)
+		s.runLiveness(ctx)
+
+		var wait time.Duration
+		switch {
+		case cres.Busy:
+			wait = busyBackoff
+		case cres.Advanced:
+			wait = catchUpPause
+		default:
+			wait = s.idleBackoff()
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
-			s.runProbeAndCrawl(ctx)
+		case <-time.After(wait):
 		}
 	}
 }
 
-func (s *Service) runProbeAndCrawl(ctx context.Context) {
+func (s *Service) idleBackoff() time.Duration {
+	s.mu.Lock()
+	d := s.cfg.CrawlInterval
+	s.mu.Unlock()
+	if d <= 0 {
+		return defaultIdleBackoff
+	}
+	return d
+}
+
+func (s *Service) runProbeAndCrawl(ctx context.Context) CrawlResult {
 	s.mu.Lock()
 	src := s.src
 	cfg := s.cfg
@@ -194,7 +227,7 @@ func (s *Service) runProbeAndCrawl(ctx context.Context) {
 	s.probe = r
 	s.mu.Unlock()
 	if !r.Ready || idx == nil || src == nil {
-		return
+		return CrawlResult{}
 	}
 	window := time.Duration(cfg.WindowDays) * 24 * time.Hour
 	if cfg.WindowDays <= 0 {
@@ -205,9 +238,30 @@ func (s *Service) runProbeAndCrawl(ctx context.Context) {
 		maxGB = DefaultIndexMaxGB
 	}
 	c := &Crawler{Src: src, Index: idx, Groups: cfg.AllGroups(), Window: window, MaxGB: maxGB}
-	if err := c.CrawlOnce(ctx); err != nil {
+	cres, err := c.CrawlOnce(ctx)
+	if err != nil {
 		log.Printf("usenetsearch: crawl: %v", err)
 	}
+	return cres
+}
+
+func (s *Service) runLiveness(ctx context.Context) {
+	s.mu.Lock()
+	src := s.src
+	idx := s.idx
+	off := s.livenessOffset
+	s.mu.Unlock()
+	if src == nil || idx == nil {
+		return
+	}
+	_, next, err := LivenessOnce(ctx, src, idx, off)
+	if err != nil {
+		log.Printf("usenetsearch: liveness: %v", err)
+		return
+	}
+	s.mu.Lock()
+	s.livenessOffset = next
+	s.mu.Unlock()
 }
 
 // Ready implements Backend.

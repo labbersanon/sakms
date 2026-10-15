@@ -113,27 +113,61 @@ func (idx *Index) PruneOlderThan(ctx context.Context, cutoffUnix int64) (int64, 
 	return res.RowsAffected()
 }
 
+// approxHeaderRowBytes is the logical size used for the soft index budget.
+// Claude 2026-10-15: do NOT use pg_total_relation_size for prune loops.
+// Reason: DELETE does not shrink relation size until VACUUM FULL/rewrite, so
+//   PruneOldest kept deleting until the table was empty.
+// Troubleshooting: index wiped after crossing index_max_gb — check ApproxBytes.
+// Review if: monthly/continuous VACUUM ANALYZE reports real disk separately.
+const approxHeaderRowBytes int64 = 200
+
+// ApproxBytes is the soft budget metric (index_max_gb), not on-disk relation size.
 func (idx *Index) ApproxBytes(ctx context.Context) (int64, error) {
-	var n sql.NullInt64
-	err := idx.db.QueryRowContext(ctx, `SELECT pg_total_relation_size('usenet_nntp_headers')`).Scan(&n)
+	rows, err := idx.CountHeaders(ctx)
 	if err != nil {
-		var rows int64
-		_ = idx.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usenet_nntp_headers`).Scan(&rows)
-		return rows * 200, nil
+		return 0, err
 	}
-	return n.Int64, nil
+	return rows * approxHeaderRowBytes, nil
 }
 
+// CountHeaders returns the number of indexed header rows.
+func (idx *Index) CountHeaders(ctx context.Context) (int64, error) {
+	var rows int64
+	err := idx.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usenet_nntp_headers`).Scan(&rows)
+	return rows, err
+}
+
+// PruneOldest deletes oldest headers until ApproxBytes <= targetBytes or no
+// rows remain. Availability-based removal is the monitor loop's job.
+// Claude 2026-10-15: batch size = overage rows (cap 5000), not a fixed 5000.
+// Reason: a fixed LIMIT 5000 wiped small indexes in one DELETE (budget test
+//   with 100 rows → 0). Overage-sized batches stop at the soft floor.
+// Troubleshooting: index emptied after prune — check batch limit math here.
+// Review if: VACUUM FULL is scheduled separately for real disk reclaim.
 func (idx *Index) PruneOldest(ctx context.Context, targetBytes int64) error {
+	if targetBytes <= 0 {
+		return nil
+	}
+	const maxBatch = 5000
 	for {
 		size, err := idx.ApproxBytes(ctx)
-		if err != nil || size <= targetBytes {
+		if err != nil {
 			return err
+		}
+		if size <= targetBytes {
+			return nil
+		}
+		overRows := (size - targetBytes + approxHeaderRowBytes - 1) / approxHeaderRowBytes
+		if overRows < 1 {
+			overRows = 1
+		}
+		if overRows > maxBatch {
+			overRows = maxBatch
 		}
 		res, err := idx.db.ExecContext(ctx, `
 DELETE FROM usenet_nntp_headers WHERE ctid IN (
-  SELECT ctid FROM usenet_nntp_headers ORDER BY ingested_at ASC, posted_at ASC LIMIT 5000
-)`)
+  SELECT ctid FROM usenet_nntp_headers ORDER BY ingested_at ASC, posted_at ASC LIMIT ?
+)`, overRows)
 		if err != nil {
 			return err
 		}
@@ -142,6 +176,59 @@ DELETE FROM usenet_nntp_headers WHERE ctid IN (
 			return nil
 		}
 	}
+}
+
+// LivenessRow is one indexed article selected for STAT availability checks.
+type LivenessRow struct {
+	Group string
+	MsgID string
+}
+
+// ListOldestMsgIDs returns up to limit headers oldest-first, skipping offset
+// rows (the liveness scan cursor).
+func (idx *Index) ListOldestMsgIDs(ctx context.Context, limit, offset int) ([]LivenessRow, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := idx.db.QueryContext(ctx, `
+SELECT group_name, msgid FROM usenet_nntp_headers
+ORDER BY ingested_at ASC, posted_at ASC, msgid ASC
+LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []LivenessRow
+	for rows.Next() {
+		var r LivenessRow
+		if err := rows.Scan(&r.Group, &r.MsgID); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// DeleteByMsgIDs removes headers whose msgid is in msgIDs (any group).
+func (idx *Index) DeleteByMsgIDs(ctx context.Context, msgIDs []string) (int64, error) {
+	if len(msgIDs) == 0 {
+		return 0, nil
+	}
+	ph := make([]string, len(msgIDs))
+	args := make([]any, len(msgIDs))
+	for i, id := range msgIDs {
+		ph[i] = "?"
+		args[i] = id
+	}
+	res, err := idx.db.ExecContext(ctx,
+		`DELETE FROM usenet_nntp_headers WHERE msgid IN (`+strings.Join(ph, ",")+`)`, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 func (idx *Index) Empty(ctx context.Context) (bool, error) {

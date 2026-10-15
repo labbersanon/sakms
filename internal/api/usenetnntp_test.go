@@ -64,4 +64,7 @@ func TestGetUsenetNNTPGroups_NoService(t *testing.T) {
 	if got.Mode != "movies" || got.Groups == nil {
 		t.Fatalf("got %+v", got)
 	}
+	if got.Recommended == nil || got.Items == nil {
+		t.Fatalf("recommended/items should be non-nil slices: %+v", got)
+	}
 }

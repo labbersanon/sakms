@@ -628,9 +628,7 @@ describe("DetailPopup — ExpandableClampedText More/Less", () => {
       screen.getByText("Pick another season or episode to check availability again."),
     ).toBeInTheDocument();
     // Still drilled into season 2 after the grab.
-    expect(
-      screen.getByRole("button", { name: /E1 · Ep 1/ }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /E1 · Ep 1/ })).toBeInTheDocument();
 
     const seasonsGets = () =>
       calls.filter(

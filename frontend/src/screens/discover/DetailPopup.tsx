@@ -1147,6 +1147,8 @@ export const DetailPopup: Component<{
     setProtocol(null);
   };
   const bumpSeasonsPanel = () => setSeasonsEpoch((n) => n + 1);
+  const showSeriesSections = () =>
+    allowGrab() && !replaceOpen() && mode() === "series" && hasCatalogTmdb();
 
   const grabDisabled = () => {
     if (grabbing() || !!fallback()) return true;
@@ -1707,14 +1709,7 @@ export const DetailPopup: Component<{
           titleKey={qualityTitleKey()}
         />
       </Show>
-      <Show
-        when={
-          allowGrab() &&
-          !replaceOpen() &&
-          mode() === "series" &&
-          hasCatalogTmdb()
-        }
-      >
+      <Show when={showSeriesSections()}>
         <SeasonsPanel
           tmdbId={(item() as DiscoverItem).id}
           refetchEpoch={seasonsEpoch}
@@ -1752,14 +1747,7 @@ export const DetailPopup: Component<{
           Troubleshooting: season/episode availability felt stuck after Grab.
           Review if: picker collapses to a compact "S2E4 Change" chip.
           Related files: applySeasonEpisode; SeasonsPanel refetchEpoch */}
-      <Show
-        when={
-          allowGrab() &&
-          !replaceOpen() &&
-          mode() === "series" &&
-          hasCatalogTmdb()
-        }
-      >
+      <Show when={showSeriesSections()}>
         <div class="mb-3">
           <Muted class="mb-2">
             {ready()

@@ -37,6 +37,23 @@ func (s *stubHeaderSource) StatArticle(_ context.Context, msgID string) (bool, e
 	return found, nil
 }
 
+// Claude 2026-10-15: stub for the all-pool StatArticleAll (LivenessOnce now
+// uses it instead of StatArticle). present=true -> StatPresent, false ->
+// StatMissing; busy mirrors the single-pool stub's ErrBusy/StatInconclusive.
+func (s *stubHeaderSource) StatArticleAll(_ context.Context, msgID string) (usenet.StatVerdict, error) {
+	if s.busy {
+		return usenet.StatInconclusive, usenet.ErrBusy
+	}
+	found, ok := s.stat[msgID]
+	if !ok {
+		return usenet.StatInconclusive, errors.New("unexpected msgid")
+	}
+	if found {
+		return usenet.StatPresent, nil
+	}
+	return usenet.StatMissing, nil
+}
+
 func TestLivenessOnce_DeletesOnlyMissing(t *testing.T) {
 	sqlDB := dbtest.New(t)
 	idx, err := OpenIndex(sqlDB)

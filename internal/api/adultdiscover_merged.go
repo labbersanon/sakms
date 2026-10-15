@@ -33,6 +33,13 @@ import (
 // error; any other store error propagates. mode.optionalConn is unexported and
 // can't be imported here, hence this small replica.
 func optionalConnAPI(ctx context.Context, store *connections.Store, service string) (*connections.Connection, error) {
+	// Claude 2026-10-14: nil-store guard — same contract as mode.optionalConn.
+	// Reason: keep the api replica aligned; nil store = nothing configured.
+	// Troubleshooting: connectionExists / Adult Discover optional sources.
+	// Review if: optionalConn is exported and this replica is deleted.
+	if store == nil {
+		return nil, nil
+	}
 	conn, err := store.Get(ctx, service)
 	if errors.Is(err, connections.ErrNotFound) {
 		return nil, nil

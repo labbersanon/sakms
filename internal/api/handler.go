@@ -257,7 +257,17 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	//   as grab pills, persisted for unattended drain.
 	// Troubleshooting: TitleQualityPrefs UI; library_quality_prefs table.
 	// Review if: adult titles join these routes.
-	tq := titleQualityDeps{lib: libStore, settings: settingsStore, grabs: grabsStore}
+	// Claude 2026-10-14: wire connStore/scStore/httpClient into titleQualityDeps.
+	// Reason: TMDB-keyed quality-prefs Save calls ensureSeriesByTMDB → mode.Build;
+	//   without these, AI-enabled installs panic (nil connections.Store).
+	// Troubleshooting: media-admin.zaena.us Save → Bad Gateway; sakms panic in
+	//   optionalConn/store.Get.
+	// Review if: putSeriesQualityPrefsByTMDB no longer ensures a library row.
+	// Related files: internal/api/titlequality.go, internal/mode/mode.go
+	tq := titleQualityDeps{
+		lib: libStore, settings: settingsStore, grabs: grabsStore,
+		httpClient: httpClient, connStore: connStore, scStore: scStore,
+	}
 	mux.HandleFunc("GET /api/modes/series/library/{seriesID}/quality-prefs", getSeriesQualityPrefsByIDHandler(tq))
 	mux.HandleFunc("PUT /api/modes/series/library/{seriesID}/quality-prefs", putSeriesQualityPrefsByIDHandler(tq))
 	mux.HandleFunc("GET /api/modes/series/library/tmdb/{tmdbId}/quality-prefs", getSeriesQualityPrefsByTMDBHandler(tq))

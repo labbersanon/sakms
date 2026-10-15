@@ -12,11 +12,13 @@ import (
 
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/autograb"
+	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/quality"
 	"github.com/labbersanon/sakms/internal/release"
+	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 )
 
@@ -33,6 +35,17 @@ type titleQualityDeps struct {
 	lib      *library.Store
 	settings *settings.Store
 	grabs    *grabs.Store
+	// Claude 2026-10-14: connStore/scStore/httpClient for TMDB shell ensure.
+	// Reason: putSeriesQualityPrefsByTMDBHandler → ensureSeriesByTMDB →
+	//   mode.Build needs these to resolve the series title (and to avoid a
+	//   nil-store panic when AI is configured). Match seasonCatalog wiring
+	//   used by the seasons/monitor routes in handler.go.
+	// Troubleshooting: Save quality prefs on a Discover-only show → 502.
+	// Review if: ensureSeriesByTMDB stops calling mode.Build for titles.
+	// Related files: internal/api/handler.go, internal/mode/mode.go
+	httpClient *http.Client
+	connStore  *connections.Store
+	scStore    *serviceconn.Store
 }
 
 func getSeriesQualityPrefsByIDHandler(deps titleQualityDeps) http.HandlerFunc {
@@ -79,7 +92,10 @@ func putSeriesQualityPrefsByTMDBHandler(deps titleQualityDeps) http.HandlerFunc 
 		if !ok {
 			return
 		}
-		catalog := seasonCatalog{lib: deps.lib, settings: deps.settings}
+		catalog := seasonCatalog{
+			httpClient: deps.httpClient, connStore: deps.connStore, scStore: deps.scStore,
+			lib: deps.lib, settings: deps.settings,
+		}
 		series, err := catalog.ensureSeriesByTMDB(r.Context(), tmdbID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)

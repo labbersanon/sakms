@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/apidto"
@@ -189,5 +191,44 @@ func TestTitlePrefsTiersFromRequest_FloorExpandsUp(t *testing.T) {
 	got := titlePrefsTiersFromRequest(apidto.TitleQualityPrefsRequest{Floor: "high"})
 	if len(got) != 2 || got[0] != quality.High || got[1] != quality.Lossless {
 		t.Fatalf("got %v", got)
+	}
+}
+
+// TestPutSeriesQualityPrefsByTMDB_ShellSeriesWithAIEnabled reproduces the
+// media-admin Save → Bad Gateway path: AI fallback configured, series not yet
+// in library_series, PUT .../tmdb/{id}/quality-prefs must create a shell row
+// without panicking on a nil connections.Store.
+func TestPutSeriesQualityPrefsByTMDB_ShellSeriesWithAIEnabled(t *testing.T) {
+	connStore, _, settingsStore, grabsStore, libStore, _, _, _, _, _, scStore := testStoresWithRegistry(t)
+	ctx := context.Background()
+	if err := settingsStore.Set(ctx, mode.AIFallbackEnabledKey, "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := settingsStore.Set(ctx, mode.AIModelKey, "qwen2.5:7b"); err != nil {
+		t.Fatal(err)
+	}
+	if err := connStore.Upsert(ctx, "ollama", "http://ollama.local:11434", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	const tmdbID = 1418 // It's Always Sunny — must not exist in library yet
+	deps := titleQualityDeps{
+		lib: libStore, settings: settingsStore, grabs: grabsStore,
+		httpClient: &http.Client{}, connStore: connStore, scStore: scStore,
+	}
+	body := []byte(`{"floor":"medium","minResolution":720,"maxResolution":2160}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/modes/series/library/tmdb/"+strconv.Itoa(tmdbID)+"/quality-prefs", bytes.NewReader(body))
+	req.SetPathValue("tmdbId", strconv.Itoa(tmdbID))
+	rec := httptest.NewRecorder()
+	putSeriesQualityPrefsByTMDBHandler(deps)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	series, err := libStore.GetSeriesByTMDBID(ctx, tmdbID)
+	if err != nil {
+		t.Fatalf("expected shell series after Save: %v", err)
+	}
+	if series.Title == "" {
+		t.Fatal("shell series title must be non-empty")
 	}
 }

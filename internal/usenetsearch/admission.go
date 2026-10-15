@@ -196,6 +196,14 @@ func normalizeTitleKey(s string) string {
 	return strings.Join(tokens, " ")
 }
 
+// NormalizeTitleKey exposes normalizeTitleKey for api.NewNNTPAdmissionPolicy
+// (Step 4) to key PolicySnapshot.Titles by a library_quality_prefs row's own
+// Title column, matching cleanTitleKey's release-prefix-side normalization
+// so Resolve's exact-key lookup lines up (see the comment on PolicySnapshot).
+func NormalizeTitleKey(title string) string {
+	return normalizeTitleKey(title)
+}
+
 // cleanTitleKey runs the release-side prefix through the same cleanup
 // FromName/StripYear already give orphan search terms, then normalizes.
 func cleanTitleKey(prefix string) string {

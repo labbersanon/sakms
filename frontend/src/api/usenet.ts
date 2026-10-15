@@ -169,9 +169,18 @@ export type UsenetNNTPNativeSettings = {
   probeDetail: string;
 };
 
+export type UsenetNNTPGroupItem = {
+  name: string;
+  recommended?: boolean;
+  tier?: string;
+  note?: string;
+};
+
 export type UsenetNNTPAvailableGroups = {
   mode: "movies" | "series" | "adult";
   groups: string[];
+  recommended?: UsenetNNTPGroupItem[];
+  items?: UsenetNNTPGroupItem[];
 };
 
 export function fetchUsenetNNTPNative(): Promise<UsenetNNTPNativeSettings> {

@@ -17,15 +17,21 @@ import (
 func MediaWildmats(mode string) []string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "movies":
+		// Claude 2026-10-15: drop warez*; add moovee (exact-friendly wildmat).
+		// Reason: warez is software noise; moovee is a primary movie binary group
+		//   missing from the old list. Recommended seeds filter against LIST ACTIVE.
+		// Troubleshooting: empty Movies picker — provider wildmat miss.
+		// Review if: Discover titles replace wildmat LIST ACTIVE entirely.
 		return []string{
 			"alt.binaries.movies*",
+			"alt.binaries.moovee*",
 			"alt.binaries.multimedia*",
 			"alt.binaries.x264*",
+			"alt.binaries.hdtv.x264*",
 			"alt.binaries.bluray*",
 			"alt.binaries.blu-ray*",
 			"alt.binaries.uhd*",
 			"alt.binaries.dvd*",
-			"alt.binaries.warez*",
 		}
 	case "series":
 		return []string{

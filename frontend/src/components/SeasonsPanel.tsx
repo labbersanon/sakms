@@ -16,8 +16,10 @@ import {
   type Component,
   For,
   Show,
+  createEffect,
   createResource,
   createSignal,
+  on,
 } from "solid-js";
 import {
   type SeasonKey,
@@ -46,13 +48,32 @@ const SEASON_AUTOGRAB_COPY =
 // quietly touch a season no visible row accounts for.
 const seasonLabel = (n: number) => (n === 0 ? "Specials" : `Season ${n}`);
 
-export const SeasonsPanel: Component<SeasonKey> = (props) => {
+// Claude 2026-10-15: optional refetchEpoch for Discover post-grab refresh.
+// Reason: DetailPopup's SeasonsPanel used to fetch once on mount; Grab did not
+//   bump any key, so missing counts stayed stale while the popup stayed open.
+// Troubleshooting: Series Discover Grab → Seasons line unchanged until reopen.
+// Review if: seasons SSE or shared query cache replaces epoch bumps.
+// Related files: frontend/src/screens/discover/DetailPopup.tsx
+export type SeasonsPanelProps = SeasonKey & {
+  refetchEpoch?: () => number;
+};
+
+export const SeasonsPanel: Component<SeasonsPanelProps> = (props) => {
   const key = (): SeasonKey =>
     props.seriesID != null
       ? { seriesID: props.seriesID }
       : { tmdbId: props.tmdbId };
 
   const [seasons, { refetch }] = createResource(key, fetchSeasonStatesFor);
+  createEffect(
+    on(
+      () => props.refetchEpoch?.() ?? 0,
+      () => {
+        void refetch();
+      },
+      { defer: true },
+    ),
+  );
   const [autoGrab] = createResource(() =>
     fetchUsenetAutoGrabEnabled().catch(() => false),
   );

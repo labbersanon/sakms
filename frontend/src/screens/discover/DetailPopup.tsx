@@ -1128,6 +1128,28 @@ export const DetailPopup: Component<{
   const [fallback, setFallback] = createSignal<AutoGrabResponse | null>(null);
   const [manualPicking, setManualPicking] = createSignal("");
 
+  // Claude 2026-10-15: keep Series picker usable after the first pick / Grab.
+  // Reason: ready() used to unmount SeasonEpisodePicker, so after Grab the
+  //   popup stuck on "Grabbed …" with no way to check another episode without
+  //   closing. Changing the slot clears grab UI and re-seeds the grid.
+  // Troubleshooting: Series Discover — season/episode availability not realtime.
+  // Review if: availability preview gains an explicit Refresh control.
+  // Related files: SeasonsPanel refetchEpoch; SeasonEpisodePicker
+  const applySeasonEpisode = (season: number, episode: number) => {
+    setSeasonEpisode({ season, episode });
+    setGrabbed(false);
+    setGrabbedTitle("");
+    setFallback(null);
+    setGrabError("");
+    setDefaulted(false);
+    setResolution(null);
+    setTier(null);
+    setProtocol(null);
+  };
+  const bumpSeasonsPanel = () => setSeasonsEpoch((n) => n + 1);
+  const showSeriesSections = () =>
+    allowGrab() && !replaceOpen() && mode() === "series" && hasCatalogTmdb();
+
   const grabDisabled = () => {
     if (grabbing() || !!fallback()) return true;
     if (useAutoGrab()) return !ready() || autoGrabEnabled.loading;
@@ -1156,6 +1178,7 @@ export const DetailPopup: Component<{
         }
         setGrabbedTitle(res.grab?.title || item().title);
         setGrabbed(true);
+        bumpSeasonsPanel();
         return;
       }
       const c = selectedCandidate();
@@ -1194,6 +1217,7 @@ export const DetailPopup: Component<{
       });
       setGrabbedTitle(c.title);
       setGrabbed(true);
+      bumpSeasonsPanel();
     } catch (e) {
       setGrabError((e as Error).message);
     } finally {
@@ -1226,6 +1250,7 @@ export const DetailPopup: Component<{
       setGrabbedTitle(c.title);
       setGrabbed(true);
       setFallback(null);
+      bumpSeasonsPanel();
     } catch (e) {
       setGrabError((e as Error).message);
     } finally {
@@ -1260,6 +1285,7 @@ export const DetailPopup: Component<{
       if (res.grabbed) {
         setGrabbedTitle(res.grab?.title || item().title);
         setGrabbed(true);
+        bumpSeasonsPanel();
         return;
       }
       setGrabError(res.message || "No replacement grabbed");
@@ -1683,15 +1709,11 @@ export const DetailPopup: Component<{
           titleKey={qualityTitleKey()}
         />
       </Show>
-      <Show
-        when={
-          allowGrab() &&
-          !replaceOpen() &&
-          mode() === "series" &&
-          hasCatalogTmdb()
-        }
-      >
-        <SeasonsPanel tmdbId={(item() as DiscoverItem).id} />
+      <Show when={showSeriesSections()}>
+        <SeasonsPanel
+          tmdbId={(item() as DiscoverItem).id}
+          refetchEpoch={seasonsEpoch}
+        />
       </Show>
       <Show when={(ownedSeriesID() ?? 0) > 0}>
         <SeriesEpisodesPanel
@@ -1719,27 +1741,33 @@ export const DetailPopup: Component<{
           Review if: Library grows its own early slot separate from children. */}
       {props.children}
 
-      <Show
-        when={ready()}
-        fallback={
-          <div>
-            <Muted class="mb-2">
-              Pick a season (and optionally an episode) to check availability.
-            </Muted>
-            {/* seasons is passed (not omitted) so the picker does NOT fire its
-                own ?sections=seasons request — this popup's detail resource has
-                already fetched them. loading distinguishes "still in flight"
-                from the resource's soft-fail to undefined. */}
-            <SeasonEpisodePicker
-              tmdbId={(item() as DiscoverItem).id}
-              selectionMode="single"
-              seasons={detail()?.seasons}
-              loading={detail.loading}
-              onSubmit={(season, episode) => setSeasonEpisode({ season, episode })}
-            />
-          </div>
-        }
-      >
+      {/* Claude 2026-10-15: Series picker stays mounted after the first pick.
+          Reason: unmounting behind ready() left no way to check another
+          episode after Grab without closing the popup.
+          Troubleshooting: season/episode availability felt stuck after Grab.
+          Review if: picker collapses to a compact "S2E4 Change" chip.
+          Related files: applySeasonEpisode; SeasonsPanel refetchEpoch */}
+      <Show when={showSeriesSections()}>
+        <div class="mb-3">
+          <Muted class="mb-2">
+            {ready()
+              ? "Pick another season or episode to check availability again."
+              : "Pick a season (and optionally an episode) to check availability."}
+          </Muted>
+          {/* seasons is passed (not omitted) so the picker does NOT fire its
+              own ?sections=seasons request — this popup's detail resource has
+              already fetched them. loading distinguishes "still in flight"
+              from the resource's soft-fail to undefined. */}
+          <SeasonEpisodePicker
+            tmdbId={(item() as DiscoverItem).id}
+            selectionMode="single"
+            seasons={detail()?.seasons}
+            loading={detail.loading}
+            onSubmit={applySeasonEpisode}
+          />
+        </div>
+      </Show>
+      <Show when={ready()}>
         {/* Adult scene description — sourced from the entity's own catalog
             (entity_source, AC4) via GET /api/modes/adult/discover/description, once per
             popup open. Absent entirely when no catalog has real data (AC5): no

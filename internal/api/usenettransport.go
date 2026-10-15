@@ -91,6 +91,7 @@ func parkUsenetTransportFailure(ctx context.Context, deps AutoGrabDeps, g grabs.
 // without driving a real NNTP server. *usenet.Manager satisfies it.
 type usenetResumeEngine interface {
 	FindByGID(gid string) (*usenet.Download, error)
+	FindFilename(gid string) string
 	Forget(gid string) bool
 	RelaunchNZB(ctx context.Context, gid, url, name string) error
 }
@@ -149,6 +150,19 @@ func resumeDueTransportRetries(ctx context.Context, deps AutoGrabDeps, engine us
 			log.Printf("usenet transport: FindByGID %q for grab %d: %v", g.DownloadGID, g.ID, findErr)
 			continue
 		}
+		// Claude 2026-10-14: capture Prowlarr release title BEFORE Forget.
+		// Reason: RelaunchNZB used g.Title (show name), overwriting dl.parkName.
+		//   At transport-cap content park, FindFilename then equaled g.Title so
+		//   parkNZBTitle dropped it — tried_release_keys got only u: URL hashes.
+		//   Alternate search re-picked the same BiQ NZB from other indexers
+		//   (Ancient Aliens grab 1843 outer stall loop).
+		// Troubleshooting: "N keys excluded" all u: prefixes; same 125954 article.
+		// Review if: grabs persist download_title column (survives container restart).
+		// Related files: internal/api/usenetcontent.go parkNZBTitle; manager FindFilename
+		releaseName := strings.TrimSpace(engine.FindFilename(g.DownloadGID))
+		if releaseName == "" {
+			releaseName = g.Title
+		}
 		if live != nil {
 			switch live.Status {
 			case "error", "complete", "removed":
@@ -164,7 +178,7 @@ func resumeDueTransportRetries(ctx context.Context, deps AutoGrabDeps, engine us
 			}
 		}
 
-		if err := engine.RelaunchNZB(ctx, g.DownloadGID, g.DownloadURL, g.Title); err != nil {
+		if err := engine.RelaunchNZB(ctx, g.DownloadGID, g.DownloadURL, releaseName); err != nil {
 			if usenet.IsPrecheckReject(err) {
 				log.Printf("usenet transport: grab %d (%s) precheck reject on resume — escalating to re-search", g.ID, g.Title)
 				if parkErr := parkGrabForRetry(ctx, deps, g.ID, precheckParkReason(err)); parkErr != nil {

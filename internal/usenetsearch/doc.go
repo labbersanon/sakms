@@ -2,7 +2,12 @@
 // OVER crawler over operator-chosen newsgroups, a local Postgres header index,
 // and Candidate → *usenet.NZB synthesis for the existing download engine.
 //
-// Import discipline: stdlib + database/sql (app Postgres) + internal/usenet only.
+// Import discipline: stdlib + database/sql (app Postgres) + internal/usenet,
+// plus — as of the crawl-time quality admission feature (admission.go) —
+// internal/release, internal/quality, internal/autograb, and
+// internal/searchterm for title-token parsing and quality-tier/resolution
+// gating. None of those four import internal/api, internal/grabs,
+// internal/prowlarr, or internal/mode, so the layering below still holds.
 // Must NOT import modernc.org/sqlite (banned from cmd/sakms), internal/api,
 // internal/grabs, internal/prowlarr, or internal/mode — adapters live on the api side.
 //

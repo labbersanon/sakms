@@ -286,6 +286,7 @@ func TestApplyUsenetFailure_430ParksAlternateRelease(t *testing.T) {
 // fakeResumeEngine implements usenetResumeEngine for unit tests.
 type fakeResumeEngine struct {
 	finds      map[string]*usenet.Download // gid → Download (nil means not found)
+	filenames  map[string]string           // gid → FindFilename (Prowlarr release title)
 	forgotGIDs []string
 	relaunchFn func(gid, url, name string) error
 }
@@ -298,8 +299,14 @@ func (f *fakeResumeEngine) FindByGID(gid string) (*usenet.Download, error) {
 	return d, nil
 }
 
+func (f *fakeResumeEngine) FindFilename(gid string) string {
+	return f.filenames[gid]
+}
+
 func (f *fakeResumeEngine) Forget(gid string) bool {
 	f.forgotGIDs = append(f.forgotGIDs, gid)
+	delete(f.finds, gid)
+	delete(f.filenames, gid)
 	return true
 }
 
@@ -609,5 +616,44 @@ func TestApplyUsenetFailure_ContextCanceled(t *testing.T) {
 	}
 	if retryT.After(now.Add(5 * time.Second)) {
 		t.Errorf("retry_after %v should be due immediately (within 5s of now)", retryT)
+	}
+}
+
+// TestResumeDueTransportRetries_PreservesReleaseTitle is the Ancient Aliens
+// grab-1843 regression: transport resume must RelaunchNZB with the Prowlarr
+// release title (FindFilename), not g.Title (show name). Captured before Forget
+// so parkName survives the error→relaunch cycle for later t:/g: exclusion keys.
+func TestResumeDueTransportRetries_PreservesReleaseTitle(t *testing.T) {
+	ctx := context.Background()
+	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
+	deps := AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore}
+	if err := settingsStore.Set(ctx, UsenetMaxConcurrentDownloadsKey, "10"); err != nil {
+		t.Fatalf("set max concurrent: %v", err)
+	}
+
+	const gid = "nzb-release-title-1"
+	const releaseTitle = "Ancient.Aliens.S04E06.1080p.BluRay.x264-BiQ"
+	g := parkTransportGrab(t, grabsStore, gid)
+
+	var gotName string
+	engine := &fakeResumeEngine{
+		finds: map[string]*usenet.Download{
+			gid: {GID: gid, Status: "error", Filename: releaseTitle},
+		},
+		filenames: map[string]string{gid: releaseTitle},
+		relaunchFn: func(id, url, name string) error {
+			gotName = name
+			return nil
+		},
+	}
+
+	resumeDueTransportRetries(ctx, deps, engine, map[string]bool{}, time.Now())
+
+	if gotName != releaseTitle {
+		t.Fatalf("RelaunchNZB name = %q, want release title %q (not show title %q)",
+			gotName, releaseTitle, g.Title)
+	}
+	if len(engine.forgotGIDs) != 1 || engine.forgotGIDs[0] != gid {
+		t.Fatalf("Forget = %v, want [%s] before relaunch", engine.forgotGIDs, gid)
 	}
 }

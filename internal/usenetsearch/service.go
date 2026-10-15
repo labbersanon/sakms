@@ -47,10 +47,32 @@ type Config struct {
 	MoviesGroups  []string
 	SeriesGroups  []string
 	AdultGroups   []string
+	MoviesPackage string // "1".."5" or "custom"
+	SeriesPackage string
+	AdultPackage  string
 	IndexDir      string
 	IndexMaxGB    int
 	WindowDays    int
 	CrawlInterval time.Duration
+}
+
+// PackageCeilingForMode returns the crawl/search ceiling step for mode.
+func (c Config) PackageCeilingForMode(mode string) int {
+	raw := ""
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "movies":
+		raw = c.MoviesPackage
+	case "series":
+		raw = c.SeriesPackage
+	case "adult":
+		raw = c.AdultPackage
+	}
+	step, custom, ok := ParsePackageValue(raw)
+	if !ok || custom {
+		// Custom: treat as max ceiling; grade filter still applies vs step 5.
+		return PackageStepMax
+	}
+	return step
 }
 
 // AllGroups is the deduped union of per-mode selections — what the crawler indexes.
@@ -233,13 +255,15 @@ func (s *Service) runProbeAndCrawl(ctx context.Context) CrawlResult {
 	cfg := s.cfg
 	idx := s.idx
 	s.mu.Unlock()
-	r := Probe(ctx, src, cfg.AllGroups())
+	groups := s.crawlEligibleGroups(ctx)
+	r := Probe(ctx, src, groups)
 	s.mu.Lock()
 	s.probe = r
 	s.mu.Unlock()
 	if !r.Ready || idx == nil || src == nil {
 		return CrawlResult{}
 	}
+	_ = s.PruneBeyondCeilings(ctx)
 	window := time.Duration(cfg.WindowDays) * 24 * time.Hour
 	if cfg.WindowDays <= 0 {
 		window = DefaultWindowDays * 24 * time.Hour
@@ -248,12 +272,122 @@ func (s *Service) runProbeAndCrawl(ctx context.Context) CrawlResult {
 	if maxGB <= 0 {
 		maxGB = DefaultIndexMaxGB
 	}
-	c := &Crawler{Src: src, Index: idx, Groups: cfg.AllGroups(), Window: window, MaxGB: maxGB}
+	c := &Crawler{Src: src, Index: idx, Groups: groups, Window: window, MaxGB: maxGB}
 	cres, err := c.CrawlOnce(ctx)
 	if err != nil {
 		log.Printf("usenetsearch: crawl: %v", err)
 	}
 	return cres
+}
+
+// crawlEligibleGroups is the union of per-mode groups with grade ≤ ceiling.
+func (s *Service) crawlEligibleGroups(ctx context.Context) []string {
+	s.mu.Lock()
+	cfg := s.cfg
+	idx := s.idx
+	s.mu.Unlock()
+	if idx == nil {
+		return cfg.AllGroups()
+	}
+	var lists [][]string
+	for _, mode := range []string{"movies", "series", "adult"} {
+		if !cfg.ModeEnabled(mode) {
+			continue
+		}
+		ceiling := cfg.PackageCeilingForMode(mode)
+		elig, err := idx.EligibleGroups(ctx, mode, ceiling, cfg.GroupsForMode(mode))
+		if err != nil {
+			log.Printf("usenetsearch: eligible %s: %v", mode, err)
+			continue
+		}
+		lists = append(lists, elig)
+	}
+	return MergeGroups(lists...)
+}
+
+// PruneBeyondCeilings deletes index rows for groups graded past each mode's ceiling.
+func (s *Service) PruneBeyondCeilings(ctx context.Context) error {
+	s.mu.Lock()
+	cfg := s.cfg
+	idx := s.idx
+	s.mu.Unlock()
+	if idx == nil {
+		return nil
+	}
+	for _, mode := range []string{"movies", "series", "adult"} {
+		if !cfg.ModeEnabled(mode) {
+			continue
+		}
+		ceiling := cfg.PackageCeilingForMode(mode)
+		if err := idx.PruneGroupsBeyondCeiling(ctx, mode, ceiling, cfg.GroupsForMode(mode)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DemoteForFailure bumps the group's grade for mode and deletes its index
+// when the new grade is beyond the mode's package ceiling.
+func (s *Service) DemoteForFailure(ctx context.Context, mode, group string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	idx := s.idx
+	cfg := s.cfg
+	s.mu.Unlock()
+	if idx == nil {
+		return
+	}
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	group = strings.TrimSpace(group)
+	if mode == "" || group == "" {
+		return
+	}
+	grade, err := idx.DemoteGroup(ctx, mode, group)
+	if err != nil {
+		log.Printf("usenetsearch: demote %s/%s: %v", mode, group, err)
+		return
+	}
+	ceiling := cfg.PackageCeilingForMode(mode)
+	log.Printf("usenetsearch: demote mode=%s group=%s grade=%d ceiling=%d", mode, group, grade, ceiling)
+	if grade > ceiling {
+		n, err := idx.DeleteGroupIndex(ctx, group)
+		if err != nil {
+			log.Printf("usenetsearch: delete index %s: %v", group, err)
+			return
+		}
+		log.Printf("usenetsearch: deleted %d headers for %s (grade %d > ceiling %d)", n, group, grade, ceiling)
+	}
+}
+
+// ListGroupGrades returns stored grades for mode (empty if index closed).
+func (s *Service) ListGroupGrades(ctx context.Context, mode string) ([]GroupGrade, error) {
+	s.mu.Lock()
+	idx := s.idx
+	s.mu.Unlock()
+	if idx == nil {
+		return nil, nil
+	}
+	return idx.ListGrades(ctx, mode)
+}
+
+// SearchGroupsForMode returns grade-eligible groups for search in mode.
+func (s *Service) SearchGroupsForMode(ctx context.Context, mode string) []string {
+	s.mu.Lock()
+	cfg := s.cfg
+	idx := s.idx
+	s.mu.Unlock()
+	cands := cfg.GroupsForMode(mode)
+	if idx == nil {
+		return cands
+	}
+	elig, err := idx.EligibleGroups(ctx, mode, cfg.PackageCeilingForMode(mode), cands)
+	if err != nil {
+		log.Printf("usenetsearch: search eligible %s: %v", mode, err)
+		return cands
+	}
+	return elig
 }
 
 func (s *Service) runLiveness(ctx context.Context) {

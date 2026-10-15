@@ -16,8 +16,8 @@ import (
 
 // Index is the local header store (usenet_nntp_* tables on the app DB).
 type Index struct {
-	db     *sql.DB
-	owned  bool // if true, Close closes db (tests only; production shares app DB)
+	db    *sql.DB
+	owned bool // if true, Close closes db (tests only; production shares app DB)
 }
 
 // OpenIndex wraps an already-migrated app *sql.DB. Does not take ownership.
@@ -116,7 +116,9 @@ func (idx *Index) PruneOlderThan(ctx context.Context, cutoffUnix int64) (int64, 
 // approxHeaderRowBytes is the logical size used for the soft index budget.
 // Claude 2026-10-15: do NOT use pg_total_relation_size for prune loops.
 // Reason: DELETE does not shrink relation size until VACUUM FULL/rewrite, so
-//   PruneOldest kept deleting until the table was empty.
+//
+//	PruneOldest kept deleting until the table was empty.
+//
 // Troubleshooting: index wiped after crossing index_max_gb — check ApproxBytes.
 // Review if: monthly/continuous VACUUM ANALYZE reports real disk separately.
 const approxHeaderRowBytes int64 = 200
@@ -141,7 +143,9 @@ func (idx *Index) CountHeaders(ctx context.Context) (int64, error) {
 // rows remain. Availability-based removal is the monitor loop's job.
 // Claude 2026-10-15: batch size = overage rows (cap 5000), not a fixed 5000.
 // Reason: a fixed LIMIT 5000 wiped small indexes in one DELETE (budget test
-//   with 100 rows → 0). Overage-sized batches stop at the soft floor.
+//
+//	with 100 rows → 0). Overage-sized batches stop at the soft floor.
+//
 // Troubleshooting: index emptied after prune — check batch limit math here.
 // Review if: VACUUM FULL is scheduled separately for real disk reclaim.
 func (idx *Index) PruneOldest(ctx context.Context, targetBytes int64) error {

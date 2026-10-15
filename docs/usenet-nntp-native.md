@@ -18,7 +18,8 @@ and prune passes (window days + max GiB).
 | Setting | Notes |
 |---|---|
 | Master + per-mode toggles | Movies / Series / Adult AND-ed with master |
-| Per-mode package slider | 5 steps: most reliable → largest selection (cumulative curated packages); advanced customize → Custom; first-run drafts step 1 |
+| Per-mode package slider | Ceiling (default max/all relevant): crawl/search only groups with grade ≤ step; advanced customize → Custom |
+| Passive grades | Start at 1 (most reliable); +1 per Usenet article failure (sticky at 5); grade > ceiling → stop crawl + delete that group's index |
 | Max GiB / soft age days / idle backoff | Soft size budget; soft age display; idle backoff after catch-up (0 = 60s default). Crawl is continuous when enabled |
 | Probe state/detail | Read-only |
 
@@ -39,10 +40,12 @@ age alone. Soft size budget uses row-count × ~200 B/row (`ApproxBytes`), not
 `pg_total_relation_size` (which does not shrink after `DELETE` and previously
 could wipe the index).
 
-Group picking: curated **5-step packages** (`seeds/packages.json`) from
-most reliable → largest selection (cumulative). Settings uses a per-mode
-slider; advanced customize flips that mode to Custom. GET groups exposes
-`steps` / `packages` (provider-filtered).
+Group picking: curated **5-step packages** (`seeds/packages.json`). The
+Settings slider is a **ceiling** (default 5 = all relevant). Every group
+starts grade 1; Usenet article failures demote one tier (5 sticky). When
+grade exceeds the ceiling, crawl stops for that group and its index rows
+are deleted. Advanced customize → Custom.
+
 
 ## Spike numbers
 

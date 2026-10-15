@@ -185,6 +185,9 @@ export type UsenetNNTPGroupItem = {
   // Reason: server annotates items with their package step; pinned items are always included.
   step?: number;
   pinned?: boolean;
+  // Claude 2026-10-15: grade for passive grading — server demotes groups on article failures.
+  // Reason: UI needs to surface the current grade so operators see which groups are degraded.
+  grade?: number;
 };
 
 export type UsenetNNTPPackageStep = {

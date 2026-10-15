@@ -11009,3 +11009,20 @@ status stays active.
 | `frontend/src/api/usenet.ts` | package/step types |
 | `docs/usenet-nntp-native.md` | slider docs |
 
+## 2026-10-15 — NNTP passive group grades (failure demotion)
+
+**Problem:** Active re-rank from index stats was the wrong model; groups should start trusted and lose trust only after Usenet failures.
+**Root cause:** Plan assumed proactive scoring; operator wants passive demotion + ceiling slider.
+**Fix:** Default ceiling step 5. Per-mode grades (migration 0040) start at 1; article-missing failures demote +1 (cap 5 sticky). Crawl/search filter grade≤ceiling; crossing ceiling deletes that group's headers. Settings shows grades; help copy updated.
+**Outcome:** Ready on PR #165 branch. Deploy after merge.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/db/migrations/0040_usenet_nntp_group_grades.sql` | grades table |
+| `internal/usenetsearch/grades.go` | Demote/Eligible/Prune/DeleteGroupIndex |
+| `internal/usenetsearch/service.go` | crawl/search by grade; DemoteForFailure |
+| `internal/api/usenet_nntp_demote.go` | hook from failure/precheck paths |
+| `frontend/.../Usenet.tsx` | ceiling default 5, grade badges, copy |
+

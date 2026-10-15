@@ -78,6 +78,7 @@ type usenetNNTPGroupItem struct {
 	Tier        string `json:"tier,omitempty"` // shim: core|extra from step 1|2
 	Step        int    `json:"step,omitempty"`
 	Pinned      bool   `json:"pinned,omitempty"`
+	Grade       int    `json:"grade,omitempty"` // 1=most reliable … 5=least (sticky)
 	Note        string `json:"note,omitempty"`
 }
 
@@ -174,10 +175,23 @@ func getUsenetNNTPGroupsHandler(svc *usenetsearch.Service) http.HandlerFunc {
 			}
 		}
 		items := make([]usenetNNTPGroupItem, 0, len(groups))
+		gradeByName := map[string]int{}
+		if active != nil {
+			if grades, gerr := active.ListGroupGrades(r.Context(), mode); gerr == nil {
+				for _, gg := range grades {
+					gradeByName[gg.Group] = gg.Grade
+				}
+			}
+		}
 		for _, g := range groups {
 			it, ok := byName[g]
 			if !ok {
 				it = usenetNNTPGroupItem{Name: g}
+			}
+			if gr, ok := gradeByName[g]; ok {
+				it.Grade = gr
+			} else {
+				it.Grade = 1
 			}
 			items = append(items, it)
 		}
@@ -297,6 +311,8 @@ func putUsenetNNTPNativeHandler(settingsStore *settings.Store, svc *usenetsearch
 		}
 		if active != nil {
 			_ = active.Apply(configFromNNTPResponse(cur))
+			// Lowering the ceiling prunes index rows for demoted-beyond groups.
+			_ = active.PruneBeyondCeilings(ctx)
 			probe := active.ProbeSnapshot()
 			_ = settingsStore.Set(ctx, usenetsearch.KeyProbeState, probe.State)
 			_ = settingsStore.Set(ctx, usenetsearch.KeyProbeDetail, probe.Detail)
@@ -479,6 +495,9 @@ func configFromNNTPResponse(r usenetNNTPNativeResponse) usenetsearch.Config {
 		MoviesGroups:  usenetsearch.ParseGroups(r.MoviesGroups),
 		SeriesGroups:  usenetsearch.ParseGroups(r.SeriesGroups),
 		AdultGroups:   usenetsearch.ParseGroups(r.AdultGroups),
+		MoviesPackage: r.MoviesPackage,
+		SeriesPackage: r.SeriesPackage,
+		AdultPackage:  r.AdultPackage,
 		IndexDir:      r.IndexDir,
 		IndexMaxGB:    r.IndexMaxGB,
 		WindowDays:    r.WindowDays,

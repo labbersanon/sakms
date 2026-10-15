@@ -23,8 +23,11 @@ const (
 	PackageStepMax = 5
 	PackageCustom  = "custom"
 
-	// DefaultPackageStep is the first-run / "most reliable" draft.
-	DefaultPackageStep = 1
+	// Claude 2026-10-15: default ceiling = all relevant (largest selection).
+	// Reason: passive grading — start broad, demote on Usenet failures.
+	// Troubleshooting: first-run drafts step 5; lower slider to shrink crawl.
+	// Review if: operator wants conservative default again.
+	DefaultPackageStep = 5
 )
 
 // PackageSeed is one curated group at a slider step for a mode.

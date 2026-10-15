@@ -923,8 +923,9 @@ const GroupTransferToolbox: Component<{
 
   const labelFor = (g: string) => {
     const it = itemByName().get(g);
-    if (!it?.recommended) return g;
-    return it.note ? `★ ${g} — ${it.note}` : `★ ${g}`;
+    const gradePart = it?.grade !== undefined ? ` G${it.grade}` : "";
+    if (!it?.recommended) return `${g}${gradePart}`;
+    return it.note ? `★ ${g}${gradePart} — ${it.note}` : `★ ${g}${gradePart}`;
   };
 
   return (
@@ -1092,7 +1093,7 @@ const PackageSliderPanel: Component<{
 
   const currentStep = () => {
     const n = parseInt(props.pkg, 10);
-    return Number.isFinite(n) && n >= 1 && n <= STEP_MAX ? n : 1;
+    return Number.isFinite(n) && n >= 1 && n <= STEP_MAX ? n : 5;
   };
 
   const isCustom = () => props.pkg === "custom";
@@ -1131,7 +1132,7 @@ const PackageSliderPanel: Component<{
       <Show when={!isCustom()}>
         <div class="mb-3">
           <div class="flex items-center justify-between text-xs text-muted">
-            <span>Most reliable</span>
+            <span>Most reliable (narrow)</span>
             <span>Largest selection</span>
           </div>
           <input
@@ -1163,9 +1164,9 @@ const PackageSliderPanel: Component<{
           </Muted>
           <Button
             class="!px-2 !py-1 !text-xs"
-            onClick={() => applyStep(1)}
+            onClick={() => applyStep(currentStep())}
           >
-            Reset to step 1
+            Reset to step {currentStep()}
           </Button>
         </div>
       </Show>
@@ -1204,11 +1205,11 @@ const NativeSearchCard: Component = () => {
   const [adultGroups, setAdultGroups] = createSignal<string[]>([]);
   // Claude 2026-10-15: package signals for the 5-step slider.
   // Reason: "1".."5" drives server-side group expansion; "custom" = manual list.
-  // Troubleshooting: package undefined from older server → default to "1".
+  // Troubleshooting: package undefined from older server → default to "5".
   // Review if: step count or package key format changes.
-  const [moviesPackage, setMoviesPackage] = createSignal("1");
-  const [seriesPackage, setSeriesPackage] = createSignal("1");
-  const [adultPackage, setAdultPackage] = createSignal("1");
+  const [moviesPackage, setMoviesPackage] = createSignal("5");
+  const [seriesPackage, setSeriesPackage] = createSignal("5");
+  const [adultPackage, setAdultPackage] = createSignal("5");
   const [availMovies, setAvailMovies] = createSignal<UsenetNNTPAvailableGroups>({ mode: "movies", groups: [] });
   const [availSeries, setAvailSeries] = createSignal<UsenetNNTPAvailableGroups>({ mode: "series", groups: [] });
   const [availAdult, setAvailAdult] = createSignal<UsenetNNTPAvailableGroups>({ mode: "adult", groups: [] });
@@ -1237,9 +1238,9 @@ const NativeSearchCard: Component = () => {
     setMoviesGroups(parseStored(r.moviesGroups));
     setSeriesGroups(parseStored(r.seriesGroups));
     setAdultGroups(parseStored(r.adultGroups));
-    setMoviesPackage(r.moviesPackage ?? "1");
-    setSeriesPackage(r.seriesPackage ?? "1");
-    setAdultPackage(r.adultPackage ?? "1");
+    setMoviesPackage(r.moviesPackage ?? "5");
+    setSeriesPackage(r.seriesPackage ?? "5");
+    setAdultPackage(r.adultPackage ?? "5");
     setIndexDir(r.indexDir ?? "");
     setIndexMaxGb(r.indexMaxGb || 20);
     setWindowDays(r.windowDays || 14);
@@ -1248,8 +1249,8 @@ const NativeSearchCard: Component = () => {
     setProbeDetail(r.probeDetail || "");
   };
 
-  // Claude 2026-10-15: first-run prefill for package="1" with empty groups.
-  // Reason: cold-start UX — draft step-1 groups unsaved so Save is still required.
+  // Claude 2026-10-15: first-run prefill for package="5" (ceiling max) with empty groups.
+  // Reason: cold-start UX — draft step-5 groups unsaved so Save is still required.
   // Troubleshooting: dirty after load with empty groups = expected on first visit.
   // Review if: wizard step sets groups before Settings opens.
   const prefillStepIfEmpty = (
@@ -1260,7 +1261,7 @@ const NativeSearchCard: Component = () => {
   ): boolean => {
     if (current.length > 0) return false;
     const step = parseInt(pkg, 10);
-    const stepNum = Number.isFinite(step) && step >= 1 && step <= STEP_MAX ? step : 1;
+    const stepNum = Number.isFinite(step) && step >= 1 && step <= STEP_MAX ? step : 5;
     const groups = groupsFromPackageStep(stepNum, avail);
     if (groups.length === 0) return false;
     setter(groups);
@@ -1287,7 +1288,7 @@ const NativeSearchCard: Component = () => {
         ].includes(true);
         if (filled) {
           setDirty(true);
-          status.set("Most reliable package pre-selected — Save to apply");
+          status.set("All relevant groups pre-selected (ceiling max) — Save to apply");
         }
       }
     } catch (e) {
@@ -1489,12 +1490,13 @@ const NativeSearchCard: Component = () => {
         />
       </Show>
       <Muted class="mb-3">
-        Use the slider to pick a coverage level from "Most reliable" (step 1 —
-        fewest groups, highest completion) to "Largest selection" (step 5 — most
-        groups). Expand "Customize groups" to edit the list manually; doing so
-        switches that mode to Custom and disables the slider until you reset it.
-        Crawl indexes the union of monitored groups; search uses only the active
-        mode&apos;s list.
+        The slider sets a grade ceiling — only groups graded at or below that tier
+        are crawled. Groups start at grade 1 (most reliable). Usenet article
+        failures demote a group one tier. Once a group is demoted past the ceiling,
+        crawling stops and its index is deleted. Grade 5 is sticky — groups at that
+        tier stay regardless of failures. Expand "Customize groups" to edit the list
+        manually; doing so switches that mode to Custom and disables the slider until
+        you reset it.
       </Muted>
       <label class="mb-3 block">
         <span class={labelClass}>Index directory (unused — index is in the SAK Postgres DB)</span>

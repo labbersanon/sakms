@@ -528,6 +528,7 @@ func dispatchToDownloadClient(ctx context.Context, settingsStore *settings.Store
 			}
 			gid, err := nzb.AddArticleSet(ctx, article, title)
 			if err != nil {
+				demoteNativeGroupFromURL(ctx, native, m, downloadURL, err)
 				return wrapUsenetPrecheckErr(err)
 			}
 			return "nntp", gid, http.StatusOK, nil

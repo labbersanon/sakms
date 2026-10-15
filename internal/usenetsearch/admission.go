@@ -31,8 +31,8 @@ import (
 //   these (nor internal/config, searchterm's own dependency) import
 //   internal/api, internal/grabs, internal/prowlarr, or internal/mode, so
 //   the cycle/layering doc.go actually guards against does not reappear.
-// Troubleshooting: doc.go's import-discipline paragraph is updated in the
-//   Step 5 commit to list these four packages explicitly.
+// Troubleshooting: doc.go's import-discipline paragraph lists these four
+//   packages explicitly (Step 5 commit).
 // Review if: a future addition to any of those four packages adds an
 //   internal/api (etc.) dependency — re-check for cycles before merging.
 

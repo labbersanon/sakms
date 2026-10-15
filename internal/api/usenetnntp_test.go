@@ -67,4 +67,10 @@ func TestGetUsenetNNTPGroups_NoService(t *testing.T) {
 	if got.Recommended == nil || got.Items == nil {
 		t.Fatalf("recommended/items should be non-nil slices: %+v", got)
 	}
+	if got.Steps == nil || got.Packages == nil {
+		t.Fatalf("steps/packages should be present: %+v", got)
+	}
+	if len(got.Steps) != usenetsearch.PackageStepMax {
+		t.Fatalf("steps=%d want %d", len(got.Steps), usenetsearch.PackageStepMax)
+	}
 }

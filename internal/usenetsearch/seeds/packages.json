@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "groups": [
+    {"mode": "movies", "name": "alt.binaries.moovee", "step": 1, "pinned": true, "note": "Primary movie binaries"},
+    {"mode": "movies", "name": "alt.binaries.movies", "step": 1, "pinned": true, "note": "General movies"},
+    {"mode": "movies", "name": "alt.binaries.hdtv.x264", "step": 2, "pinned": false, "note": "HDTV x264 (movies + TV overlap)"},
+    {"mode": "movies", "name": "alt.binaries.x264", "step": 2, "pinned": false, "note": "x264 encodes"},
+    {"mode": "movies", "name": "alt.binaries.multimedia", "step": 3, "pinned": false, "note": "General multimedia"},
+    {"mode": "movies", "name": "alt.binaries.bluray", "step": 3, "pinned": false, "note": "Blu-ray rips"},
+    {"mode": "movies", "name": "alt.binaries.movies.divx", "step": 4, "pinned": false, "note": "Legacy DivX movies"},
+    {"mode": "movies", "name": "alt.binaries.uhd", "step": 4, "pinned": false, "note": "UHD / 4K binaries"},
+    {"mode": "movies", "name": "alt.binaries.dvd", "step": 5, "pinned": false, "note": "DVD-era / high noise"},
+    {"mode": "movies", "name": "alt.binaries.blu-ray", "step": 5, "pinned": false, "note": "Alternate blu-ray spelling (noisy overlap)"},
+
+    {"mode": "series", "name": "alt.binaries.teevee", "step": 1, "pinned": true, "note": "Primary TV group"},
+    {"mode": "series", "name": "alt.binaries.hdtv", "step": 2, "pinned": false, "note": "HDTV"},
+    {"mode": "series", "name": "alt.binaries.hdtv.x264", "step": 2, "pinned": false, "note": "HDTV x264"},
+    {"mode": "series", "name": "alt.binaries.tv", "step": 3, "pinned": false, "note": "General TV"},
+    {"mode": "series", "name": "alt.binaries.multimedia", "step": 3, "pinned": false, "note": "General multimedia"},
+    {"mode": "series", "name": "alt.binaries.multimedia.anime.highspeed", "step": 4, "pinned": false, "note": "Anime highspeed"},
+    {"mode": "series", "name": "alt.binaries.series", "step": 4, "pinned": false, "note": "Generic series binaries"},
+    {"mode": "series", "name": "alt.binaries.anime", "step": 5, "pinned": false, "note": "Broad anime (high volume / mixed quality)"},
+
+    {"mode": "adult", "name": "alt.binaries.erotica", "step": 1, "pinned": true, "note": "Primary erotica binaries"},
+    {"mode": "adult", "name": "alt.binaries.multimedia.erotica", "step": 2, "pinned": false, "note": "Multimedia erotica"},
+    {"mode": "adult", "name": "alt.binaries.xxx", "step": 3, "pinned": false, "note": "XXX binaries"},
+    {"mode": "adult", "name": "alt.binaries.pictures.erotica", "step": 4, "pinned": false, "note": "Erotica pictures/media"},
+    {"mode": "adult", "name": "alt.binaries.boneless", "step": 5, "pinned": false, "note": "Very high obfuscation / noise"}
+  ]
+}

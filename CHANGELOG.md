@@ -10974,3 +10974,20 @@ status stays active.
 | `frontend/src/api/usenet.ts` | group item types |
 | `docs/usenet-nntp-native.md` | continuous index docs |
 
+## 2026-10-15 — NNTP group packages v2 (5-step reliability↔breadth)
+
+**Problem:** Hand-picked newsgroup lists and a flat "recommended" set do not match the intended curated slider UX.
+**Root cause:** seeds/recommended.json only had core/extra; Settings assumed per-group dual-list defaults.
+**Fix:** Embed `seeds/packages.json` v2 with steps 1–5 (cumulative resolve). GET `/api/settings/usenet-nntp-native/groups` adds `steps` and `packages` (provider-filtered). Keep `recommended` as a steps≤2 shim for one release.
+**Outcome:** Backend ready for Settings slider (slice 2). Not a user-visible Settings change until the frontend lands.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/seeds/packages.json` | curated step 1–5 groups per mode |
+| `internal/usenetsearch/seeds.go` | ResolveGroupsForStep / FilterPackagesToProvider |
+| `internal/usenetsearch/seeds/recommended.json` | removed (replaced by packages.json) |
+| `internal/api/usenetnntp.go` | groups response `steps` + `packages` |
+| `docs/usenet-nntp-native.md` | package slider direction |
+

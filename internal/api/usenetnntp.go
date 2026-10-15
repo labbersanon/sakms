@@ -50,18 +50,28 @@ type usenetNNTPNativeRequest struct {
 type usenetNNTPGroupsResponse struct {
 	Mode   string   `json:"mode"`
 	Groups []string `json:"groups"`
-	// Claude 2026-10-15: recommended + annotated items for searchable picker.
-	// Reason: dual-list of raw names is daunting; seeds mark Apply-recommended.
-	// Troubleshooting: recommended empty → provider lacks curated groups.
-	// Review if: items gain perDay/usablePct from group catalog cache.
-	Recommended []usenetNNTPGroupItem `json:"recommended"`
-	Items       []usenetNNTPGroupItem `json:"items"`
+	// Claude 2026-10-15: 5-step package slider data (reliability → breadth).
+	// Reason: replace individual-group defaults with cumulative curated steps.
+	// Troubleshooting: steps empty → provider lacks package groups.
+	// Review if: slice 2 wires Settings slider; recommended shim removed.
+	Recommended []usenetNNTPGroupItem            `json:"recommended"`
+	Items       []usenetNNTPGroupItem            `json:"items"`
+	Steps       map[string]usenetNNTPStepInfo    `json:"steps"`
+	Packages    map[string][]usenetNNTPGroupItem `json:"packages"`
+}
+
+type usenetNNTPStepInfo struct {
+	Step            int `json:"step"`
+	GroupCount      int `json:"groupCount"`
+	CumulativeCount int `json:"cumulativeCount"`
 }
 
 type usenetNNTPGroupItem struct {
 	Name        string `json:"name"`
 	Recommended bool   `json:"recommended"`
-	Tier        string `json:"tier,omitempty"`
+	Tier        string `json:"tier,omitempty"` // shim: core|extra from step 1|2
+	Step        int    `json:"step,omitempty"`
+	Pinned      bool   `json:"pinned,omitempty"`
 	Note        string `json:"note,omitempty"`
 }
 
@@ -91,10 +101,18 @@ func getUsenetNNTPGroupsHandler(svc *usenetsearch.Service) http.HandlerFunc {
 			return
 		}
 		active := resolveNNTPNativeService(svc)
+		emptySteps := map[string]usenetNNTPStepInfo{}
+		emptyPkgs := map[string][]usenetNNTPGroupItem{}
+		for s := usenetsearch.PackageStepMin; s <= usenetsearch.PackageStepMax; s++ {
+			key := strconv.Itoa(s)
+			emptySteps[key] = usenetNNTPStepInfo{Step: s}
+			emptyPkgs[key] = []usenetNNTPGroupItem{}
+		}
 		if active == nil {
 			writeJSON(w, usenetNNTPGroupsResponse{
 				Mode: mode, Groups: []string{},
 				Recommended: []usenetNNTPGroupItem{}, Items: []usenetNNTPGroupItem{},
+				Steps: emptySteps, Packages: emptyPkgs,
 			})
 			return
 		}
@@ -106,17 +124,52 @@ func getUsenetNNTPGroupsHandler(svc *usenetsearch.Service) http.HandlerFunc {
 		if groups == nil {
 			groups = []string{}
 		}
-		seeds := usenetsearch.FilterSeedsToProvider(usenetsearch.RecommendedForMode(mode), groups)
-		recByName := make(map[string]usenetNNTPGroupItem, len(seeds))
-		rec := make([]usenetNNTPGroupItem, 0, len(seeds))
-		for _, s := range seeds {
-			it := usenetNNTPGroupItem{Name: s.Name, Recommended: true, Tier: s.Tier, Note: s.Note}
-			recByName[s.Name] = it
-			rec = append(rec, it)
+		pkgSeeds := usenetsearch.FilterPackagesToProvider(usenetsearch.PackagesForMode(mode), groups)
+		byName := map[string]usenetNNTPGroupItem{}
+		packages := map[string][]usenetNNTPGroupItem{}
+		steps := map[string]usenetNNTPStepInfo{}
+		for s := usenetsearch.PackageStepMin; s <= usenetsearch.PackageStepMax; s++ {
+			packages[strconv.Itoa(s)] = []usenetNNTPGroupItem{}
+		}
+		for _, s := range pkgSeeds {
+			tier := ""
+			rec := s.Step <= 2
+			if s.Step == 1 {
+				tier = usenetsearch.SeedTierCore
+			} else if s.Step == 2 {
+				tier = usenetsearch.SeedTierExtra
+			}
+			it := usenetNNTPGroupItem{
+				Name: s.Name, Recommended: rec, Tier: tier,
+				Step: s.Step, Pinned: s.Pinned, Note: s.Note,
+			}
+			byName[s.Name] = it
+			key := strconv.Itoa(s.Step)
+			packages[key] = append(packages[key], it)
+		}
+		for s := usenetsearch.PackageStepMin; s <= usenetsearch.PackageStepMax; s++ {
+			key := strconv.Itoa(s)
+			cumN := 0
+			for _, p := range pkgSeeds {
+				if p.Step <= s {
+					cumN++
+				}
+			}
+			steps[key] = usenetNNTPStepInfo{
+				Step:            s,
+				GroupCount:      len(packages[key]),
+				CumulativeCount: cumN,
+			}
+		}
+		rec := make([]usenetNNTPGroupItem, 0)
+		for _, s := range usenetsearch.FilterSeedsToProvider(usenetsearch.RecommendedForMode(mode), groups) {
+			if it, ok := byName[s.Name]; ok {
+				rec = append(rec, it)
+			}
 		}
 		items := make([]usenetNNTPGroupItem, 0, len(groups))
 		for _, g := range groups {
-			it, ok := recByName[g]
+			it, ok := byName[g]
 			if !ok {
 				it = usenetNNTPGroupItem{Name: g}
 			}
@@ -124,6 +177,7 @@ func getUsenetNNTPGroupsHandler(svc *usenetsearch.Service) http.HandlerFunc {
 		}
 		writeJSON(w, usenetNNTPGroupsResponse{
 			Mode: mode, Groups: groups, Recommended: rec, Items: items,
+			Steps: steps, Packages: packages,
 		})
 	}
 }

@@ -39,8 +39,9 @@ age alone. Soft size budget uses row-count × ~200 B/row (`ApproxBytes`), not
 `pg_total_relation_size` (which does not shrink after `DELETE` and previously
 could wipe the index).
 
-Group picking: curated recommended seeds (`internal/usenetsearch/seeds/`) plus
-a searchable provider list with Apply recommended.
+Group picking: curated **5-step packages** (`seeds/packages.json`) from
+most reliable → largest selection (cumulative). Settings slider lands in a
+follow-up; GET groups already exposes `steps` / `packages`.
 
 ## Spike numbers
 

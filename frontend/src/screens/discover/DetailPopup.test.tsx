@@ -591,6 +591,74 @@ describe("DetailPopup — ExpandableClampedText More/Less", () => {
     expect(availCall?.url).toContain("episode=4");
   });
 
+  // Claude 2026-10-15: after Grab, picker stays mounted so another episode
+  // can be checked without closing the popup; SeasonsPanel refetches.
+  it("Series keeps the season picker after Grab and rechecks a new episode", async () => {
+    const preview = emptyPreview();
+    preview.res1080.high.torrent = candidate({ title: "A.Series.S02E04" });
+
+    const calls = stubFetch((url) => {
+      if (url.includes("/discover/detail"))
+        return jsonResponse({ seasons: [seasonFixture(1), seasonFixture(2)] });
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      if (url.includes("/discover/availability")) return jsonResponse(preview);
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080 });
+      if (url.includes("/modes/series/autograb"))
+        return jsonResponse({
+          grabbed: true,
+          message: "auto-grabbed",
+          grab: { title: "A.Series.S02E04" },
+        });
+      throw new Error("unexpected fetch: " + url);
+    });
+
+    const target: DetailTarget = {
+      mode: "series",
+      item: movie({ id: 5, title: "A Series", mediaType: "tv" }),
+    };
+    render(() => <DetailPopup target={target} onClose={() => {}} />);
+
+    await pickSeasonEpisode(2, 4);
+    fireEvent.click(await screen.findByRole("button", { name: "Grab" }));
+    expect(await screen.findByText(/Grabbed/)).toBeInTheDocument();
+
+    // Picker stays usable — helper text flips after the first pick.
+    expect(
+      screen.getByText("Pick another season or episode to check availability again."),
+    ).toBeInTheDocument();
+    // Still drilled into season 2 after the grab.
+    expect(
+      screen.getByRole("button", { name: /E1 · Ep 1/ }),
+    ).toBeInTheDocument();
+
+    const seasonsGets = () =>
+      calls.filter(
+        (c) =>
+          c.method === "GET" &&
+          c.url.includes("/library/tmdb/") &&
+          c.url.includes("/seasons") &&
+          !c.url.includes("monitored") &&
+          !c.url.includes("quality-prefs"),
+      ).length;
+    await waitFor(() => expect(seasonsGets()).toBeGreaterThanOrEqual(2));
+
+    fireEvent.click(screen.getByRole("button", { name: /E1 · Ep 1/ }));
+    expect(screen.queryByText(/Grabbed/)).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Grab" })).toBeInTheDocument();
+
+    await waitFor(() =>
+      expect(
+        calls.filter(
+          (c) =>
+            c.url.includes("/discover/availability") &&
+            c.url.includes("season=2") &&
+            c.url.includes("episode=1"),
+        ).length,
+      ).toBeGreaterThanOrEqual(1),
+    );
+  });
+
   it("Series reveals the same season monitors as Library, keyed by TMDB id", async () => {
     const calls = stubFetch((url) => {
       if (url.includes("/discover/detail"))

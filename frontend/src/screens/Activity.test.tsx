@@ -41,8 +41,14 @@ const stubGrabs = (byMode: Partial<Record<string, Grab[]>>) => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("activity helpers", () => {
-  it("stamps UTC createdAt without converting", () => {
-    expect(activityStamp("2026-10-12T08:13:00.000Z")).toBe("2026-10-12 08:13");
+  it("stamps createdAt in the viewer local timezone", () => {
+    const iso = "2026-10-12T08:13:00.000Z";
+    const d = new Date(iso);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const want =
+      `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+      `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    expect(activityStamp(iso)).toBe(want);
   });
 
   it("shortens pending_retry and completed, and names a held request", () => {

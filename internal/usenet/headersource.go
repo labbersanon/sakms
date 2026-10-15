@@ -225,7 +225,6 @@ func (h *managerHeaderSource) StatArticleAll(ctx context.Context, msgID string) 
 	if len(pools) == 0 {
 		return StatInconclusive, errors.New("usenet: no subscriptions")
 	}
-	sawRemoved := false
 	var otherErr error
 	for _, p := range pools {
 		if ctx.Err() != nil {
@@ -251,10 +250,8 @@ func (h *managerHeaderSource) StatArticleAll(ctx context.Context, msgID string) 
 		switch {
 		case mapped == nil:
 			return StatPresent, nil
-		case errors.Is(mapped, ErrArticleRemoved):
-			sawRemoved = true
-		case errors.Is(mapped, ErrArticleNotFound):
-			// Not here — keep checking the remaining pools.
+		case missing:
+			// 430/451 here — keep checking the remaining pools.
 		default:
 			if otherErr == nil {
 				otherErr = mapped
@@ -263,9 +260,6 @@ func (h *managerHeaderSource) StatArticleAll(ctx context.Context, msgID string) 
 	}
 	if otherErr != nil {
 		return StatInconclusive, otherErr
-	}
-	if sawRemoved {
-		return StatMissing, nil
 	}
 	return StatMissing, nil
 }

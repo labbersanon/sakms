@@ -25,15 +25,15 @@ const (
 	// Reason: Settings slider; effective groups still in Key*Groups.
 	// Troubleshooting: missing key → InferPackageFromGroups on read.
 	// Review if: auto-apply re-rank (slice 4) writes these + group keys.
-	KeyMoviesPackage  = "usenet_nntp_package_movies"
-	KeySeriesPackage  = "usenet_nntp_package_series"
-	KeyAdultPackage   = "usenet_nntp_package_adult"
-	KeyIndexDir       = "usenet_nntp_index_dir"
-	KeyIndexMaxGB     = "usenet_nntp_index_max_gb"
-	KeyWindowDays     = "usenet_nntp_index_window_days"
-	KeyCrawlInterval  = "usenet_nntp_crawl_interval_seconds"
-	KeyProbeState     = "usenet_nntp_probe_state"
-	KeyProbeDetail    = "usenet_nntp_probe_detail"
+	KeyMoviesPackage = "usenet_nntp_package_movies"
+	KeySeriesPackage = "usenet_nntp_package_series"
+	KeyAdultPackage  = "usenet_nntp_package_adult"
+	KeyIndexDir      = "usenet_nntp_index_dir"
+	KeyIndexMaxGB    = "usenet_nntp_index_max_gb"
+	KeyWindowDays    = "usenet_nntp_index_window_days"
+	KeyCrawlInterval = "usenet_nntp_crawl_interval_seconds"
+	KeyProbeState    = "usenet_nntp_probe_state"
+	KeyProbeDetail   = "usenet_nntp_probe_detail"
 	// Claude 2026-10-15: crawl-time quality admission kill switch (Step 4).
 	// Reason: locked decision #10 — default true; set "false" via Settings
 	//   KV directly (no UI toggle yet) to reproduce the pre-admission

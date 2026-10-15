@@ -48,12 +48,17 @@ func TestEligibleAndPruneBeyondCeiling(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	elig, err := idx.EligibleGroups(ctx, "movies", 2, []string{group, "other"})
+	elig, err := idx.EligibleGroups(ctx, "movies", 2, []string{group})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(elig) != 0 {
 		t.Fatalf("grade 3 should be ineligible at ceiling 2: %+v", elig)
+	}
+	// Untouched groups stay grade 1 and remain eligible.
+	okElig, err := idx.EligibleGroups(ctx, "movies", 2, []string{"alt.binaries.movies"})
+	if err != nil || len(okElig) != 1 {
+		t.Fatalf("untouched group should stay eligible: %+v err=%v", okElig, err)
 	}
 	if err := idx.PruneGroupsBeyondCeiling(ctx, "movies", 2, []string{group}); err != nil {
 		t.Fatal(err)

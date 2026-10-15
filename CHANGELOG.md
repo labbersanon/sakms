@@ -10991,3 +10991,21 @@ status stays active.
 | `internal/api/usenetnntp.go` | groups response `steps` + `packages` |
 | `docs/usenet-nntp-native.md` | package slider direction |
 
+## 2026-10-15 — NNTP package slider Settings (steps 1–5)
+
+**Problem:** Operators still had to pick individual newsgroups; recommended seeds were a flat list.
+**Root cause:** No package step in settings KV or Settings UI.
+**Fix:** Per-mode `moviesPackage`/`seriesPackage`/`adultPackage` (`1`–`5` or `custom`). PUT expands non-custom packages server-side. Soft-infer package from saved groups. Frontend: reliability↔breadth slider, Custom chip, advanced customize collapse.
+**Outcome:** Native search Settings is package-first; crawl keys unchanged. Re-rank auto-apply and unselected sampling still pending.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/package_resolve.go` | Infer/Resolve/Parse package step |
+| `internal/usenetsearch/service.go` | package KV keys + LIST ACTIVE cache |
+| `internal/api/usenetnntp.go` | package fields on GET/PUT |
+| `frontend/src/screens/settings/Usenet.tsx` | PackageSliderPanel |
+| `frontend/src/api/usenet.ts` | package/step types |
+| `docs/usenet-nntp-native.md` | slider docs |
+

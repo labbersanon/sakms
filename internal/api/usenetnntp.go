@@ -25,6 +25,9 @@ type usenetNNTPNativeResponse struct {
 	MoviesGroups  string `json:"moviesGroups"`
 	SeriesGroups  string `json:"seriesGroups"`
 	AdultGroups   string `json:"adultGroups"`
+	MoviesPackage string `json:"moviesPackage"`
+	SeriesPackage string `json:"seriesPackage"`
+	AdultPackage  string `json:"adultPackage"`
 	IndexDir      string `json:"indexDir"`
 	IndexMaxGB    int    `json:"indexMaxGb"`
 	WindowDays    int    `json:"windowDays"`
@@ -41,6 +44,9 @@ type usenetNNTPNativeRequest struct {
 	MoviesGroups  *string `json:"moviesGroups"`
 	SeriesGroups  *string `json:"seriesGroups"`
 	AdultGroups   *string `json:"adultGroups"`
+	MoviesPackage *string `json:"moviesPackage"`
+	SeriesPackage *string `json:"seriesPackage"`
+	AdultPackage  *string `json:"adultPackage"`
 	IndexDir      *string `json:"indexDir"`
 	IndexMaxGB    *int    `json:"indexMaxGb"`
 	WindowDays    *int    `json:"windowDays"`
@@ -208,6 +214,15 @@ func putUsenetNNTPNativeHandler(settingsStore *settings.Store, svc *usenetsearch
 		if req.Adult != nil {
 			cur.Adult = *req.Adult
 		}
+		if req.MoviesPackage != nil {
+			cur.MoviesPackage = strings.TrimSpace(*req.MoviesPackage)
+		}
+		if req.SeriesPackage != nil {
+			cur.SeriesPackage = strings.TrimSpace(*req.SeriesPackage)
+		}
+		if req.AdultPackage != nil {
+			cur.AdultPackage = strings.TrimSpace(*req.AdultPackage)
+		}
 		if req.MoviesGroups != nil {
 			cur.MoviesGroups = *req.MoviesGroups
 		}
@@ -238,6 +253,14 @@ func putUsenetNNTPNativeHandler(settingsStore *settings.Store, svc *usenetsearch
 		if cur.CrawlInterval < 0 {
 			cur.CrawlInterval = 0
 		}
+		// Claude 2026-10-15: non-custom packages expand server-side on Save.
+		// Reason: slider owns the list; client *Groups ignored unless custom.
+		// Troubleshooting: empty after Save → provider filter removed all names.
+		// Review if: re-rank auto-apply writes groups without going through PUT.
+		if errMsg := applyPackageResolution(&cur, active); errMsg != "" {
+			http.Error(w, errMsg, http.StatusBadRequest)
+			return
+		}
 		if cur.Enabled {
 			if errMsg := validatePerModeGroups(cur); errMsg != "" {
 				http.Error(w, errMsg, http.StatusBadRequest)
@@ -257,6 +280,9 @@ func putUsenetNNTPNativeHandler(settingsStore *settings.Store, svc *usenetsearch
 			{usenetsearch.KeyMoviesGroups, cur.MoviesGroups},
 			{usenetsearch.KeySeriesGroups, cur.SeriesGroups},
 			{usenetsearch.KeyAdultGroups, cur.AdultGroups},
+			{usenetsearch.KeyMoviesPackage, cur.MoviesPackage},
+			{usenetsearch.KeySeriesPackage, cur.SeriesPackage},
+			{usenetsearch.KeyAdultPackage, cur.AdultPackage},
 			{usenetsearch.KeyGroups, union}, // legacy mirror for soft-migrate readers
 			{usenetsearch.KeyIndexDir, cur.IndexDir},
 			{usenetsearch.KeyIndexMaxGB, strconv.Itoa(cur.IndexMaxGB)},
@@ -292,6 +318,59 @@ func validatePerModeGroups(cur usenetNNTPNativeResponse) string {
 		return "select at least one Adult newsgroup when Adult native search is enabled"
 	}
 	return ""
+}
+
+// applyPackageResolution expands non-custom packages into *Groups on cur.
+func applyPackageResolution(cur *usenetNNTPNativeResponse, svc *usenetsearch.Service) string {
+	type modePack struct {
+		mode string
+		pkg  *string
+		grp  *string
+	}
+	modes := []modePack{
+		{"movies", &cur.MoviesPackage, &cur.MoviesGroups},
+		{"series", &cur.SeriesPackage, &cur.SeriesGroups},
+		{"adult", &cur.AdultPackage, &cur.AdultGroups},
+	}
+	for _, m := range modes {
+		pkg := strings.TrimSpace(*m.pkg)
+		if pkg == "" {
+			pkg = usenetsearch.FormatPackageStep(usenetsearch.DefaultPackageStep)
+			*m.pkg = pkg
+		}
+		step, custom, ok := usenetsearch.ParsePackageValue(pkg)
+		if !ok {
+			return "invalid " + m.mode + " package (want 1–5 or custom)"
+		}
+		if custom {
+			*m.pkg = usenetsearch.PackageCustom
+			continue
+		}
+		var avail []string
+		if svc != nil {
+			avail = svc.CachedAvailableGroups(m.mode)
+		}
+		*m.grp = usenetsearch.FormatGroups(usenetsearch.ResolvePackageGroups(m.mode, step, avail))
+		*m.pkg = usenetsearch.FormatPackageStep(step)
+	}
+	return ""
+}
+
+func loadOrInferPackage(ctx context.Context, settingsStore *settings.Store, key, mode, groups string, svc *usenetsearch.Service) (string, error) {
+	raw, err := settingsStore.Get(ctx, key)
+	if err != nil && !isSettingsNotFound(err) {
+		return "", err
+	}
+	if strings.TrimSpace(raw) != "" {
+		if _, _, ok := usenetsearch.ParsePackageValue(raw); ok {
+			return strings.TrimSpace(raw), nil
+		}
+	}
+	var avail []string
+	if svc != nil {
+		avail = svc.CachedAvailableGroups(mode)
+	}
+	return usenetsearch.InferPackageFromGroups(mode, usenetsearch.ParseGroups(groups), avail), nil
 }
 
 func loadNNTPNativeSettings(ctx context.Context, settingsStore *settings.Store, svc *usenetsearch.Service) (usenetNNTPNativeResponse, error) {
@@ -359,6 +438,18 @@ func loadNNTPNativeSettings(ctx context.Context, settingsStore *settings.Store, 
 	if probeState == "" {
 		probeState = "unknown"
 	}
+	moviesPkg, err := loadOrInferPackage(ctx, settingsStore, usenetsearch.KeyMoviesPackage, "movies", moviesGroups, svc)
+	if err != nil {
+		return usenetNNTPNativeResponse{}, err
+	}
+	seriesPkg, err := loadOrInferPackage(ctx, settingsStore, usenetsearch.KeySeriesPackage, "series", seriesGroups, svc)
+	if err != nil {
+		return usenetNNTPNativeResponse{}, err
+	}
+	adultPkg, err := loadOrInferPackage(ctx, settingsStore, usenetsearch.KeyAdultPackage, "adult", adultGroups, svc)
+	if err != nil {
+		return usenetNNTPNativeResponse{}, err
+	}
 	return usenetNNTPNativeResponse{
 		Enabled:       enabled,
 		Movies:        movies,
@@ -367,6 +458,9 @@ func loadNNTPNativeSettings(ctx context.Context, settingsStore *settings.Store, 
 		MoviesGroups:  moviesGroups,
 		SeriesGroups:  seriesGroups,
 		AdultGroups:   adultGroups,
+		MoviesPackage: moviesPkg,
+		SeriesPackage: seriesPkg,
+		AdultPackage:  adultPkg,
 		IndexDir:      indexDir,
 		IndexMaxGB:    maxGB,
 		WindowDays:    window,

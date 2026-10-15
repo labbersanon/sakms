@@ -18,7 +18,7 @@ and prune passes (window days + max GiB).
 | Setting | Notes |
 |---|---|
 | Master + per-mode toggles | Movies / Series / Adult AND-ed with master |
-| Per-mode newsgroups | Searchable dual-list + Apply recommended (curated seeds filtered to provider `LIST ACTIVE`); first-run pre-fills recommended as unsaved draft |
+| Per-mode package slider | 5 steps: most reliable → largest selection (cumulative curated packages); advanced customize → Custom; first-run drafts step 1 |
 | Max GiB / soft age days / idle backoff | Soft size budget; soft age display; idle backoff after catch-up (0 = 60s default). Crawl is continuous when enabled |
 | Probe state/detail | Read-only |
 
@@ -40,8 +40,9 @@ age alone. Soft size budget uses row-count × ~200 B/row (`ApproxBytes`), not
 could wipe the index).
 
 Group picking: curated **5-step packages** (`seeds/packages.json`) from
-most reliable → largest selection (cumulative). Settings slider lands in a
-follow-up; GET groups already exposes `steps` / `packages`.
+most reliable → largest selection (cumulative). Settings uses a per-mode
+slider; advanced customize flips that mode to Custom. GET groups exposes
+`steps` / `packages` (provider-filtered).
 
 ## Spike numbers
 

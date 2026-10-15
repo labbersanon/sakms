@@ -13,22 +13,29 @@ import (
 
 // Settings keys (KV store).
 const (
-	KeyNativeEnabled   = "usenet_nntp_native_enabled"
-	KeyMoviesEnabled   = "movies_nntp_native_enabled"
-	KeySeriesEnabled   = "series_nntp_native_enabled"
-	KeyAdultEnabled    = "adult_nntp_native_enabled"
-	KeyGroups          = "usenet_nntp_groups" // legacy shared list; soft-migrated
-	KeyMoviesGroups    = "usenet_nntp_groups_movies"
-	KeySeriesGroups    = "usenet_nntp_groups_series"
-	KeyAdultGroups     = "usenet_nntp_groups_adult"
-	KeyIndexDir        = "usenet_nntp_index_dir"
-	KeyIndexMaxGB      = "usenet_nntp_index_max_gb"
-	KeyWindowDays      = "usenet_nntp_index_window_days"
-	KeyCrawlInterval   = "usenet_nntp_crawl_interval_seconds"
-	KeyProbeState      = "usenet_nntp_probe_state"
-	KeyProbeDetail     = "usenet_nntp_probe_detail"
-	DefaultIndexMaxGB  = 20
-	DefaultWindowDays  = 14
+	KeyNativeEnabled = "usenet_nntp_native_enabled"
+	KeyMoviesEnabled = "movies_nntp_native_enabled"
+	KeySeriesEnabled = "series_nntp_native_enabled"
+	KeyAdultEnabled  = "adult_nntp_native_enabled"
+	KeyGroups        = "usenet_nntp_groups" // legacy shared list; soft-migrated
+	KeyMoviesGroups  = "usenet_nntp_groups_movies"
+	KeySeriesGroups  = "usenet_nntp_groups_series"
+	KeyAdultGroups   = "usenet_nntp_groups_adult"
+	// Claude 2026-10-15: per-mode package step (1–5) or "custom".
+	// Reason: Settings slider; effective groups still in Key*Groups.
+	// Troubleshooting: missing key → InferPackageFromGroups on read.
+	// Review if: auto-apply re-rank (slice 4) writes these + group keys.
+	KeyMoviesPackage  = "usenet_nntp_package_movies"
+	KeySeriesPackage  = "usenet_nntp_package_series"
+	KeyAdultPackage   = "usenet_nntp_package_adult"
+	KeyIndexDir       = "usenet_nntp_index_dir"
+	KeyIndexMaxGB     = "usenet_nntp_index_max_gb"
+	KeyWindowDays     = "usenet_nntp_index_window_days"
+	KeyCrawlInterval  = "usenet_nntp_crawl_interval_seconds"
+	KeyProbeState     = "usenet_nntp_probe_state"
+	KeyProbeDetail    = "usenet_nntp_probe_detail"
+	DefaultIndexMaxGB = 20
+	DefaultWindowDays = 14
 )
 
 // Config is a snapshot of operator settings for the native backend.
@@ -107,7 +114,9 @@ func ValidateIndexDir(dir string) string {
 
 // Claude 2026-10-15: continuous crawl defaults (conservative — protect downloads).
 // Reason: no nightly cron; idle only when caught up / busy. CrawlInterval setting
-//   is idle backoff when >0; else defaultIdleBackoff.
+//
+//	is idle backoff when >0; else defaultIdleBackoff.
+//
 // Troubleshooting: index lag while downloads idle — lower idle; stall downloads — raise.
 // Review if: rates become Settings knobs separate from CrawlInterval.
 const (
@@ -126,6 +135,8 @@ type Service struct {
 	cancel         context.CancelFunc
 	probe          Readiness
 	livenessOffset int
+	// availCache: mode → last LIST ACTIVE media groups (settings resolve).
+	availCache map[string][]string
 }
 
 // NewService constructs a stopped Service. Call Apply to open the index / start crawl.
@@ -333,7 +344,28 @@ func (s *Service) ListAvailableGroups(ctx context.Context, mode string) ([]strin
 	s.mu.Lock()
 	src := s.src
 	s.mu.Unlock()
-	return ListMediaGroups(ctx, src, mode)
+	groups, err := ListMediaGroups(ctx, src, mode)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	if s.availCache == nil {
+		s.availCache = map[string][]string{}
+	}
+	cp := append([]string{}, groups...)
+	s.availCache[strings.ToLower(strings.TrimSpace(mode))] = cp
+	s.mu.Unlock()
+	return groups, nil
+}
+
+// CachedAvailableGroups returns the last LIST ACTIVE result for mode, or nil.
+func (s *Service) CachedAvailableGroups(mode string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.availCache == nil {
+		return nil
+	}
+	return append([]string{}, s.availCache[strings.ToLower(strings.TrimSpace(mode))]...)
 }
 
 // Close stops the crawler and closes the index.

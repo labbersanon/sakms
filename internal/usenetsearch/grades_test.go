@@ -2,6 +2,7 @@ package usenetsearch
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -34,16 +35,36 @@ func TestDemoteGroup_CapsAtFive(t *testing.T) {
 	ctx := context.Background()
 	var g int
 	for i := 0; i < 8; i++ {
-		if i > 0 {
-			clearDemoteCooldown(t, idx, "movies", "alt.binaries.moovee")
-		}
-		g, err = idx.DemoteGroup(ctx, "movies", "alt.binaries.moovee")
+		g, err = idx.DemoteGroup(ctx, "movies", "alt.binaries.moovee", fmt.Sprintf("gid-%d", i))
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
 	if g != 5 {
 		t.Fatalf("grade=%d want 5", g)
+	}
+}
+
+func TestDemoteGroup_SameGIDNoOp(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	group := "alt.binaries.moovee"
+	g1, err := idx.DemoteGroup(ctx, "movies", group, "same-gid")
+	if err != nil || g1 != 2 {
+		t.Fatalf("first demote: grade=%d err=%v", g1, err)
+	}
+	g2, err := idx.DemoteGroup(ctx, "movies", group, "same-gid")
+	if err != nil || g2 != 2 {
+		t.Fatalf("same GID should not demote again: grade=%d err=%v", g2, err)
+	}
+	g3, err := idx.DemoteGroup(ctx, "movies", group, "other-gid")
+	if err != nil || g3 != 3 {
+		t.Fatalf("new GID should demote: grade=%d err=%v", g3, err)
 	}
 }
 
@@ -64,10 +85,7 @@ func TestEligibleAndPruneBeyondCeiling(t *testing.T) {
 	}
 	// Demote to grade 3
 	for i := 0; i < 2; i++ {
-		if i > 0 {
-			clearDemoteCooldown(t, idx, "movies", group)
-		}
-		if _, err := idx.DemoteGroup(ctx, "movies", group); err != nil {
+		if _, err := idx.DemoteGroup(ctx, "movies", group, fmt.Sprintf("e-%d", i)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -117,10 +135,7 @@ func TestNoteSuccess_PromotesAfterTwo(t *testing.T) {
 	group := "alt.binaries.teevee"
 	// Demote to 3 first so promote is observable.
 	for i := 0; i < 2; i++ {
-		if i > 0 {
-			clearDemoteCooldown(t, idx, "series", group)
-		}
-		if _, err := idx.DemoteGroup(ctx, "series", group); err != nil {
+		if _, err := idx.DemoteGroup(ctx, "series", group, fmt.Sprintf("p-%d", i)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -133,11 +148,61 @@ func TestNoteSuccess_PromotesAfterTwo(t *testing.T) {
 		t.Fatalf("second success: grade=%d promoted=%v err=%v want grade 2 promoted", g, promoted, err)
 	}
 	// Demote resets streak — need two more successes.
-	if _, err := idx.DemoteGroup(ctx, "series", group); err != nil {
+	if _, err := idx.DemoteGroup(ctx, "series", group, "reset-streak"); err != nil {
 		t.Fatal(err)
 	}
 	_, promoted, err = idx.NoteSuccess(ctx, "series", group)
 	if err != nil || promoted {
 		t.Fatalf("streak reset: promoted=%v err=%v", promoted, err)
+	}
+}
+
+func TestResetGrade(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	group := "alt.binaries.moovee"
+	if _, err := idx.DemoteGroup(ctx, "movies", group, "g1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.ResetGrade(ctx, "movies", group); err != nil {
+		t.Fatal(err)
+	}
+	g, err := idx.GetGrade(ctx, "movies", group)
+	if err != nil || g != 1 {
+		t.Fatalf("grade=%d err=%v want 1", g, err)
+	}
+	// Same GID must demote again after reset cleared last_demote_gid.
+	g2, err := idx.DemoteGroup(ctx, "movies", group, "g1")
+	if err != nil || g2 != 2 {
+		t.Fatalf("after reset same GID should demote: grade=%d err=%v", g2, err)
+	}
+}
+
+func TestDemoteGroup_EmptyGIDCooldown(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	group := "alt.binaries.moovee"
+	g1, err := idx.DemoteGroup(ctx, "movies", group, "")
+	if err != nil || g1 != 2 {
+		t.Fatalf("first empty-GID demote: grade=%d err=%v", g1, err)
+	}
+	g2, err := idx.DemoteGroup(ctx, "movies", group, "")
+	if err != nil || g2 != 2 {
+		t.Fatalf("cooldown should block: grade=%d err=%v", g2, err)
+	}
+	clearDemoteCooldown(t, idx, "movies", group)
+	g3, err := idx.DemoteGroup(ctx, "movies", group, "")
+	if err != nil || g3 != 3 {
+		t.Fatalf("after cooldown: grade=%d err=%v", g3, err)
 	}
 }

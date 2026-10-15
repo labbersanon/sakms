@@ -528,7 +528,8 @@ func dispatchToDownloadClient(ctx context.Context, settingsStore *settings.Store
 			}
 			gid, err := nzb.AddArticleSet(ctx, article, title)
 			if err != nil {
-				demoteNativeGroupFromURL(ctx, native, m, downloadURL, err)
+				// No GID yet on pre-dispatch failure — cooldown dedupe applies.
+				demoteNativeGroupFromURL(ctx, native, m, downloadURL, "", err)
 				return wrapUsenetPrecheckErr(err)
 			}
 			return "nntp", gid, http.StatusOK, nil
@@ -826,11 +827,14 @@ func importUsenetFromDisk(
 		http.Error(w, errSeriesImportNoEpisodeIdentity.Error(), http.StatusConflict)
 		return errSeriesImportNoEpisodeIdentity
 	}
-	if err := grabsStore.UpdateStatus(ctx, id, grabs.Imported); err != nil {
+	changed, err := grabsStore.MarkImportedIfNot(ctx, id)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return err
 	}
-	promoteNativeGroupFromGrab(ctx, *g)
+	if changed {
+		promoteNativeGroupFromGrab(ctx, *g)
+	}
 	// Claude 2026-09-11: remove sakms-owned staging after successful import
 	// Reason: RARs/PAR2 were left on disk after import; only delete if ownership
 	//         gate says this dir is under staging and minted by sakms

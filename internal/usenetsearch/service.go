@@ -147,6 +147,10 @@ const (
 	catchUpPause       = 500 * time.Millisecond
 )
 
+// ProtectedGroupsFn returns newsgroup names that must not have their index
+// deleted (in-flight native grabs still need ResolveLocator).
+type ProtectedGroupsFn func(ctx context.Context) map[string]bool
+
 // Service owns the index, crawler loop, and probe state.
 type Service struct {
 	mu             sync.Mutex
@@ -159,11 +163,19 @@ type Service struct {
 	livenessOffset int
 	// availCache: mode → last LIST ACTIVE media groups (settings resolve).
 	availCache map[string][]string
+	protectFn  ProtectedGroupsFn
 }
 
 // NewService constructs a stopped Service. Call Apply to open the index / start crawl.
 func NewService(src usenet.HeaderSource, sqlDB *sql.DB) *Service {
 	return &Service{src: src, sqlDB: sqlDB, probe: Readiness{State: "unknown"}}
+}
+
+// SetProtectedGroupsFn registers groups whose index must not be deleted.
+func (s *Service) SetProtectedGroupsFn(fn ProtectedGroupsFn) {
+	s.mu.Lock()
+	s.protectFn = fn
+	s.mu.Unlock()
 }
 
 // SetHeaderSource updates the NNTP source (e.g. after SetSubscriptions).
@@ -310,6 +322,7 @@ func (s *Service) PruneBeyondCeilings(ctx context.Context) error {
 	s.mu.Lock()
 	cfg := s.cfg
 	idx := s.idx
+	protectFn := s.protectFn
 	s.mu.Unlock()
 	if idx == nil {
 		return nil
@@ -318,8 +331,12 @@ func (s *Service) PruneBeyondCeilings(ctx context.Context) error {
 	for _, g := range s.crawlEligibleGroups(ctx) {
 		allowed[g] = true
 	}
+	var protected map[string]bool
+	if protectFn != nil {
+		protected = protectFn(ctx)
+	}
 	for _, g := range cfg.AllGroups() {
-		if allowed[g] {
+		if allowed[g] || protected[g] {
 			continue
 		}
 		n, err := idx.DeleteGroupIndex(ctx, g)
@@ -362,14 +379,14 @@ func (s *Service) PromoteForSuccess(ctx context.Context, mode, group string) {
 }
 
 // DemoteForFailure bumps the group's grade for mode and deletes its index
-// when the new grade is beyond the mode's package ceiling.
-func (s *Service) DemoteForFailure(ctx context.Context, mode, group string) {
+// when no enabled mode still allows the group (and no in-flight grab protects it).
+func (s *Service) DemoteForFailure(ctx context.Context, mode, group, downloadGID string) {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
 	idx := s.idx
-	cfg := s.cfg
+	protectFn := s.protectFn
 	s.mu.Unlock()
 	if idx == nil {
 		return
@@ -379,25 +396,43 @@ func (s *Service) DemoteForFailure(ctx context.Context, mode, group string) {
 	if mode == "" || group == "" {
 		return
 	}
-	grade, err := idx.DemoteGroup(ctx, mode, group)
+	grade, err := idx.DemoteGroup(ctx, mode, group, downloadGID)
 	if err != nil {
 		log.Printf("usenetsearch: demote %s/%s: %v", mode, group, err)
 		return
 	}
-	ceiling := cfg.PackageCeilingForMode(mode)
-	log.Printf("usenetsearch: demote mode=%s group=%s grade=%d ceiling=%d", mode, group, grade, ceiling)
+	log.Printf("usenetsearch: demote mode=%s group=%s grade=%d gid=%s", mode, group, grade, downloadGID)
 	// Claude 2026-10-15: never delete index while any enabled mode still allows the group.
 	// Reason: shared groups (multimedia, hdtv.x264) would re-crawl/delete-loop.
 	// Troubleshooting: index empty for series after movies demote — check eligibility union.
 	// Review if: grades become global per group_name.
-	if !s.groupAllowedByAnyMode(ctx, group) {
-		n, err := idx.DeleteGroupIndex(ctx, group)
-		if err != nil {
-			log.Printf("usenetsearch: delete index %s: %v", group, err)
-			return
-		}
-		log.Printf("usenetsearch: deleted %d headers for %s (ineligible in all modes)", n, group)
+	if s.groupAllowedByAnyMode(ctx, group) {
+		return
 	}
+	if protectFn != nil && protectFn(ctx)[group] {
+		log.Printf("usenetsearch: skip index delete for %s (active grab)", group)
+		return
+	}
+	n, err := idx.DeleteGroupIndex(ctx, group)
+	if err != nil {
+		log.Printf("usenetsearch: delete index %s: %v", group, err)
+		return
+	}
+	log.Printf("usenetsearch: deleted %d headers for %s (ineligible in all modes)", n, group)
+}
+
+// ResetGroupGrade restores grade 1 for mode/group (operator escape).
+func (s *Service) ResetGroupGrade(ctx context.Context, mode, group string) error {
+	if s == nil {
+		return errString("usenetsearch: service nil")
+	}
+	s.mu.Lock()
+	idx := s.idx
+	s.mu.Unlock()
+	if idx == nil {
+		return ErrIndexClosed
+	}
+	return idx.ResetGrade(ctx, mode, group)
 }
 
 // groupAllowedByAnyMode reports whether any enabled mode still crawls group.

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -72,5 +73,30 @@ func TestGetUsenetNNTPGroups_NoService(t *testing.T) {
 	}
 	if len(got.Steps) != usenetsearch.PackageStepMax {
 		t.Fatalf("steps=%d want %d", len(got.Steps), usenetsearch.PackageStepMax)
+	}
+}
+
+func TestPostUsenetNNTPResetGrade_Validation(t *testing.T) {
+	h := postUsenetNNTPResetGradeHandler(nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/usenet-nntp-native/grades/reset",
+		bytes.NewBufferString(`{"mode":"bogus","group":"alt.binaries.moovee"}`))
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("bad mode status=%d", rr.Code)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/settings/usenet-nntp-native/grades/reset",
+		bytes.NewBufferString(`{"mode":"movies","group":""}`))
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("empty group status=%d", rr.Code)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/settings/usenet-nntp-native/grades/reset",
+		bytes.NewBufferString(`{"mode":"movies","group":"alt.binaries.moovee"}`))
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("no service status=%d want 503", rr.Code)
 	}
 }

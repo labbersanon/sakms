@@ -85,24 +85,30 @@ const demoteCooldownLimitSec int64 = 600
 
 // DemoteGroup bumps grade by one (cap 5) for mode/group. Returns new grade.
 // Resets success_streak. First failure inserts grade=2 (implicit prior grade 1).
-// Rate-limited: another demote within demoteCooldownLimitSec is a no-op.
-func (idx *Index) DemoteGroup(ctx context.Context, mode, group string) (int, error) {
+// Dedupes: same downloadGID as last_demote_gid is a no-op; also rate-limited
+// within demoteCooldownLimitSec when gid is empty.
+func (idx *Index) DemoteGroup(ctx context.Context, mode, group, downloadGID string) (int, error) {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	group = strings.TrimSpace(group)
+	downloadGID = strings.TrimSpace(downloadGID)
 	if mode == "" || group == "" {
 		return 1, nil
 	}
 	now := time.Now().Unix()
 	var lastFail sql.NullInt64
-	_ = idx.db.QueryRowContext(ctx,
-		`SELECT last_failed_at FROM usenet_nntp_group_grades WHERE mode=? AND group_name=?`,
-		mode, group).Scan(&lastFail)
-	if lastFail.Valid && lastFail.Int64 > 0 && now-lastFail.Int64 < demoteCooldownLimitSec {
+	var lastGID string
+	_ = idx.db.QueryRowContext(ctx, `
+SELECT last_failed_at, COALESCE(last_demote_gid, '') FROM usenet_nntp_group_grades
+WHERE mode=? AND group_name=?`, mode, group).Scan(&lastFail, &lastGID)
+	if downloadGID != "" && lastGID == downloadGID {
+		return idx.GetGrade(ctx, mode, group)
+	}
+	if downloadGID == "" && lastFail.Valid && lastFail.Int64 > 0 && now-lastFail.Int64 < demoteCooldownLimitSec {
 		return idx.GetGrade(ctx, mode, group)
 	}
 	_, err := idx.db.ExecContext(ctx, `
-INSERT INTO usenet_nntp_group_grades (mode, group_name, grade, fail_count, last_failed_at, success_streak, last_success_at)
-VALUES (?, ?, 2, 1, ?, 0, 0)
+INSERT INTO usenet_nntp_group_grades (mode, group_name, grade, fail_count, last_failed_at, success_streak, last_success_at, last_demote_gid)
+VALUES (?, ?, 2, 1, ?, 0, 0, ?)
 ON CONFLICT (mode, group_name) DO UPDATE SET
   grade = CASE
     WHEN usenet_nntp_group_grades.grade >= ? THEN usenet_nntp_group_grades.grade
@@ -110,8 +116,9 @@ ON CONFLICT (mode, group_name) DO UPDATE SET
   END,
   fail_count = usenet_nntp_group_grades.fail_count + 1,
   last_failed_at = EXCLUDED.last_failed_at,
-  success_streak = 0
-`, mode, group, now, PackageStepMax)
+  success_streak = 0,
+  last_demote_gid = EXCLUDED.last_demote_gid
+`, mode, group, now, downloadGID, PackageStepMax)
 	if err != nil {
 		return 0, err
 	}
@@ -163,10 +170,10 @@ func (idx *Index) ResetGrade(ctx context.Context, mode, group string) error {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	group = strings.TrimSpace(group)
 	_, err := idx.db.ExecContext(ctx, `
-INSERT INTO usenet_nntp_group_grades (mode, group_name, grade, fail_count, last_failed_at, success_streak, last_success_at)
-VALUES (?, ?, 1, 0, 0, 0, 0)
+INSERT INTO usenet_nntp_group_grades (mode, group_name, grade, fail_count, last_failed_at, success_streak, last_success_at, last_demote_gid)
+VALUES (?, ?, 1, 0, 0, 0, 0, '')
 ON CONFLICT (mode, group_name) DO UPDATE SET
-  grade=1, fail_count=0, last_failed_at=0, success_streak=0, last_success_at=0
+  grade=1, fail_count=0, last_failed_at=0, success_streak=0, last_success_at=0, last_demote_gid=''
 `, mode, group)
 	return err
 }

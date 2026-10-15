@@ -29,7 +29,7 @@ func shouldDemoteNativeGroup(err error) bool {
 		errors.Is(err, usenet.ErrArticleRemoved)
 }
 
-func demoteNativeGroupFromURL(ctx context.Context, svc *usenetsearch.Service, m mode.Mode, downloadURL string, failure error) {
+func demoteNativeGroupFromURL(ctx context.Context, svc *usenetsearch.Service, m mode.Mode, downloadURL, downloadGID string, failure error) {
 	if svc == nil || !shouldDemoteNativeGroup(failure) || !usenetsearch.IsLocator(downloadURL) {
 		return
 	}
@@ -37,8 +37,8 @@ func demoteNativeGroupFromURL(ctx context.Context, svc *usenetsearch.Service, m 
 	if err != nil || !ok || parts.Group == "" {
 		return
 	}
-	log.Printf("usenetsearch: demote from failure mode=%s group=%s err=%v", m, parts.Group, failure)
-	svc.DemoteForFailure(ctx, string(m), parts.Group)
+	log.Printf("usenetsearch: demote from failure mode=%s group=%s gid=%s err=%v", m, parts.Group, downloadGID, failure)
+	svc.DemoteForFailure(ctx, string(m), parts.Group, downloadGID)
 }
 
 func demoteNativeGroupFromGrab(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, failure error) {
@@ -46,7 +46,7 @@ func demoteNativeGroupFromGrab(ctx context.Context, deps AutoGrabDeps, g grabs.G
 	// Reason: demote was a no-op for mid-download 430/451 without this fallback.
 	// Troubleshooting: grade stuck at 1 after live failures — check WithUsenetSearch.
 	// Review if: AutoGrabDeps always carries UsenetSearch from those callers.
-	demoteNativeGroupFromURL(ctx, WithUsenetSearch(deps).UsenetSearch, g.Mode, g.DownloadURL, failure)
+	demoteNativeGroupFromURL(ctx, WithUsenetSearch(deps).UsenetSearch, g.Mode, g.DownloadURL, g.DownloadGID, failure)
 }
 
 // promoteNativeGroupFromGrab notes a successful import for sakms-nntp grabs.
@@ -63,4 +63,26 @@ func promoteNativeGroupFromGrab(ctx context.Context, g grabs.Grab) {
 		return
 	}
 	svc.PromoteForSuccess(ctx, string(g.Mode), parts.Group)
+}
+
+// ActiveNativeLocatorGroups returns newsgroup names referenced by in-flight
+// sakms-nntp grabs. Used to skip index deletion while ResolveLocator is still needed.
+func ActiveNativeLocatorGroups(ctx context.Context, store *grabs.Store) map[string]bool {
+	out := map[string]bool{}
+	if store == nil {
+		return out
+	}
+	list, err := store.ListActive(ctx)
+	if err != nil {
+		log.Printf("usenetsearch: list active grabs for protect: %v", err)
+		return out
+	}
+	for _, g := range list {
+		parts, ok, err := usenetsearch.DecodeLocator(g.DownloadURL)
+		if err != nil || !ok || parts.Group == "" {
+			continue
+		}
+		out[parts.Group] = true
+	}
+	return out
 }

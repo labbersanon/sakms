@@ -49,6 +49,7 @@ import {
   putUsenetMaxConcurrentDownloads,
   putUsenetNNTPNative,
   putUsenetSegmentResume,
+  resetUsenetNNTPGroupGrade,
   type UsenetNNTPAvailableGroups,
   type UsenetNNTPGroupItem,
   type UsenetNNTPNativeSettings,
@@ -867,16 +868,20 @@ const listBoxClass =
 // Review if: a third reset variant is needed.
 const GroupTransferToolbox: Component<{
   title: string;
+  mode: "movies" | "series" | "adult";
   items: UsenetNNTPGroupItem[];
   recommended: UsenetNNTPGroupItem[];
   monitored: string[];
   onChange: (monitored: string[]) => void;
   resetLabel?: string;
   onReset?: () => void;
+  onGradeReset?: () => void;
 }> = (props) => {
   const [leftSel, setLeftSel] = createSignal<string[]>([]);
   const [rightSel, setRightSel] = createSignal<string[]>([]);
   const [query, setQuery] = createSignal("");
+  const [gradeBusy, setGradeBusy] = createSignal(false);
+  const [gradeErr, setGradeErr] = createSignal("");
 
   const monitoredSet = () => new Set(props.monitored);
   const itemByName = createMemo(() => {
@@ -884,6 +889,8 @@ const GroupTransferToolbox: Component<{
     for (const it of props.items) m.set(it.name, it);
     return m;
   });
+  const demotedSelection = () =>
+    rightSel().filter((g) => (itemByName().get(g)?.grade ?? 1) > 1);
   const matches = (name: string) => {
     const needle = query().trim().toLowerCase();
     if (!needle) return true;
@@ -1041,6 +1048,39 @@ const GroupTransferToolbox: Component<{
           </select>
         </label>
       </div>
+      {/* Claude 2026-10-15: Reset grade for selected monitored groups (G>1).
+          Reason: operator escape for demoted/sticky grades without SQL.
+          Troubleshooting: button disabled until a demoted group is selected.
+          Review if: bulk reset-all-for-mode is added. */}
+      <div class="mt-2 flex flex-wrap items-center gap-2">
+        <Button
+          class="!px-2 !py-1 !text-xs"
+          disabled={gradeBusy() || demotedSelection().length === 0}
+          title="Reset selected groups to grade 1"
+          aria-label={`${props.title} reset grade for selected`}
+          onClick={async () => {
+            const targets = demotedSelection();
+            if (targets.length === 0) return;
+            setGradeBusy(true);
+            setGradeErr("");
+            try {
+              for (const g of targets) {
+                await resetUsenetNNTPGroupGrade(props.mode, g);
+              }
+              props.onGradeReset?.();
+            } catch (e) {
+              setGradeErr(e instanceof Error ? e.message : String(e));
+            } finally {
+              setGradeBusy(false);
+            }
+          }}
+        >
+          Reset grade
+        </Button>
+        <Show when={gradeErr()}>
+          <ErrorText>{gradeErr()}</ErrorText>
+        </Show>
+      </div>
     </div>
   );
 };
@@ -1082,12 +1122,14 @@ const STEP_MAX = 5;
 
 const PackageSliderPanel: Component<{
   title: string;
+  mode: "movies" | "series" | "adult";
   pkg: string;
   steps?: UsenetNNTPAvailableGroups["steps"];
   avail: UsenetNNTPAvailableGroups;
   monitored: string[];
   onPackageChange: (pkg: string, groups: string[]) => void;
   onGroupsChange: (groups: string[]) => void;
+  onGradeReset?: () => void;
 }> = (props) => {
   const [advOpen, setAdvOpen] = createSignal(false);
 
@@ -1180,6 +1222,7 @@ const PackageSliderPanel: Component<{
         <div class="mt-3">
           <GroupTransferToolbox
             title={props.title}
+            mode={props.mode}
             items={props.avail.items ?? []}
             recommended={props.avail.recommended ?? []}
             monitored={props.monitored}
@@ -1188,6 +1231,7 @@ const PackageSliderPanel: Component<{
             }}
             resetLabel={`Reset to step ${currentStep()}`}
             onReset={resetToStep}
+            onGradeReset={props.onGradeReset}
           />
         </div>
       </details>
@@ -1447,6 +1491,7 @@ const NativeSearchCard: Component = () => {
       <Show when={movies()}>
         <PackageSliderPanel
           title="Movies"
+          mode="movies"
           pkg={moviesPackage()}
           steps={availMovies().steps}
           avail={availMovies()}
@@ -1457,11 +1502,13 @@ const NativeSearchCard: Component = () => {
           onGroupsChange={(groups) =>
             handleGroupsChange(setMoviesPackage, setMoviesGroups, groups)
           }
+          onGradeReset={() => void loadAvailable()}
         />
       </Show>
       <Show when={series()}>
         <PackageSliderPanel
           title="Series"
+          mode="series"
           pkg={seriesPackage()}
           steps={availSeries().steps}
           avail={availSeries()}
@@ -1472,11 +1519,13 @@ const NativeSearchCard: Component = () => {
           onGroupsChange={(groups) =>
             handleGroupsChange(setSeriesPackage, setSeriesGroups, groups)
           }
+          onGradeReset={() => void loadAvailable()}
         />
       </Show>
       <Show when={adult()}>
         <PackageSliderPanel
           title="Adult"
+          mode="adult"
           pkg={adultPackage()}
           steps={availAdult().steps}
           avail={availAdult()}
@@ -1487,6 +1536,7 @@ const NativeSearchCard: Component = () => {
           onGroupsChange={(groups) =>
             handleGroupsChange(setAdultPackage, setAdultGroups, groups)
           }
+          onGradeReset={() => void loadAvailable()}
         />
       </Show>
       <Muted class="mb-3">

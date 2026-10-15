@@ -239,6 +239,13 @@ func run() error {
 	} else if err := nntpSearch.Apply(cfgNative); err != nil {
 		log.Printf("usenetsearch: apply: %v", err)
 	}
+	// Claude 2026-10-15: protect in-flight native locator groups from index delete.
+	// Reason: demote/prune must not wipe headers while ResolveLocator still needed.
+	// Troubleshooting: mid-download ResolveLocator fails after demote — protectFn.
+	// Review if: ListActive gains a sakms-nntp-only SQL filter.
+	nntpSearch.SetProtectedGroupsFn(func(ctx context.Context) map[string]bool {
+		return api.ActiveNativeLocatorGroups(ctx, grabsStore)
+	})
 	api.SetNNTPNativeService(nntpSearch)
 	defer nntpSearch.Close()
 	// traktStore persists Trakt's single application connection + linked

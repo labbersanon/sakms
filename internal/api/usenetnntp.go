@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -199,6 +200,50 @@ func getUsenetNNTPGroupsHandler(svc *usenetsearch.Service) http.HandlerFunc {
 			Mode: mode, Groups: groups, Recommended: rec, Items: items,
 			Steps: steps, Packages: packages,
 		})
+	}
+}
+
+// Claude 2026-10-15: operator escape to restore grade 1 after demotions.
+// Reason: sticky grade 5 / mistaken demotes need a Settings reset without SQL.
+// Troubleshooting: POST returns 503 when native index is closed (disabled).
+// Review if: bulk reset-all-for-mode is needed.
+// Related files: usenetsearch.ResetGroupGrade, frontend Usenet.tsx
+type usenetNNTPResetGradeRequest struct {
+	Mode  string `json:"mode"`
+	Group string `json:"group"`
+}
+
+func postUsenetNNTPResetGradeHandler(svc *usenetsearch.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req usenetNNTPResetGradeRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		mode := strings.ToLower(strings.TrimSpace(req.Mode))
+		group := strings.TrimSpace(req.Group)
+		if mode != "movies" && mode != "series" && mode != "adult" {
+			http.Error(w, "mode must be movies, series, or adult", http.StatusBadRequest)
+			return
+		}
+		if group == "" {
+			http.Error(w, "group is required", http.StatusBadRequest)
+			return
+		}
+		active := resolveNNTPNativeService(svc)
+		if active == nil {
+			http.Error(w, "native usenet search is not available", http.StatusServiceUnavailable)
+			return
+		}
+		if err := active.ResetGroupGrade(r.Context(), mode, group); err != nil {
+			if errors.Is(err, usenetsearch.ErrIndexClosed) {
+				http.Error(w, "native index is not open — enable Native search first", http.StatusServiceUnavailable)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "mode": mode, "group": group, "grade": 1})
 	}
 }
 

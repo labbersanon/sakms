@@ -228,3 +228,16 @@ export function fetchUsenetNNTPGroups(
   );
 }
 
+// Claude 2026-10-15: operator reset for demoted NNTP group grades.
+// Reason: sticky grade 5 / mistaken demotes need a Settings escape hatch.
+// Troubleshooting: 503 → enable Native search so the index is open.
+// Review if: bulk reset-all endpoint is added.
+export function resetUsenetNNTPGroupGrade(
+  mode: "movies" | "series" | "adult",
+  group: string,
+): Promise<{ ok: boolean; mode: string; group: string; grade: number }> {
+  return api("/api/settings/usenet-nntp-native/grades/reset", {
+    method: "POST",
+    body: JSON.stringify({ mode, group }),
+  });
+}

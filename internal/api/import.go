@@ -210,15 +210,18 @@ func UsenetCompleteImporter(httpClient *http.Client, connStore *connections.Stor
 			log.Printf("usenet import: grab %d recorded no library files — leaving staging %s", g.ID, gid)
 			return
 		}
-		if err := grabsStore.UpdateStatus(ctx, g.ID, grabs.Imported); err != nil {
+		// Claude 2026-10-15: MarkImportedIfNot so promote runs once per status flip.
+		// Reason: complete + reconcile can race; double NoteSuccess would over-promote.
+		// Troubleshooting: grade drops two tiers after one import — check changed gate.
+		// Review if: torrent CompleteImporter needs the same one-shot pattern.
+		changed, err := grabsStore.MarkImportedIfNot(ctx, g.ID)
+		if err != nil {
 			log.Printf("usenet import: grab %d marking imported: %v", g.ID, err)
 			return
 		}
-		// Claude 2026-10-15: passive grade promote after successful native import.
-		// Reason: two successes → one tier toward most-reliable; demote on failure.
-		// Troubleshooting: only sakms-nntp locators; see PromoteForSuccess.
-		// Review if: manual importUsenetFromDisk should also promote (yes — shared helper).
-		promoteNativeGroupFromGrab(ctx, *g)
+		if changed {
+			promoteNativeGroupFromGrab(ctx, *g)
+		}
 		// Claude 2026-09-11: clear owned staging on automatic complete
 		// Reason: critic — auto-import left nzb-* dirs
 		// Troubleshooting: journal "post-import staging cleanup"

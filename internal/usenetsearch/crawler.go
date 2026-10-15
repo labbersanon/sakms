@@ -223,15 +223,15 @@ func pruneGroupNonMatching(ctx context.Context, idx *Index, group string, groupM
 // "Per-chunk aggregate count log", locked decision #7 — counts only, no
 // per-item reject logging).
 type chunkStats struct {
-	rows        int
-	releases    int
-	admitted    int
+	rows         int
+	releases     int
+	admitted     int
 	skipUnparsed int
-	skipRes     int
-	skipTier    int
-	skipStat    int
-	statCalls   int
-	deferred    int
+	skipRes      int
+	skipTier     int
+	skipStat     int
+	statCalls    int
+	deferred     int
 }
 
 // admitChunk runs the plan's bucket → gate → STAT → upsert flow over one
@@ -305,10 +305,9 @@ func (c *Crawler) admitChunk(ctx context.Context, group string, a, b int, header
 			}
 		}
 		if passIdx < 0 {
-			switch rejectReason {
-			case reasonTierOutOfBand:
+			if rejectReason == reasonTierOutOfBand {
 				st.skipTier++
-			default:
+			} else {
 				st.skipRes++
 			}
 			continue
@@ -383,27 +382,24 @@ func (c *Crawler) statVerdict(ctx context.Context, group, name string, rows []He
 
 func logAdmit(group, name string, std Standard, label string, rows []HeaderRow) {
 	info := release.Parse(name)
-	tier, ok := quality.InferTier(info)
-	tierStr := "unknown"
-	if ok {
-		tierStr = string(tier)
-	}
 	low, high := bandBounds(std.Tiers)
 	payloadRows, lowMsg, highMsg := rowStats(rows)
 	log.Printf("usenetsearch: admit group=%s release=%s mode=%s policy=%s tmdb=%d match=%s res=%d source=%s codec=%s tier=%s band=%s-%s min_res=%d max_res=%d rows=%d payload_rows=%d msgs=%d-%d stat=%s",
-		group, name, std.Mode, std.Policy, std.TMDBID, std.Match, info.Resolution, orDash(info.Source), orDash(info.Codec), tierStr, low, high, std.MinRes, std.MaxRes, len(rows), payloadRows, lowMsg, highMsg, label)
+		group, name, std.Mode, std.Policy, std.TMDBID, std.Match, info.Resolution, orUnknown(info.Source), orUnknown(info.Codec), tierLabel(info), low, high, std.MinRes, std.MaxRes, len(rows), payloadRows, lowMsg, highMsg, label)
 }
 
 func logAdmitSkipStat(group, name string, std Standard, label string, rows []HeaderRow) {
 	info := release.Parse(name)
-	tier, ok := quality.InferTier(info)
-	tierStr := "unknown"
-	if ok {
-		tierStr = string(tier)
-	}
 	sample := pickSample(rows)
 	log.Printf("usenetsearch: admit-skip-stat group=%s release=%s mode=%s policy=%s tmdb=%d match=%s res=%d source=%s tier=%s rows=%d stat=%s sample=%s",
-		group, name, std.Mode, std.Policy, std.TMDBID, std.Match, info.Resolution, orDash(info.Source), tierStr, len(rows), label, strings.Join(sample, ","))
+		group, name, std.Mode, std.Policy, std.TMDBID, std.Match, info.Resolution, orUnknown(info.Source), tierLabel(info), len(rows), label, strings.Join(sample, ","))
+}
+
+func tierLabel(info release.Info) string {
+	if tier, ok := quality.InferTier(info); ok {
+		return string(tier)
+	}
+	return "unknown"
 }
 
 func bandBounds(tiers []quality.Tier) (low, high string) {
@@ -430,7 +426,7 @@ func rowStats(rows []HeaderRow) (payloadRows, lowMsg, highMsg int) {
 	return payloadRows, lowMsg, highMsg
 }
 
-func orDash(s string) string {
+func orUnknown(s string) string {
 	if s == "" {
 		return "unknown"
 	}

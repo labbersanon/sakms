@@ -4,6 +4,7 @@ import (
 	"context"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/labbersanon/sakms/internal/autograb"
@@ -162,22 +163,9 @@ func splitReleaseTitle(name string) (prefix string, year int, isEpisode bool) {
 
 	prefix = strings.TrimSpace(name[:cutIdx])
 	if yearIsCut {
-		if y := yearRe.FindString(name[cutIdx:]); y != "" {
-			year = atoiSafe(y)
-		}
+		year, _ = strconv.Atoi(yearRe.FindString(name[cutIdx:]))
 	}
 	return prefix, year, isEpisode
-}
-
-func atoiSafe(s string) int {
-	n := 0
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return 0
-		}
-		n = n*10 + int(c-'0')
-	}
-	return n
 }
 
 var titleTokenRe = regexp.MustCompile(`[a-z0-9]+`)

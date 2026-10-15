@@ -7,6 +7,15 @@ import (
 	"github.com/labbersanon/sakms/internal/dbtest"
 )
 
+func clearDemoteCooldown(t *testing.T, idx *Index, mode, group string) {
+	t.Helper()
+	_, err := idx.db.ExecContext(context.Background(),
+		`UPDATE usenet_nntp_group_grades SET last_failed_at=0 WHERE mode=? AND group_name=?`, mode, group)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDemoteGroup_CapsAtFive(t *testing.T) {
 	sqlDB := dbtest.New(t)
 	idx, err := OpenIndex(sqlDB)
@@ -17,6 +26,9 @@ func TestDemoteGroup_CapsAtFive(t *testing.T) {
 	ctx := context.Background()
 	var g int
 	for i := 0; i < 8; i++ {
+		if i > 0 {
+			clearDemoteCooldown(t, idx, "movies", "alt.binaries.moovee")
+		}
 		g, err = idx.DemoteGroup(ctx, "movies", "alt.binaries.moovee")
 		if err != nil {
 			t.Fatal(err)
@@ -44,6 +56,9 @@ func TestEligibleAndPruneBeyondCeiling(t *testing.T) {
 	}
 	// Demote to grade 3
 	for i := 0; i < 2; i++ {
+		if i > 0 {
+			clearDemoteCooldown(t, idx, "movies", group)
+		}
 		if _, err := idx.DemoteGroup(ctx, "movies", group); err != nil {
 			t.Fatal(err)
 		}
@@ -94,6 +109,9 @@ func TestNoteSuccess_PromotesAfterTwo(t *testing.T) {
 	group := "alt.binaries.teevee"
 	// Demote to 3 first so promote is observable.
 	for i := 0; i < 2; i++ {
+		if i > 0 {
+			clearDemoteCooldown(t, idx, "series", group)
+		}
 		if _, err := idx.DemoteGroup(ctx, "series", group); err != nil {
 			t.Fatal(err)
 		}

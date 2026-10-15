@@ -3,7 +3,6 @@ package usenetsearch
 import (
 	"context"
 	"database/sql"
-	"log"
 	"strings"
 	"time"
 )

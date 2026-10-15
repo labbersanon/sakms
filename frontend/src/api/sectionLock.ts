@@ -19,7 +19,7 @@ import type {
   SectionLockUnlockRequest,
 } from "@dto";
 
-// LOCKABLE_TAB_SECTIONS is the six sidebar tabs, as section ids (each
+// LOCKABLE_TAB_SECTIONS is the five sidebar tabs, as section ids (each
 // NAV_ITEM's href minus its leading "/"), in sidebar order.
 //
 // WHY THIS IS AUTHORED HERE RATHER THAN DERIVED FROM NAV_ITEMS. Deriving it
@@ -59,7 +59,12 @@ export const LOCKABLE_TAB_SECTIONS = [
   // "library",
   "queue",
   "organize",
-  "collections",
+  // Claude 2026-10-14: "collections" removed from the sidebar lock list.
+  // Reason: operator dropped Collections from the landside nav; page stays
+  //   at /collections. Stored collections PINs still display via sectionLabel
+  //   and still gate leftover API classification.
+  // Review if: Collections returns as a nav item.
+  // "collections",
   "settings",
 ] as const;
 
@@ -69,7 +74,7 @@ export const LOCKABLE_TAB_SECTIONS = [
 export const ADULT_CONTENT_SECTION = "adult-content";
 
 // ALL_LOCKABLE_SECTIONS is the full checkbox set for the Settings panel: the
-// six tabs plus adult-content, in that fixed order.
+// five tabs plus adult-content, in that fixed order.
 //
 // ORDER IS LOAD-BEARING, not cosmetic. Both the per-checkbox save and the
 // "lock everything" convenience build their request array by filtering THIS
@@ -85,9 +90,9 @@ export const ALL_LOCKABLE_SECTIONS: string[] = [
 // so a new section can never render as a bare slug.
 //
 // Claude 2026-10-14: landside Lubber names on the sidebar.
-// Reason: Dock/Lighthouse/Wharf/Dry dock/Locker/Harbormaster is shore
-//   vocabulary (off the *arr ship), not pirate kitsch. Route paths stay
-//   /dashboard /discover /queue /organize /collections /settings.
+// Reason: Dock/Lighthouse/Cargo/Dry dock is shore vocabulary (off the *arr
+//   ship), not pirate kitsch. Settings stays Settings. Route paths stay
+//   /dashboard /discover /queue /organize /settings.
 // Troubleshooting: sidebar, lock overlay, and PIN checkboxes all read here.
 //   Nested workflow names (Rename, Downloads, …) stay operational.
 // Review if: the product is renamed from SAK.
@@ -95,10 +100,10 @@ const SECTION_LABELS: Record<string, string> = {
   dashboard: "Dock",
   discover: "Lighthouse",
   library: "Library",
-  queue: "Wharf",
+  queue: "Cargo",
   organize: "Dry dock",
-  collections: "Locker",
-  settings: "Harbormaster",
+  collections: "Collections",
+  settings: "Settings",
   "adult-content": "Adult content",
 };
 

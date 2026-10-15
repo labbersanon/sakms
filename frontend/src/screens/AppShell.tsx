@@ -1,5 +1,5 @@
 // The authed app shell. Past auth it renders a LEFT SIDEBAR (Dock /
-// Lighthouse / Wharf / Dry dock / Locker / Harbormaster, each
+// Lighthouse / Cargo / Dry dock / Settings, each
 // an icon + label) beside the client-side router; the landing view is
 // Lighthouse. The sidebar collapses to icon-only and persists that choice in
 // localStorage. The router must never claim an /api/* path (see APP_ROUTES).
@@ -240,12 +240,15 @@ const IconRename: Component = () => (
     <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
   </svg>
 );
-const IconCollections: Component = () => (
-  <svg {...svgProps}>
-    <rect x="2" y="7" width="16" height="13" rx="2" />
-    <path d="M6 7V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-2" />
-  </svg>
-);
+// Claude 2026-10-14: IconCollections unused after Collections left the sidebar.
+// Reason: operator dropped the nav item; /collections route still renders.
+// Review if: Collections returns as a nav item.
+// const IconCollections: Component = () => (
+//   <svg {...svgProps}>
+//     <rect x="2" y="7" width="16" height="13" rx="2" />
+//     <path d="M6 7V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-2" />
+//   </svg>
+// );
 const IconSettings: Component = () => (
   <svg {...svgProps}>
     <circle cx="12" cy="12" r="3" />
@@ -289,7 +292,11 @@ export const NAV_ITEMS: NavItem[] = [
   // { href: "/library/mainstream", label: "Library", icon: IconLibrary, section: "library", group: "library" },
   { href: "/queue", label: sectionLabel("queue"), icon: IconQueue, section: "queue" },
   { href: "/organize", label: sectionLabel("organize"), icon: IconRename, section: "organize" },
-  { href: "/collections", label: sectionLabel("collections"), icon: IconCollections, section: "collections" },
+  // Claude 2026-10-14: Collections sidebar item removed.
+  // Reason: operator dropped it from the landside nav; /collections still
+  //   renders for leftover bookmarks.
+  // Review if: Collections returns as a nav item.
+  // { href: "/collections", label: sectionLabel("collections"), icon: IconCollections, section: "collections" },
   { href: "/settings", label: sectionLabel("settings"), icon: IconSettings, section: "settings" },
 ];
 

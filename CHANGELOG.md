@@ -11005,3 +11005,19 @@ status stays active.
 | `frontend/src/screens/discover/RowView.tsx` | Back to Lighthouse |
 | `docs/lubber-theme-mockup.html` | sidebar names + glossary |
 | tests | match the new labels |
+
+## 2026-10-14 — Cargo, drop Collections, Settings stays Settings
+
+**Problem:** Wharf was the wrong word for Queue; Collections did not belong on the landside nav; Harbormaster was an unwanted rename of Settings.
+**Fix:** Queue label is Cargo. Collections is commented out of NAV_ITEMS and the lockable-tab lists (page remains at `/collections`). Settings label is Settings again.
+**Outcome:** Sidebar is Dock, Lighthouse, Cargo, Dry dock, Settings.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/api/sectionLock.ts` | queue=Cargo; settings=Settings; collections off lock tabs |
+| `frontend/src/screens/AppShell.tsx` | Collections nav item commented out |
+| `internal/sectionlock/sections.go` | SectionCollections off tabSections |
+| `docs/lubber-theme-mockup.html` | matching sidebar + glossary |
+| tests | Cargo / Settings; no Collections nav |

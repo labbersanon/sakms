@@ -1,4 +1,4 @@
-// Sidebar tests — the left nav renders all 7 items with icons + labels, the
+// Sidebar tests — the left nav renders all 5 items with icons + labels, the
 // collapse toggle hides labels while keeping icons, and the collapsed choice
 // persists to localStorage across a fresh mount. Also covers the mobile
 // off-canvas drawer: open/closed translate classes and closing on nav-link
@@ -17,10 +17,9 @@ import { AdultModeContext } from "../components/ui";
 const NAV_LABELS = [
   "Dock",
   "Lighthouse",
-  "Wharf",
+  "Cargo",
   "Dry dock",
-  "Locker",
-  "Harbormaster",
+  "Settings",
 ];
 
 const ORGANIZE_CHILDREN = ["Rename", "Clean-up", "Dedup", "Browse", "Import", "Discs"];
@@ -40,7 +39,7 @@ const SETTINGS_CHILDREN = [
   "Global",
 ];
 const MEDIA_CHILDREN = ["Mainstream", "Adult"];
-const GROUP_LABELS = ["Lighthouse", "Wharf", "Dry dock", "Harbormaster"];
+const GROUP_LABELS = ["Lighthouse", "Cargo", "Dry dock", "Settings"];
 
 // renderSidebar mounts the Sidebar inside a Router (its <A> links need router
 // context) with its collapsed state owned by the persisted-bool helper — the
@@ -84,9 +83,9 @@ describe("Sidebar", () => {
     for (const label of MEDIA_CHILDREN) {
       expect(screen.getAllByText(label)).toHaveLength(1);
     }
-    // 6 nav icons + 1 sidebar-collapse chevron + 4 group chevrons
-    // (Discover, Queue, Organize, Settings).
-    expect(container.querySelectorAll("svg").length).toBe(11);
+    // 5 nav icons + 1 sidebar-collapse chevron + 4 group chevrons
+    // (Lighthouse, Cargo, Dry dock, Settings).
+    expect(container.querySelectorAll("svg").length).toBe(10);
   });
 
   it("collapse toggle hides labels but keeps icons", () => {
@@ -113,7 +112,7 @@ describe("Sidebar", () => {
     for (const label of MEDIA_CHILDREN) {
       expect(screen.queryByText(label)).not.toBeInTheDocument();
     }
-    expect(container.querySelectorAll("svg").length).toBe(7);
+    expect(container.querySelectorAll("svg").length).toBe(6);
     for (const label of NAV_LABELS) {
       if (GROUP_LABELS.includes(label)) continue;
       expect(container.querySelector(`a[title="${label}"]`)).toBeTruthy();
@@ -159,7 +158,7 @@ describe("Sidebar", () => {
     const { container } = renderSidebar();
 
     expect(screen.queryByText("Lighthouse")).not.toBeInTheDocument();
-    expect(container.querySelectorAll("svg").length).toBe(7);
+    expect(container.querySelectorAll("svg").length).toBe(6);
     expect(screen.getByLabelText("Expand sidebar")).toBeInTheDocument();
   });
 
@@ -178,9 +177,9 @@ describe("Sidebar", () => {
   it("icon-collapsed Settings opens a flyout with screen links", () => {
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, "true");
     renderSidebar();
-    fireEvent.click(screen.getByLabelText("Harbormaster"));
+    fireEvent.click(screen.getByLabelText("Settings"));
     expect(
-      screen.getByRole("menu", { name: "Harbormaster screens" }),
+      screen.getByRole("menu", { name: "Settings screens" }),
     ).toBeInTheDocument();
     for (const label of SETTINGS_CHILDREN) {
       expect(screen.getByRole("menuitem", { name: label })).toBeInTheDocument();
@@ -190,9 +189,9 @@ describe("Sidebar", () => {
   it("icon-collapsed Queue opens a flyout with section links", () => {
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, "true");
     renderSidebar();
-    fireEvent.click(screen.getByLabelText("Wharf"));
+    fireEvent.click(screen.getByLabelText("Cargo"));
     expect(
-      screen.getByRole("menu", { name: "Wharf sections" }),
+      screen.getByRole("menu", { name: "Cargo sections" }),
     ).toBeInTheDocument();
     for (const label of QUEUE_CHILDREN) {
       expect(screen.getByRole("menuitem", { name: label })).toBeInTheDocument();
@@ -290,7 +289,7 @@ describe("Sidebar mobile drawer", () => {
 
   it("calls onCloseMobile when a nav link is clicked", () => {
     const { onCloseMobile } = renderMobileSidebar();
-    fireEvent.click(screen.getByText("Wharf"));
+    fireEvent.click(screen.getByText("Cargo"));
     expect(onCloseMobile).toHaveBeenCalledOnce();
   });
 

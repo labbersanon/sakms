@@ -830,6 +830,7 @@ func importUsenetFromDisk(
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return err
 	}
+	promoteNativeGroupFromGrab(ctx, *g)
 	// Claude 2026-09-11: remove sakms-owned staging after successful import
 	// Reason: RARs/PAR2 were left on disk after import; only delete if ownership
 	//         gate says this dir is under staging and minted by sakms

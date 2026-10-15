@@ -214,6 +214,11 @@ func UsenetCompleteImporter(httpClient *http.Client, connStore *connections.Stor
 			log.Printf("usenet import: grab %d marking imported: %v", g.ID, err)
 			return
 		}
+		// Claude 2026-10-15: passive grade promote after successful native import.
+		// Reason: two successes → one tier toward most-reliable; demote on failure.
+		// Troubleshooting: only sakms-nntp locators; see PromoteForSuccess.
+		// Review if: manual importUsenetFromDisk should also promote (yes — shared helper).
+		promoteNativeGroupFromGrab(ctx, *g)
 		// Claude 2026-09-11: clear owned staging on automatic complete
 		// Reason: critic — auto-import left nzb-* dirs
 		// Troubleshooting: journal "post-import staging cleanup"

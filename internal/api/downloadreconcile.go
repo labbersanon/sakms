@@ -463,6 +463,7 @@ func reconcileImportUsenet(ctx context.Context, deps DownloadReconcileDeps, g *g
 	if err := deps.GrabsStore.UpdateStatus(ctx, g.ID, grabs.Imported); err != nil {
 		return err
 	}
+	promoteNativeGroupFromGrab(ctx, *g)
 	clearOwnedUsenetStaging(deps.NZB, g.DownloadGID)
 	return nil
 }

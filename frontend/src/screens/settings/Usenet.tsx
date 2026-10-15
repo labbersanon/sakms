@@ -1493,7 +1493,7 @@ const NativeSearchCard: Component = () => {
         The slider sets a grade ceiling — only groups graded at or below that tier
         are crawled. Groups start at grade 1 (most reliable). Usenet article
         failures demote a group one tier. Once a group is demoted past the ceiling,
-        crawling stops and its index is deleted. Grade 5 is sticky — groups at that
+        crawling stops and its index is deleted. Two successful native imports promote one tier. Grade 5 is sticky on demote — groups at that
         tier stay regardless of failures. Expand "Customize groups" to edit the list
         manually; doing so switches that mode to Custom and disables the slider until
         you reset it.

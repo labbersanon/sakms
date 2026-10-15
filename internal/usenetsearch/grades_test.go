@@ -60,15 +60,13 @@ func TestEligibleAndPruneBeyondCeiling(t *testing.T) {
 	if err != nil || len(okElig) != 1 {
 		t.Fatalf("untouched group should stay eligible: %+v err=%v", okElig, err)
 	}
-	if err := idx.PruneGroupsBeyondCeiling(ctx, "movies", 2, []string{group}); err != nil {
-		t.Fatal(err)
+	n, err := idx.DeleteGroupIndex(ctx, group)
+	if err != nil || n == 0 {
+		t.Fatalf("DeleteGroupIndex n=%d err=%v", n, err)
 	}
-	n, err := idx.CountHeaders(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n != 0 {
-		t.Fatalf("headers=%d want 0 after prune", n)
+	left, err := idx.CountHeaders(ctx)
+	if err != nil || left != 0 {
+		t.Fatalf("headers=%d want 0 after delete", left)
 	}
 }
 
@@ -82,5 +80,38 @@ func TestGetGrade_DefaultOne(t *testing.T) {
 	g, err := idx.GetGrade(context.Background(), "series", "alt.binaries.teevee")
 	if err != nil || g != 1 {
 		t.Fatalf("grade=%d err=%v", g, err)
+	}
+}
+
+func TestNoteSuccess_PromotesAfterTwo(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	group := "alt.binaries.teevee"
+	// Demote to 3 first so promote is observable.
+	for i := 0; i < 2; i++ {
+		if _, err := idx.DemoteGroup(ctx, "series", group); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g, promoted, err := idx.NoteSuccess(ctx, "series", group)
+	if err != nil || promoted || g != 3 {
+		t.Fatalf("first success: grade=%d promoted=%v err=%v", g, promoted, err)
+	}
+	g, promoted, err = idx.NoteSuccess(ctx, "series", group)
+	if err != nil || !promoted || g != 2 {
+		t.Fatalf("second success: grade=%d promoted=%v err=%v want grade 2 promoted", g, promoted, err)
+	}
+	// Demote resets streak — need two more successes.
+	if _, err := idx.DemoteGroup(ctx, "series", group); err != nil {
+		t.Fatal(err)
+	}
+	_, promoted, err = idx.NoteSuccess(ctx, "series", group)
+	if err != nil || promoted {
+		t.Fatalf("streak reset: promoted=%v err=%v", promoted, err)
 	}
 }

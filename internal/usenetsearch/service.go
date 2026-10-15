@@ -305,7 +305,7 @@ func (s *Service) crawlEligibleGroups(ctx context.Context) []string {
 	return MergeGroups(lists...)
 }
 
-// PruneBeyondCeilings deletes index rows for groups graded past each mode's ceiling.
+// PruneBeyondCeilings deletes index rows for groups that no enabled mode still allows.
 func (s *Service) PruneBeyondCeilings(ctx context.Context) error {
 	s.mu.Lock()
 	cfg := s.cfg
@@ -314,16 +314,51 @@ func (s *Service) PruneBeyondCeilings(ctx context.Context) error {
 	if idx == nil {
 		return nil
 	}
-	for _, mode := range []string{"movies", "series", "adult"} {
-		if !cfg.ModeEnabled(mode) {
+	allowed := map[string]bool{}
+	for _, g := range s.crawlEligibleGroups(ctx) {
+		allowed[g] = true
+	}
+	for _, g := range cfg.AllGroups() {
+		if allowed[g] {
 			continue
 		}
-		ceiling := cfg.PackageCeilingForMode(mode)
-		if err := idx.PruneGroupsBeyondCeiling(ctx, mode, ceiling, cfg.GroupsForMode(mode)); err != nil {
+		n, err := idx.DeleteGroupIndex(ctx, g)
+		if err != nil {
 			return err
+		}
+		if n > 0 {
+			log.Printf("usenetsearch: pruned %d headers for %s (not eligible under any mode ceiling/grade)", n, g)
 		}
 	}
 	return nil
+}
+
+// PromoteForSuccess records a successful native import for mode/group.
+// After two successes the grade improves by one tier (floor 1).
+func (s *Service) PromoteForSuccess(ctx context.Context, mode, group string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	idx := s.idx
+	s.mu.Unlock()
+	if idx == nil {
+		return
+	}
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	group = strings.TrimSpace(group)
+	if mode == "" || group == "" {
+		return
+	}
+	grade, promoted, err := idx.NoteSuccess(ctx, mode, group)
+	if err != nil {
+		log.Printf("usenetsearch: promote note %s/%s: %v", mode, group, err)
+		return
+	}
+	if promoted {
+		log.Printf("usenetsearch: promote mode=%s group=%s grade=%d (after %d successes)",
+			mode, group, grade, promoteEverySuccesses)
+	}
 }
 
 // DemoteForFailure bumps the group's grade for mode and deletes its index
@@ -351,14 +386,28 @@ func (s *Service) DemoteForFailure(ctx context.Context, mode, group string) {
 	}
 	ceiling := cfg.PackageCeilingForMode(mode)
 	log.Printf("usenetsearch: demote mode=%s group=%s grade=%d ceiling=%d", mode, group, grade, ceiling)
-	if grade > ceiling {
+	// Claude 2026-10-15: never delete index while any enabled mode still allows the group.
+	// Reason: shared groups (multimedia, hdtv.x264) would re-crawl/delete-loop.
+	// Troubleshooting: index empty for series after movies demote — check eligibility union.
+	// Review if: grades become global per group_name.
+	if !s.groupAllowedByAnyMode(ctx, group) {
 		n, err := idx.DeleteGroupIndex(ctx, group)
 		if err != nil {
 			log.Printf("usenetsearch: delete index %s: %v", group, err)
 			return
 		}
-		log.Printf("usenetsearch: deleted %d headers for %s (grade %d > ceiling %d)", n, group, grade, ceiling)
+		log.Printf("usenetsearch: deleted %d headers for %s (ineligible in all modes)", n, group)
 	}
+}
+
+// groupAllowedByAnyMode reports whether any enabled mode still crawls group.
+func (s *Service) groupAllowedByAnyMode(ctx context.Context, group string) bool {
+	for _, g := range s.crawlEligibleGroups(ctx) {
+		if g == group {
+			return true
+		}
+	}
+	return false
 }
 
 // ListGroupGrades returns stored grades for mode (empty if index closed).

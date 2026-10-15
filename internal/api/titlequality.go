@@ -140,6 +140,7 @@ func putTitleQualityPrefs(w http.ResponseWriter, r *http.Request, deps titleQual
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		invalidateAdmissionPolicy()
 		writeTitleQualityPrefs(w, ctx, deps, m, tmdbID, effectiveTitleQualityPrefs(ctx, deps, m, tmdbID))
 		return
 	}
@@ -185,16 +186,70 @@ func putTitleQualityPrefs(w http.ResponseWriter, r *http.Request, deps titleQual
 	if req.FeatureUpgrade != nil {
 		prefs.FeatureUpgrade = req.FeatureUpgrade
 	}
+	// Claude 2026-10-15: title/year snapshot for NNTP crawl-time admission
+	// matching (migration 0043, Step 4 of the crawl-admission plan).
+	// Reason: api.NewNNTPAdmissionPolicy keys PolicySnapshot.Titles by this
+	//   column — series already has it resolved (series.Title/Year from
+	//   ensureSeriesByTMDB); movies need a best-effort lookup since there is
+	//   no movie-shell-row concept to resolve against beforehand.
+	// Troubleshooting: a movie override never gates the crawl → Title blank
+	//   because the TMDB lookup failed at PUT time; retry the PUT once TMDB works.
+	// Review if: movies gain their own ensure-shell-row helper.
+	switch m {
+	case mode.Series:
+		if series != nil {
+			prefs.Title, prefs.Year = series.Title, series.Year
+		}
+	case mode.Movies:
+		prefs.Title, prefs.Year = resolveMovieTitleYear(ctx, deps, tmdbID)
+	}
 	if err := deps.lib.SetTitleQualityPrefs(ctx, prefs); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	invalidateAdmissionPolicy()
 
 	out := effectiveTitleQualityPrefs(ctx, deps, m, tmdbID)
 	if qualityPrefsRaised(prev, out) {
 		out.UpgradeQueued = queueQualityUpgrades(ctx, deps, m, tmdbID, series, out)
 	}
 	writeTitleQualityPrefs(w, ctx, deps, m, tmdbID, out)
+}
+
+// resolveMovieTitleYear best-effort resolves (title, year) for a movie TMDB
+// id at PUT time, without creating a persistent library row (unlike series'
+// ensureSeriesByTMDB) — a Discover-only movie override has no shell-row
+// concept to anchor on. Checks the local library first (an already-grabbed
+// movie), then falls back to one TMDB lookup. Returns ("", 0) when neither
+// resolves (e.g. no TMDB connection configured); the row's Title column
+// stays blank and NewNNTPAdmissionPolicy's Snapshot skips it — the title
+// override still applies everywhere else (Search/auto-grab), only crawl-time
+// admission falls back to mode defaults until the title is resolvable.
+func resolveMovieTitleYear(ctx context.Context, deps titleQualityDeps, tmdbID int) (title string, year int) {
+	if deps.lib != nil {
+		if item, err := deps.lib.GetByTMDBID(ctx, mode.Movies, tmdbID); err == nil && item != nil {
+			return item.Title, item.Year
+		}
+	}
+	sess, err := mode.Build(ctx, deps.connStore, deps.scStore, deps.settings, deps.httpClient, nil, mode.Movies)
+	if err != nil || sess.TMDB == nil {
+		return "", 0
+	}
+	d, err := sess.TMDB.MovieDetails(ctx, tmdbID)
+	if err != nil {
+		return "", 0
+	}
+	return d.Title, yearFromDate(d.ReleaseDate)
+}
+
+// invalidateAdmissionPolicy forces the NNTP crawler to re-fetch its
+// PolicySnapshot before the next pass — called after any title/mode
+// quality-prefs write (PUT or Clear/DELETE) so a save takes effect without
+// waiting out the admitter's 5-minute refresh timer.
+func invalidateAdmissionPolicy() {
+	if svc := getNNTPNativeService(); svc != nil {
+		svc.InvalidateAdmissionPolicy()
+	}
 }
 
 func writeTitleQualityPrefs(w http.ResponseWriter, ctx context.Context, deps titleQualityDeps, m mode.Mode, tmdbID int, out apidto.TitleQualityPrefsResponse) {

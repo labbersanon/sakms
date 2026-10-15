@@ -34,8 +34,16 @@ const (
 	KeyCrawlInterval  = "usenet_nntp_crawl_interval_seconds"
 	KeyProbeState     = "usenet_nntp_probe_state"
 	KeyProbeDetail    = "usenet_nntp_probe_detail"
-	DefaultIndexMaxGB = 20
-	DefaultWindowDays = 14
+	// Claude 2026-10-15: crawl-time quality admission kill switch (Step 4).
+	// Reason: locked decision #10 — default true; set "false" via Settings
+	//   KV directly (no UI toggle yet) to reproduce the pre-admission
+	//   upsert-everything crawl without disabling native search entirely.
+	// Troubleshooting: api.loadNNTPNativeSettings reads this with GetBool
+	//   default true; configFromNNTPResponse carries it into Config.
+	// Review if: a Settings UI toggle for this ships.
+	KeyAdmissionEnabled = "usenet_nntp_admission_enabled"
+	DefaultIndexMaxGB   = 20
+	DefaultWindowDays   = 14
 )
 
 // Config is a snapshot of operator settings for the native backend.

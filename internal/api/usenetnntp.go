@@ -35,6 +35,12 @@ type usenetNNTPNativeResponse struct {
 	CrawlInterval int    `json:"crawlIntervalSeconds"`
 	ProbeState    string `json:"probeState"`
 	ProbeDetail   string `json:"probeDetail"`
+	// Claude 2026-10-15: crawl-time quality admission kill switch (Step 4).
+	// Reason: loaded fresh from usenetsearch.KeyAdmissionEnabled (default
+	//   true) on every read so a PUT save never clobbers it — no request
+	//   field exists to set it; see usenetsearch.KeyAdmissionEnabled.
+	// Review if: a Settings UI toggle for this ships.
+	AdmissionEnabled bool `json:"admissionEnabled"`
 }
 
 type usenetNNTPNativeRequest struct {
@@ -511,42 +517,48 @@ func loadNNTPNativeSettings(ctx context.Context, settingsStore *settings.Store, 
 	if err != nil {
 		return usenetNNTPNativeResponse{}, err
 	}
+	admissionEnabled, err := settingsStore.GetBool(ctx, usenetsearch.KeyAdmissionEnabled, true)
+	if err != nil {
+		return usenetNNTPNativeResponse{}, err
+	}
 	return usenetNNTPNativeResponse{
-		Enabled:       enabled,
-		Movies:        movies,
-		Series:        series,
-		Adult:         adult,
-		MoviesGroups:  moviesGroups,
-		SeriesGroups:  seriesGroups,
-		AdultGroups:   adultGroups,
-		MoviesPackage: moviesPkg,
-		SeriesPackage: seriesPkg,
-		AdultPackage:  adultPkg,
-		IndexDir:      indexDir,
-		IndexMaxGB:    maxGB,
-		WindowDays:    window,
-		CrawlInterval: crawl,
-		ProbeState:    probeState,
-		ProbeDetail:   probeDetail,
+		Enabled:          enabled,
+		Movies:           movies,
+		Series:           series,
+		Adult:            adult,
+		MoviesGroups:     moviesGroups,
+		SeriesGroups:     seriesGroups,
+		AdultGroups:      adultGroups,
+		MoviesPackage:    moviesPkg,
+		SeriesPackage:    seriesPkg,
+		AdultPackage:     adultPkg,
+		IndexDir:         indexDir,
+		IndexMaxGB:       maxGB,
+		WindowDays:       window,
+		CrawlInterval:    crawl,
+		ProbeState:       probeState,
+		ProbeDetail:      probeDetail,
+		AdmissionEnabled: admissionEnabled,
 	}, nil
 }
 
 func configFromNNTPResponse(r usenetNNTPNativeResponse) usenetsearch.Config {
 	return usenetsearch.Config{
-		Enabled:       r.Enabled,
-		Movies:        r.Movies,
-		Series:        r.Series,
-		Adult:         r.Adult,
-		MoviesGroups:  usenetsearch.ParseGroups(r.MoviesGroups),
-		SeriesGroups:  usenetsearch.ParseGroups(r.SeriesGroups),
-		AdultGroups:   usenetsearch.ParseGroups(r.AdultGroups),
-		MoviesPackage: r.MoviesPackage,
-		SeriesPackage: r.SeriesPackage,
-		AdultPackage:  r.AdultPackage,
-		IndexDir:      r.IndexDir,
-		IndexMaxGB:    r.IndexMaxGB,
-		WindowDays:    r.WindowDays,
-		CrawlInterval: time.Duration(r.CrawlInterval) * time.Second,
+		Enabled:          r.Enabled,
+		Movies:           r.Movies,
+		Series:           r.Series,
+		Adult:            r.Adult,
+		MoviesGroups:     usenetsearch.ParseGroups(r.MoviesGroups),
+		SeriesGroups:     usenetsearch.ParseGroups(r.SeriesGroups),
+		AdultGroups:      usenetsearch.ParseGroups(r.AdultGroups),
+		MoviesPackage:    r.MoviesPackage,
+		SeriesPackage:    r.SeriesPackage,
+		AdultPackage:     r.AdultPackage,
+		IndexDir:         r.IndexDir,
+		IndexMaxGB:       r.IndexMaxGB,
+		WindowDays:       r.WindowDays,
+		CrawlInterval:    time.Duration(r.CrawlInterval) * time.Second,
+		AdmissionEnabled: r.AdmissionEnabled,
 	}
 }
 

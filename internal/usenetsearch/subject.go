@@ -32,9 +32,19 @@ var (
 	reHexBlob = regexp.MustCompile(`(?i)^[a-f0-9]{16,}$`)
 )
 
+// nntpUTF8 replaces invalid UTF-8 (latin1/CP1252 NNTP headers) with U+FFFD.
+func nntpUTF8(s string) string {
+	return strings.ToValidUTF8(s, "\uFFFD")
+}
+
 // ParseSubject extracts release identity from an overview subject.
 func ParseSubject(subj string) ParsedSubject {
-	s := strings.TrimSpace(subj)
+	// Claude 2026-10-16: sanitize before ToLower+slice.
+	// Reason: ToLower expands each invalid byte to U+FFFD (3 bytes); slicing
+	//   the original with that index panics ([:80] with length 78 in prod).
+	// Troubleshooting: crawl loop panic in ParseSubject → latin1 subject before yEnc.
+	// Review if: Overview() already returns valid UTF-8.
+	s := strings.TrimSpace(nntpUTF8(subj))
 	if s == "" {
 		return ParsedSubject{}
 	}

@@ -24,6 +24,16 @@ func TestParseSubject_Obfuscated(t *testing.T) {
 	}
 }
 
+func TestParseSubject_Latin1BeforeYencDoesNotPanic(t *testing.T) {
+	// Live panic: ToLower expanded latin1 0xe4 → U+FFFD (+2 bytes) so
+	// core[:i] was [:80] on a 78-byte subject.
+	subj := "Some.Movie.2024.1080p" + string([]byte{0xe4}) + " yEnc (1/10)"
+	ps := ParseSubject(subj)
+	if ps.PartN != 1 || ps.PartM != 10 {
+		t.Fatalf("parts: %+v", ps)
+	}
+}
+
 func TestLocatorRoundTrip(t *testing.T) {
 	raw := EncodeLocator("alt.binaries.movies", "abc@example.com", "Some.Release", 100, 12345)
 	p, ok, err := DecodeLocator(raw)

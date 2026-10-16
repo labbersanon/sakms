@@ -84,6 +84,13 @@ type Config struct {
 	UnnamedMaxPct  int
 	// NameFixBodyMBPerHour caps BODY volume for name recovery (0 = default 512).
 	NameFixBodyMBPerHour int
+	// BackfillEnabled walks history below the forward crawl down to provider
+	// retention (key usenet_nntp_backfill_enabled; default true via api).
+	// BackfillDays limits depth (0 = retention); BackfillBudgetPct pauses at
+	// that share of IndexMaxGB (0 = DefaultBackfillBudgetPct).
+	BackfillEnabled   bool
+	BackfillDays      int
+	BackfillBudgetPct int
 }
 
 // GroupModesFor returns the enabled modes (a subset of "movies"/"series"/
@@ -317,6 +324,8 @@ func (s *Service) loop(ctx context.Context) {
 	// Troubleshooting: loop exits only on Apply cancel / disable.
 	// Review if: CrawlInterval is renamed to idle_backoff_seconds in settings KV.
 	budget := &bodyBudget{}
+	backfillStart := 0
+	backfillSkipLogged := false
 	for {
 		if ctx.Err() != nil {
 			return
@@ -344,6 +353,20 @@ func (s *Service) loop(ctx context.Context) {
 			advanced = advanced || nr.Advanced()
 		}
 		s.runRecompute(ctx)
+		if crawler != nil && !busy && crawler.BackfillEnabled {
+			crawler.BackfillStart = backfillStart
+			br, err := crawler.BackfillOnce(ctx)
+			if err != nil {
+				log.Printf("usenetsearch: backfill: %v", err)
+			}
+			backfillStart = br.NextStart
+			if br.Skipped != "" && !backfillSkipLogged {
+				log.Printf("usenetsearch: backfill skipped reason=%s", br.Skipped)
+			}
+			backfillSkipLogged = br.Skipped != ""
+			busy = busy || br.Busy
+			advanced = advanced || br.Advanced || br.HasWork
+		}
 		s.runSweeps(ctx)
 		s.runLiveness(ctx)
 
@@ -406,12 +429,15 @@ func (s *Service) runProbeAndCrawl(ctx context.Context) (CrawlResult, *Crawler) 
 	}
 	c := &Crawler{
 		Src: src, Index: idx, Groups: groups, Window: window, MaxGB: maxGB,
-		AdmissionEnabled: admissionEnabled,
-		GroupModesFn:     cfg.GroupModesFor,
-		Admitter:         admit,
-		RepairEnabled:    cfg.RepairEnabled,
-		NameFixEnabled:   cfg.NameFixEnabled,
-		UnnamedMaxPct:    cfg.UnnamedMaxPct,
+		AdmissionEnabled:  admissionEnabled,
+		GroupModesFn:      cfg.GroupModesFor,
+		Admitter:          admit,
+		RepairEnabled:     cfg.RepairEnabled,
+		NameFixEnabled:    cfg.NameFixEnabled,
+		UnnamedMaxPct:     cfg.UnnamedMaxPct,
+		BackfillEnabled:   cfg.BackfillEnabled,
+		BackfillDays:      cfg.BackfillDays,
+		BackfillBudgetPct: cfg.BackfillBudgetPct,
 	}
 	cres, err := c.CrawlOnce(ctx)
 	if err != nil {

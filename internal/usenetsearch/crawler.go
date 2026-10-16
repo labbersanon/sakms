@@ -63,13 +63,29 @@ type Crawler struct {
 	NameFixEnabled bool
 	UnnamedMaxPct  int
 
-	// curDir/curGaps/curStaged/curSkipObfCap describe the chunk ingestRange is
-	// processing; admitChunk reads them for its aggregate log line. A Crawler
+	// BackfillEnabled turns on the retention backfill (usenet_nntp_backfill_enabled).
+	// BackfillDays limits history depth (0 = to provider retention);
+	// BackfillBudgetPct pauses backfill at that share of MaxGB
+	// (0 = DefaultBackfillBudgetPct). BackfillStart is the loop-owned
+	// round-robin offset.
+	BackfillEnabled   bool
+	BackfillDays      int
+	BackfillBudgetPct int
+	BackfillStart     int
+
+	// ranges holds each group's last GroupRange (set by crawlGroup); backfill
+	// uses Low as its target. budgetOverride is a test hook.
+	ranges         map[string]usenet.GroupRange
+	budgetOverride int64
+
+	// curDir/curGaps/curStaged/curSkipObfCap/curMaxPosted describe the chunk
+	// ingestRange is processing; admitChunk and backfill read them. A Crawler
 	// is single-goroutine.
 	curDir        string
 	curGaps       int
 	curStaged     int
 	curSkipObfCap int
+	curMaxPosted  int64
 }
 
 // CrawlOnce advances watermarks for every configured group.
@@ -121,6 +137,10 @@ func (c *Crawler) crawlGroup(ctx context.Context, group string) (advanced bool, 
 	if err != nil {
 		return false, err
 	}
+	if c.ranges == nil {
+		c.ranges = map[string]usenet.GroupRange{}
+	}
+	c.ranges[group] = gr
 	wm, err := c.Index.Watermark(ctx, group)
 	if err != nil {
 		return false, err

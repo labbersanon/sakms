@@ -168,6 +168,12 @@ func (c *Crawler) ingestRange(ctx context.Context, opts ingestOpts, group string
 	}
 	c.curDir = opts.Dir
 	c.curGaps = 0
+	c.curMaxPosted = 0
+	for _, r := range rows {
+		if r.DateUnix > c.curMaxPosted {
+			c.curMaxPosted = r.DateUnix
+		}
+	}
 	var gaps [][2]int
 	if opts.CaptureGaps {
 		gaps = missingRanges(rows, a, b)

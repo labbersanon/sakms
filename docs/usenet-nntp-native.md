@@ -104,8 +104,16 @@ Claude 2026-10-15: four cooperating features make the index complete and
 searchable by true release name. All run on the single crawl goroutine, borrow
 connections `tryOnly`, yield on `ErrBusy`, and reuse `chunkPause` / `busyBackoff`
 / `catchUpPause`, so downloads are never starved. Loop order per iteration:
-forward crawl → repair → name recovery → recompute → backfill → sweeps → liveness.
+collection-key rewrite (once) → forward crawl → repair → name recovery → recompute → backfill → sweeps → liveness.
 
+- **Collection grouping.** `headers.release_name` is the upload, not the file.
+  `ParseSubject` strips `[k/N]`, `(n/m)`, and `N of M` from the stem (NNTmux
+  collection hash input) and stores the file counter on `file_n`/`file_m`.
+  `[48/73] Show…` and `[01/73] Show…` share one key. Obfuscated sets still
+  hash `(group, poster, skeleton)`; skeletons shorter than 8 characters are
+  not staged (empty quoted `.part01.rar` used to mega-bucket a poster).
+  Existing headers are rewritten in place once (`usenet_nntp_collection_rewrite_v1`);
+  watermarks are not rewound.
 - **Strict completeness gate.** A release is searchable only when at least
   `min_completeness_pct` of its payload segments are indexed (default 95,
   clamped 80–100). Computed per release into `usenet_nntp_releases`
@@ -160,7 +168,7 @@ counters under `gapFillStatus` (`releasesSearchable`, `releasesBelowGate`,
 
 ### Operating notes
 
-- O2 queries: `o2cli grep "namefix pass"`, `"repair pass"`,
+- O2 queries: `o2cli grep "collection rewrite"`, `"namefix pass"`, `"repair pass"`,
   `"backfill group="`, `"completeness recompute"`, `"predb"`.
   `backfill ... state=paused reason=budget` means the index is at the budget.
 - Re-run a finished backfill (e.g. after raising `backfill_days`):

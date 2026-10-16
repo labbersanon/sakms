@@ -8,6 +8,14 @@ import (
 	"github.com/labbersanon/sakms/internal/dbtest"
 )
 
+func completeFiles(n int) []fileAgg {
+	out := make([]fileAgg, n)
+	for i := range out {
+		out[i] = fileAgg{PartM: 10, Seen: seenN(10)}
+	}
+	return out
+}
+
 func seenN(n int) map[int]bool {
 	m := make(map[int]bool, n)
 	for i := 1; i <= n; i++ {
@@ -44,6 +52,8 @@ func TestComputeCompleteness_Table(t *testing.T) {
 		{"out-of-range part ignored", []fileAgg{{PartM: 10, Seen: map[int]bool{1: true, 11: true, 12: true}}}, 0, 95, false, gateReasonBelow},
 		{"lower gate admits 90", []fileAgg{{PartM: 100, Seen: seenN(90)}}, 0, 90, true, gateReasonOK},
 		{"gate clamps to 80 floor", []fileAgg{{PartM: 100, Seen: seenN(80)}}, 0, 10, true, gateReasonOK},
+		{"73 files one collection meets", completeFiles(73), 73, 95, true, gateReasonOK},
+		{"one file of 73 is below gate", completeFiles(1), 73, 95, false, gateReasonBelow},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

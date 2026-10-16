@@ -11217,3 +11217,20 @@ status stays active.
 | `internal/usenetsearch/backfill.go` | skip non-core groups with no named index |
 | `internal/usenetsearch/{seeds,index,service}.go` | IsPackageCore, GroupHasNamedRelease, CoreStart |
 
+## 2026-10-16 — Collection grouping: named stem, not per-file keys
+
+**Problem:** 315k releases, 0 searchable. Multi-file posts (`[48/73] Show…`, `Title] (72/93)`) each became their own `release_key` at ~1% complete, so namefix never ran.
+**Root cause:** `ParseSubject` left `[k/N]` / `(k/N)` in `Name` (`Trim("[]")` produced `72/93] Title`). Completeness then treated each file as a 1-of-N collection. Empty obfuscated skeletons hashed to one mega-bucket per poster.
+**Fix:** NNTmux-style collection stem (strip file/part counters; keep `[k/N]` as `file_n`/`file_m`). Refuse obfuscated skeletons shorter than 8 runes. One-shot in-place header rewrite; watermarks unchanged. Did not import NNTmux collection_regexes or force-complete.
+**Outcome:** `[01/73]` and `[73/73]` share one key; a full 73-file set meets the 95% gate; empty-skeleton posts are not staged.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/subject.go` | collectionStem, yenc vs file-count, minObfSkeleton |
+| `internal/usenetsearch/ingest.go` | shared parseHeader; refuse short obf skeletons |
+| `internal/usenetsearch/rewrite.go` | in-place key rewrite + release rebuild |
+| `internal/usenetsearch/service.go` | rewrite at start of crawl loop |
+| `docs/usenet-nntp-native.md` | collection grouping documented |
+

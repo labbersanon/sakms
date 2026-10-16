@@ -126,6 +126,22 @@ func TestObfSkeletonGroupsVolumes(t *testing.T) {
 	}
 }
 
+func TestStageObfuscated_EmptySkeletonDoesNotStage(t *testing.T) {
+	c := &Crawler{NameFixEnabled: true}
+	rows := c.buildHeaders("alt.binaries.bluray", []usenet.MessageOverview{
+		{Number: 1, Subject: `[01/10] - ".part01.rar" yEnc (1/20)`, From: "p@x", MessageID: "a@x", Bytes: 100},
+		{Number: 2, Subject: `[02/10] - ".part02.rar" yEnc (1/20)`, From: "p@x", MessageID: "b@x", Bytes: 100},
+	})
+	if len(rows) != 2 {
+		t.Fatalf("rows=%d", len(rows))
+	}
+	for i, h := range rows {
+		if isObfKey(h.ReleaseName) {
+			t.Fatalf("row %d empty skeleton staged as %q", i, h.ReleaseName)
+		}
+	}
+}
+
 func TestParsesAsRelease(t *testing.T) {
 	for name, want := range map[string]bool{
 		"Some.Movie.2021.1080p.BluRay.x264-GRP": true,

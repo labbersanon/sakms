@@ -71,6 +71,15 @@ const (
 	KeyBackfillEnabled      = "usenet_nntp_backfill_enabled"
 	KeyBackfillDays         = "usenet_nntp_backfill_days"
 	KeyBackfillBudgetPct    = "usenet_nntp_backfill_budget_pct"
+	// Claude 2026-10-16: one-shot in-place collection-key rewrite (plan D5).
+	// Reason: 315k per-file release keys stay wrong until subjects are re-parsed;
+	//   watermarks must not rewind. Value "true" when finished; cursor is
+	//   group\\nmsgid while in progress.
+	// Troubleshooting: o2cli grep "collection rewrite"; stuck cursor → delete
+	//   these two keys and let the next loop resume from the start.
+	// Review if: a second rewrite (v2) is needed after another ParseSubject change.
+	KeyCollectionRewriteDone   = "usenet_nntp_collection_rewrite_v1"
+	KeyCollectionRewriteCursor = "usenet_nntp_collection_rewrite_v1_cursor"
 
 	DefaultIndexMaxGB = 20
 	DefaultWindowDays = 14
@@ -415,10 +424,12 @@ func (s *Service) loop(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		s.runCollectionRewrite(ctx)
 		s.refreshMembershipFromList(ctx)
-		// Claude 2026-10-15: D7 pass order — forward crawl, repair, (name-fix),
-		// recompute, (backfill), sweeps, liveness. Any NNTP pass reporting busy
-		// short-circuits the remaining NNTP passes and waits busyBackoff.
+		// Claude 2026-10-16: D7 pass order — one-shot collection rewrite, then
+		// forward crawl, repair, (name-fix), recompute, (backfill), sweeps,
+		// liveness. Any NNTP pass reporting busy short-circuits the remaining
+		// NNTP passes and waits busyBackoff.
 		// Reason: one goroutine, existing constants, never starve downloads.
 		// Troubleshooting: a pass starving others → check which log line stops
 		//   appearing (repair pass / namefix pass / backfill group=).

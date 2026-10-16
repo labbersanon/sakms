@@ -254,7 +254,8 @@ func (n *NameFixer) accept(ctx context.Context, raw, source string, payload int6
 		return "", "", "", "", false
 	}
 	predb = "n/a"
-	if n.PreDB != nil {
+	// Only release-shaped names are worth a (rate-limited) PreDB lookup.
+	if n.PreDB != nil && hasTitleAndMarker(norm) {
 		if hit, found := n.PreDB.ByName(ctx, norm); found && sizeWithin(hit.SizeBytes, payload) {
 			title := hit.Title
 			if title == "" {
@@ -359,15 +360,17 @@ func normalizeRecovered(name string) string {
 // parsesAsRelease: a usable title plus (year or SxxEyy-style episode) plus a
 // resolution or source token.
 func parsesAsRelease(name string) bool {
-	prefix, year, isEpisode := splitReleaseTitle(name)
-	if cleanTitleKey(prefix) == "" {
-		return false
-	}
-	if year == 0 && !isEpisode {
+	if !hasTitleAndMarker(name) {
 		return false
 	}
 	info := release.Parse(name)
 	return info.Resolution > 0 || info.Source != ""
+}
+
+// hasTitleAndMarker: a usable title prefix plus a year or episode marker.
+func hasTitleAndMarker(name string) bool {
+	prefix, year, isEpisode := splitReleaseTitle(name)
+	return cleanTitleKey(prefix) != "" && (year > 0 || isEpisode)
 }
 
 type nameCand struct{ name, source string }

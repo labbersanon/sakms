@@ -1,0 +1,140 @@
+// Package predb is the local scene-release (PreDB) corpus: a Postgres table
+// fed by an on-demand HTTP lookup (default) and an optional IRC announce
+// feed. Stdlib only — it must not import the rest of sakms (see
+// usenetsearch/doc.go import discipline).
+package predb
+
+import (
+	"context"
+	"crypto/md5"
+	"crypto/sha1"
+	"database/sql"
+	"encoding/hex"
+	"errors"
+	"strings"
+	"time"
+)
+
+// Sources recorded in usenet_nntp_predb.source.
+const (
+	SourceHTTP = "http"
+	SourceIRC  = "irc"
+	// SourceMiss marks a cached negative HTTP lookup (never returned as a hit).
+	SourceMiss = "miss"
+)
+
+// MissTTL is how long a negative HTTP lookup is trusted.
+const MissTTL = 30 * 24 * time.Hour
+
+// Entry is one PreDB release record.
+type Entry struct {
+	Title     string
+	SizeBytes int64 // 0 when unknown
+	Files     int
+	Filename  string
+	Category  string
+	PreAt     int64
+	Nuked     bool
+}
+
+// Store reads and writes usenet_nntp_predb.
+type Store struct{ db *sql.DB }
+
+// NewStore wraps an already-migrated app database.
+func NewStore(db *sql.DB) *Store { return &Store{db: db} }
+
+// HashesOf returns the lowercase hex md5 and sha1 of title — the forms
+// hash-obfuscating posters use as subjects.
+func HashesOf(title string) (md5hex, sha1hex string) {
+	m := md5.Sum([]byte(title))
+	s := sha1.Sum([]byte(title))
+	return hex.EncodeToString(m[:]), hex.EncodeToString(s[:])
+}
+
+// Upsert stores (or refreshes) a record, replacing any cached miss for it.
+func (s *Store) Upsert(ctx context.Context, e Entry, source string) error {
+	if s == nil || s.db == nil {
+		return errors.New("predb: store not configured")
+	}
+	title := strings.TrimSpace(e.Title)
+	if title == "" {
+		return errors.New("predb: empty title")
+	}
+	m, sh := HashesOf(title)
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO usenet_nntp_predb (title, title_md5, title_sha1, size_bytes, files, filename, category, pre_at, nuked, source, fetched_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT (title) DO UPDATE SET title_md5=EXCLUDED.title_md5, title_sha1=EXCLUDED.title_sha1,
+  size_bytes=CASE WHEN EXCLUDED.size_bytes>0 THEN EXCLUDED.size_bytes ELSE usenet_nntp_predb.size_bytes END,
+  files=CASE WHEN EXCLUDED.files>0 THEN EXCLUDED.files ELSE usenet_nntp_predb.files END,
+  filename=CASE WHEN EXCLUDED.filename<>'' THEN EXCLUDED.filename ELSE usenet_nntp_predb.filename END,
+  category=CASE WHEN EXCLUDED.category<>'' THEN EXCLUDED.category ELSE usenet_nntp_predb.category END,
+  pre_at=CASE WHEN EXCLUDED.pre_at>0 THEN EXCLUDED.pre_at ELSE usenet_nntp_predb.pre_at END,
+  nuked=EXCLUDED.nuked, source=EXCLUDED.source, fetched_at=EXCLUDED.fetched_at`,
+		title, m, sh, e.SizeBytes, e.Files, e.Filename, e.Category, e.PreAt, e.Nuked, source, time.Now().Unix())
+	return err
+}
+
+// SetNuked updates the nuke flag of an existing record (IRC NUKE/UNNUKE).
+func (s *Store) SetNuked(ctx context.Context, title string, nuked bool) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE usenet_nntp_predb SET nuked=? WHERE title=? AND source<>?`, nuked, title, SourceMiss)
+	return err
+}
+
+const selectEntry = `SELECT title, size_bytes, files, filename, category, pre_at, nuked FROM usenet_nntp_predb`
+
+func scanEntry(row *sql.Row) (Entry, bool, error) {
+	var e Entry
+	err := row.Scan(&e.Title, &e.SizeBytes, &e.Files, &e.Filename, &e.Category, &e.PreAt, &e.Nuked)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Entry{}, false, nil
+	}
+	if err != nil {
+		return Entry{}, false, err
+	}
+	return e, true, nil
+}
+
+// ByTitle returns the exact-title record (cached misses are not hits).
+func (s *Store) ByTitle(ctx context.Context, title string) (Entry, bool, error) {
+	return scanEntry(s.db.QueryRowContext(ctx, selectEntry+` WHERE title=? AND source<>?`, title, SourceMiss))
+}
+
+// ByHash resolves a 32-char md5 or 40-char sha1 hex string to a record.
+func (s *Store) ByHash(ctx context.Context, h string) (Entry, bool, error) {
+	h = strings.ToLower(strings.TrimSpace(h))
+	col := ""
+	switch len(h) {
+	case 32:
+		col = "title_md5"
+	case 40:
+		col = "title_sha1"
+	default:
+		return Entry{}, false, nil
+	}
+	return scanEntry(s.db.QueryRowContext(ctx, selectEntry+` WHERE `+col+`=? AND source<>? LIMIT 1`, h, SourceMiss))
+}
+
+// RecentMiss reports whether title has a cached negative lookup newer than ttl.
+func (s *Store) RecentMiss(ctx context.Context, title string, ttl time.Duration) (bool, error) {
+	var fetched int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT fetched_at FROM usenet_nntp_predb WHERE title=? AND source=?`, title, SourceMiss).Scan(&fetched)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return time.Since(time.Unix(fetched, 0)) < ttl, nil
+}
+
+// RecordMiss caches a confirmed negative lookup (never overwrites a real record).
+func (s *Store) RecordMiss(ctx context.Context, title string) error {
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO usenet_nntp_predb (title, source, fetched_at) VALUES (?,?,?)
+ON CONFLICT (title) DO UPDATE SET fetched_at=EXCLUDED.fetched_at WHERE usenet_nntp_predb.source=?`,
+		title, SourceMiss, time.Now().Unix(), SourceMiss)
+	return err
+}

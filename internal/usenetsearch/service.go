@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -329,18 +330,6 @@ func (s *Service) preferredLanguages(ctx context.Context) (langs []string, filte
 	return fn(ctx), true
 }
 
-func langsEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
 // SetAdmissionPolicy wires the crawl-time quality admission policy (Step 4,
 // api.NewNNTPAdmissionPolicy). Replacing the policy starts a fresh admitter
 // (snapshot cache + verdict LRU) — call InvalidateAdmissionPolicy instead
@@ -505,7 +494,7 @@ func (s *Service) runProbeAndCrawl(ctx context.Context) (CrawlResult, *Crawler) 
 	s.mu.Unlock()
 	langs, langFilter := s.preferredLanguages(ctx)
 	s.mu.Lock()
-	if langFilter && !langsEqual(s.lastLangs, langs) {
+	if langFilter && !slices.Equal(s.lastLangs, langs) {
 		s.lastLangs = append([]string(nil), langs...)
 		s.langPruned = nil
 		log.Printf("usenetsearch: preferred languages %v — index scoped to matching groups/titles", langs)
@@ -695,7 +684,7 @@ func (s *Service) filterGroupsByLanguage(ctx context.Context, groups []string) [
 	}
 	out := make([]string, 0, len(groups))
 	for _, g := range groups {
-		if languageAllowed(groupLanguageQuery(g), langs, true) {
+		if release.TitleLanguageAllowed(groupLanguageQuery(g), langs) {
 			out = append(out, g)
 		}
 	}

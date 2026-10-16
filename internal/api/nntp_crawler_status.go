@@ -79,15 +79,7 @@ func nntpCrawlerStatusFrom(st usenetsearch.CrawlerStatus) nntpCrawlerStatusRespo
 		LastPassAdvanced:   st.LastPassAdvanced,
 	}
 	if st.LastChunk != nil {
-		c := nntpCrawlerChunk{
-			Dir: st.LastChunk.Dir, Group: st.LastChunk.Group,
-			RangeLow: st.LastChunk.RangeLow, RangeHigh: st.LastChunk.RangeHigh,
-			Rows: st.LastChunk.Rows, Releases: st.LastChunk.Releases,
-			Admitted: st.LastChunk.Admitted, StagedObf: st.LastChunk.StagedObf,
-			SkipRes: st.LastChunk.SkipRes, SkipStat: st.LastChunk.SkipStat,
-			Gaps: st.LastChunk.Gaps, ElapsedMs: st.LastChunk.ElapsedMs,
-			AtUnixMs: st.LastChunk.AtUnixMs,
-		}
+		c := nntpCrawlerChunk(*st.LastChunk)
 		out.LastChunk = &c
 	}
 	return out

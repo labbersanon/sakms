@@ -34,12 +34,9 @@ type CrawlResult struct {
 // everything behavior byte-for-byte — Service only sets these when the
 // usenet_nntp_admission_enabled kill switch is on and a policy is wired.
 // Troubleshooting: crawlGroup's admitChunk helper carries the whole
-//
-//	bucket→gate→STAT→upsert flow; admission.go holds the pure decisions.
-//
+// bucket→gate→STAT→upsert flow; admission.go holds the pure decisions.
 // Review if: a second Crawler construction site (tests aside) needs the
-//
-//	same fields wired differently.
+// same fields wired differently.
 type Crawler struct {
 	Src    usenet.HeaderSource
 	Index  *Index
@@ -89,7 +86,6 @@ type Crawler struct {
 	curStaged     int
 	curSkipObfCap int
 	curMaxPosted  int64
-	lastChunk     CrawlChunkStat
 	// OnChunk, if set, is invoked after each OVER chunk is admitted (Dashboard).
 	OnChunk func(CrawlChunkStat)
 }
@@ -356,14 +352,13 @@ func (c *Crawler) admitChunk(ctx context.Context, group string, a, b int, header
 		dir = dirForward
 	}
 	elapsed := time.Since(start).Milliseconds()
-	c.lastChunk = CrawlChunkStat{
-		Dir: dir, Group: group, RangeLow: a, RangeHigh: b,
-		Rows: st.rows, Releases: st.releases, Admitted: st.admitted,
-		StagedObf: c.curStaged, SkipRes: st.skipRes, SkipStat: st.skipStat,
-		Gaps: c.curGaps, ElapsedMs: elapsed, AtUnixMs: time.Now().UnixMilli(),
-	}
 	if c.OnChunk != nil {
-		c.OnChunk(c.lastChunk)
+		c.OnChunk(CrawlChunkStat{
+			Dir: dir, Group: group, RangeLow: a, RangeHigh: b,
+			Rows: st.rows, Releases: st.releases, Admitted: st.admitted,
+			StagedObf: c.curStaged, SkipRes: st.skipRes, SkipStat: st.skipStat,
+			Gaps: c.curGaps, ElapsedMs: elapsed, AtUnixMs: time.Now().UnixMilli(),
+		})
 	}
 	log.Printf("usenetsearch: crawl chunk dir=%s group=%s range=%d-%d rows=%d releases=%d admitted=%d staged_obf=%d skip_obf_cap=%d skip_unparsed=%d skip_res=%d skip_tier=%d skip_stat=%d stat_calls=%d deferred=%d gaps=%d elapsed_ms=%d",
 		dir, group, a, b, st.rows, st.releases, st.admitted, c.curStaged, c.curSkipObfCap, st.skipUnparsed, st.skipRes, st.skipTier, st.skipStat, st.statCalls, st.deferred, c.curGaps, elapsed)

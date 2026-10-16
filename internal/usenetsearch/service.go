@@ -400,9 +400,6 @@ func (s *Service) loop(ctx context.Context) {
 			s.mu.Lock()
 			s.ranges = crawler.ranges
 			s.lastPass = cres
-			if crawler.lastChunk.Group != "" {
-				s.lastChunk = crawler.lastChunk
-			}
 			s.mu.Unlock()
 		}
 		busy, advanced := cres.Busy, cres.Advanced

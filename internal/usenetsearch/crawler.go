@@ -56,10 +56,20 @@ type Crawler struct {
 	// (usenet_nntp_repair_enabled). false = today's behavior (gaps ignored).
 	RepairEnabled bool
 
-	// curDir/curGaps describe the chunk ingestRange is processing; admitChunk
-	// reads them for its aggregate log line. A Crawler is single-goroutine.
-	curDir  string
-	curGaps int
+	// NameFixEnabled stages obfuscated binary sets (release_name "obf:<key>")
+	// instead of dropping them (usenet_nntp_namefix_enabled). false = today's
+	// behavior. UnnamedMaxPct caps staged bytes as a share of the index budget
+	// (0 = DefaultUnnamedMaxPct).
+	NameFixEnabled bool
+	UnnamedMaxPct  int
+
+	// curDir/curGaps/curStaged/curSkipObfCap describe the chunk ingestRange is
+	// processing; admitChunk reads them for its aggregate log line. A Crawler
+	// is single-goroutine.
+	curDir        string
+	curGaps       int
+	curStaged     int
+	curSkipObfCap int
 }
 
 // CrawlOnce advances watermarks for every configured group.
@@ -319,8 +329,8 @@ func (c *Crawler) admitChunk(ctx context.Context, group string, a, b int, header
 	if dir == "" {
 		dir = dirForward
 	}
-	log.Printf("usenetsearch: crawl chunk dir=%s group=%s range=%d-%d rows=%d releases=%d admitted=%d skip_unparsed=%d skip_res=%d skip_tier=%d skip_stat=%d stat_calls=%d deferred=%d gaps=%d elapsed_ms=%d",
-		dir, group, a, b, st.rows, st.releases, st.admitted, st.skipUnparsed, st.skipRes, st.skipTier, st.skipStat, st.statCalls, st.deferred, c.curGaps, time.Since(start).Milliseconds())
+	log.Printf("usenetsearch: crawl chunk dir=%s group=%s range=%d-%d rows=%d releases=%d admitted=%d staged_obf=%d skip_obf_cap=%d skip_unparsed=%d skip_res=%d skip_tier=%d skip_stat=%d stat_calls=%d deferred=%d gaps=%d elapsed_ms=%d",
+		dir, group, a, b, st.rows, st.releases, st.admitted, c.curStaged, c.curSkipObfCap, st.skipUnparsed, st.skipRes, st.skipTier, st.skipStat, st.statCalls, st.deferred, c.curGaps, time.Since(start).Milliseconds())
 
 	return kept, nil
 }

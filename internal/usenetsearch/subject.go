@@ -1,6 +1,8 @@
 package usenetsearch
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -79,6 +81,93 @@ func ParseSubject(subj string) ParsedSubject {
 	out.Name = name
 	out.OK = !out.Obfuscated && (out.PartM > 0 || out.Filename != "" || strings.Contains(name, ".") || strings.Contains(name, "-"))
 	return out
+}
+
+// Claude 2026-10-15: obfuscated-set grouping skeleton (plan D3 step 1).
+// Reason: obfuscated posts have no release name, so volumes of one upload are
+//   grouped by (group, poster, subject skeleton): the quoted filename with the
+//   segment counter "(n/m)", file counter "[k/N]", and volume/extension
+//   suffixes (.partNN.rar, .rNN, .7z.NNN, .volNN+NN.par2, .par2) removed.
+// Troubleshooting: one upload splitting into many staged sets → compare the
+//   skeletons of its subjects; per-file random names are not clustered (v1).
+// Review if: posters start varying the hash base between volumes.
+
+var reObfSuffix = regexp.MustCompile(`(?i)(?:\.vol\d+\+\d+\.par2|\.part\d+\.rar|\.r\d{2,3}|\.7z\.\d{3}|\.z\d{2}|\.par2|\.rar|\.zip|\.7z|\.nfo|\.sfv|\.mkv|\.mp4|\.avi|\.nzb)+$`)
+
+// obfSkeleton returns the grouping skeleton of an overview subject (case kept
+// so looksObfuscated can see case churn; ObfKey lowercases before hashing).
+func obfSkeleton(subj string) string {
+	s := subj
+	if i := strings.Index(strings.ToLower(s), "yenc"); i > 0 {
+		s = s[:i]
+	}
+	s = rePartNM.ReplaceAllString(s, "")
+	s = reFileNM.ReplaceAllString(s, "")
+	if i := strings.Index(s, `"`); i >= 0 {
+		if j := strings.LastIndex(s, `"`); j > i {
+			s = s[i+1 : j]
+		}
+	}
+	s = strings.Trim(s, "[]() -_\"'")
+	s = reObfSuffix.ReplaceAllString(s, "")
+	return collapseWS(s)
+}
+
+// ObfKey returns the staged-set key ("obf:<16-hex>") for one subject.
+func ObfKey(group, from, subj string) string {
+	sum := sha256.Sum256([]byte(group + "\x00" + from + "\x00" + strings.ToLower(obfSkeleton(subj))))
+	return obfKeyPrefix + hex.EncodeToString(sum[:8])
+}
+
+// subjectCounters returns the (n/m) segment counter that ParseSubject skips
+// for obfuscated subjects.
+func subjectCounters(subj string) (partN, partM int) {
+	if m := rePartNM.FindStringSubmatch(subj); len(m) == 3 {
+		partN, _ = strconv.Atoi(m[1])
+		partM, _ = strconv.Atoi(m[2])
+	}
+	return partN, partM
+}
+
+// hashCore returns the skeleton when it is a bare md5 (32) or sha1 (40) hex
+// string — the form hash-obfuscating posters use for md5/sha1(title).
+func hashCore(skeleton string) string {
+	if (len(skeleton) == 32 || len(skeleton) == 40) && reHexBlob.MatchString(skeleton) {
+		return strings.ToLower(skeleton)
+	}
+	return ""
+}
+
+// looksObfuscated flags a separator-free, long, case/digit-churning skeleton
+// (random alphanumerics) that ParseSubject's hex check misses. Conservative:
+// readable release names carry dots/dashes/spaces or few case/digit switches.
+func looksObfuscated(skeleton string) bool {
+	if len(skeleton) < 16 || strings.ContainsAny(skeleton, ".-_ ") {
+		return false
+	}
+	switches := 0
+	prev := rune(0)
+	for _, r := range skeleton {
+		// Upper→lower is an ordinary capitalised word ("Matrix"), not churn.
+		if prev != 0 && charClass(prev) != charClass(r) && !(charClass(prev) == 3 && charClass(r) == 2) {
+			switches++
+		}
+		prev = r
+	}
+	return switches*4 >= len(skeleton)
+}
+
+func charClass(r rune) int {
+	switch {
+	case r >= '0' && r <= '9':
+		return 1
+	case r >= 'a' && r <= 'z':
+		return 2
+	case r >= 'A' && r <= 'Z':
+		return 3
+	default:
+		return 0
+	}
 }
 
 func mostlyHex(s string) bool {

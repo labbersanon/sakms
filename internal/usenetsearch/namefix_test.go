@@ -1,0 +1,534 @@
+package usenetsearch
+
+import (
+	"context"
+	"crypto/md5"
+	"encoding/binary"
+	"encoding/hex"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/labbersanon/sakms/internal/dbtest"
+	"github.com/labbersanon/sakms/internal/quality"
+	"github.com/labbersanon/sakms/internal/usenet"
+)
+
+func par2Packet(typ string, body []byte) []byte {
+	length := par2HeaderLen + len(body)
+	b := append([]byte{}, par2Magic...)
+	b = binary.LittleEndian.AppendUint64(b, uint64(length))
+	b = append(b, make([]byte, 32)...) // packet md5 + recovery set id (unchecked)
+	t := make([]byte, 16)
+	copy(t, typ)
+	b = append(b, t...)
+	return append(b, body...)
+}
+
+func par2FileDescPacket(name string) []byte {
+	body := make([]byte, 48)
+	body = binary.LittleEndian.AppendUint64(body, 1234)
+	nb := []byte(name)
+	for len(nb)%4 != 0 {
+		nb = append(nb, 0)
+	}
+	return par2Packet("PAR 2.0\x00FileDesc", append(body, nb...))
+}
+
+func TestPar2FileNames(t *testing.T) {
+	var data []byte
+	data = append(data, par2Packet("PAR 2.0\x00Main", make([]byte, 12))...)
+	data = append(data, par2FileDescPacket("Some.Movie.2021.1080p.BluRay.x264-GRP.part01.rar")...)
+	data = append(data, par2FileDescPacket("Some.Movie.2021.1080p.BluRay.x264-GRP.part02.rar")...)
+	got := par2FileNames(data)
+	if len(got) != 2 || got[0] != "Some.Movie.2021.1080p.BluRay.x264-GRP.part01.rar" {
+		t.Fatalf("names = %v", got)
+	}
+	// Truncated mid-packet: the complete first name survives, no panic.
+	got = par2FileNames(data[:len(data)-20])
+	if len(got) < 1 {
+		t.Fatalf("truncated names = %v", got)
+	}
+	for _, bad := range [][]byte{nil, []byte("PAR2\x00PKT"), append([]byte("PAR2\x00PKT"), make([]byte, 60)...), []byte("garbage")} {
+		_ = par2FileNames(bad)
+	}
+}
+
+func TestNfoSceneNames(t *testing.T) {
+	nfo := []byte("  RELEASE INFO\n  Name.....: Another.Movie.2020.1080p.WEB-DL.x264-GRP\n  Size: 4GB\n")
+	got := nfoSceneNames(nfo)
+	if len(got) == 0 || got[0] != "Another.Movie.2020.1080p.WEB-DL.x264-GRP" {
+		t.Fatalf("nfo names = %v", got)
+	}
+}
+
+func rar4Fixture(member string) []byte {
+	b := []byte("Rar!\x1a\x07\x00")
+	b = append(b, 0, 0, 0x73, 0, 0, 13, 0, 0, 0, 0, 0, 0, 0) // main header, size 13
+	hdr := make([]byte, 32)
+	hdr[2] = 0x74
+	binary.LittleEndian.PutUint16(hdr[5:], uint16(32+len(member)))
+	binary.LittleEndian.PutUint16(hdr[26:], uint16(len(member)))
+	return append(append(b, hdr...), member...)
+}
+
+func TestRarMemberNameFixtures(t *testing.T) {
+	got := usenet.ArchiveMemberNames(rar4Fixture("Some.Show.S01E02.720p.HDTV.x264-GRP.mkv"))
+	if len(got) != 1 || got[0] != "Some.Show.S01E02.720p.HDTV.x264-GRP.mkv" {
+		t.Fatalf("rar4 = %v", got)
+	}
+	rar5 := append([]byte("Rar!\x1a\x07\x01\x00"), []byte("\x00\x00Some.Show.S01E02.720p.HDTV.x264-GRP.mkv\x00")...)
+	got = usenet.ArchiveMemberNames(rar5)
+	if len(got) != 1 {
+		t.Fatalf("rar5 = %v", got)
+	}
+	cands := candidatesFromSample(usenet.BodySample{Data: rar4Fixture("Some.Show.S01E02.720p.HDTV.x264-GRP.mkv")}, false)
+	if len(cands) != 1 || cands[0].source != sourceRar || normalizeRecovered(cands[0].name) != "Some.Show.S01E02.720p.HDTV.x264-GRP" {
+		t.Fatalf("cands = %+v", cands)
+	}
+}
+
+func TestObfSkeletonGroupsVolumes(t *testing.T) {
+	const h = "0123456789abcdef0123456789abcdef"
+	subs := []string{
+		fmt.Sprintf(`[01/46] - "%s.part01.rar" yEnc (1/80)`, h),
+		fmt.Sprintf(`[02/46] - "%s.part02.rar" yEnc (37/80)`, h),
+		fmt.Sprintf(`[45/46] - "%s.part45.rar" yEnc (1/12)`, h),
+		fmt.Sprintf(`[46/46] - "%s.vol00+01.par2" yEnc (1/1)`, h),
+		fmt.Sprintf(`"%s.par2" yEnc (1/1)`, h),
+		fmt.Sprintf(`"%s.r05" yEnc (2/9)`, h),
+	}
+	want := ObfKey("g", "p@x", subs[0])
+	for _, s := range subs {
+		if got := ObfKey("g", "p@x", s); got != want {
+			t.Fatalf("key(%q) = %s, want %s", s, got, want)
+		}
+	}
+	if !strings.HasPrefix(want, "obf:") || len(want) != len("obf:")+16 {
+		t.Fatalf("key = %q", want)
+	}
+	if ObfKey("g", "other@x", subs[0]) == want || ObfKey("g2", "p@x", subs[0]) == want {
+		t.Fatal("poster/group must separate sets")
+	}
+	if hashCore(obfSkeleton(subs[0])) != h {
+		t.Fatalf("hashCore = %q", hashCore(obfSkeleton(subs[0])))
+	}
+	for _, rnd := range []string{"dFkQ3xZp9aL2mNq8xW", "A1b2C3d4E5f6G7h8I9"} {
+		if !looksObfuscated(rnd) {
+			t.Fatalf("%q should look obfuscated", rnd)
+		}
+	}
+	for _, ok := range []string{"TheMatrixReloaded2003", "Some.Movie.2021.1080p.WEB-DL", "short"} {
+		if looksObfuscated(ok) {
+			t.Fatalf("%q must not look obfuscated", ok)
+		}
+	}
+}
+
+func TestParsesAsRelease(t *testing.T) {
+	for name, want := range map[string]bool{
+		"Some.Movie.2021.1080p.BluRay.x264-GRP": true,
+		"Some.Show.S01E02.720p.HDTV.x264-GRP":   true,
+		"Some.Movie.2021":                       false, // no resolution/source
+		"Some.Movie.1080p.BluRay.x264-GRP":      false, // no year/episode
+		"0123456789abcdef0123456789abcdef":      false,
+	} {
+		if got := parsesAsRelease(name); got != want {
+			t.Errorf("parsesAsRelease(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
+type fakePreDB struct {
+	hashes map[string]PreDBHit
+	names  map[string]PreDBHit
+}
+
+func (f *fakePreDB) ByHash(_ context.Context, h string) (PreDBHit, bool) {
+	v, ok := f.hashes[h]
+	return v, ok
+}
+func (f *fakePreDB) ByName(_ context.Context, n string) (PreDBHit, bool) {
+	v, ok := f.names[n]
+	return v, ok
+}
+
+const nfGroup = "alt.binaries.movies"
+
+// obfuscatedSet builds files x 2 OVER rows of one hash-obfuscated RAR set plus
+// a small .par2 (first segment msgid "<prefix>par2"). ~131 MB payload.
+func obfuscatedSet(prefix, hash string, startNum, files int) []usenet.MessageOverview {
+	var out []usenet.MessageOverview
+	n := startNum
+	for f := 1; f <= files; f++ {
+		for p := 1; p <= 2; p++ {
+			out = append(out, usenet.MessageOverview{
+				Number:    n,
+				Subject:   fmt.Sprintf(`[%02d/%d] - "%s.part%02d.rar" yEnc (%d/2)`, f, files+1, hash, f, p),
+				From:      "poster@obf",
+				MessageID: fmt.Sprintf("%s%d_%d@t", prefix, f, p),
+				Bytes:     2_000_000,
+				DateUnix:  1700000000,
+			})
+			n++
+		}
+	}
+	out = append(out, usenet.MessageOverview{
+		Number:    n,
+		Subject:   fmt.Sprintf(`[%02d/%d] - "%s.par2" yEnc (1/1)`, files+1, files+1, hash),
+		From:      "poster@obf",
+		MessageID: prefix + "par2",
+		Bytes:     40_000,
+		DateUnix:  1700000000,
+	})
+	return out
+}
+
+type nfFixture struct {
+	idx   *Index
+	src   *crawlStub
+	crawl *Crawler
+	nf    *NameFixer
+}
+
+func newNFFixture(t *testing.T, rows []usenet.MessageOverview, admission *PolicySnapshot) *nfFixture {
+	t.Helper()
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { idx.Close() })
+	src := &crawlStub{gr: usenet.GroupRange{Low: 1, High: len(rows)}, rows: rows, bodies: map[string]usenet.BodySample{}}
+	c := &Crawler{Src: src, Index: idx, Groups: []string{nfGroup}, NameFixEnabled: true,
+		GroupModesFn: func(string) []string { return []string{"movies"} }}
+	if admission != nil {
+		c.AdmissionEnabled = true
+		c.Admitter = newAdmitter(&fakePolicy{snap: admission})
+	}
+	budget := &bodyBudget{}
+	budget.setCapMB(0)
+	nf := &NameFixer{Src: src, Index: idx, Crawler: c, Groups: []string{nfGroup}, Budget: budget}
+	return &nfFixture{idx: idx, src: src, crawl: c, nf: nf}
+}
+
+func (f *nfFixture) crawlAndRecompute(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := f.crawl.CrawlOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.idx.RecomputeDirty(ctx, 500); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f *nfFixture) release(t *testing.T) (key, state, display string, attempts int) {
+	t.Helper()
+	err := f.idx.db.QueryRow(`SELECT release_key, state, display_name, name_attempts FROM usenet_nntp_releases LIMIT 1`).Scan(&key, &state, &display, &attempts)
+	if err != nil {
+		t.Fatalf("release row: %v", err)
+	}
+	return
+}
+
+const nfHash = "0123456789abcdef0123456789abcdef"
+
+func par2Body(names ...string) usenet.BodySample {
+	var data []byte
+	for _, n := range names {
+		data = append(data, par2FileDescPacket(n)...)
+	}
+	return usenet.BodySample{Data: data, YencName: nfHash + ".par2", WireBytes: int64(len(data))}
+}
+
+func TestNameFix_StagedThenRenamedFromPar2ThenSearchable(t *testing.T) {
+	rows := obfuscatedSet("o", nfHash, 1, 45)
+	f := newNFFixture(t, rows, nil)
+	ctx := context.Background()
+	f.crawlAndRecompute(t)
+
+	key, state, display, _ := f.release(t)
+	if !isObfKey(key) || state != statePendingName || display != "" {
+		t.Fatalf("staged release = %q %q %q", key, state, display)
+	}
+	if cs, _ := f.idx.SearchReleases(ctx, Query{}); len(cs) != 0 {
+		t.Fatalf("staged set must not be searchable: %v", cs)
+	}
+
+	f.src.bodies["opar2"] = par2Body("Some.Movie.2021.1080p.BluRay.x264-GRP.part01.rar", "Some.Movie.2021.1080p.BluRay.x264-GRP.part02.rar")
+	res, err := f.nf.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Renamed != 1 || res.BySource[sourcePar2] != 1 || res.BodyFetches != 1 {
+		t.Fatalf("result = %+v", res)
+	}
+	if _, err := f.idx.RecomputeDirty(ctx, 500); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := f.idx.SearchReleases(ctx, Query{Terms: []string{"Some.Movie"}})
+	if err != nil || len(cs) != 1 {
+		t.Fatalf("search = %v err=%v", cs, err)
+	}
+	if cs[0].Name != "Some.Movie.2021.1080p.BluRay.x264-GRP" {
+		t.Fatalf("name = %q", cs[0].Name)
+	}
+	nzb, err := ToNZB(cs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	segs := 0
+	for _, nzf := range nzb.Files {
+		segs += len(nzf.Segs)
+	}
+	if segs != len(rows) {
+		t.Fatalf("nzb segments = %d, want %d (all set segments)", segs, len(rows))
+	}
+	// The locator (seed msgid -> staged key) still resolves to the renamed set.
+	c, err := f.idx.LoadBySeed(ctx, nfGroup, cs[0].SeedMsgID)
+	if err != nil || c.Name != cs[0].Name {
+		t.Fatalf("locator round-trip = %q err=%v", c.Name, err)
+	}
+}
+
+func TestNameFix_Md5SubjectResolvesWithZeroBodyFetches(t *testing.T) {
+	const title = "Another.Movie.2020.1080p.WEB-DL.x264-GRP"
+	sum := md5.Sum([]byte(title))
+	h := hex.EncodeToString(sum[:])
+	f := newNFFixture(t, obfuscatedSet("m", h, 1, 45), nil)
+	f.nf.PreDB = &fakePreDB{hashes: map[string]PreDBHit{h: {Title: title}}}
+	f.crawlAndRecompute(t)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.HashHits != 1 || res.Renamed != 1 || res.BodyFetches != 0 || len(f.src.bodyCalls) != 0 {
+		t.Fatalf("result = %+v bodyCalls=%v", res, f.src.bodyCalls)
+	}
+	if _, _, display, _ := f.release(t); display != title {
+		t.Fatalf("display = %q", display)
+	}
+}
+
+func TestNameFix_GateRejectedNameDeletesSet(t *testing.T) {
+	snap := &PolicySnapshot{Modes: map[string]Standard{"movies": movieModeStd([]quality.Tier{quality.High}, 2160, 0)}}
+	f := newNFFixture(t, obfuscatedSet("r", nfHash, 1, 45), snap)
+	f.crawlAndRecompute(t)
+	f.src.bodies["rpar2"] = par2Body("Some.Movie.2021.1080p.BluRay.x264-GRP.part01.rar")
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RejectGate != 1 || res.Renamed != 0 {
+		t.Fatalf("result = %+v", res)
+	}
+	var n int
+	f.idx.db.QueryRow(`SELECT (SELECT COUNT(*) FROM usenet_nntp_headers)+(SELECT COUNT(*) FROM usenet_nntp_releases)`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("rows left after gate reject = %d", n)
+	}
+	// The rejected set does not re-stage when its rows are crawled again.
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_watermarks SET high=0`); err != nil {
+		t.Fatal(err)
+	}
+	f.crawlAndRecompute(t)
+	f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("rejected set re-staged: %d", n)
+	}
+}
+
+func TestNameFix_MissingStatDeletesSet(t *testing.T) {
+	snap := &PolicySnapshot{Modes: map[string]Standard{"movies": movieModeStd([]quality.Tier{quality.High, quality.Medium}, 0, 0)}}
+	f := newNFFixture(t, obfuscatedSet("s", nfHash, 1, 45), snap)
+	f.crawlAndRecompute(t)
+	f.src.bodies["spar2"] = par2Body("Some.Movie.2021.1080p.BluRay.x264-GRP.part01.rar")
+	for _, id := range pickSampleIDs(t, f) {
+		if f.src.stat == nil {
+			f.src.stat = map[string]usenet.StatVerdict{}
+		}
+		f.src.stat[id] = usenet.StatMissing
+	}
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RejectStat != 1 || res.Renamed != 0 {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+func pickSampleIDs(t *testing.T, f *nfFixture) []string {
+	t.Helper()
+	key, _, _, _ := f.release(t)
+	rows, err := f.idx.SetRows(context.Background(), nfGroup, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pickSample(rows)
+}
+
+func TestNameFix_BodyBudgetStopsPassWithoutAttempts(t *testing.T) {
+	f := newNFFixture(t, obfuscatedSet("b", nfHash, 1, 45), nil)
+	f.crawlAndRecompute(t)
+	// Unresolvable first sample (600 kB, no name) exhausts most of a 1 MiB cap;
+	// the next pick (a 2 MB payload article) no longer fits.
+	f.src.bodies["bpar2"] = usenet.BodySample{Data: []byte("nothing"), WireBytes: 600_000}
+	f.nf.Budget.capBytes = 1 << 20
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.BudgetStop || res.BodyBytes > 1<<20 || res.BodyBytes != 600_000 || res.Unresolved != 0 {
+		t.Fatalf("result = %+v", res)
+	}
+	if _, state, _, attempts := f.release(t); state != statePendingName || attempts != 0 {
+		t.Fatalf("state=%s attempts=%d, want pending/0 (budget stop charges nothing)", state, attempts)
+	}
+}
+
+func TestNameFix_BusyStopsWithoutAttempts(t *testing.T) {
+	f := newNFFixture(t, obfuscatedSet("y", nfHash, 1, 45), nil)
+	f.crawlAndRecompute(t)
+	f.src.bodyErr = usenet.ErrBusy
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Busy || res.Unresolved != 0 {
+		t.Fatalf("result = %+v", res)
+	}
+	if _, _, _, attempts := f.release(t); attempts != 0 {
+		t.Fatalf("attempts = %d", attempts)
+	}
+}
+
+func TestNameFix_UnresolvedBacksOffThenFinalizesAfterThree(t *testing.T) {
+	f := newNFFixture(t, obfuscatedSet("u", nfHash, 1, 45), nil)
+	f.crawlAndRecompute(t)
+	ctx := context.Background()
+	f.src.bodies["upar2"] = usenet.BodySample{Data: []byte("nothing"), WireBytes: 1000}
+	for i := 1; i <= 3; i++ {
+		if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET next_name_at=0`); err != nil {
+			t.Fatal(err)
+		}
+		res, err := f.nf.Run(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i < 3 && res.Unresolved == 0 && res.Finalized == 0 {
+			t.Fatalf("pass %d did nothing: %+v", i, res)
+		}
+	}
+	// Not due again until next_name_at passes.
+	res, _ := f.nf.Run(ctx)
+	if res.Sets != 0 {
+		t.Fatalf("set retried before backoff elapsed: %+v", res)
+	}
+	var n int
+	f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("set survived 3 failed attempts: %d", n)
+	}
+	f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_headers`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("headers survived finalize: %d", n)
+	}
+}
+
+func TestNameFix_SmallSetFinalizedWithoutBody(t *testing.T) {
+	rows := obfuscatedSet("z", nfHash, 1, 45)
+	for i := range rows {
+		rows[i].Bytes = 1000 // ~60 kB payload, far under 100 MiB
+	}
+	f := newNFFixture(t, rows, nil)
+	f.crawlAndRecompute(t)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Finalized != 1 || len(f.src.bodyCalls) != 0 {
+		t.Fatalf("result = %+v bodyCalls=%v", res, f.src.bodyCalls)
+	}
+}
+
+func TestNameFix_TTLFinalizesOldSets(t *testing.T) {
+	f := newNFFixture(t, obfuscatedSet("t", nfHash, 1, 45), nil)
+	f.crawlAndRecompute(t)
+	old := time.Now().Add(-8 * 24 * time.Hour).Unix()
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET ingested_at=?`, old); err != nil {
+		t.Fatal(err)
+	}
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Finalized != 1 || len(f.src.bodyCalls) != 0 {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+func TestStaging_CapDropsNewSetsButKeepsExisting(t *testing.T) {
+	rowsA := obfuscatedSet("a", nfHash, 1, 45)
+	f := newNFFixture(t, rowsA, nil)
+	f.crawl.MaxGB = 1
+	f.crawlAndRecompute(t)
+	// Pretend the staging area is full (cap = 25% of 1 GiB).
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET payload_bytes=?`, int64(300)<<20); err != nil {
+		t.Fatal(err)
+	}
+	const h2 = "fedcba9876543210fedcba9876543210"
+	rowsB := obfuscatedSet("c", h2, len(rowsA)+1, 45)
+	// New rows for the already-staged set A plus a brand-new set B.
+	extra := usenet.MessageOverview{
+		Number: len(rowsA) + len(rowsB) + 1, Subject: fmt.Sprintf(`[46/46] - "%s.part46.rar" yEnc (1/1)`, nfHash),
+		From: "poster@obf", MessageID: "a46@t", Bytes: 1000, DateUnix: 1700000000,
+	}
+	f.src.rows = append(append(f.src.rows, rowsB...), extra)
+	f.src.gr.High = len(f.src.rows)
+	logs := captureLog(t, func() {
+		f.crawl.AdmissionEnabled = true
+		f.crawl.Admitter = newAdmitter(&fakePolicy{snap: &PolicySnapshot{Modes: map[string]Standard{"movies": movieModeStd(nil, 0, 0)}}})
+		if _, err := f.crawl.CrawlOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	})
+	var sets int
+	f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases`).Scan(&sets)
+	if sets != 1 {
+		t.Fatalf("sets = %d, want 1 (new set B dropped over the cap)", sets)
+	}
+	var n int
+	f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_headers WHERE msgid='a46@t'`).Scan(&n)
+	if n != 1 {
+		t.Fatal("row of an already-staged set must still be kept")
+	}
+	if !strings.Contains(logs, "skip_obf_cap=") || strings.Contains(logs, "skip_obf_cap=0") {
+		t.Fatalf("log missing skip_obf_cap>0:\n%s", logs)
+	}
+}
+
+// With namefix off the crawl keeps today's behavior: nothing is staged (no
+// obf-keyed headers, no pending_name release rows); rows are parsed exactly as
+// ParseSubject always did.
+func TestNameFixOff_ObfuscatedRowsNotStaged(t *testing.T) {
+	rows := obfuscatedSet("g", nfHash, 1, 5)
+	f := newNFFixture(t, rows, nil)
+	f.crawl.NameFixEnabled = false
+	f.crawlAndRecompute(t)
+	var n int
+	f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases WHERE state='pending_name'`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("pending_name rows = %d, want 0 with namefix off", n)
+	}
+	f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_headers WHERE release_name LIKE 'obf:%'`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("obf-keyed headers = %d, want 0 with namefix off", n)
+	}
+	f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_headers`).Scan(&n)
+	if n != len(rows) {
+		t.Fatalf("headers = %d, want %d (legacy upserts every row)", n, len(rows))
+	}
+}

@@ -76,6 +76,14 @@ type Config struct {
 	// RepairEnabled gates OVER gap capture + missed-range repair (key
 	// usenet_nntp_repair_enabled, default true via api; zero value = off).
 	RepairEnabled bool
+	// NameFixEnabled stages obfuscated sets and recovers true names (key
+	// usenet_nntp_namefix_enabled; default true via api, zero value = off).
+	NameFixEnabled bool
+	// UnnamedTTLDays / UnnamedMaxPct bound the staging area (0 = defaults 7 / 25).
+	UnnamedTTLDays int
+	UnnamedMaxPct  int
+	// NameFixBodyMBPerHour caps BODY volume for name recovery (0 = default 512).
+	NameFixBodyMBPerHour int
 }
 
 // GroupModesFor returns the enabled modes (a subset of "movies"/"series"/
@@ -212,6 +220,15 @@ type Service struct {
 	// the first crawl pass after admission is enabled.
 	admit      *admitter
 	prunedOnce map[string]bool
+	// predb resolves recovered names/hashes during name-fix (nil = no PreDB).
+	predb PreDBLookup
+}
+
+// SetPreDB wires the PreDB lookup used by name recovery (nil disables it).
+func (s *Service) SetPreDB(p PreDBLookup) {
+	s.mu.Lock()
+	s.predb = p
+	s.mu.Unlock()
 }
 
 // NewService constructs a stopped Service. Call Apply to open the index / start crawl.
@@ -299,6 +316,7 @@ func (s *Service) loop(ctx context.Context) {
 	// Reason: approved plan — OVER catch-up and STAT deletions, idle only when quiet.
 	// Troubleshooting: loop exits only on Apply cancel / disable.
 	// Review if: CrawlInterval is renamed to idle_backoff_seconds in settings KV.
+	budget := &bodyBudget{}
 	for {
 		if ctx.Err() != nil {
 			return
@@ -319,6 +337,11 @@ func (s *Service) loop(ctx context.Context) {
 			}
 			busy = busy || rr.Busy
 			advanced = advanced || rr.Advanced
+		}
+		if crawler != nil && !busy && crawler.NameFixEnabled {
+			nr := s.runNameFix(ctx, crawler, budget)
+			busy = busy || nr.Busy
+			advanced = advanced || nr.Advanced()
 		}
 		s.runRecompute(ctx)
 		s.runSweeps(ctx)
@@ -387,6 +410,8 @@ func (s *Service) runProbeAndCrawl(ctx context.Context) (CrawlResult, *Crawler) 
 		GroupModesFn:     cfg.GroupModesFor,
 		Admitter:         admit,
 		RepairEnabled:    cfg.RepairEnabled,
+		NameFixEnabled:   cfg.NameFixEnabled,
+		UnnamedMaxPct:    cfg.UnnamedMaxPct,
 	}
 	cres, err := c.CrawlOnce(ctx)
 	if err != nil {
@@ -618,6 +643,25 @@ func (s *Service) SearchGroupsForMode(ctx context.Context, mode string) []string
 		return cands
 	}
 	return elig
+}
+
+// runNameFix runs one name-recovery pass over staged obfuscated sets.
+func (s *Service) runNameFix(ctx context.Context, c *Crawler, budget *bodyBudget) NameFixResult {
+	s.mu.Lock()
+	cfg := s.cfg
+	predb := s.predb
+	s.mu.Unlock()
+	budget.setCapMB(cfg.NameFixBodyMBPerHour)
+	nf := &NameFixer{
+		Src: c.Src, Index: c.Index, Crawler: c, PreDB: predb,
+		Groups: c.Groups, Budget: budget,
+		UnnamedTTL: time.Duration(cfg.UnnamedTTLDays) * 24 * time.Hour,
+	}
+	res, err := nf.Run(ctx)
+	if err != nil {
+		log.Printf("usenetsearch: namefix: %v", err)
+	}
+	return res
 }
 
 // runRecompute drains a bounded batch of dirty releases (DB only, no NNTP).

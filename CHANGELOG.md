@@ -11026,3 +11026,29 @@ status stays active.
 | `internal/api/usenet_nntp_demote.go` | hook from failure/precheck paths |
 | `frontend/.../Usenet.tsx` | ceiling default 5, grade badges, copy |
 
+## 2026-10-15 — NNTP crawl-time quality admission + sampled STAT
+
+**Problem:** The native OVER crawl indexed every header regardless of quality or title match, then relied entirely on search/auto-grab-time filtering — the index itself grew unbounded with releases that would never be grabbed, and a DMCA-removed release stayed indexed until the next STAT-based liveness sweep happened to reach it.
+**Root cause:** Admission (quality gate + "does this title match a tracked show/movie") had never been pushed to crawl time; `LivenessOnce`'s single-article `StatArticle` sample was also too weak a liveness signal for a quality-gated admit decision.
+**Fix:** `.omc/plans/nntp-crawl-quality-admission.md` (11 locked decisions). `usenet.HeaderSource` gained all-pool `StatArticleAll` (tryOnly across every borrowed connection) + `StatVerdict`; `LivenessOnce` switched to it. New pure `usenetsearch/admission.go` core: release-title → normalized key classification (movies require year disambiguation; series falls back on ambiguity), per-title `library_quality_prefs` override resolution else loosest-of(mode defaults ∪ all title overrides in that mode), a resolution/tier `gate`, and a 3-segment sampled-STAT `statDecision` (2-of-3 missing skips, inconclusive defers). `Crawler.admitChunk` gates each OVER chunk's releases through this core before upserting — rejects are never indexed, admits/admit-skips are logged, grades are never touched by a crawl-time STAT miss. `Service` gained an LRU-cached `admitter` (verdict cache + 5-minute policy-snapshot refresh) and a one-shot per-group prune of already-indexed non-matching rows the first pass after admission is enabled. `library_quality_prefs` gained `title`/`year` columns (migration 0043) so Discover-only title overrides are matchable at crawl time; `api.NewNNTPAdmissionPolicy` builds the `PolicySnapshot` from mode-default Settings + every title override row, skipping adult (no title overrides) and rows with an unresolved blank `Title`. Kill switch `usenet_nntp_admission_enabled` defaults true; `AdmissionEnabled==false` or no policy wired reproduces the pre-admission upsert-everything crawl byte-for-byte.
+**Outcome:** Stacked on PR #165 (`cursor/feat-nntp-group-packages-c0b8`). Native crawl now only indexes quality-matching, STAT-confirmed releases; a title/mode quality-prefs save invalidates the cached policy immediately rather than waiting out the refresh timer.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/headersource.go` | `StatVerdict` + all-pool `StatArticleAll` on HeaderSource |
+| `internal/usenetsearch/monitor.go` | `LivenessOnce` → `StatArticleAll` |
+| `internal/usenetsearch/admission.go` | pure admission core (title match, quality gate, sampled-STAT decision) |
+| `internal/usenetsearch/admitter.go` | LRU verdict cache + policy-snapshot refresh/invalidate |
+| `internal/usenetsearch/crawler.go` | `admitChunk`/`statVerdict`/`pruneGroupNonMatching`; admit/admit-skip-stat logging |
+| `internal/usenetsearch/index.go` | `ExistingReleases`/`DistinctReleases`/`DeleteReleases` |
+| `internal/usenetsearch/service.go` | `AdmissionEnabled` config + `KeyAdmissionEnabled`; `SetAdmissionPolicy`/`InvalidateAdmissionPolicy`; one-shot prune wiring |
+| `internal/db/migrations/0043_library_quality_prefs_title_year.sql` | `title`/`year` columns for crawl-time title matching |
+| `internal/library/quality_prefs.go` | `TitleQualityPrefs.Title/Year`; `ListTitleQualityPrefs` |
+| `internal/api/usenetadmission.go` | `NewNNTPAdmissionPolicy` — builds `PolicySnapshot` from Settings + title overrides |
+| `internal/api/titlequality.go` | resolves/stores Title/Year on title-prefs PUT; invalidates policy on PUT/Clear |
+| `internal/api/library.go` | invalidates policy on mode-level quality-prefs PUT |
+| `internal/api/usenetnntp.go` | reads `usenet_nntp_admission_enabled` into `Config.AdmissionEnabled` |
+| `cmd/sakms/main.go` | wires `nntpSearch.SetAdmissionPolicy(api.NewNNTPAdmissionPolicy(...))` |
+

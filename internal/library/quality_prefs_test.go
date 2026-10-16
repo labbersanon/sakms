@@ -85,3 +85,65 @@ func TestTitleQualityPrefs_RoundTripAndDelete(t *testing.T) {
 		t.Fatalf("after delete: %v", err)
 	}
 }
+
+func TestTitleQualityPrefs_TitleYearRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.SetTitleQualityPrefs(ctx, TitleQualityPrefs{
+		Mode: mode.Movies, TMDBID: 438631, Tiers: []quality.Tier{quality.High},
+		Title: "Dune", Year: 2021,
+	}); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	got, err := s.GetTitleQualityPrefs(ctx, mode.Movies, 438631)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Title != "Dune" || got.Year != 2021 {
+		t.Fatalf("got title=%q year=%d, want Dune/2021", got.Title, got.Year)
+	}
+}
+
+func TestListTitleQualityPrefs(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.SetTitleQualityPrefs(ctx, TitleQualityPrefs{
+		Mode: mode.Movies, TMDBID: 11, Tiers: []quality.Tier{quality.Low}, Title: "Dune", Year: 1984,
+	}); err != nil {
+		t.Fatalf("set 1: %v", err)
+	}
+	if err := s.SetTitleQualityPrefs(ctx, TitleQualityPrefs{
+		Mode: mode.Movies, TMDBID: 438631, Tiers: []quality.Tier{quality.High}, MinResolution: 1080, MinResolutionSet: true, Title: "Dune", Year: 2021,
+	}); err != nil {
+		t.Fatalf("set 2: %v", err)
+	}
+	// A movie override with no resolvable library title (Title left blank).
+	if err := s.SetTitleQualityPrefs(ctx, TitleQualityPrefs{
+		Mode: mode.Movies, TMDBID: 999, Tiers: []quality.Tier{quality.Medium},
+	}); err != nil {
+		t.Fatalf("set 3: %v", err)
+	}
+
+	got, err := s.ListTitleQualityPrefs(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("list len=%d, want 3", len(got))
+	}
+	byID := map[int]TitleQualityPrefs{}
+	for _, p := range got {
+		byID[p.TMDBID] = p
+	}
+	if byID[11].Title != "Dune" || byID[11].Year != 1984 {
+		t.Fatalf("tmdb 11 = %+v, want Dune/1984", byID[11])
+	}
+	if byID[438631].Title != "Dune" || byID[438631].Year != 2021 || !byID[438631].MinResolutionSet {
+		t.Fatalf("tmdb 438631 = %+v, want Dune/2021/MinResolutionSet", byID[438631])
+	}
+	if byID[999].Title != "" {
+		t.Fatalf("tmdb 999 title=%q, want blank (not resolvable at PUT)", byID[999].Title)
+	}
+}

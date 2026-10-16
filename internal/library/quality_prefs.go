@@ -36,6 +36,14 @@ type TitleQualityPrefs struct {
 	MaxResolution    int
 	MaxResolutionSet bool
 	HasOverride      bool
+	// Claude 2026-10-15: title/year snapshot for NNTP crawl-time admission
+	// matching (migration 0043). Title=="" means not yet resolvable at PUT
+	// time (e.g. a movie override set from Discover before TMDB lookup
+	// succeeded) — api.NewNNTPAdmissionPolicy skips such rows, falling back
+	// to mode defaults at crawl time, same as before this column existed.
+	// Review if: a title PUT path is added that still can't resolve a title.
+	Title string
+	Year  int // 0 when unknown
 	// ResolutionFloors is the per-rung bitrate floor (480/720/1080/2160).
 	// Nil/empty means synthesize UniformFloors(Lowest(Tiers)) at the caller.
 	ResolutionFloors map[int]quality.Tier
@@ -51,7 +59,7 @@ type TitleQualityPrefs struct {
 func (s *Store) GetTitleQualityPrefs(ctx context.Context, m mode.Mode, tmdbID int) (TitleQualityPrefs, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT quality_tiers, min_resolution, resolution_floors,
-		       max_resolution, codec_rank, feature_upgrade
+		       max_resolution, codec_rank, feature_upgrade, title, year
 		FROM library_quality_prefs
 		WHERE mode = ? AND tmdb_id = ?
 	`, string(m), tmdbID)
@@ -61,7 +69,9 @@ func (s *Store) GetTitleQualityPrefs(ctx context.Context, m mode.Mode, tmdbID in
 	var maxRes sql.NullInt64
 	var codecRankRaw string
 	var featureUp sql.NullInt64
-	if err := row.Scan(&tiersRaw, &minRes, &floorsRaw, &maxRes, &codecRankRaw, &featureUp); err != nil {
+	var title string
+	var year sql.NullInt64
+	if err := row.Scan(&tiersRaw, &minRes, &floorsRaw, &maxRes, &codecRankRaw, &featureUp, &title, &year); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return TitleQualityPrefs{}, ErrNotFound
 		}
@@ -72,6 +82,7 @@ func (s *Store) GetTitleQualityPrefs(ctx context.Context, m mode.Mode, tmdbID in
 		Tiers:            parseStoredTiers(tiersRaw),
 		ResolutionFloors: parseStoredFloors(floorsRaw),
 		CodecRank:        parseStoredCodecRank(codecRankRaw),
+		Title:            title,
 	}
 	if minRes.Valid {
 		out.MinResolution = int(minRes.Int64)
@@ -85,7 +96,59 @@ func (s *Store) GetTitleQualityPrefs(ctx context.Context, m mode.Mode, tmdbID in
 		v := featureUp.Int64 != 0
 		out.FeatureUpgrade = &v
 	}
+	if year.Valid {
+		out.Year = int(year.Int64)
+	}
 	return out, nil
+}
+
+// ListTitleQualityPrefs returns every stored title override row — the
+// NNTP crawl-admission policy builder's input set (api.
+// NewNNTPAdmissionPolicy, Step 4 of the crawl-admission plan).
+func (s *Store) ListTitleQualityPrefs(ctx context.Context) ([]TitleQualityPrefs, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT mode, tmdb_id, quality_tiers, min_resolution, resolution_floors,
+		       max_resolution, codec_rank, feature_upgrade, title, year
+		FROM library_quality_prefs
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("listing quality prefs: %w", err)
+	}
+	defer rows.Close()
+	var out []TitleQualityPrefs
+	for rows.Next() {
+		var modeRaw, tiersRaw, floorsRaw, codecRankRaw, title string
+		var tmdbID int
+		var minRes, maxRes, year sql.NullInt64
+		var featureUp sql.NullInt64
+		if err := rows.Scan(&modeRaw, &tmdbID, &tiersRaw, &minRes, &floorsRaw, &maxRes, &codecRankRaw, &featureUp, &title, &year); err != nil {
+			return nil, fmt.Errorf("scanning quality prefs: %w", err)
+		}
+		p := TitleQualityPrefs{
+			Mode: mode.Mode(modeRaw), TMDBID: tmdbID, HasOverride: true,
+			Tiers:            parseStoredTiers(tiersRaw),
+			ResolutionFloors: parseStoredFloors(floorsRaw),
+			CodecRank:        parseStoredCodecRank(codecRankRaw),
+			Title:            title,
+		}
+		if minRes.Valid {
+			p.MinResolution = int(minRes.Int64)
+			p.MinResolutionSet = true
+		}
+		if maxRes.Valid {
+			p.MaxResolution = int(maxRes.Int64)
+			p.MaxResolutionSet = true
+		}
+		if featureUp.Valid {
+			v := featureUp.Int64 != 0
+			p.FeatureUpgrade = &v
+		}
+		if year.Valid {
+			p.Year = int(year.Int64)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 // SetTitleQualityPrefs upserts a title override. tiers must be non-empty.
@@ -132,12 +195,16 @@ func (s *Store) SetTitleQualityPrefs(ctx context.Context, prefs TitleQualityPref
 			featArg = 0
 		}
 	}
+	var yearArg any
+	if prefs.Year > 0 {
+		yearArg = prefs.Year
+	}
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO library_quality_prefs (
 			mode, tmdb_id, quality_tiers, min_resolution, resolution_floors,
-			max_resolution, codec_rank, feature_upgrade
+			max_resolution, codec_rank, feature_upgrade, title, year
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(mode, tmdb_id) DO UPDATE SET
 			quality_tiers = excluded.quality_tiers,
 			min_resolution = excluded.min_resolution,
@@ -145,8 +212,10 @@ func (s *Store) SetTitleQualityPrefs(ctx context.Context, prefs TitleQualityPref
 			max_resolution = excluded.max_resolution,
 			codec_rank = excluded.codec_rank,
 			feature_upgrade = excluded.feature_upgrade,
+			title = excluded.title,
+			year = excluded.year,
 			updated_at = sakms_now()
-	`, string(prefs.Mode), prefs.TMDBID, string(raw), minArg, floorsRaw, maxArg, codecRaw, featArg)
+	`, string(prefs.Mode), prefs.TMDBID, string(raw), minArg, floorsRaw, maxArg, codecRaw, featArg, prefs.Title, yearArg)
 	if err != nil {
 		return fmt.Errorf("upserting quality prefs for %s/%d: %w", prefs.Mode, prefs.TMDBID, err)
 	}

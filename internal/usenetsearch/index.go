@@ -356,6 +356,92 @@ SELECT release_name FROM usenet_nntp_headers WHERE group_name=? AND msgid=?`, gr
 	return idx.loadCandidate(ctx, group, release)
 }
 
+// Claude 2026-10-15: admission support queries (crawl-time quality gate).
+// Reason: ExistingReleases batches the "already indexed" STAT short-circuit
+//   into one query per OVER chunk (plan: "1 query/chunk") instead of one
+//   per release; DistinctReleases/DeleteReleases back the one-shot prune of
+//   already-indexed rows that fail the quality gate.
+// Troubleshooting: a release re-STATed every chunk despite being indexed →
+//   check names actually reach ExistingReleases (bucketed release names,
+//   not raw subjects).
+// Related files: usenetsearch/crawler.go, usenetsearch/admission.go
+
+// ExistingReleases reports which of names are already indexed for group —
+// the "stat=existing" short-circuit for a release that started in an
+// earlier OVER chunk (same or an earlier crawl pass) and still has rows in
+// the current chunk.
+func (idx *Index) ExistingReleases(ctx context.Context, group string, names []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	if len(names) == 0 {
+		return out, nil
+	}
+	ph := make([]string, len(names))
+	args := make([]any, 0, len(names)+1)
+	args = append(args, group)
+	for i, n := range names {
+		ph[i] = "?"
+		args = append(args, n)
+	}
+	rows, err := idx.db.QueryContext(ctx, `
+SELECT DISTINCT release_name FROM usenet_nntp_headers
+WHERE group_name=? AND release_name IN (`+strings.Join(ph, ",")+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		out[n] = true
+	}
+	return out, rows.Err()
+}
+
+// DistinctReleases lists every distinct non-obfuscated release_name already
+// indexed for group — the one-shot prune's input set.
+func (idx *Index) DistinctReleases(ctx context.Context, group string) ([]string, error) {
+	rows, err := idx.db.QueryContext(ctx, `
+SELECT DISTINCT release_name FROM usenet_nntp_headers
+WHERE group_name=? AND obfuscated=FALSE AND release_name!=''`, group)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+// DeleteReleases removes every header row for group whose release_name is
+// in names — the one-shot prune's delete step. No STAT check: pruning is
+// quality-gate-only (plan: "no STAT needed for prune").
+func (idx *Index) DeleteReleases(ctx context.Context, group string, names []string) (int64, error) {
+	if len(names) == 0 {
+		return 0, nil
+	}
+	ph := make([]string, len(names))
+	args := make([]any, 0, len(names)+1)
+	args = append(args, group)
+	for i, n := range names {
+		ph[i] = "?"
+		args = append(args, n)
+	}
+	res, err := idx.db.ExecContext(ctx, `
+DELETE FROM usenet_nntp_headers WHERE group_name=? AND release_name IN (`+strings.Join(ph, ",")+`)`, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func escapeLike(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `%`, `\%`)

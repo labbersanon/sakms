@@ -252,12 +252,55 @@ func (idx *Index) RecomputeDirty(ctx context.Context, limit int) (RecomputeStats
 			st.BelowGate++
 		default:
 			st.BelowGate++
+			if err := idx.enqueueSpan(ctx, k); err != nil {
+				return st, err
+			}
 		}
 	}
 	if err := idx.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usenet_nntp_releases WHERE dirty`).Scan(&st.Backlog); err != nil {
 		return st, err
 	}
 	return st, nil
+}
+
+// spanRepairFloorBP / spanRepairMaxArticles bound which near-complete named
+// releases get a one-shot release-span repair range (plan D5).
+const (
+	spanRepairFloorBP     = 8000
+	spanRepairMaxArticles = 20_000
+	spanRepairPad         = 200
+)
+
+// enqueueSpan queues one reason='span' range [first-200, last+200] for a named
+// release sitting at 80%..gate whose span is already behind the forward
+// watermark. span_requeued makes it once-per-release.
+func (idx *Index) enqueueSpan(ctx context.Context, k releaseKey) error {
+	if !idx.spanRepair.Load() {
+		return nil
+	}
+	var first, last int
+	err := idx.db.QueryRowContext(ctx, `
+UPDATE usenet_nntp_releases r SET span_requeued = TRUE
+FROM usenet_nntp_watermarks w
+WHERE r.group_name = ? AND r.release_key = ? AND w.group_name = r.group_name
+  AND r.state = 'named' AND r.searchable = FALSE AND r.span_requeued = FALSE
+  AND r.gate_reason = 'below_gate' AND r.completeness_bp >= ? AND w.high > r.last_msg
+RETURNING r.first_msg, r.last_msg`, k.group, k.key, spanRepairFloorBP).Scan(&first, &last)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	lo := first - spanRepairPad
+	if lo < 1 {
+		lo = 1
+	}
+	hi := last + spanRepairPad
+	if hi-lo+1 > spanRepairMaxArticles {
+		return nil
+	}
+	return idx.AddMissedRanges(ctx, k.group, [][2]int{{lo, hi}}, "span")
 }
 
 func (idx *Index) recomputeOne(ctx context.Context, k releaseKey, gate int) (searchable, undeclared, orphan bool, err error) {

@@ -73,6 +73,9 @@ type Config struct {
 	// IncompleteTTLDays reaps below-gate named releases (key
 	// usenet_nntp_incomplete_ttl_days; 0 = default 3).
 	IncompleteTTLDays int
+	// RepairEnabled gates OVER gap capture + missed-range repair (key
+	// usenet_nntp_repair_enabled, default true via api; zero value = off).
+	RepairEnabled bool
 }
 
 // GroupModesFor returns the enabled modes (a subset of "movies"/"series"/
@@ -283,6 +286,7 @@ func (s *Service) Apply(cfg Config) error {
 		return err
 	}
 	idx.SetMinCompletenessPct(cfg.MinCompletenessPct)
+	idx.SetSpanRepair(cfg.RepairEnabled)
 	s.idx = idx
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
@@ -299,16 +303,32 @@ func (s *Service) loop(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		cres := s.runProbeAndCrawl(ctx)
+		// Claude 2026-10-15: D7 pass order — forward crawl, repair, (name-fix),
+		// recompute, (backfill), sweeps, liveness. Any NNTP pass reporting busy
+		// short-circuits the remaining NNTP passes and waits busyBackoff.
+		// Reason: one goroutine, existing constants, never starve downloads.
+		// Troubleshooting: a pass starving others → check which log line stops
+		//   appearing (repair pass / namefix pass / backfill group=).
+		// Review if: a pass needs its own cadence.
+		cres, crawler := s.runProbeAndCrawl(ctx)
+		busy, advanced := cres.Busy, cres.Advanced
+		if crawler != nil && !busy && crawler.RepairEnabled {
+			rr, err := crawler.RepairOnce(ctx)
+			if err != nil {
+				log.Printf("usenetsearch: repair: %v", err)
+			}
+			busy = busy || rr.Busy
+			advanced = advanced || rr.Advanced
+		}
 		s.runRecompute(ctx)
 		s.runSweeps(ctx)
 		s.runLiveness(ctx)
 
 		var wait time.Duration
 		switch {
-		case cres.Busy:
+		case busy:
 			wait = busyBackoff
-		case cres.Advanced:
+		case advanced:
 			wait = catchUpPause
 		default:
 			wait = s.idleBackoff()
@@ -331,7 +351,7 @@ func (s *Service) idleBackoff() time.Duration {
 	return d
 }
 
-func (s *Service) runProbeAndCrawl(ctx context.Context) CrawlResult {
+func (s *Service) runProbeAndCrawl(ctx context.Context) (CrawlResult, *Crawler) {
 	s.mu.Lock()
 	src := s.src
 	cfg := s.cfg
@@ -343,7 +363,7 @@ func (s *Service) runProbeAndCrawl(ctx context.Context) CrawlResult {
 	s.probe = r
 	s.mu.Unlock()
 	if !r.Ready || idx == nil || src == nil {
-		return CrawlResult{}
+		return CrawlResult{}, nil
 	}
 	_ = s.PruneBeyondCeilings(ctx)
 	window := time.Duration(cfg.WindowDays) * 24 * time.Hour
@@ -366,12 +386,13 @@ func (s *Service) runProbeAndCrawl(ctx context.Context) CrawlResult {
 		AdmissionEnabled: admissionEnabled,
 		GroupModesFn:     cfg.GroupModesFor,
 		Admitter:         admit,
+		RepairEnabled:    cfg.RepairEnabled,
 	}
 	cres, err := c.CrawlOnce(ctx)
 	if err != nil {
 		log.Printf("usenetsearch: crawl: %v", err)
 	}
-	return cres
+	return cres, c
 }
 
 // pruneNonMatchingOnce runs the one-shot prune of already-indexed rows that

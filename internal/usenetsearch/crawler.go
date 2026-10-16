@@ -51,6 +51,15 @@ type Crawler struct {
 	// falls through to loosest-of mode defaults with an empty Modes map).
 	GroupModesFn func(group string) []string
 	Admitter     *admitter
+
+	// RepairEnabled turns on OVER gap capture into usenet_nntp_missed_ranges
+	// (usenet_nntp_repair_enabled). false = today's behavior (gaps ignored).
+	RepairEnabled bool
+
+	// curDir/curGaps describe the chunk ingestRange is processing; admitChunk
+	// reads them for its aggregate log line. A Crawler is single-goroutine.
+	curDir  string
+	curGaps int
 }
 
 // CrawlOnce advances watermarks for every configured group.
@@ -134,44 +143,18 @@ func (c *Crawler) crawlGroup(ctx context.Context, group string) (advanced bool, 
 		if b > gr.High {
 			b = gr.High
 		}
-		rows, err := c.Src.Overview(ctx, group, a, b)
-		if err != nil {
-			return advanced, err
-		}
-		headers := make([]HeaderRow, 0, len(rows))
-		for _, r := range rows {
-			ps := ParseSubject(r.Subject)
-			headers = append(headers, HeaderRow{
-				Group:       group,
-				MsgNum:      r.Number,
-				MsgID:       r.MessageID,
-				Subject:     r.Subject,
-				From:        r.From,
-				PostedAt:    r.DateUnix,
-				Bytes:       int64(r.Bytes),
-				ReleaseName: ps.Name,
-				PartN:       ps.PartN,
-				PartM:       ps.PartM,
-				Filename:    ps.Filename,
-				YencSize:    ps.YencSize,
-				Obfuscated:  ps.Obfuscated || !ps.OK,
-				IsMeta:      ps.Meta || IsMetaSubject(r.Subject, ps.Filename),
-				FileN:       ps.FileN,
-				FileM:       ps.FileM,
-			})
-		}
-		kept := headers
-		if c.AdmissionEnabled && c.Admitter != nil {
-			kept, err = c.admitChunk(ctx, group, a, b, headers)
-			if err != nil {
-				return advanced, err
-			}
-		}
-		if err := c.Index.Upsert(ctx, kept); err != nil {
+		if _, err := c.ingestRange(ctx, ingestOpts{Dir: dirForward, CaptureGaps: c.RepairEnabled}, group, a, b); err != nil {
 			return advanced, err
 		}
 		if err := c.Index.SetWatermark(ctx, group, b); err != nil {
 			return advanced, err
+		}
+		if wm == 0 && !advanced {
+			// Claude 2026-10-15: a brand-new group's backfill cursor starts at the
+			// first forward chunk (plan D6); it only ever moves down from here.
+			if err := c.Index.EnsureLow(ctx, group, from); err != nil {
+				return advanced, err
+			}
 		}
 		advanced = true
 		select {
@@ -332,8 +315,12 @@ func (c *Crawler) admitChunk(ctx context.Context, group string, a, b int, header
 		}
 	}
 
-	log.Printf("usenetsearch: crawl chunk group=%s range=%d-%d rows=%d releases=%d admitted=%d skip_unparsed=%d skip_res=%d skip_tier=%d skip_stat=%d stat_calls=%d deferred=%d elapsed_ms=%d",
-		group, a, b, st.rows, st.releases, st.admitted, st.skipUnparsed, st.skipRes, st.skipTier, st.skipStat, st.statCalls, st.deferred, time.Since(start).Milliseconds())
+	dir := c.curDir
+	if dir == "" {
+		dir = dirForward
+	}
+	log.Printf("usenetsearch: crawl chunk dir=%s group=%s range=%d-%d rows=%d releases=%d admitted=%d skip_unparsed=%d skip_res=%d skip_tier=%d skip_stat=%d stat_calls=%d deferred=%d gaps=%d elapsed_ms=%d",
+		dir, group, a, b, st.rows, st.releases, st.admitted, st.skipUnparsed, st.skipRes, st.skipTier, st.skipStat, st.statCalls, st.deferred, c.curGaps, time.Since(start).Milliseconds())
 
 	return kept, nil
 }

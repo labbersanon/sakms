@@ -22,7 +22,13 @@ type Index struct {
 	// gatePct is the strict completeness threshold (0 = default 95). Set by
 	// Service.Apply via SetMinCompletenessPct; read on every search.
 	gatePct atomic.Int64
+	// spanRepair enables release-span repair enqueueing from the recompute
+	// pass (usenet_nntp_repair_enabled); false by default.
+	spanRepair atomic.Bool
 }
+
+// SetSpanRepair toggles release-span range enqueueing (the repair kill switch).
+func (idx *Index) SetSpanRepair(on bool) { idx.spanRepair.Store(on) }
 
 // SetMinCompletenessPct sets the strict completeness gate (clamped 80-100).
 func (idx *Index) SetMinCompletenessPct(p int) {

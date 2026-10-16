@@ -11111,3 +11111,16 @@ status stays active.
 | `frontend/src/screens/settings/Usenet.tsx` | `allModeGroups` from `avail.groups` |
 | `docs/usenet-nntp-native.md` | membership = LIST ACTIVE |
 
+## 2026-10-16 — Drop adult* LIST wildmat (adultswim false positive)
+
+**Problem:** `alt.binaries.adult*` matched `alt.binaries.adultswim` (TV) into the Adult crawl set.
+**Root cause:** Prefix wildmat is not the same as "adult binaries".
+**Fix:** Remove `adult*`. Adult membership stays erotica/xxx/boneless/pictures.erotica/mom.
+**Outcome:** Adult LIST no longer includes Adult Swim.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/mediagroups.go` | drop `alt.binaries.adult*` |
+

@@ -11092,3 +11092,22 @@ status stays active.
 | `frontend/src/api/usenet.ts` | package field comment |
 | `docs/usenet-nntp-native.md` | membership vs tolerance |
 
+## 2026-10-16 — NNTP mode groups = provider LIST ACTIVE (not packages.json)
+
+**Problem:** After the tolerance-slider fix, monitored lists were still ~10/8/5 groups. Wade had asked repeatedly for every group that applies to each mode.
+**Root cause:** Membership was `packages.json ∩ LIST` (a 23-name shortlist). Boot `LoadUsenetSearchConfig` also ran before `SetNNTPNativeService`, so LIST was never consulted and the seed list was persisted as "full".
+**Fix:** Non-custom membership is the mode-scoped LIST ACTIVE set. `packages.json` is badges only. Boot registers the service first, live-LISTs, and persists. Crawler retries LIST if boot missed. Wildmats include scene bins (inner-sanctum, ath, cores, …). Slider remains grade tolerance.
+**Outcome:** Settings/crawl monitor every provider group matching the mode wildmats; custom still opts out.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/package_resolve.go` | `ResolveModeGroups` = LIST set when available |
+| `internal/usenetsearch/mediagroups.go` | scene-bin wildmats for movies/series |
+| `internal/usenetsearch/service.go` | crawl-loop LIST expand + retry |
+| `internal/api/usenetnntp.go` | live LIST on apply; keep groups if LIST empty |
+| `cmd/sakms/main.go` | register service before LoadUsenetSearchConfig |
+| `frontend/src/screens/settings/Usenet.tsx` | `allModeGroups` from `avail.groups` |
+| `docs/usenet-nntp-native.md` | membership = LIST ACTIVE |
+

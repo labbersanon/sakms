@@ -8,10 +8,25 @@ import (
 	"github.com/labbersanon/sakms/internal/usenet"
 )
 
-// Claude 2026-09-18: mode-scoped LIST ACTIVE wildmats for settings multi-select.
-// Reason: full LIST ACTIVE on Eweka is huge; Discover title filter is future-only.
-// Troubleshooting: empty picker → no subscriptions or wildmat miss.
-// Review if: Discover titles land (keep groups API; titles are separate).
+// Claude 2026-10-16: mode-scoped LIST ACTIVE wildmats = crawl membership.
+// Reason: every provider group matching these patterns applies to the mode;
+//   packages.json is badges only. Scene bins added so movies/series are not
+//   stuck on movies*/teevee* alone.
+// Troubleshooting: a wanted group missing → add a wildmat here (not seeds).
+// Review if: a pattern pulls warez/spam hierarchies (warez* was dropped).
+
+// sceneBinWildmats carry both movies and series but are not matched by the
+// mode-named hierarchies (movies*/moovee*/teevee*).
+var sceneBinWildmats = []string{
+	"alt.binaries.inner-sanctum*",
+	"alt.binaries.ath*",
+	"alt.binaries.cores*",
+	"alt.binaries.ghosts*",
+	"alt.binaries.ftn*",
+	"alt.binaries.amazing*",
+	"alt.binaries.bloaf*",
+	"alt.binaries.u4e*",
+}
 
 // MediaWildmats returns LIST ACTIVE wildmats for mode ("movies"|"series"|"adult").
 func MediaWildmats(mode string) []string {
@@ -22,7 +37,7 @@ func MediaWildmats(mode string) []string {
 		//   missing from the old list. Recommended seeds filter against LIST ACTIVE.
 		// Troubleshooting: empty Movies picker — provider wildmat miss.
 		// Review if: Discover titles replace wildmat LIST ACTIVE entirely.
-		return []string{
+		return append([]string{
 			"alt.binaries.movies*",
 			"alt.binaries.moovee*",
 			"alt.binaries.multimedia*",
@@ -32,16 +47,16 @@ func MediaWildmats(mode string) []string {
 			"alt.binaries.blu-ray*",
 			"alt.binaries.uhd*",
 			"alt.binaries.dvd*",
-		}
+		}, sceneBinWildmats...)
 	case "series":
-		return []string{
+		return append([]string{
 			"alt.binaries.teevee*",
 			"alt.binaries.tv*",
 			"alt.binaries.hdtv*",
 			"alt.binaries.series*",
 			"alt.binaries.anime*",
 			"alt.binaries.multimedia*",
-		}
+		}, sceneBinWildmats...)
 	case "adult":
 		return []string{
 			"alt.binaries.erotica*",
@@ -49,6 +64,8 @@ func MediaWildmats(mode string) []string {
 			"alt.binaries.multimedia.erotica*",
 			"alt.binaries.xxx*",
 			"alt.binaries.pictures.erotica*",
+			"alt.binaries.mom*",
+			"alt.binaries.adult*",
 		}
 	default:
 		return nil

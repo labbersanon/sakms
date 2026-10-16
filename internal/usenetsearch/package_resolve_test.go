@@ -9,23 +9,20 @@ func TestInferPackageFromGroups_EmptyIsDefault(t *testing.T) {
 	}
 }
 
-func TestInferPackageFromGroups_FullSetIsDefaultTolerance(t *testing.T) {
-	full := ResolveAllModeGroups("movies")
-	got := InferPackageFromGroups("movies", full, full)
+func TestInferPackageFromGroups_FullListIsDefaultTolerance(t *testing.T) {
+	avail := []string{"alt.binaries.moovee", "alt.binaries.movies", "alt.binaries.movies.erotica"}
+	got := InferPackageFromGroups("movies", avail, avail)
 	if got != FormatPackageStep(DefaultPackageStep) {
 		t.Fatalf("got %q want default tolerance", got)
 	}
 }
 
-func TestInferPackageFromGroups_PartialIsCustom(t *testing.T) {
-	step2 := ResolveGroupsForStep("movies", 2)
-	full := ResolveAllModeGroups("movies")
-	if sameGroupSet(step2, full) {
-		t.Fatal("need step2 ⊂ full for this assertion")
-	}
-	got := InferPackageFromGroups("movies", step2, nil)
+func TestInferPackageFromGroups_SeedShortlistIsCustom(t *testing.T) {
+	seeds := ResolveAllModeGroups("movies")
+	avail := append(append([]string{}, seeds...), "alt.binaries.movies.erotica")
+	got := InferPackageFromGroups("movies", seeds, avail)
 	if got != PackageCustom {
-		t.Fatalf("partial curated set should be custom, got %q", got)
+		t.Fatalf("packages.json shortlist vs full LIST should be custom, got %q", got)
 	}
 }
 
@@ -36,23 +33,19 @@ func TestInferPackageFromGroups_Custom(t *testing.T) {
 	}
 }
 
-func TestResolveModeGroups_IntersectsProvider(t *testing.T) {
-	all := ResolveAllModeGroups("movies")
-	if len(all) < 2 {
-		t.Fatal("need curated movies")
-	}
-	only := []string{all[0]}
-	got := ResolveModeGroups("movies", only)
-	if len(got) != 1 || got[0] != all[0] {
-		t.Fatalf("got %+v", got)
+func TestResolveModeGroups_UsesFullListActive(t *testing.T) {
+	avail := []string{"alt.binaries.movies.erotica", "alt.binaries.moovee", "alt.binaries.inner-sanctum"}
+	got := ResolveModeGroups("movies", avail)
+	if !sameGroupSet(got, avail) {
+		t.Fatalf("membership must be the LIST set, got %+v", got)
 	}
 }
 
-func TestResolveModeGroups_UnfilteredIsFullCuratedSet(t *testing.T) {
+func TestResolveModeGroups_EmptyFallsBackToSeeds(t *testing.T) {
 	got := ResolveModeGroups("movies", nil)
 	full := ResolveGroupsForStep("movies", PackageStepMax)
 	if !sameGroupSet(got, full) {
-		t.Fatalf("membership must be full curated set: got=%d full=%d", len(got), len(full))
+		t.Fatalf("empty LIST falls back to seeds: got=%d seeds=%d", len(got), len(full))
 	}
 }
 

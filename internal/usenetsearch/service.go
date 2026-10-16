@@ -141,17 +141,33 @@ func (c Config) GroupModesFor(group string) []string {
 	return out
 }
 
-// PackageCeilingForMode returns the crawl/search ceiling step for mode.
-func (c Config) PackageCeilingForMode(mode string) int {
-	raw := ""
+func (c Config) packageRawForMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "movies":
-		raw = c.MoviesPackage
+		return c.MoviesPackage
 	case "series":
-		raw = c.SeriesPackage
+		return c.SeriesPackage
 	case "adult":
-		raw = c.AdultPackage
+		return c.AdultPackage
+	default:
+		return ""
 	}
+}
+
+func (c *Config) setGroupsForMode(mode string, groups []string) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "movies":
+		c.MoviesGroups = groups
+	case "series":
+		c.SeriesGroups = groups
+	case "adult":
+		c.AdultGroups = groups
+	}
+}
+
+// PackageCeilingForMode returns the crawl/search ceiling step for mode.
+func (c Config) PackageCeilingForMode(mode string) int {
+	raw := c.packageRawForMode(mode)
 	step, custom, ok := ParsePackageValue(raw)
 	if !ok || custom {
 		// Custom: treat as max ceiling; grade filter still applies vs step 5.
@@ -249,6 +265,10 @@ type Service struct {
 	// availCache: mode → last LIST ACTIVE media groups (settings resolve).
 	availCache map[string][]string
 	protectFn  ProtectedGroupsFn
+	// membershipExpanded is true after a successful LIST ACTIVE rewrite of
+	// non-custom mode groups (retry while false so a boot LIST miss recovers).
+	membershipExpanded bool
+	membershipRetryAt  time.Time
 
 	// admit is nil until SetAdmissionPolicy is called (api wiring, Step 4).
 	// crawlEligibleGroups-selected groups get pruned once each (prunedOnce)
@@ -324,6 +344,8 @@ func (s *Service) Apply(cfg Config) error {
 		s.idx = nil
 	}
 	s.cfg = cfg
+	s.membershipExpanded = false
+	s.membershipRetryAt = time.Time{}
 	if !cfg.Enabled {
 		s.probe = Readiness{Ready: false, State: "unknown", Detail: "native backend disabled"}
 		return nil
@@ -362,6 +384,7 @@ func (s *Service) loop(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		s.refreshMembershipFromList(ctx)
 		// Claude 2026-10-15: D7 pass order — forward crawl, repair, (name-fix),
 		// recompute, (backfill), sweeps, liveness. Any NNTP pass reporting busy
 		// short-circuits the remaining NNTP passes and waits busyBackoff.
@@ -869,6 +892,56 @@ func (s *Service) ListAvailableGroups(ctx context.Context, mode string) ([]strin
 	s.availCache[strings.ToLower(strings.TrimSpace(mode))] = cp
 	s.mu.Unlock()
 	return groups, nil
+}
+
+// refreshMembershipFromList replaces non-custom mode groups with LIST ACTIVE.
+// Retries while LIST fails so a boot miss still expands once NNTP is up.
+func (s *Service) refreshMembershipFromList(ctx context.Context) {
+	s.mu.Lock()
+	if s.membershipExpanded || !s.cfg.Enabled || time.Now().Before(s.membershipRetryAt) {
+		s.mu.Unlock()
+		return
+	}
+	cfg := s.cfg
+	s.mu.Unlock()
+
+	allOK := true
+	changed := false
+	for _, mode := range []string{"movies", "series", "adult"} {
+		if !cfg.ModeEnabled(mode) {
+			continue
+		}
+		_, custom, ok := ParsePackageValue(cfg.packageRawForMode(mode))
+		if ok && custom {
+			continue
+		}
+		list, err := s.ListAvailableGroups(ctx, mode)
+		if err != nil {
+			log.Printf("usenetsearch: LIST ACTIVE %s: %v", mode, err)
+			allOK = false
+			continue
+		}
+		if len(list) == 0 {
+			allOK = false
+			continue
+		}
+		if sameGroupSet(list, cfg.GroupsForMode(mode)) {
+			continue
+		}
+		cfg.setGroupsForMode(mode, list)
+		changed = true
+		log.Printf("usenetsearch: %s groups from LIST ACTIVE: %d", mode, len(list))
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if changed {
+		s.cfg = cfg
+	}
+	if allOK {
+		s.membershipExpanded = true
+	} else {
+		s.membershipRetryAt = time.Now().Add(time.Minute)
+	}
 }
 
 // CachedAvailableGroups returns the last LIST ACTIVE result for mode, or nil.

@@ -1087,12 +1087,20 @@ const GroupTransferToolbox: Component<{
 
 const STEP_MAX = 5;
 
-// Claude 2026-10-16: allModeGroups = every curated packages.json group for the
-// mode (∩ provider), independent of the tolerance slider.
-// Reason: slider is grade ceiling only; membership is always the full curated set.
-// Troubleshooting: empty list → provider LIST miss or packages/items absent.
-// Review if: server ResolveModeGroups shape changes.
+// Claude 2026-10-16: allModeGroups = every LIST ACTIVE group for the mode.
+// Reason: membership is provider groups that apply, not the packages.json shortlist.
+// Troubleshooting: count matches seed count (~10) → still reading packages map.
+// Review if: groups API stops returning the full LIST in `groups`/`items`.
 function allModeGroups(avail: UsenetNNTPAvailableGroups): string[] {
+  if (avail.groups && avail.groups.length > 0) {
+    return [...avail.groups].sort((a, b) => a.localeCompare(b));
+  }
+  const fromItems = (avail.items ?? [])
+    .map((it) => it.name)
+    .filter(Boolean);
+  if (fromItems.length > 0) {
+    return [...new Set(fromItems)].sort((a, b) => a.localeCompare(b));
+  }
   if (avail.packages) {
     const names = new Set<string>();
     for (let s = 1; s <= STEP_MAX; s++) {
@@ -1102,17 +1110,14 @@ function allModeGroups(avail: UsenetNNTPAvailableGroups): string[] {
     }
     return [...names].sort((a, b) => a.localeCompare(b));
   }
-  return (avail.items ?? [])
-    .map((it) => it.name)
-    .filter(Boolean)
-    .sort((a, b) => a.localeCompare(b));
+  return [];
 }
 
 // PackageSliderPanel: tolerance slider + optional custom chip + advanced collapse.
 //
-// Claude 2026-10-16: slider sets grade ceiling only; groups stay full curated set.
-// Reason: Wade — demote/promote selects survivors; slider is not membership.
-// Troubleshooting: moving slider shrinks list → still calling step-filtered helper.
+// Claude 2026-10-16: slider sets grade ceiling only; groups stay full LIST set.
+// Reason: Wade — every mode-applicable provider group; demote/promote survivors.
+// Troubleshooting: moving slider shrinks list → still using packages.json names.
 // Review if: custom mode retired once repair always rewrites non-custom.
 
 const PackageSliderPanel: Component<{
@@ -1135,12 +1140,9 @@ const PackageSliderPanel: Component<{
 
   const isCustom = () => props.pkg === "custom";
 
-  // Always show full curated count (step 5 cumulative), not the tolerance value.
   const monitoredCount = () => {
     if (isCustom()) return props.monitored.length;
-    const fullCount = props.steps?.[String(STEP_MAX)]?.cumulativeCount;
-    if (fullCount != null) return fullCount;
-    return allModeGroups(props.avail).length || null;
+    return allModeGroups(props.avail).length || props.monitored.length || null;
   };
 
   const applyTolerance = (step: number) => {
@@ -1204,7 +1206,7 @@ const PackageSliderPanel: Component<{
             class="!px-2 !py-1 !text-xs"
             onClick={resetToCurated}
           >
-            Reset to curated (tolerance {currentStep()})
+            Reset to all mode groups (tolerance {currentStep()})
           </Button>
         </div>
       </Show>
@@ -1225,7 +1227,7 @@ const PackageSliderPanel: Component<{
             onChange={(groups) => {
               props.onGroupsChange(groups);
             }}
-            resetLabel={`Reset to curated (tolerance ${currentStep()})`}
+            resetLabel={`Reset to all mode groups (tolerance ${currentStep()})`}
             onReset={resetToCurated}
             onGradeReset={props.onGradeReset}
           />
@@ -1289,18 +1291,26 @@ const NativeSearchCard: Component = () => {
     setProbeDetail(r.probeDetail || "");
   };
 
-  // Claude 2026-10-16: first-run prefill = full curated mode groups (tolerance unchanged).
-  // Reason: cold-start drafts full membership; Save still required.
-  // Troubleshooting: dirty after load with empty groups = expected on first visit.
-  // Review if: boot LoadUsenetSearchConfig already persisted full sets (prefill no-ops).
-  const prefillFullIfEmpty = (
+  // Claude 2026-10-16: non-custom modes always sync to the full LIST ACTIVE set.
+  // Reason: KV may still hold the old packages.json shortlist; LIST is membership.
+  // Troubleshooting: dirty on load with 10 groups → LIST returned more; Save required
+  //   only if boot repair has not persisted yet.
+  // Review if: GET native settings already returns the expanded LIST (sync no-ops).
+  const syncFullListIfNeeded = (
+    pkg: string,
     current: string[],
     setter: (v: string[]) => void,
     avail: UsenetNNTPAvailableGroups,
   ): boolean => {
-    if (current.length > 0) return false;
+    if (pkg === "custom") return false;
     const groups = allModeGroups(avail);
     if (groups.length === 0) return false;
+    if (
+      current.length === groups.length &&
+      [...current].sort((a, b) => a.localeCompare(b)).every((g, i) => g === groups[i])
+    ) {
+      return false;
+    }
     setter(groups);
     return true;
   };
@@ -1319,13 +1329,13 @@ const NativeSearchCard: Component = () => {
       if (opts?.prefillEmpty) {
         // Array literal prevents short-circuit so all three modes are checked.
         const filled = [
-          prefillFullIfEmpty(moviesGroups(), setMoviesGroups, m),
-          prefillFullIfEmpty(seriesGroups(), setSeriesGroups, s),
-          prefillFullIfEmpty(adultGroups(), setAdultGroups, a),
+          syncFullListIfNeeded(moviesPackage(), moviesGroups(), setMoviesGroups, m),
+          syncFullListIfNeeded(seriesPackage(), seriesGroups(), setSeriesGroups, s),
+          syncFullListIfNeeded(adultPackage(), adultGroups(), setAdultGroups, a),
         ].includes(true);
         if (filled) {
           setDirty(true);
-          status.set("All curated groups pre-selected — Save to apply");
+          status.set("All mode groups from provider — Save to apply");
         }
       }
     } catch (e) {
@@ -1533,10 +1543,10 @@ const NativeSearchCard: Component = () => {
         />
       </Show>
       <Muted class="mb-3">
-        Every curated group for the mode stays monitored (∩ your provider). The
-        slider is grade tolerance only — crawl/search include groups with grade ≤
-        that ceiling. Groups start at grade 1; Usenet article failures demote one
-        tier (5 is sticky). Past the ceiling, crawl stops and that group's index is
+        Every provider group that applies to the mode stays monitored. The slider
+        is grade tolerance only — crawl/search include groups with grade ≤ that
+        ceiling. Groups start at grade 1; Usenet article failures demote one tier
+        (5 is sticky). Past the ceiling, crawl stops and that group's index is
         deleted. Two successful native imports promote one tier. "Customize groups"
         switches the mode to Custom and disables the slider until you reset.
       </Muted>

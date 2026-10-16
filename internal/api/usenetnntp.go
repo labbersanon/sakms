@@ -131,6 +131,11 @@ func getUsenetNNTPNativeHandler(settingsStore *settings.Store, svc *usenetsearch
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// Expand non-custom modes to the live LIST ACTIVE set for the UI.
+		if errMsg := applyPackageResolution(r.Context(), &resp, active); errMsg != "" {
+			http.Error(w, errMsg, http.StatusInternalServerError)
+			return
+		}
 		if active != nil {
 			st, err := active.GapFillStatus(r.Context())
 			if err != nil {
@@ -354,11 +359,11 @@ func putUsenetNNTPNativeHandler(settingsStore *settings.Store, svc *usenetsearch
 		if cur.CrawlInterval < 0 {
 			cur.CrawlInterval = 0
 		}
-		// Claude 2026-10-15: non-custom packages expand server-side on Save.
-		// Reason: slider owns the list; client *Groups ignored unless custom.
-		// Troubleshooting: empty after Save → provider filter removed all names.
+		// Claude 2026-10-16: non-custom packages expand to LIST ACTIVE on Save.
+		// Reason: client *Groups ignored unless custom; LIST is membership.
+		// Troubleshooting: empty after Save → LIST miss (keep previous groups).
 		// Review if: re-rank auto-apply writes groups without going through PUT.
-		if errMsg := applyPackageResolution(&cur, active); errMsg != "" {
+		if errMsg := applyPackageResolution(ctx, &cur, active); errMsg != "" {
 			http.Error(w, errMsg, http.StatusBadRequest)
 			return
 		}
@@ -423,12 +428,14 @@ func validatePerModeGroups(cur usenetNNTPNativeResponse) string {
 	return ""
 }
 
-// Claude 2026-10-16: non-custom → full curated mode groups; package = tolerance.
-// Reason: slider must not shrink membership; demote past tolerance drops crawl.
-// Troubleshooting: incomplete moviesGroups after Save — check ResolveModeGroups.
-// Review if: package value regains a membership meaning.
-// applyPackageResolution expands non-custom packages into *Groups on cur.
-func applyPackageResolution(cur *usenetNNTPNativeResponse, svc *usenetsearch.Service) string {
+// Claude 2026-10-16: non-custom → every LIST ACTIVE group for the mode.
+// Reason: packages.json is badges; membership is provider groups that apply.
+// Troubleshooting: still 10 movies groups → LIST not called (svc nil / cache empty
+//
+//	rewritten from seeds). Empty LIST must keep the saved list, not shrink.
+//
+// Review if: custom remains the only opt-out of the rewrite.
+func applyPackageResolution(ctx context.Context, cur *usenetNNTPNativeResponse, svc *usenetsearch.Service) string {
 	type modePack struct {
 		mode string
 		pkg  *string
@@ -453,14 +460,26 @@ func applyPackageResolution(cur *usenetNNTPNativeResponse, svc *usenetsearch.Ser
 			*m.pkg = usenetsearch.PackageCustom
 			continue
 		}
-		var avail []string
-		if svc != nil {
-			avail = svc.CachedAvailableGroups(m.mode)
+		if avail := modeAvailableGroups(ctx, svc, m.mode); len(avail) > 0 {
+			*m.grp = usenetsearch.FormatGroups(usenetsearch.ResolveModeGroups(m.mode, avail))
 		}
-		*m.grp = usenetsearch.FormatGroups(usenetsearch.ResolveModeGroups(m.mode, avail))
 		*m.pkg = usenetsearch.FormatPackageStep(step)
 	}
 	return ""
+}
+
+func modeAvailableGroups(ctx context.Context, svc *usenetsearch.Service, mode string) []string {
+	if svc == nil {
+		return nil
+	}
+	if cached := svc.CachedAvailableGroups(mode); len(cached) > 0 {
+		return cached
+	}
+	groups, err := svc.ListAvailableGroups(ctx, mode)
+	if err != nil {
+		return nil
+	}
+	return groups
 }
 
 func loadOrInferPackage(ctx context.Context, settingsStore *settings.Store, key, mode, groups string, svc *usenetsearch.Service) (string, error) {
@@ -676,11 +695,11 @@ func isSettingsNotFound(err error) bool {
 	return err == settings.ErrNotFound
 }
 
-// Claude 2026-10-16: repair non-custom modes to full curated group sets on boot.
-// Reason: prior slider-as-membership bug left cores (moovee/teevee) out of KV.
-// Troubleshooting: after upgrade, moviesGroups should list every packages.json
-//   movies seed ∩ provider (or unfiltered curated when LIST cache empty).
-// Review if: all installs have booted past the slider-as-membership bug.
+// Claude 2026-10-16: repair non-custom modes to LIST ACTIVE membership on boot.
+// Reason: packages.json shortlist was wrongly used as the crawl set.
+// Troubleshooting: after upgrade, moviesGroups should match LIST ACTIVE wildmats
+//   (not 10 seeds). Empty LIST keeps the previous KV list.
+// Review if: custom remains the only opt-out.
 
 // LoadUsenetSearchConfig reads native-search settings for Apply at boot / drain.
 // Custom modes are left untouched; repaired lists are persisted best-effort.
@@ -691,7 +710,7 @@ func LoadUsenetSearchConfig(ctx context.Context, settingsStore *settings.Store) 
 		return usenetsearch.Config{}, err
 	}
 	before := r
-	if errMsg := applyPackageResolution(&r, svc); errMsg != "" {
+	if errMsg := applyPackageResolution(ctx, &r, svc); errMsg != "" {
 		return usenetsearch.Config{}, errors.New(errMsg)
 	}
 	changed := r.MoviesGroups != before.MoviesGroups || r.SeriesGroups != before.SeriesGroups ||

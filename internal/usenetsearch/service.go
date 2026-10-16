@@ -80,6 +80,16 @@ const (
 	// Review if: a v3 rewrite is needed after another ParseSubject change.
 	KeyCollectionRewriteDone   = "usenet_nntp_collection_rewrite_v2"
 	KeyCollectionRewriteCursor = "usenet_nntp_collection_rewrite_v2_cursor"
+	// Claude 2026-10-16: extra RE2 collection patterns + drift kill switch.
+	// Reason: AI-proposed strip_prefix/lead_token live in KV; ingest reads the
+	//   published set. Kill switch default true, no-op without an AI client.
+	// Troubleshooting: o2cli grep "collection drift"; set this key false to
+	//   stop new proposals (existing extras still apply until KV is cleared).
+	// Review if: extras should also trigger a v3 header rewrite.
+	KeyCollectionDriftEnabled  = "usenet_nntp_collection_drift_enabled"
+	KeyCollectionExtraPatterns = "usenet_nntp_collection_extra_patterns"
+	KeyCollectionSeederCache   = "usenet_nntp_collection_seeder_cache"
+	KeyCollectionSeederSeen    = "usenet_nntp_collection_seeder_seen"
 
 	DefaultIndexMaxGB = 20
 	DefaultWindowDays = 14
@@ -130,6 +140,10 @@ type Config struct {
 	BackfillEnabled   bool
 	BackfillDays      int
 	BackfillBudgetPct int
+	// CollectionDriftEnabled gates the idle ChatJSON pass that may add extra
+	// RE2 grouping patterns (key usenet_nntp_collection_drift_enabled;
+	// default true via api). Zero value = off. No-op when DriftAI is nil.
+	CollectionDriftEnabled bool
 }
 
 // GroupModesFor returns the enabled modes (a subset of "movies"/"series"/
@@ -302,6 +316,11 @@ type Service struct {
 	// lastChunk / lastPass feed the Dashboard crawler card.
 	lastChunk CrawlChunkStat
 	lastPass  CrawlResult
+
+	driftAIFn        DriftAIFunc
+	driftFetch       DriftFetchFunc
+	driftLastAt      time.Time
+	driftLastCluster string
 }
 
 // SetPreDB wires the PreDB lookup used by name recovery (nil disables it).
@@ -403,6 +422,7 @@ func (s *Service) Apply(cfg Config) error {
 	idx.SetMinCompletenessPct(cfg.MinCompletenessPct)
 	idx.SetSpanRepair(cfg.RepairEnabled)
 	s.idx = idx
+	s.loadExtraPatterns(context.Background())
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
 	go s.loop(ctx)
@@ -428,8 +448,8 @@ func (s *Service) loop(ctx context.Context) {
 		s.refreshMembershipFromList(ctx)
 		// Claude 2026-10-16: D7 pass order — one-shot collection rewrite, then
 		// forward crawl, repair, (name-fix), recompute, (backfill), sweeps,
-		// liveness. Any NNTP pass reporting busy short-circuits the remaining
-		// NNTP passes and waits busyBackoff.
+		// liveness, (idle collection-drift). Any NNTP pass reporting busy
+		// short-circuits the remaining NNTP passes and waits busyBackoff.
 		// Reason: one goroutine, existing constants, never starve downloads.
 		// Troubleshooting: a pass starving others → check which log line stops
 		//   appearing (repair pass / namefix pass / backfill group=).
@@ -478,6 +498,16 @@ func (s *Service) loop(ctx context.Context) {
 		}
 		s.runSweeps(ctx)
 		s.runLiveness(ctx)
+		// Claude 2026-10-16: one ChatJSON grouping pass while idle (plan 2A).
+		// Reason: never per article; skip when NNTP is busy or still catching
+		//   up so Ollama/cloud is not hit every 500ms. Rewrite must finish
+		//   first so samples are not pre-stem fragments.
+		// Troubleshooting: no "collection drift" logs → AI nil, kill switch
+		//   off, rewrite v2 still running, or crawler not idle.
+		// Review if: extras should also rewrite stored headers.
+		if !busy && !advanced {
+			s.runCollectionDrift(ctx)
+		}
 
 		var wait time.Duration
 		switch {

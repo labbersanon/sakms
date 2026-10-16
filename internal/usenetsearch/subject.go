@@ -57,6 +57,10 @@ func nntpUTF8(s string) string {
 
 // ParseSubject extracts release identity from an overview subject.
 func ParseSubject(subj string) ParsedSubject {
+	return parseSubjectWith(subj, extraPatternsLive())
+}
+
+func parseSubjectWith(subj string, extra []compiledExtra) ParsedSubject {
 	// Claude 2026-10-16: sanitize before ToLower+slice.
 	// Reason: ToLower expands each invalid byte to U+FFFD (3 bytes); slicing
 	//   the original with that index panics ([:80] with length 78 in prod).
@@ -80,11 +84,11 @@ func ParseSubject(subj string) ParsedSubject {
 			out.Meta = true
 		}
 	}
-	if tok := leadCollectionToken(s); tok != "" && tokenLooksObfuscated(tok) {
+	if tok := leadCollectionTokenWith(s, extra); tok != "" && tokenLooksObfuscated(tok) {
 		out.Obfuscated = true
 		return out
 	}
-	name := collectionStem(s, out.Filename)
+	name := collectionStemWith(s, out.Filename, extra)
 	if reHexBlob.MatchString(name) || (len(name) >= 20 && mostlyHex(name)) {
 		out.Obfuscated = true
 		return out
@@ -100,11 +104,16 @@ func ParseSubject(subj string) ParsedSubject {
 // collectionStem is the named grouping key: the subject with yEnc, file/part
 // counters, and the quoted filename removed. [k/N] is FileN/FileM, not identity.
 func collectionStem(subj, filename string) string {
+	return collectionStemWith(subj, filename, extraPatternsLive())
+}
+
+func collectionStemWith(subj, filename string, extra []compiledExtra) string {
 	s := subj
 	if i := strings.Index(strings.ToLower(s), "yenc"); i > 0 {
 		s = strings.TrimSpace(s[:i])
 	}
 	s = reGroupTag.ReplaceAllString(s, "")
+	s = applyStripPrefix(s, extra)
 	if i := strings.Index(s, `"`); i >= 0 {
 		if j := strings.LastIndex(s, `"`); j > i {
 			s = strings.TrimSpace(s[:i] + " " + s[j+1:])
@@ -127,7 +136,19 @@ func collectionStem(subj, filename string) string {
 // leadCollectionToken is the NNTmux hash-token capture: a 16+ char token
 // immediately before [k/N] or (k/N), optionally glued (t2EI3…[08/52]).
 func leadCollectionToken(subj string) string {
+	return leadCollectionTokenWith(subj, extraPatternsLive())
+}
+
+func leadCollectionTokenWith(subj string, extra []compiledExtra) string {
 	s := strings.TrimSpace(subj)
+	for _, e := range extra {
+		if extraKind(e.Kind) != extraLeadToken {
+			continue
+		}
+		if m := e.re.FindStringSubmatch(s); len(m) >= 2 && m[1] != "" {
+			return m[1]
+		}
+	}
 	if m := reLeadHashGlue.FindStringSubmatch(s); len(m) == 2 {
 		return m[1]
 	}
@@ -135,6 +156,15 @@ func leadCollectionToken(subj string) string {
 		return m[1]
 	}
 	return ""
+}
+
+func applyStripPrefix(s string, extra []compiledExtra) string {
+	for _, e := range extra {
+		if extraKind(e.Kind) == extraStripPrefix {
+			s = e.re.ReplaceAllString(s, "")
+		}
+	}
+	return strings.TrimSpace(s)
 }
 
 func tokenLooksObfuscated(tok string) bool {
@@ -203,13 +233,18 @@ const minObfSkeleton = 8
 // obfSkeleton returns the grouping skeleton of an overview subject (case kept
 // so looksObfuscated can see case churn; ObfKey lowercases before hashing).
 func obfSkeleton(subj string) string {
-	if tok := leadCollectionToken(subj); tok != "" {
+	return obfSkeletonWith(subj, extraPatternsLive())
+}
+
+func obfSkeletonWith(subj string, extra []compiledExtra) string {
+	if tok := leadCollectionTokenWith(subj, extra); tok != "" {
 		return tok
 	}
 	s := subj
 	if i := strings.Index(strings.ToLower(s), "yenc"); i > 0 {
 		s = s[:i]
 	}
+	s = applyStripPrefix(s, extra)
 	s = rePartNM.ReplaceAllString(s, "")
 	s = reFileNM.ReplaceAllString(s, "")
 	if i := strings.Index(s, `"`); i >= 0 {
@@ -224,6 +259,10 @@ func obfSkeleton(subj string) string {
 
 // ObfKey returns the staged-set key ("obf:<16-hex>") for one subject.
 func ObfKey(group, from, subj string) string {
+	return obfKeyWith(group, from, subj, extraPatternsLive())
+}
+
+func obfKeyWith(group, from, subj string, extra []compiledExtra) string {
 	// Claude 2026-10-16: totalFiles is NOT mixed into this hash.
 	// Reason: plan 2A wanted sha1(name+totalFiles) like NNTmux collections, but
 	//   sakms hashes each header independently. PAR2/NFO subjects often omit
@@ -234,7 +273,7 @@ func ObfKey(group, from, subj string) string {
 	//   empty-skeleton bluray 100k-seg set → stageObfuscated must no-op.
 	// Review if: a collection row caches totalFiles so two same-token uploads
 	//   with different file counts stay separate.
-	sum := sha256.Sum256([]byte(group + "\x00" + from + "\x00" + strings.ToLower(obfSkeleton(subj))))
+	sum := sha256.Sum256([]byte(group + "\x00" + from + "\x00" + strings.ToLower(obfSkeletonWith(subj, extra))))
 	return obfKeyPrefix + hex.EncodeToString(sum[:8])
 }
 

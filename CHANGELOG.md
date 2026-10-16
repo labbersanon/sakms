@@ -11249,3 +11249,21 @@ status stays active.
 | `internal/usenetsearch/service.go` | rewrite KV v2 |
 | `internal/usenetsearch/{subject,namefix}_test.go` | teevee wrapper + hash-token tests |
 
+## 2026-10-16 — Collection drift: AI extra RE2 patterns, fixture-gated
+
+**Problem:** New poster wrappers and hash-token shapes will re-split collections after the generic stem + three hardcoded patterns. Importing NNTmux's 4.8k PCRE table is still out of scope (Go regexp is RE2).
+**Root cause:** Grouping regexes drift; per-article LLM parse is too slow; a static subset goes stale.
+**Fix:** Deterministic `ParseSubject` plus KV extra patterns (`strip_prefix` / `lead_token`). One idle crawl-loop ChatJSON pass samples live split clusters and unseen NNTmux seeder regexes. Auto-apply only if golden fixtures still hold. No stored-header rewrite on apply. Kill switch `usenet_nntp_collection_drift_enabled` (default true); no-op without AI fallback.
+**Outcome:** New wrapper/token shapes can be added without a code change; Decker/Bhool/teevee/hash fixtures block bad proposals.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/subject.go` | extra patterns in stem / lead-token / ObfKey |
+| `internal/usenetsearch/{fixtures,drift}.go` | golden fixtures, sampler, seeder parse, ChatJSON gate |
+| `internal/usenetsearch/service.go` | idle-loop pass + KV keys |
+| `internal/api/usenetnntp_drift.go` | AI + HTTP fetch wiring |
+| `internal/mode/mode.go` | exported `BuildAIClient` |
+| `docs/usenet-nntp-native.md` | collection drift documented |
+

@@ -54,20 +54,21 @@ type usenetNNTPNativeResponse struct {
 // PreDB provider state. IRCPasswordSet reports presence only — the password
 // never leaves the server.
 type usenetNNTPGapFill struct {
-	NameFixEnabled       bool   `json:"namefixEnabled"`
-	NameFixBodyMBPerHour int    `json:"namefixBodyMbPerHour"`
-	UnnamedTTLDays       int    `json:"unnamedTtlDays"`
-	UnnamedMaxPct        int    `json:"unnamedMaxPct"`
-	PreDBHTTPEnabled     bool   `json:"predbHttpEnabled"`
-	PreDBHTTPURL         string `json:"predbHttpUrl"`
-	PreDBIRCEnabled      bool   `json:"predbIrcEnabled"`
-	IRCPasswordSet       bool   `json:"predbIrcPasswordSet"`
-	MinCompletenessPct   int    `json:"minCompletenessPct"`
-	IncompleteTTLDays    int    `json:"incompleteTtlDays"`
-	RepairEnabled        bool   `json:"repairEnabled"`
-	BackfillEnabled      bool   `json:"backfillEnabled"`
-	BackfillDays         int    `json:"backfillDays"`
-	BackfillBudgetPct    int    `json:"backfillBudgetPct"`
+	NameFixEnabled         bool   `json:"namefixEnabled"`
+	NameFixBodyMBPerHour   int    `json:"namefixBodyMbPerHour"`
+	UnnamedTTLDays         int    `json:"unnamedTtlDays"`
+	UnnamedMaxPct          int    `json:"unnamedMaxPct"`
+	PreDBHTTPEnabled       bool   `json:"predbHttpEnabled"`
+	PreDBHTTPURL           string `json:"predbHttpUrl"`
+	PreDBIRCEnabled        bool   `json:"predbIrcEnabled"`
+	IRCPasswordSet         bool   `json:"predbIrcPasswordSet"`
+	MinCompletenessPct     int    `json:"minCompletenessPct"`
+	IncompleteTTLDays      int    `json:"incompleteTtlDays"`
+	RepairEnabled          bool   `json:"repairEnabled"`
+	BackfillEnabled        bool   `json:"backfillEnabled"`
+	BackfillDays           int    `json:"backfillDays"`
+	BackfillBudgetPct      int    `json:"backfillBudgetPct"`
+	CollectionDriftEnabled bool   `json:"collectionDriftEnabled"`
 }
 
 type usenetNNTPNativeRequest struct {
@@ -624,16 +625,17 @@ func configFromNNTPResponse(r usenetNNTPNativeResponse) usenetsearch.Config {
 		CrawlInterval:    time.Duration(r.CrawlInterval) * time.Second,
 		AdmissionEnabled: r.AdmissionEnabled,
 
-		MinCompletenessPct:   r.GapFill.MinCompletenessPct,
-		IncompleteTTLDays:    r.GapFill.IncompleteTTLDays,
-		RepairEnabled:        r.GapFill.RepairEnabled,
-		NameFixEnabled:       r.GapFill.NameFixEnabled,
-		UnnamedTTLDays:       r.GapFill.UnnamedTTLDays,
-		UnnamedMaxPct:        r.GapFill.UnnamedMaxPct,
-		NameFixBodyMBPerHour: r.GapFill.NameFixBodyMBPerHour,
-		BackfillEnabled:      r.GapFill.BackfillEnabled,
-		BackfillDays:         r.GapFill.BackfillDays,
-		BackfillBudgetPct:    r.GapFill.BackfillBudgetPct,
+		MinCompletenessPct:     r.GapFill.MinCompletenessPct,
+		IncompleteTTLDays:      r.GapFill.IncompleteTTLDays,
+		RepairEnabled:          r.GapFill.RepairEnabled,
+		NameFixEnabled:         r.GapFill.NameFixEnabled,
+		UnnamedTTLDays:         r.GapFill.UnnamedTTLDays,
+		UnnamedMaxPct:          r.GapFill.UnnamedMaxPct,
+		NameFixBodyMBPerHour:   r.GapFill.NameFixBodyMBPerHour,
+		BackfillEnabled:        r.GapFill.BackfillEnabled,
+		BackfillDays:           r.GapFill.BackfillDays,
+		BackfillBudgetPct:      r.GapFill.BackfillBudgetPct,
+		CollectionDriftEnabled: r.GapFill.CollectionDriftEnabled,
 	}
 }
 
@@ -653,6 +655,7 @@ func loadNNTPGapFill(ctx context.Context, st *settings.Store) (usenetNNTPGapFill
 		{&g.PreDBIRCEnabled, usenetsearch.KeyPreDBIRCEnabled, false},
 		{&g.RepairEnabled, usenetsearch.KeyRepairEnabled, true},
 		{&g.BackfillEnabled, usenetsearch.KeyBackfillEnabled, true},
+		{&g.CollectionDriftEnabled, usenetsearch.KeyCollectionDriftEnabled, true},
 	}
 	for _, b := range bools {
 		if *b.dst, err = st.GetBool(ctx, b.key, b.def); err != nil {

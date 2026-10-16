@@ -104,7 +104,7 @@ Claude 2026-10-15: four cooperating features make the index complete and
 searchable by true release name. All run on the single crawl goroutine, borrow
 connections `tryOnly`, yield on `ErrBusy`, and reuse `chunkPause` / `busyBackoff`
 / `catchUpPause`, so downloads are never starved. Loop order per iteration:
-collection-key rewrite (once) → forward crawl → repair → name recovery → recompute → backfill → sweeps → liveness.
+collection-key rewrite (once) → forward crawl → repair → name recovery → recompute → backfill → sweeps → liveness → idle collection-drift.
 
 - **Collection grouping.** `headers.release_name` is the upload, not the file.
   `ParseSubject` strips `[k/N]`, `(n/m)`, and `N of M` from the stem (NNTmux
@@ -115,6 +115,12 @@ collection-key rewrite (once) → forward crawl → repair → name recovery →
   capture) so per-file random quoted names still cluster. Skeletons shorter
   than 8 characters are not staged. Existing headers are rewritten in place
   (`usenet_nntp_collection_rewrite_v2`); watermarks are not rewound.
+  Extra RE2 `strip_prefix` / `lead_token` patterns (KV
+  `usenet_nntp_collection_extra_patterns`) are applied at parse time. An idle
+  crawl-loop pass samples live split clusters and unseen NNTmux seeder regexes,
+  asks the configured AI (`ChatJSON`) for one pattern, and publishes it only if
+  golden stem fixtures still hold. Applied extras do not rewrite stored
+  headers. The pass no-ops without an AI client (`ai_fallback_enabled`).
 - **Strict completeness gate.** A release is searchable only when at least
   `min_completeness_pct` of its payload segments are indexed (default 95,
   clamped 80–100). Computed per release into `usenet_nntp_releases`
@@ -161,6 +167,7 @@ are dropped again and completeness is still recorded.
 | `min_completeness_pct` / `incomplete_ttl_days` | 95 / 3 | Completeness gate / reap |
 | `repair_enabled` | true | Gap capture + repair |
 | `backfill_enabled` / `backfill_days` / `backfill_budget_pct` | true / 0 (retention) / 90 | Backfill |
+| `collection_drift_enabled` | true | Idle ChatJSON pass that may add extra RE2 grouping patterns (no-op without AI) |
 
 `GET /api/settings/usenet-nntp-native` returns the knobs under `gapFill` and
 counters under `gapFillStatus` (`releasesSearchable`, `releasesBelowGate`,
@@ -169,7 +176,7 @@ counters under `gapFillStatus` (`releasesSearchable`, `releasesBelowGate`,
 
 ### Operating notes
 
-- O2 queries: `o2cli grep "collection rewrite"`, `"namefix pass"`, `"repair pass"`,
+- O2 queries: `o2cli grep "collection rewrite"`, `"collection drift"`, `"namefix pass"`, `"repair pass"`,
   `"backfill group="`, `"completeness recompute"`, `"predb"`.
   `backfill ... state=paused reason=budget` means the index is at the budget.
 - Re-run a finished backfill (e.g. after raising `backfill_days`):

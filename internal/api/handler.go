@@ -816,6 +816,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("PUT /api/settings/usenet-segment-resume", putUsenetSegmentResumeHandler(settingsStore, nzb))
 	mux.HandleFunc("GET /api/settings/usenet-nntp-native", getUsenetNNTPNativeHandler(settingsStore, nil))
 	mux.HandleFunc("PUT /api/settings/usenet-nntp-native", putUsenetNNTPNativeHandler(settingsStore, nil))
+	mux.HandleFunc("PUT /api/settings/usenet-nntp-native/predb-irc-password", putUsenetNNTPPreDBIRCPasswordHandler(settingsStore))
 	mux.HandleFunc("GET /api/settings/usenet-nntp-native/groups", getUsenetNNTPGroupsHandler(nil))
 	mux.HandleFunc("POST /api/settings/usenet-nntp-native/grades/reset", postUsenetNNTPResetGradeHandler(nil))
 	mux.HandleFunc("GET /api/settings/download-rate-limit-mbps", getDownloadRateLimitHandler(settingsStore))

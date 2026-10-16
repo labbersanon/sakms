@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -18,6 +19,25 @@ import (
 type Index struct {
 	db    *sql.DB
 	owned bool // if true, Close closes db (tests only; production shares app DB)
+	// gatePct is the strict completeness threshold (0 = default 95). Set by
+	// Service.Apply via SetMinCompletenessPct; read on every search.
+	gatePct atomic.Int64
+	// spanRepair enables release-span repair enqueueing from the recompute
+	// pass (usenet_nntp_repair_enabled); false by default.
+	spanRepair atomic.Bool
+}
+
+// SetSpanRepair toggles release-span range enqueueing (the repair kill switch).
+func (idx *Index) SetSpanRepair(on bool) { idx.spanRepair.Store(on) }
+
+// SetMinCompletenessPct sets the strict completeness gate (clamped 80-100).
+func (idx *Index) SetMinCompletenessPct(p int) {
+	idx.gatePct.Store(int64(ClampMinCompletenessPct(p)))
+}
+
+// MinCompletenessPct is the active strict gate threshold.
+func (idx *Index) MinCompletenessPct() int {
+	return ClampMinCompletenessPct(int(idx.gatePct.Load()))
 }
 
 // OpenIndex wraps an already-migrated app *sql.DB. Does not take ownership.
@@ -51,9 +71,20 @@ type HeaderRow struct {
 	YencSize    int64
 	Obfuscated  bool
 	IsMeta      bool
+	FileN       int
+	FileM       int
 }
 
-// Upsert inserts or replaces overview rows.
+// Upsert inserts or replaces overview rows and marks every touched release
+// dirty (usenet_nntp_releases) so the recompute pass re-evaluates it.
+//
+// Claude 2026-10-15: release rows are created here (plan D1/D4), not by the
+// crawler, so every writer (forward crawl, repair, backfill, tests) keeps the
+// release table consistent. Rows with an empty ReleaseName (legacy
+// obfuscated junk) get no release row.
+// Troubleshooting: release missing from search after upsert → run
+//   RecomputeDirty; check usenet_nntp_releases.dirty.
+// Review if: headers gain a surrogate release id.
 func (idx *Index) Upsert(ctx context.Context, rows []HeaderRow) error {
 	if len(rows) == 0 {
 		return nil
@@ -65,25 +96,38 @@ func (idx *Index) Upsert(ctx context.Context, rows []HeaderRow) error {
 	defer tx.Rollback()
 	stmt, err := tx.PrepareContext(ctx, `
 INSERT INTO usenet_nntp_headers (group_name, msg_num, msgid, subject, from_addr, posted_at, bytes,
-  release_name, part_n, part_m, filename, yenc_size, obfuscated, is_meta, ingested_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  release_name, part_n, part_m, filename, yenc_size, obfuscated, is_meta, ingested_at, file_n, file_m)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT (group_name, msgid) DO UPDATE SET
   msg_num=EXCLUDED.msg_num, subject=EXCLUDED.subject, from_addr=EXCLUDED.from_addr,
   posted_at=EXCLUDED.posted_at, bytes=EXCLUDED.bytes, release_name=EXCLUDED.release_name,
   part_n=EXCLUDED.part_n, part_m=EXCLUDED.part_m, filename=EXCLUDED.filename,
   yenc_size=EXCLUDED.yenc_size, obfuscated=EXCLUDED.obfuscated, is_meta=EXCLUDED.is_meta,
-  ingested_at=EXCLUDED.ingested_at
+  ingested_at=EXCLUDED.ingested_at, file_n=EXCLUDED.file_n, file_m=EXCLUDED.file_m
 `)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 	now := time.Now().Unix()
+	seen := map[releaseKey]bool{}
+	var keys []releaseKey
 	for _, r := range rows {
 		if _, err := stmt.ExecContext(ctx, r.Group, r.MsgNum, r.MsgID, r.Subject, r.From, r.PostedAt, r.Bytes,
-			r.ReleaseName, r.PartN, r.PartM, r.Filename, r.YencSize, r.Obfuscated, r.IsMeta, now); err != nil {
+			r.ReleaseName, r.PartN, r.PartM, r.Filename, r.YencSize, r.Obfuscated, r.IsMeta, now, r.FileN, r.FileM); err != nil {
 			return err
 		}
+		if r.ReleaseName == "" {
+			continue
+		}
+		k := releaseKey{r.Group, r.ReleaseName}
+		if !seen[k] {
+			seen[k] = true
+			keys = append(keys, k)
+		}
+	}
+	if err := upsertReleaseRows(ctx, tx, keys, now); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -168,16 +212,30 @@ func (idx *Index) PruneOldest(ctx context.Context, targetBytes int64) error {
 		if overRows > maxBatch {
 			overRows = maxBatch
 		}
-		res, err := idx.db.ExecContext(ctx, `
+		// Claude 2026-10-15: evict by post date, not ingest date (plan D6).
+		// Reason: backfilled old posts are ingested LAST, so ingested_at
+		//   ordering would evict the newest forward-crawled rows first.
+		//   idx_usenet_nntp_headers_prune (migration 0044) backs this ORDER BY.
+		// Troubleshooting: recent releases vanish after backfill → check this
+		//   ORDER BY still uses COALESCE(NULLIF(posted_at,0), ingested_at).
+		// Review if: backfill is removed.
+		// Old: ORDER BY ingested_at ASC, posted_at ASC
+		rows, err := idx.db.QueryContext(ctx, `
 DELETE FROM usenet_nntp_headers WHERE ctid IN (
-  SELECT ctid FROM usenet_nntp_headers ORDER BY ingested_at ASC, posted_at ASC LIMIT ?
-)`, overRows)
+  SELECT ctid FROM usenet_nntp_headers ORDER BY COALESCE(NULLIF(posted_at, 0), ingested_at) ASC LIMIT ?
+) RETURNING group_name, release_name`, overRows)
 		if err != nil {
 			return err
 		}
-		n, _ := res.RowsAffected()
+		n, keys, err := scanDeletedKeys(rows)
+		if err != nil {
+			return err
+		}
 		if n == 0 {
 			return nil
+		}
+		if err := idx.markDirty(ctx, keys); err != nil {
+			return err
 		}
 	}
 }
@@ -227,12 +285,19 @@ func (idx *Index) DeleteByMsgIDs(ctx context.Context, msgIDs []string) (int64, e
 		ph[i] = "?"
 		args[i] = id
 	}
-	res, err := idx.db.ExecContext(ctx,
-		`DELETE FROM usenet_nntp_headers WHERE msgid IN (`+strings.Join(ph, ",")+`)`, args...)
+	rows, err := idx.db.QueryContext(ctx,
+		`DELETE FROM usenet_nntp_headers WHERE msgid IN (`+strings.Join(ph, ",")+`) RETURNING group_name, release_name`, args...)
 	if err != nil {
 		return 0, err
 	}
-	return res.RowsAffected()
+	n, keys, err := scanDeletedKeys(rows)
+	if err != nil {
+		return 0, err
+	}
+	if err := idx.markDirty(ctx, keys); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 func (idx *Index) Empty(ctx context.Context) (bool, error) {
@@ -264,8 +329,12 @@ func (idx *Index) SearchReleases(ctx context.Context, q Query) ([]Candidate, err
 	}
 	groups := q.Groups
 	var args []any
+	// Claude 2026-10-15: search reads the release table (plan D1), not
+	// DISTINCT over headers. searchable already encodes named AND strict
+	// completeness; assembleFromRows re-checks the gate below (defense in depth).
+	// Old: SELECT DISTINCT group_name, release_name FROM usenet_nntp_headers WHERE obfuscated=FALSE ...
 	var where []string
-	where = append(where, `obfuscated=FALSE`, `release_name!=''`)
+	where = append(where, `searchable=TRUE`, `display_name<>''`)
 	if len(groups) > 0 {
 		ph := make([]string, len(groups))
 		for i, g := range groups {
@@ -279,7 +348,7 @@ func (idx *Index) SearchReleases(ctx context.Context, q Query) ([]Candidate, err
 		if t == "" {
 			continue
 		}
-		where = append(where, `release_name ILIKE ?`)
+		where = append(where, `display_name ILIKE ?`)
 		args = append(args, "%"+escapeLike(t)+"%")
 	}
 	for _, ex := range q.Exclude {
@@ -287,32 +356,35 @@ func (idx *Index) SearchReleases(ctx context.Context, q Query) ([]Candidate, err
 		if ex == "" {
 			continue
 		}
-		where = append(where, `release_name NOT ILIKE ?`)
+		where = append(where, `display_name NOT ILIKE ?`)
 		args = append(args, "%"+escapeLike(ex)+"%")
 	}
 	if !q.PostedAfter.IsZero() {
 		where = append(where, `posted_at >= ?`)
 		args = append(args, q.PostedAfter.Unix())
 	}
-	sqlStr := `SELECT DISTINCT group_name, release_name FROM usenet_nntp_headers WHERE ` + strings.Join(where, " AND ") + ` LIMIT ?`
+	sqlStr := `SELECT group_name, release_key, display_name FROM usenet_nntp_releases WHERE ` + strings.Join(where, " AND ") + ` ORDER BY posted_at DESC LIMIT ?`
 	args = append(args, limit*3)
 	rows, err := idx.db.QueryContext(ctx, sqlStr, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	type key struct{ g, n string }
+	type key struct{ g, k, name string }
 	var keys []key
 	for rows.Next() {
-		var g, n string
-		if err := rows.Scan(&g, &n); err != nil {
+		var k key
+		if err := rows.Scan(&k.g, &k.k, &k.name); err != nil {
 			return nil, err
 		}
-		keys = append(keys, key{g, n})
+		keys = append(keys, k)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	var out []Candidate
 	for _, k := range keys {
-		c, err := idx.loadCandidate(ctx, k.g, k.n)
+		c, err := idx.loadCandidateNamed(ctx, k.g, k.k, k.name)
 		if err != nil || c.Name == "" {
 			continue
 		}
@@ -322,7 +394,7 @@ func (idx *Index) SearchReleases(ctx context.Context, q Query) ([]Candidate, err
 		if q.MaxBytes > 0 && c.PayloadBytes > q.MaxBytes {
 			continue
 		}
-		if !c.Complete && c.MissingParts > max(1, c.SegmentCount/50) {
+		if !c.Complete {
 			continue
 		}
 		out = append(out, c)
@@ -333,19 +405,33 @@ func (idx *Index) SearchReleases(ctx context.Context, q Query) ([]Candidate, err
 	return out, nil
 }
 
+// loadCandidate loads group/release (grouping key), resolving the display
+// name from the release table (falls back to the key for pre-table rows).
 func (idx *Index) loadCandidate(ctx context.Context, group, release string) (Candidate, error) {
+	var display string
+	err := idx.db.QueryRowContext(ctx,
+		`SELECT display_name FROM usenet_nntp_releases WHERE group_name=? AND release_key=?`, group, release).Scan(&display)
+	if err != nil && err != sql.ErrNoRows {
+		return Candidate{}, err
+	}
+	return idx.loadCandidateNamed(ctx, group, release, display)
+}
+
+func (idx *Index) loadCandidateNamed(ctx context.Context, group, release, display string) (Candidate, error) {
 	rows, err := idx.db.QueryContext(ctx, `
-SELECT msgid, subject, from_addr, posted_at, bytes, part_n, part_m, filename, yenc_size, is_meta
+SELECT msgid, subject, from_addr, posted_at, bytes, part_n, part_m, filename, yenc_size, is_meta, file_m
 FROM usenet_nntp_headers WHERE group_name=? AND release_name=? ORDER BY filename, part_n, msg_num
 `, group, release)
 	if err != nil {
 		return Candidate{}, err
 	}
 	defer rows.Close()
-	return assembleFromRows(group, release, rows)
+	return assembleFromRows(group, release, display, rows, idx.MinCompletenessPct())
 }
 
 // LoadBySeed reconstructs a candidate from group + seed message-id (locator).
+// The locator path does not enforce the strict gate (a queued grab must still
+// resolve); Candidate.Complete reports it.
 func (idx *Index) LoadBySeed(ctx context.Context, group, seedMsgID string) (Candidate, error) {
 	var release string
 	err := idx.db.QueryRowContext(ctx, `
@@ -437,6 +523,10 @@ func (idx *Index) DeleteReleases(ctx context.Context, group string, names []stri
 	res, err := idx.db.ExecContext(ctx, `
 DELETE FROM usenet_nntp_headers WHERE group_name=? AND release_name IN (`+strings.Join(ph, ",")+`)`, args...)
 	if err != nil {
+		return 0, err
+	}
+	if _, err := idx.db.ExecContext(ctx, `
+DELETE FROM usenet_nntp_releases WHERE group_name=? AND release_key IN (`+strings.Join(ph, ",")+`)`, args...); err != nil {
 		return 0, err
 	}
 	return res.RowsAffected()

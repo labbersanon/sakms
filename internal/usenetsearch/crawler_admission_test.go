@@ -24,6 +24,25 @@ type crawlStub struct {
 	stat      map[string]usenet.StatVerdict
 	statErr   map[string]error
 	statCalls []string
+	// bodies/bodyErr drive BodyHead (namefix tests); bodyCalls records msgids.
+	bodies    map[string]usenet.BodySample
+	bodyErr   error
+	bodyCalls []string
+}
+
+func (c *crawlStub) BodyHead(_ context.Context, msgID string, maxBytes int) (usenet.BodySample, error) {
+	c.bodyCalls = append(c.bodyCalls, msgID)
+	if c.bodyErr != nil {
+		return usenet.BodySample{}, c.bodyErr
+	}
+	s, ok := c.bodies[msgID]
+	if !ok {
+		return usenet.BodySample{}, usenet.ErrArticleNotFound
+	}
+	if maxBytes > 0 && len(s.Data) > maxBytes {
+		s.Data = s.Data[:maxBytes]
+	}
+	return s, nil
 }
 
 func (c *crawlStub) Capabilities(context.Context) ([]string, error) { return nil, nil }

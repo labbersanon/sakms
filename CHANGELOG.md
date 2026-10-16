@@ -11052,3 +11052,24 @@ status stays active.
 | `internal/api/usenetnntp.go` | reads `usenet_nntp_admission_enabled` into `Config.AdmissionEnabled` |
 | `cmd/sakms/main.go` | wires `nntpSearch.SetAdmissionPolicy(api.NewNNTPAdmissionPolicy(...))` |
 
+
+## 2026-10-15 — NNTP gap fill: strict completeness, repair, name recovery, backfill
+
+**Problem:** The native index silently dropped OVER gaps, accepted partial releases, discarded obfuscated binary sets entirely, and only ever crawled ~100k articles behind each group head, so many releases were missing, incomplete, or unnamed.
+**Root cause:** One immutable parsed `release_name` doubled as the search name; no completeness check, no missed-range memory, no name-recovery path, and no cursor below the forward watermark.
+**Fix:** `.omc/plans/nntp-gap-fill.md` (D1–D7). Migration 0044 adds `usenet_nntp_releases` (display name, state, completeness), `usenet_nntp_missed_ranges`, `usenet_nntp_predb`, header `file_n/file_m`, and watermark `low/backfill_done/backfill_reason`. A 95% (80–100) strict completeness gate decides `searchable` (re-checked in `ToNZB`); OVER gaps are captured and repaired by a bounded pass; obfuscated sets are staged and renamed via local PreDB hash, then at most 3 tryOnly first-segment BODY fetches (PAR2 → RAR/ZIP members → yEnc → NFO), accepting PreDB-confirmed names or title+(year|episode)+(res|source) names; a retention backfill walks `low` down under the same rate limits and a size budget. HTTP PreDB (api.predb.net, ≥2s spacing, cached) is on by default; the IRC feed is off by default with its password stored as `secrets.Store` ciphertext. Every feature has a KV kill switch (`usenet_nntp_{namefix,repair,backfill}_enabled`, `predb_http_enabled`, …); settings GET now returns `gapFill` knobs and `gapFillStatus` counters.
+**Outcome:** See `docs/usenet-nntp-native.md` "Gap fill" for knobs, undo SQL, and O2 queries. IRC announce-line parsing is NNTmux-style and unverified against a live channel (feed off by default).
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/db/migrations/0044_usenet_nntp_gap_fill.sql` | releases/missed-ranges/predb tables, header file counters, watermark backfill cursor |
+| `internal/usenetsearch/{completeness,group,releases,index}.go` | release table, strict gate, recompute, incomplete TTL, posted-time prune |
+| `internal/usenetsearch/{ranges,repair,ingest}.go` | gap capture, repair queue, shared `ingestRange` |
+| `internal/usenetsearch/{namefix,namefix_index,par2names,nfonames,subject}.go` | staging + name recovery |
+| `internal/usenetsearch/predb/*`, `predb_adapter.go` | local PreDB store, HTTP client, IRC feed, lookup adapter |
+| `internal/usenetsearch/{backfill,status,crawler,service}.go` | backfill cursor, status counters, loop wiring, config/keys |
+| `internal/usenet/{headersource,namehints}.go` | tryOnly `BodyHead`, archive member-name hints |
+| `internal/api/{usenetnntp,usenetnntp_predb,handler}.go`, `cmd/sakms/main.go` | settings/status, PreDB runtime, IRC password endpoint |
+| `docs/usenet-nntp-native.md` | Gap fill section |

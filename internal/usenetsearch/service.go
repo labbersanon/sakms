@@ -42,8 +42,36 @@ const (
 	//   default true; configFromNNTPResponse carries it into Config.
 	// Review if: a Settings UI toggle for this ships.
 	KeyAdmissionEnabled = "usenet_nntp_admission_enabled"
-	DefaultIndexMaxGB   = 20
-	DefaultWindowDays   = 14
+
+	// Claude 2026-10-15: gap-fill kill switches and knobs (plan nntp-gap-fill).
+	// Reason: every feature has an independent off switch so all-off ≈ the
+	//   pre-gap-fill crawl. KV-only (no Settings UI); read by
+	//   api.loadNNTPNativeSettings on every GET/PUT/boot. PreDB/IRC keys are
+	//   read when the PreDB runtime starts (boot, or after the IRC password PUT).
+	// Troubleshooting: knob ignored → check it is stored under exactly this key.
+	// Review if: a Settings UI for these ships.
+	KeyNameFixEnabled       = "usenet_nntp_namefix_enabled"
+	KeyNameFixBodyMBPerHour = "usenet_nntp_namefix_body_mb_per_hour"
+	KeyUnnamedTTLDays       = "usenet_nntp_unnamed_ttl_days"
+	KeyUnnamedMaxPct        = "usenet_nntp_unnamed_max_pct"
+	KeyPreDBHTTPEnabled     = "usenet_nntp_predb_http_enabled"
+	KeyPreDBHTTPURL         = "usenet_nntp_predb_http_url"
+	KeyPreDBIRCEnabled      = "usenet_nntp_predb_irc_enabled"
+	KeyPreDBIRCServer       = "usenet_nntp_predb_irc_server"
+	KeyPreDBIRCPort         = "usenet_nntp_predb_irc_port"
+	KeyPreDBIRCTLS          = "usenet_nntp_predb_irc_tls"
+	KeyPreDBIRCNick         = "usenet_nntp_predb_irc_nick"
+	KeyPreDBIRCChannels     = "usenet_nntp_predb_irc_channels"
+	KeyPreDBIRCPasswordEnc  = "usenet_nntp_predb_irc_password_enc" // secrets.Store ciphertext, never plaintext
+	KeyMinCompletenessPct   = "usenet_nntp_min_completeness_pct"
+	KeyIncompleteTTLDays    = "usenet_nntp_incomplete_ttl_days"
+	KeyRepairEnabled        = "usenet_nntp_repair_enabled"
+	KeyBackfillEnabled      = "usenet_nntp_backfill_enabled"
+	KeyBackfillDays         = "usenet_nntp_backfill_days"
+	KeyBackfillBudgetPct    = "usenet_nntp_backfill_budget_pct"
+
+	DefaultIndexMaxGB = 20
+	DefaultWindowDays = 14
 )
 
 // Config is a snapshot of operator settings for the native backend.
@@ -67,6 +95,30 @@ type Config struct {
 	// api.LoadUsenetSearchConfig, Step 4). false (or Service.admit unset)
 	// reproduces the pre-admission upsert-everything crawl byte-for-byte.
 	AdmissionEnabled bool
+	// MinCompletenessPct is the strict payload completeness gate (settings key
+	// usenet_nntp_min_completeness_pct; 0 = default 95, clamped 80-100).
+	MinCompletenessPct int
+	// IncompleteTTLDays reaps below-gate named releases (key
+	// usenet_nntp_incomplete_ttl_days; 0 = default 3).
+	IncompleteTTLDays int
+	// RepairEnabled gates OVER gap capture + missed-range repair (key
+	// usenet_nntp_repair_enabled, default true via api; zero value = off).
+	RepairEnabled bool
+	// NameFixEnabled stages obfuscated sets and recovers true names (key
+	// usenet_nntp_namefix_enabled; default true via api, zero value = off).
+	NameFixEnabled bool
+	// UnnamedTTLDays / UnnamedMaxPct bound the staging area (0 = defaults 7 / 25).
+	UnnamedTTLDays int
+	UnnamedMaxPct  int
+	// NameFixBodyMBPerHour caps BODY volume for name recovery (0 = default 512).
+	NameFixBodyMBPerHour int
+	// BackfillEnabled walks history below the forward crawl down to provider
+	// retention (key usenet_nntp_backfill_enabled; default true via api).
+	// BackfillDays limits depth (0 = retention); BackfillBudgetPct pauses at
+	// that share of IndexMaxGB (0 = DefaultBackfillBudgetPct).
+	BackfillEnabled   bool
+	BackfillDays      int
+	BackfillBudgetPct int
 }
 
 // GroupModesFor returns the enabled modes (a subset of "movies"/"series"/
@@ -203,6 +255,19 @@ type Service struct {
 	// the first crawl pass after admission is enabled.
 	admit      *admitter
 	prunedOnce map[string]bool
+	// predb resolves recovered names/hashes during name-fix (nil = no PreDB).
+	predb PreDBLookup
+	// ranges is the last crawl pass's per-group provider range (read-only once
+	// stored; each pass builds a fresh map) — GapFillStatus reports backfill
+	// targets from it.
+	ranges map[string]usenet.GroupRange
+}
+
+// SetPreDB wires the PreDB lookup used by name recovery (nil disables it).
+func (s *Service) SetPreDB(p PreDBLookup) {
+	s.mu.Lock()
+	s.predb = p
+	s.mu.Unlock()
 }
 
 // NewService constructs a stopped Service. Call Apply to open the index / start crawl.
@@ -276,6 +341,8 @@ func (s *Service) Apply(cfg Config) error {
 		s.probe = Readiness{Ready: false, State: "degraded", Detail: err.Error()}
 		return err
 	}
+	idx.SetMinCompletenessPct(cfg.MinCompletenessPct)
+	idx.SetSpanRepair(cfg.RepairEnabled)
 	s.idx = idx
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
@@ -288,18 +355,63 @@ func (s *Service) loop(ctx context.Context) {
 	// Reason: approved plan — OVER catch-up and STAT deletions, idle only when quiet.
 	// Troubleshooting: loop exits only on Apply cancel / disable.
 	// Review if: CrawlInterval is renamed to idle_backoff_seconds in settings KV.
+	budget := &bodyBudget{}
+	backfillStart := 0
+	backfillSkipLogged := false
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		cres := s.runProbeAndCrawl(ctx)
+		// Claude 2026-10-15: D7 pass order — forward crawl, repair, (name-fix),
+		// recompute, (backfill), sweeps, liveness. Any NNTP pass reporting busy
+		// short-circuits the remaining NNTP passes and waits busyBackoff.
+		// Reason: one goroutine, existing constants, never starve downloads.
+		// Troubleshooting: a pass starving others → check which log line stops
+		//   appearing (repair pass / namefix pass / backfill group=).
+		// Review if: a pass needs its own cadence.
+		cres, crawler := s.runProbeAndCrawl(ctx)
+		if crawler != nil {
+			s.mu.Lock()
+			s.ranges = crawler.ranges
+			s.mu.Unlock()
+		}
+		busy, advanced := cres.Busy, cres.Advanced
+		if crawler != nil && !busy && crawler.RepairEnabled {
+			rr, err := crawler.RepairOnce(ctx)
+			if err != nil {
+				log.Printf("usenetsearch: repair: %v", err)
+			}
+			busy = busy || rr.Busy
+			advanced = advanced || rr.Advanced
+		}
+		if crawler != nil && !busy && crawler.NameFixEnabled {
+			nr := s.runNameFix(ctx, crawler, budget)
+			busy = busy || nr.Busy
+			advanced = advanced || nr.Advanced()
+		}
+		s.runRecompute(ctx)
+		if crawler != nil && !busy && crawler.BackfillEnabled {
+			crawler.BackfillStart = backfillStart
+			br, err := crawler.BackfillOnce(ctx)
+			if err != nil {
+				log.Printf("usenetsearch: backfill: %v", err)
+			}
+			backfillStart = br.NextStart
+			if br.Skipped != "" && !backfillSkipLogged {
+				log.Printf("usenetsearch: backfill skipped reason=%s", br.Skipped)
+			}
+			backfillSkipLogged = br.Skipped != ""
+			busy = busy || br.Busy
+			advanced = advanced || br.Advanced || br.HasWork
+		}
+		s.runSweeps(ctx)
 		s.runLiveness(ctx)
 
 		var wait time.Duration
 		switch {
-		case cres.Busy:
+		case busy:
 			wait = busyBackoff
-		case cres.Advanced:
+		case advanced:
 			wait = catchUpPause
 		default:
 			wait = s.idleBackoff()
@@ -322,7 +434,7 @@ func (s *Service) idleBackoff() time.Duration {
 	return d
 }
 
-func (s *Service) runProbeAndCrawl(ctx context.Context) CrawlResult {
+func (s *Service) runProbeAndCrawl(ctx context.Context) (CrawlResult, *Crawler) {
 	s.mu.Lock()
 	src := s.src
 	cfg := s.cfg
@@ -334,7 +446,7 @@ func (s *Service) runProbeAndCrawl(ctx context.Context) CrawlResult {
 	s.probe = r
 	s.mu.Unlock()
 	if !r.Ready || idx == nil || src == nil {
-		return CrawlResult{}
+		return CrawlResult{}, nil
 	}
 	_ = s.PruneBeyondCeilings(ctx)
 	window := time.Duration(cfg.WindowDays) * 24 * time.Hour
@@ -354,15 +466,21 @@ func (s *Service) runProbeAndCrawl(ctx context.Context) CrawlResult {
 	}
 	c := &Crawler{
 		Src: src, Index: idx, Groups: groups, Window: window, MaxGB: maxGB,
-		AdmissionEnabled: admissionEnabled,
-		GroupModesFn:     cfg.GroupModesFor,
-		Admitter:         admit,
+		AdmissionEnabled:  admissionEnabled,
+		GroupModesFn:      cfg.GroupModesFor,
+		Admitter:          admit,
+		RepairEnabled:     cfg.RepairEnabled,
+		NameFixEnabled:    cfg.NameFixEnabled,
+		UnnamedMaxPct:     cfg.UnnamedMaxPct,
+		BackfillEnabled:   cfg.BackfillEnabled,
+		BackfillDays:      cfg.BackfillDays,
+		BackfillBudgetPct: cfg.BackfillBudgetPct,
 	}
 	cres, err := c.CrawlOnce(ctx)
 	if err != nil {
 		log.Printf("usenetsearch: crawl: %v", err)
 	}
-	return cres
+	return cres, c
 }
 
 // pruneNonMatchingOnce runs the one-shot prune of already-indexed rows that
@@ -588,6 +706,67 @@ func (s *Service) SearchGroupsForMode(ctx context.Context, mode string) []string
 		return cands
 	}
 	return elig
+}
+
+// runNameFix runs one name-recovery pass over staged obfuscated sets.
+func (s *Service) runNameFix(ctx context.Context, c *Crawler, budget *bodyBudget) NameFixResult {
+	s.mu.Lock()
+	cfg := s.cfg
+	predb := s.predb
+	s.mu.Unlock()
+	budget.setCapMB(cfg.NameFixBodyMBPerHour)
+	nf := &NameFixer{
+		Src: c.Src, Index: c.Index, Crawler: c, PreDB: predb,
+		Groups: c.Groups, Budget: budget,
+		UnnamedTTL: time.Duration(cfg.UnnamedTTLDays) * 24 * time.Hour,
+	}
+	res, err := nf.Run(ctx)
+	if err != nil {
+		log.Printf("usenetsearch: namefix: %v", err)
+	}
+	return res
+}
+
+// runRecompute drains a bounded batch of dirty releases (DB only, no NNTP).
+func (s *Service) runRecompute(ctx context.Context) {
+	s.mu.Lock()
+	idx := s.idx
+	s.mu.Unlock()
+	if idx == nil {
+		return
+	}
+	st, err := idx.RecomputeDirty(ctx, recomputeBatch)
+	if err != nil {
+		log.Printf("usenetsearch: recompute: %v", err)
+		return
+	}
+	if st.Releases > 0 {
+		log.Printf("usenetsearch: completeness recompute releases=%d searchable=%d below_gate=%d undeclared=%d orphans=%d backlog=%d",
+			st.Releases, st.Searchable, st.BelowGate, st.Undeclared, st.Orphans, st.Backlog)
+	}
+}
+
+// runSweeps runs the DB-only TTL cleanups (plan D7 step 6).
+func (s *Service) runSweeps(ctx context.Context) {
+	s.mu.Lock()
+	idx := s.idx
+	cfg := s.cfg
+	s.mu.Unlock()
+	if idx == nil {
+		return
+	}
+	days := cfg.IncompleteTTLDays
+	if days <= 0 {
+		days = DefaultIncompleteTTLDays
+	}
+	n, err := idx.SweepIncomplete(ctx, time.Duration(days)*24*time.Hour)
+	if err != nil {
+		log.Printf("usenetsearch: incomplete sweep: %v", err)
+		return
+	}
+	if n > 0 {
+		log.Printf("usenetsearch: incomplete sweep removed=%d ttl_days=%d", n, days)
+	}
 }
 
 func (s *Service) runLiveness(ctx context.Context) {

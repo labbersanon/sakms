@@ -189,6 +189,12 @@ func (idx *Index) DeleteGroupIndex(ctx context.Context, group string) (int64, er
 		return 0, err
 	}
 	n, _ := res.RowsAffected()
+	// Claude 2026-10-15: group-lifecycle cascade (plan D6). Release rows and
+	// queued repair ranges die with the headers; the watermark row (and with it
+	// low/backfill state) is deleted exactly as before.
+	// Review if: watermark deletion is replaced by a reset.
+	_, _ = idx.db.ExecContext(ctx, `DELETE FROM usenet_nntp_releases WHERE group_name=?`, group)
+	_, _ = idx.db.ExecContext(ctx, `DELETE FROM usenet_nntp_missed_ranges WHERE group_name=?`, group)
 	_, _ = idx.db.ExecContext(ctx, `DELETE FROM usenet_nntp_watermarks WHERE group_name=?`, group)
 	return n, nil
 }

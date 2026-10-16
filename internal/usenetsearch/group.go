@@ -2,28 +2,40 @@ package usenetsearch
 
 import (
 	"database/sql"
-	"strings"
 	"time"
 )
 
 // assembleFromRows builds one Candidate from ordered header rows for a release.
-func assembleFromRows(group, release string, rows *sql.Rows) (Candidate, error) {
-	c := Candidate{Name: release, Group: group}
+//
+// Claude 2026-10-15: completeness now comes from computeCompleteness (strict
+// payload gate, plan nntp-gap-fill.md D4) instead of the old lenient rules
+// (want := max part seen, SegmentCount/50 tolerance, HasPAR2 <=2% override).
+// release is the immutable grouping key (headers.release_name); display is
+// the searchable name (usenet_nntp_releases.display_name) and becomes
+// Candidate.Name. gatePct is the strict threshold used for Candidate.Complete.
+// Troubleshooting: Complete=false on a release that "looks" whole → inspect
+//   CompletenessPct/MissingParts; undeclared part_m reports 0%.
+// Review if: Candidate gains per-file completeness.
+func assembleFromRows(group, release, display string, rows *sql.Rows, gatePct int) (Candidate, error) {
+	if display == "" {
+		display = release
+	}
+	c := Candidate{Name: display, Group: group}
 	files := map[string]*CandidateFile{}
+	aggs := map[string]*fileAgg{}
 	var order []string
-	var maxM int
-	seenParts := map[string]map[int]bool{} // filename -> partN
 	var wire int64
 	var payload int64
 	var poster string
 	var posted int64
+	var fileM int
 
 	for rows.Next() {
 		var msgid, subject, from, filename string
 		var postedAt, bytes, yenc int64
-		var partN, partM int
+		var partN, partM, rowFileM int
 		var isMeta bool
-		if err := rows.Scan(&msgid, &subject, &from, &postedAt, &bytes, &partN, &partM, &filename, &yenc, &isMeta); err != nil {
+		if err := rows.Scan(&msgid, &subject, &from, &postedAt, &bytes, &partN, &partM, &filename, &yenc, &isMeta, &rowFileM); err != nil {
 			return Candidate{}, err
 		}
 		if poster == "" {
@@ -32,29 +44,34 @@ func assembleFromRows(group, release string, rows *sql.Rows) (Candidate, error) 
 		if postedAt > posted {
 			posted = postedAt
 		}
+		if rowFileM > fileM {
+			fileM = rowFileM
+		}
+		meta := isMeta || IsMetaSubject(subject, filename)
 		if isMeta {
 			c.HasPAR2 = true
 		}
 		fn := filename
 		if fn == "" {
-			fn = subject
+			fn = rePartNM.ReplaceAllString(subject, "")
 		}
 		if files[fn] == nil {
 			files[fn] = &CandidateFile{Subject: subject, Filename: filename}
+			aggs[fn] = &fileAgg{Meta: meta, Seen: map[int]bool{}}
 			order = append(order, fn)
-			seenParts[fn] = map[int]bool{}
+		}
+		agg := aggs[fn]
+		if partM > agg.PartM {
+			agg.PartM = partM
 		}
 		num := partN
 		if num <= 0 {
 			num = len(files[fn].Segs) + 1
 		}
-		if seenParts[fn][num] {
+		if agg.Seen[num] {
 			continue
 		}
-		seenParts[fn][num] = true
-		if partM > maxM {
-			maxM = partM
-		}
+		agg.Seen[num] = true
 		files[fn].Segs = append(files[fn].Segs, CandidateSeg{
 			Bytes:  bytes,
 			Number: num,
@@ -71,9 +88,10 @@ func assembleFromRows(group, release string, rows *sql.Rows) (Candidate, error) 
 	if err := rows.Err(); err != nil {
 		return Candidate{}, err
 	}
+	fileAggs := make([]fileAgg, 0, len(order))
 	for _, fn := range order {
-		f := files[fn]
-		c.Files = append(c.Files, *f)
+		c.Files = append(c.Files, *files[fn])
+		fileAggs = append(fileAggs, *aggs[fn])
 	}
 	c.FileCount = len(c.Files)
 	c.WireBytes = wire
@@ -85,35 +103,9 @@ func assembleFromRows(group, release string, rows *sql.Rows) (Candidate, error) 
 	if len(c.Files) > 0 && len(c.Files[0].Segs) > 0 {
 		c.SeedMsgID = c.Files[0].Segs[0].MsgID
 	}
-	// Completeness: for each file with known part_m, require contiguous 1..m
-	missing := 0
-	complete := true
-	for _, f := range c.Files {
-		if IsMetaSubject(f.Subject, f.Filename) {
-			continue
-		}
-		maxPart := 0
-		have := map[int]bool{}
-		for _, s := range f.Segs {
-			have[s.Number] = true
-			if s.Number > maxPart {
-				maxPart = s.Number
-			}
-		}
-		want := maxPart
-		// if subject carried part_m on any seg we don't have it here; use max seen
-		for i := 1; i <= want; i++ {
-			if !have[i] {
-				missing++
-				complete = false
-			}
-		}
-	}
-	c.MissingParts = missing
-	c.Complete = complete || (missing == 0 && c.SegmentCount > 0)
-	if c.HasPAR2 && missing > 0 && missing*100/max(1, c.SegmentCount) <= 2 {
-		c.Complete = true
-	}
-	_ = strings.TrimSpace
+	comp := computeCompleteness(fileAggs, fileM)
+	c.MissingParts = comp.Missing()
+	c.CompletenessPct = comp.Pct()
+	c.Complete = comp.Meets(gatePct)
 	return c, nil
 }

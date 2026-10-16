@@ -29,10 +29,13 @@ type Candidate struct {
 	WireBytes    int64 // sum of OVER :bytes
 	FileCount    int
 	SegmentCount int
-	Complete     bool
-	MissingParts int
-	HasPAR2      bool
-	Files        []CandidateFile
+	// Complete means CompletenessPct >= the strict gate (usenet_nntp_min_completeness_pct).
+	Complete bool
+	// CompletenessPct is seen/declared payload segments (0 when part_m is undeclared).
+	CompletenessPct float64
+	MissingParts    int
+	HasPAR2         bool
+	Files           []CandidateFile
 	// SeedMsgID is the first segment message-id (locator anchor).
 	SeedMsgID string
 }

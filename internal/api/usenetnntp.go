@@ -11,6 +11,7 @@ import (
 
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenetsearch"
+	"github.com/labbersanon/sakms/internal/usenetsearch/predb"
 )
 
 // Claude 2026-09-18: per-mode group multi-select + LIST ACTIVE picker.
@@ -41,6 +42,32 @@ type usenetNNTPNativeResponse struct {
 	//   field exists to set it; see usenetsearch.KeyAdmissionEnabled.
 	// Review if: a Settings UI toggle for this ships.
 	AdmissionEnabled bool `json:"admissionEnabled"`
+	// Claude 2026-10-15: gap-fill knobs (read-only here — KV keys
+	// usenetsearch.Key*, see loadNNTPGapFill) and index counters (GET only).
+	// Reason: a PUT save must never clobber them; no request field exists.
+	// Review if: a Settings UI for gap-fill ships.
+	GapFill       usenetNNTPGapFill           `json:"gapFill"`
+	GapFillStatus *usenetsearch.GapFillStatus `json:"gapFillStatus,omitempty"`
+}
+
+// usenetNNTPGapFill mirrors the gap-fill fields of usenetsearch.Config plus the
+// PreDB provider state. IRCPasswordSet reports presence only — the password
+// never leaves the server.
+type usenetNNTPGapFill struct {
+	NameFixEnabled       bool   `json:"namefixEnabled"`
+	NameFixBodyMBPerHour int    `json:"namefixBodyMbPerHour"`
+	UnnamedTTLDays       int    `json:"unnamedTtlDays"`
+	UnnamedMaxPct        int    `json:"unnamedMaxPct"`
+	PreDBHTTPEnabled     bool   `json:"predbHttpEnabled"`
+	PreDBHTTPURL         string `json:"predbHttpUrl"`
+	PreDBIRCEnabled      bool   `json:"predbIrcEnabled"`
+	IRCPasswordSet       bool   `json:"predbIrcPasswordSet"`
+	MinCompletenessPct   int    `json:"minCompletenessPct"`
+	IncompleteTTLDays    int    `json:"incompleteTtlDays"`
+	RepairEnabled        bool   `json:"repairEnabled"`
+	BackfillEnabled      bool   `json:"backfillEnabled"`
+	BackfillDays         int    `json:"backfillDays"`
+	BackfillBudgetPct    int    `json:"backfillBudgetPct"`
 }
 
 type usenetNNTPNativeRequest struct {
@@ -98,10 +125,19 @@ func resolveNNTPNativeService(svc *usenetsearch.Service) *usenetsearch.Service {
 
 func getUsenetNNTPNativeHandler(settingsStore *settings.Store, svc *usenetsearch.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		resp, err := loadNNTPNativeSettings(r.Context(), settingsStore, resolveNNTPNativeService(svc))
+		active := resolveNNTPNativeService(svc)
+		resp, err := loadNNTPNativeSettings(r.Context(), settingsStore, active)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		if active != nil {
+			st, err := active.GapFillStatus(r.Context())
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			resp.GapFillStatus = &st
 		}
 		writeJSON(w, resp)
 	}
@@ -521,7 +557,12 @@ func loadNNTPNativeSettings(ctx context.Context, settingsStore *settings.Store, 
 	if err != nil {
 		return usenetNNTPNativeResponse{}, err
 	}
+	gapFill, err := loadNNTPGapFill(ctx, settingsStore)
+	if err != nil {
+		return usenetNNTPNativeResponse{}, err
+	}
 	return usenetNNTPNativeResponse{
+		GapFill:          gapFill,
 		Enabled:          enabled,
 		Movies:           movies,
 		Series:           series,
@@ -559,7 +600,72 @@ func configFromNNTPResponse(r usenetNNTPNativeResponse) usenetsearch.Config {
 		WindowDays:       r.WindowDays,
 		CrawlInterval:    time.Duration(r.CrawlInterval) * time.Second,
 		AdmissionEnabled: r.AdmissionEnabled,
+
+		MinCompletenessPct:   r.GapFill.MinCompletenessPct,
+		IncompleteTTLDays:    r.GapFill.IncompleteTTLDays,
+		RepairEnabled:        r.GapFill.RepairEnabled,
+		NameFixEnabled:       r.GapFill.NameFixEnabled,
+		UnnamedTTLDays:       r.GapFill.UnnamedTTLDays,
+		UnnamedMaxPct:        r.GapFill.UnnamedMaxPct,
+		NameFixBodyMBPerHour: r.GapFill.NameFixBodyMBPerHour,
+		BackfillEnabled:      r.GapFill.BackfillEnabled,
+		BackfillDays:         r.GapFill.BackfillDays,
+		BackfillBudgetPct:    r.GapFill.BackfillBudgetPct,
 	}
+}
+
+// loadNNTPGapFill reads the gap-fill KV knobs. Defaults make every feature on
+// (including repair, whose Go zero value is false) except the IRC feed; each
+// bool key is its feature's kill switch.
+func loadNNTPGapFill(ctx context.Context, st *settings.Store) (usenetNNTPGapFill, error) {
+	var g usenetNNTPGapFill
+	var err error
+	bools := []struct {
+		dst *bool
+		key string
+		def bool
+	}{
+		{&g.NameFixEnabled, usenetsearch.KeyNameFixEnabled, true},
+		{&g.PreDBHTTPEnabled, usenetsearch.KeyPreDBHTTPEnabled, true},
+		{&g.PreDBIRCEnabled, usenetsearch.KeyPreDBIRCEnabled, false},
+		{&g.RepairEnabled, usenetsearch.KeyRepairEnabled, true},
+		{&g.BackfillEnabled, usenetsearch.KeyBackfillEnabled, true},
+	}
+	for _, b := range bools {
+		if *b.dst, err = st.GetBool(ctx, b.key, b.def); err != nil {
+			return g, err
+		}
+	}
+	ints := []struct {
+		dst *int
+		key string
+		def int
+	}{
+		{&g.NameFixBodyMBPerHour, usenetsearch.KeyNameFixBodyMBPerHour, usenetsearch.DefaultNameFixBodyMBPerHour},
+		{&g.UnnamedTTLDays, usenetsearch.KeyUnnamedTTLDays, usenetsearch.DefaultUnnamedTTLDays},
+		{&g.UnnamedMaxPct, usenetsearch.KeyUnnamedMaxPct, usenetsearch.DefaultUnnamedMaxPct},
+		{&g.MinCompletenessPct, usenetsearch.KeyMinCompletenessPct, usenetsearch.DefaultMinCompletenessPct},
+		{&g.IncompleteTTLDays, usenetsearch.KeyIncompleteTTLDays, usenetsearch.DefaultIncompleteTTLDays},
+		{&g.BackfillDays, usenetsearch.KeyBackfillDays, 0},
+		{&g.BackfillBudgetPct, usenetsearch.KeyBackfillBudgetPct, usenetsearch.DefaultBackfillBudgetPct},
+	}
+	for _, i := range ints {
+		if *i.dst, err = getSettingInt(ctx, st, i.key, i.def); err != nil {
+			return g, err
+		}
+	}
+	if g.PreDBHTTPURL, err = st.Get(ctx, usenetsearch.KeyPreDBHTTPURL); err != nil && !isSettingsNotFound(err) {
+		return g, err
+	}
+	if strings.TrimSpace(g.PreDBHTTPURL) == "" {
+		g.PreDBHTTPURL = predb.DefaultHTTPURL
+	}
+	enc, err := st.Get(ctx, usenetsearch.KeyPreDBIRCPasswordEnc)
+	if err != nil && !isSettingsNotFound(err) {
+		return g, err
+	}
+	g.IRCPasswordSet = enc != ""
+	return g, nil
 }
 
 func isSettingsNotFound(err error) bool {

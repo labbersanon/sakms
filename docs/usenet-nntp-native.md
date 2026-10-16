@@ -23,6 +23,7 @@ and prune passes (window days + max GiB).
 | Passive grades | Start at 1 (most reliable); +1 per Usenet article failure (sticky at 5); grade > ceiling → stop crawl + delete that group's index |
 | Max GiB / soft age days / idle backoff | Soft size budget; soft age display; idle backoff after catch-up (0 = 60s default). Crawl is continuous when enabled |
 | Probe state/detail | Read-only |
+| Dashboard card | GET `/api/admin/nntp-crawler` — groups, headers, index size, searchable/pending/missed, last OVER chunk |
 
 ## Honest limits
 

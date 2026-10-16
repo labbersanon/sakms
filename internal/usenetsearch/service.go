@@ -281,6 +281,9 @@ type Service struct {
 	// stored; each pass builds a fresh map) — GapFillStatus reports backfill
 	// targets from it.
 	ranges map[string]usenet.GroupRange
+	// lastChunk / lastPass feed the Dashboard crawler card.
+	lastChunk CrawlChunkStat
+	lastPass  CrawlResult
 }
 
 // SetPreDB wires the PreDB lookup used by name recovery (nil disables it).
@@ -396,6 +399,10 @@ func (s *Service) loop(ctx context.Context) {
 		if crawler != nil {
 			s.mu.Lock()
 			s.ranges = crawler.ranges
+			s.lastPass = cres
+			if crawler.lastChunk.Group != "" {
+				s.lastChunk = crawler.lastChunk
+			}
 			s.mu.Unlock()
 		}
 		busy, advanced := cres.Busy, cres.Advanced
@@ -498,6 +505,16 @@ func (s *Service) runProbeAndCrawl(ctx context.Context) (CrawlResult, *Crawler) 
 		BackfillEnabled:   cfg.BackfillEnabled,
 		BackfillDays:      cfg.BackfillDays,
 		BackfillBudgetPct: cfg.BackfillBudgetPct,
+		// Claude 2026-10-16: publish last OVER chunk as it lands, not after the pass.
+		// Reason: LIST membership is hundreds of groups; a Dashboard poll mid-pass
+		// should show the current chunk, not the previous pass.
+		// Troubleshooting: lastChunk stuck until idle → OnChunk not wired.
+		// Review if: Dashboard joins sysinfo SSE instead of REST poll.
+		OnChunk: func(st CrawlChunkStat) {
+			s.mu.Lock()
+			s.lastChunk = st
+			s.mu.Unlock()
+		},
 	}
 	cres, err := c.CrawlOnce(ctx)
 	if err != nil {

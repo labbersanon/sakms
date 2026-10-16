@@ -774,6 +774,11 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// Dashboard's Storage Allocation table. Pure DB read — see the handler's
 	// doc comment for why it takes libStore and nothing else.
 	mux.HandleFunc("GET /api/admin/storage-allocation", storageAllocationHandler(libStore))
+	// Claude 2026-10-16: NNTP crawler counters for the Dashboard card.
+	// Reason: REST like storage-allocation; last-chunk is process memory.
+	// Troubleshooting: 200 with enabled=false → native search off / service nil.
+	// Review if: this should join the sysinfo SSE instead of polling.
+	mux.HandleFunc("GET /api/admin/nntp-crawler", nntpCrawlerStatusHandler())
 	// Live container/host resource metrics streamed as server-sent events for
 	// the System Dashboard (internal/sysinfo reads cgroups v2 + /proc).
 	mux.HandleFunc("GET /api/admin/sysinfo/stream", sysinfoStreamHandler(

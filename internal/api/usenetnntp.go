@@ -423,6 +423,10 @@ func validatePerModeGroups(cur usenetNNTPNativeResponse) string {
 	return ""
 }
 
+// Claude 2026-10-16: non-custom → full curated mode groups; package = tolerance.
+// Reason: slider must not shrink membership; demote past tolerance drops crawl.
+// Troubleshooting: incomplete moviesGroups after Save — check ResolveModeGroups.
+// Review if: package value regains a membership meaning.
 // applyPackageResolution expands non-custom packages into *Groups on cur.
 func applyPackageResolution(cur *usenetNNTPNativeResponse, svc *usenetsearch.Service) string {
 	type modePack struct {
@@ -453,7 +457,7 @@ func applyPackageResolution(cur *usenetNNTPNativeResponse, svc *usenetsearch.Ser
 		if svc != nil {
 			avail = svc.CachedAvailableGroups(m.mode)
 		}
-		*m.grp = usenetsearch.FormatGroups(usenetsearch.ResolvePackageGroups(m.mode, step, avail))
+		*m.grp = usenetsearch.FormatGroups(usenetsearch.ResolveModeGroups(m.mode, avail))
 		*m.pkg = usenetsearch.FormatPackageStep(step)
 	}
 	return ""
@@ -672,11 +676,45 @@ func isSettingsNotFound(err error) bool {
 	return err == settings.ErrNotFound
 }
 
+// Claude 2026-10-16: repair non-custom modes to full curated group sets on boot.
+// Reason: prior slider-as-membership bug left cores (moovee/teevee) out of KV.
+// Troubleshooting: after upgrade, moviesGroups should list every packages.json
+//   movies seed ∩ provider (or unfiltered curated when LIST cache empty).
+// Review if: all installs have booted past the slider-as-membership bug.
+
 // LoadUsenetSearchConfig reads native-search settings for Apply at boot / drain.
+// Custom modes are left untouched; repaired lists are persisted best-effort.
 func LoadUsenetSearchConfig(ctx context.Context, settingsStore *settings.Store) (usenetsearch.Config, error) {
-	r, err := loadNNTPNativeSettings(ctx, settingsStore, nil)
+	svc := getNNTPNativeService()
+	r, err := loadNNTPNativeSettings(ctx, settingsStore, svc)
 	if err != nil {
 		return usenetsearch.Config{}, err
+	}
+	before := r
+	if errMsg := applyPackageResolution(&r, svc); errMsg != "" {
+		return usenetsearch.Config{}, errors.New(errMsg)
+	}
+	changed := r.MoviesGroups != before.MoviesGroups || r.SeriesGroups != before.SeriesGroups ||
+		r.AdultGroups != before.AdultGroups || r.MoviesPackage != before.MoviesPackage ||
+		r.SeriesPackage != before.SeriesPackage || r.AdultPackage != before.AdultPackage
+	if changed {
+		union := usenetsearch.FormatGroups(usenetsearch.MergeGroups(
+			usenetsearch.ParseGroups(r.MoviesGroups),
+			usenetsearch.ParseGroups(r.SeriesGroups),
+			usenetsearch.ParseGroups(r.AdultGroups),
+		))
+		sets := []struct{ k, v string }{
+			{usenetsearch.KeyMoviesGroups, r.MoviesGroups},
+			{usenetsearch.KeySeriesGroups, r.SeriesGroups},
+			{usenetsearch.KeyAdultGroups, r.AdultGroups},
+			{usenetsearch.KeyMoviesPackage, r.MoviesPackage},
+			{usenetsearch.KeySeriesPackage, r.SeriesPackage},
+			{usenetsearch.KeyAdultPackage, r.AdultPackage},
+			{usenetsearch.KeyGroups, union},
+		}
+		for _, kv := range sets {
+			_ = settingsStore.Set(ctx, kv.k, kv.v)
+		}
 	}
 	return configFromNNTPResponse(r), nil
 }

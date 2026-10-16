@@ -153,8 +153,8 @@ export function putUsenetSegmentResume(body: {
   );
 }
 
-// Claude 2026-10-15: package fields added for 5-step slider UX.
-// Reason: server expands monitored groups from a named package when value is "1".."5".
+// Claude 2026-10-16: package fields = grade tolerance ("1".."5") or "custom".
+// Reason: membership is full curated ∩ provider; package is the crawl ceiling only.
 // Troubleshooting: GET/PUT /api/settings/usenet-nntp-native includes moviesPackage etc.
 // Review if: package step count changes from 5.
 export type UsenetNNTPNativeSettings = {

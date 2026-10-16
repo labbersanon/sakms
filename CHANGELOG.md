@@ -11073,3 +11073,22 @@ status stays active.
 | `internal/usenet/{headersource,namehints}.go` | tryOnly `BodyHead`, archive member-name hints |
 | `internal/api/{usenetnntp,usenetnntp_predb,handler}.go`, `cmd/sakms/main.go` | settings/status, PreDB runtime, IRC password endpoint |
 | `docs/usenet-nntp-native.md` | Gap fill section |
+
+## 2026-10-16 — NNTP package slider is grade tolerance only (not membership)
+
+**Problem:** The Settings package slider was treated as group-set membership (step N = groups 1..N), so cores like moovee/teevee could be left out of the crawl list when the operator chose a tighter step — contradicting the intended model (monitor all curated mode groups ∩ provider; demote/promote select survivors).
+**Root cause:** `ResolvePackageGroups` / frontend `groupsFromPackageStep` expanded membership from the slider step; boot never rewrote incomplete KV lists.
+**Fix:** Non-custom modes always resolve to the full curated mode set (`ResolveModeGroups` / `ResolveAllModeGroups`). The package KV value is the grade ceiling only. `LoadUsenetSearchConfig` repairs and persists incomplete non-custom lists on boot. Settings UI copy and slider handlers no longer shrink the monitored set when the tolerance moves.
+**Outcome:** Slider moves change tolerance only; demote past ceiling still stops crawl + deletes that group's index (unchanged). Custom mode still opts out of the rewrite.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/package_resolve.go` | `ResolveModeGroups`; Infer no longer maps step membership |
+| `internal/usenetsearch/seeds.go` | `ResolveAllModeGroups`; comments = tolerance model |
+| `internal/api/usenetnntp.go` | apply uses full mode set; boot repair + persist |
+| `frontend/src/screens/settings/Usenet.tsx` | `allModeGroups`; slider = tolerance copy |
+| `frontend/src/api/usenet.ts` | package field comment |
+| `docs/usenet-nntp-native.md` | membership vs tolerance |
+

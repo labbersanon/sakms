@@ -6,11 +6,10 @@ import (
 	"strings"
 )
 
-// Claude 2026-10-15: resolve slider step → effective group list.
-// Reason: Settings stores package step (or custom); crawler still reads group keys.
-// Troubleshooting: custom with empty groups fails validate; step with 0 provider
-//   hits still saves unfiltered names (crawler skips missing).
-// Review if: accepted re-rank overrides (slice 4) layer on top of curated step.
+// Claude 2026-10-16: package value = grade tolerance only; groups = full mode set.
+// Reason: slider must not shrink the monitored group list — only demotion does.
+// Troubleshooting: groups missing cores → ResolveModeGroups not used on apply.
+// Review if: custom mode still needed once repair always rewrites non-custom.
 
 // ParsePackageValue returns step (1–5), custom=true, or ok=false if invalid.
 func ParsePackageValue(raw string) (step int, custom bool, ok bool) {
@@ -53,34 +52,16 @@ func sameGroupSet(a, b []string) bool {
 	return true
 }
 
-// InferPackageFromGroups maps a saved group list to step or custom.
-// Empty → default step (draft). Exact match to a provider-filtered cumulative
-// step → that step. Anything else → custom.
+// InferPackageFromGroups maps a saved group list to a package value when the
+// package KV is missing or invalid. Empty or the full curated mode set
+// (∩ provider) → default tolerance; anything else → custom.
 func InferPackageFromGroups(mode string, saved, available []string) string {
 	saved = ParseGroups(FormatGroups(saved))
 	if len(saved) == 0 {
 		return FormatPackageStep(DefaultPackageStep)
 	}
-	var filter []string
-	if len(available) > 0 {
-		filter = available
-	}
-	for step := PackageStepMin; step <= PackageStepMax; step++ {
-		resolved := ResolveGroupsForStep(mode, step)
-		if len(filter) > 0 {
-			resolved = intersectNames(resolved, filter)
-		}
-		if sameGroupSet(saved, resolved) {
-			return FormatPackageStep(step)
-		}
-	}
-	// Also try unfiltered equality when available was empty at infer time.
-	if len(filter) == 0 {
-		for step := PackageStepMin; step <= PackageStepMax; step++ {
-			if sameGroupSet(saved, ResolveGroupsForStep(mode, step)) {
-				return FormatPackageStep(step)
-			}
-		}
+	if sameGroupSet(saved, ResolveModeGroups(mode, available)) {
+		return FormatPackageStep(DefaultPackageStep)
 	}
 	return PackageCustom
 }
@@ -100,10 +81,11 @@ func intersectNames(names, available []string) []string {
 	return out
 }
 
-// ResolvePackageGroups expands a non-custom package to group names.
-// When available is non-empty, intersect with provider LIST ACTIVE.
-func ResolvePackageGroups(mode string, step int, available []string) []string {
-	names := ResolveGroupsForStep(mode, step)
+// ResolveModeGroups returns every curated group for mode ∩ provider LIST ACTIVE.
+// When available is empty, returns the unfiltered curated set (crawler skips
+// missing groups later).
+func ResolveModeGroups(mode string, available []string) []string {
+	names := ResolveAllModeGroups(mode)
 	if len(available) == 0 {
 		return names
 	}

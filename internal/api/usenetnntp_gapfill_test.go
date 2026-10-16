@@ -22,8 +22,8 @@ func TestNNTPGapFill_DefaultsAreOnExceptIRC(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := configFromNNTPResponse(r)
-	if !cfg.RepairEnabled || !cfg.NameFixEnabled || !cfg.BackfillEnabled {
-		t.Fatalf("repair/namefix/backfill must default on (repair's Go zero value is false): %+v", cfg)
+	if !cfg.RepairEnabled || !cfg.NameFixEnabled || !cfg.BackfillEnabled || !cfg.CollectionDriftEnabled {
+		t.Fatalf("repair/namefix/backfill/drift must default on (repair's Go zero value is false): %+v", cfg)
 	}
 	if cfg.MinCompletenessPct != 95 || cfg.IncompleteTTLDays != 3 || cfg.UnnamedTTLDays != 7 ||
 		cfg.UnnamedMaxPct != 25 || cfg.NameFixBodyMBPerHour != 512 ||
@@ -42,6 +42,7 @@ func TestNNTPGapFill_KillSwitchesReachConfig(t *testing.T) {
 	for _, k := range []string{
 		usenetsearch.KeyNameFixEnabled, usenetsearch.KeyRepairEnabled,
 		usenetsearch.KeyBackfillEnabled, usenetsearch.KeyPreDBHTTPEnabled,
+		usenetsearch.KeyCollectionDriftEnabled,
 	} {
 		if err := store.Set(ctx, k, "false"); err != nil {
 			t.Fatal(err)
@@ -55,7 +56,7 @@ func TestNNTPGapFill_KillSwitchesReachConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := configFromNNTPResponse(r)
-	if cfg.RepairEnabled || cfg.NameFixEnabled || cfg.BackfillEnabled || r.GapFill.PreDBHTTPEnabled {
+	if cfg.RepairEnabled || cfg.NameFixEnabled || cfg.BackfillEnabled || r.GapFill.PreDBHTTPEnabled || cfg.CollectionDriftEnabled {
 		t.Fatalf("kill switches ignored: %+v / %+v", cfg, r.GapFill)
 	}
 	if cfg.BackfillDays != 30 {

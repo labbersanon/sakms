@@ -557,6 +557,12 @@ func buildPlayers(ctx context.Context, scStore *serviceconn.Store, httpClient *h
 	return players, nil
 }
 
+// BuildAIClient is the shared BYOAI client. Nil when ai_fallback_enabled is
+// off or the provider/model is unconfigured — callers skip AI features.
+func BuildAIClient(ctx context.Context, store *connections.Store, settingsStore *settings.Store, httpClient *http.Client) (identify.AIClient, error) {
+	return buildAIClient(ctx, store, settingsStore, httpClient)
+}
+
 // buildAIClient assembles the one AI client every AI-assisted feature shares
 // (Adult identification's backbone AND Movies/Series Rename's title-guess
 // fallback) from AIProviderKey/AIModelKey. Tolerant by design: without a

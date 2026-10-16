@@ -279,6 +279,13 @@ func run() error {
 	// Review if: PreDB settings move into usenetsearch.Config.
 	nntpPreDB := api.StartNNTPPreDB(context.Background(), sqlDB, settingsStore, secretStore, nntpSearch)
 	api.SetNNTPPreDB(nntpPreDB)
+	// Claude 2026-10-16: collection-drift ChatJSON + NNTmux seeder fetch.
+	// Reason: usenetsearch only sees DriftAI/DriftFetch; nil AI (fallback off)
+	//   makes the idle pass a no-op. Kill switch is KV default-true.
+	// Troubleshooting: no "collection drift" logs → AI fallback off, or
+	//   rewrite v2 still running, or crawler not idle.
+	// Review if: extras should kick a v3 header rewrite.
+	api.AttachNNTPCollectionDrift(nntpSearch, connStore, settingsStore, &http.Client{Timeout: outboundTimeout})
 	defer nntpSearch.Close()
 	// traktStore persists Trakt's single application connection + linked
 	// account tokens (its own table, not connections.Store — see

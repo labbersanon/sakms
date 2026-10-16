@@ -26,6 +26,9 @@ func (s *stubHeaderSource) Overview(context.Context, string, int, int) ([]usenet
 func (s *stubHeaderSource) ListActive(context.Context, string) ([]string, error) {
 	return nil, nil
 }
+func (s *stubHeaderSource) BodyHead(context.Context, string, int) (usenet.BodySample, error) {
+	return usenet.BodySample{}, usenet.ErrBusy
+}
 func (s *stubHeaderSource) StatArticle(_ context.Context, msgID string) (bool, error) {
 	if s.busy {
 		return false, usenet.ErrBusy

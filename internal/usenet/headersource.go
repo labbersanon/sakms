@@ -55,6 +55,21 @@ type HeaderSource interface {
 	// Review if: liveness and crawl admission want different pool-exhaustion policies.
 	// Related files: usenetsearch/monitor.go LivenessOnce, usenetsearch/crawler.go
 	StatArticleAll(ctx context.Context, msgID string) (StatVerdict, error)
+	// Claude 2026-10-15: tryOnly BODY fetch for name recovery (namefix pass).
+	// Reason: obfuscated sets need the first segment's yEnc name / PAR2 / RAR
+	//   member names; fetching must never queue behind or starve downloads.
+	// Troubleshooting: ErrBusy → yield without charging an attempt; not-found
+	//   returns ErrArticleNotFound/ErrArticleRemoved.
+	// Review if: name recovery gets its own connection budget.
+	BodyHead(ctx context.Context, msgID string, maxBytes int) (BodySample, error)
+}
+
+// BodySample is the decoded head of one article for name recovery.
+type BodySample struct {
+	Data         []byte // yEnc-decoded payload, truncated to maxBytes
+	YencName     string // =ybegin name= (first segment only)
+	YencFileSize int64  // =ybegin size=
+	WireBytes    int64  // decoded bytes actually transferred (pre-truncation)
 }
 
 // StatVerdict is the outcome of an all-pool StatArticleAll STAT.
@@ -201,6 +216,32 @@ func (h *managerHeaderSource) StatArticle(ctx context.Context, msgID string) (bo
 		return !missing, nil
 	}
 	return false, mapped
+}
+
+// BodyHead fetches msgID's BODY with a tryOnly borrow and returns at most
+// maxBytes of the decoded payload plus the yEnc name/size headers. The whole
+// article is read (NNTP gives no partial BODY); only the retained slice is capped.
+func (h *managerHeaderSource) BodyHead(ctx context.Context, msgID string, maxBytes int) (BodySample, error) {
+	msgID = strings.Trim(strings.TrimSpace(msgID), "<>")
+	if msgID == "" {
+		return BodySample{}, errors.New("usenet: empty message-id")
+	}
+	c, p, err := h.borrow(ctx, true)
+	if err != nil {
+		return BodySample{}, err
+	}
+	res, ferr := fetchSegment(c, msgID)
+	keep := ferr == nil || errors.Is(ferr, ErrArticleNotFound) || errors.Is(ferr, ErrArticleRemoved)
+	p.put(c, keep)
+	if ferr != nil {
+		return BodySample{}, ferr
+	}
+	data := res.data
+	wire := int64(len(data))
+	if maxBytes > 0 && len(data) > maxBytes {
+		data = data[:maxBytes]
+	}
+	return BodySample{Data: data, YencName: res.filename, YencFileSize: res.fileSize, WireBytes: wire}, nil
 }
 
 // StatArticleAll STATs msgID across EVERY pool with a tryOnly borrow — never

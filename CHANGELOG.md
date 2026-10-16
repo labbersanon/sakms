@@ -11185,3 +11185,19 @@ status stays active.
 | `internal/usenetsearch/{crawler,ingest,service,search,namefix}.go` | skip / prune / search filter |
 | `cmd/sakms/main.go` | SetPreferredLanguagesFn |
 
+## 2026-10-16 — Forward NNTP crawl time-sliced so firehose groups cannot starve the index
+
+**Problem:** After language scoping, the crawler spent the whole pass on `alt.binaries.bloaf` / `ath` (admitted=0, skip_unparsed ~1900, skip_obf_cap filling the unnamed budget). moovee/teevee never got an OVER turn; namefix never ran because CrawlOnce never returned.
+**Root cause:** `crawlGroup` looped every remaining article to HIGH before the next group. LIST ACTIVE includes huge obfuscated bins whose HIGH keeps moving; catch-up never finished.
+**Fix:** Same bound as backfill: 25 OVER chunks per pass, 8 per group, round-robin `CrawlStart`. Membership is unchanged (still every mode-applicable LIST group).
+**Outcome:** A firehose group yields after 8 chunks; the rest of the pass visits other groups; namefix runs between passes.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/crawler.go` | pass/group chunk caps + CrawlStart rotation |
+| `internal/usenetsearch/service.go` | loop-owned crawlStart |
+| `internal/usenetsearch/crawler_admission_test.go` | firehose does not starve cores; round-robin start |
+| `docs/usenet-nntp-native.md` | forward crawl bound documented |
+

@@ -565,3 +565,96 @@ func TestService_PruneNonMatchingOnce_RunsOncePerGroup(t *testing.T) {
 		t.Fatalf("count=%d err=%v, want 1 (second call is a no-op, already pruned this group)", count, err)
 	}
 }
+
+func overCallsByGroup(calls []overCall) map[string]int {
+	out := map[string]int{}
+	for _, c := range calls {
+		out[c.group]++
+	}
+	return out
+}
+
+const (
+	firehose = "alt.binaries.bloaf"
+	core     = "alt.binaries.moovee"
+)
+
+// newFirehoseFixture returns an index and a stub where firehose is far from
+// HIGH and core is one chunk from caught up.
+func newFirehoseFixture(t *testing.T) (*Index, *bfStub) {
+	t.Helper()
+	idx, err := OpenIndex(dbtest.New(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { idx.Close() })
+	src := &bfStub{
+		rows: map[string][]usenet.MessageOverview{
+			firehose: releaseRows(1, "Junk.Movie.2001.480p.WEB-DL.x264-GROUP", "j", 5),
+			core:     releaseRows(1, "Good.Movie.2020.1080p.WEB-DL.x264-GROUP", "g", 3),
+		},
+		gr: map[string]usenet.GroupRange{
+			firehose: {Low: 1, High: 10000},
+			core:     {Low: 1, High: 3},
+		},
+	}
+	return idx, src
+}
+
+func TestCrawlOnce_FirehoseGroupDoesNotStarveTheRest(t *testing.T) {
+	idx, src := newFirehoseFixture(t)
+	ctx := context.Background()
+	c := &Crawler{
+		Src: src, Index: idx, Groups: []string{firehose, core},
+		MaxChunksPerGroup: 1, MaxChunksPerPass: 2,
+	}
+	res, err := c.CrawlOnce(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Advanced {
+		t.Fatal("expected Advanced")
+	}
+	if res.NextStart != 1 {
+		t.Fatalf("NextStart=%d, want 1", res.NextStart)
+	}
+	wmFire, err := idx.Watermark(ctx, firehose)
+	if err != nil || wmFire != overviewChunk {
+		t.Fatalf("bloaf watermark=%d err=%v, want %d (one chunk, not High)", wmFire, err, overviewChunk)
+	}
+	wmCore, err := idx.Watermark(ctx, core)
+	if err != nil || wmCore != 3 {
+		t.Fatalf("moovee watermark=%d err=%v, want 3 (visited in the same pass)", wmCore, err)
+	}
+	by := overCallsByGroup(src.calls)
+	if by[firehose] != 1 || by[core] != 1 {
+		t.Fatalf("OVER calls by group=%v, want bloaf=1 moovee=1", by)
+	}
+}
+
+func TestCrawlOnce_RoundRobinStartsPastFirehose(t *testing.T) {
+	idx, src := newFirehoseFixture(t)
+	ctx := context.Background()
+	c := &Crawler{
+		Src: src, Index: idx, Groups: []string{firehose, core},
+		CrawlStart: 1, MaxChunksPerGroup: 1, MaxChunksPerPass: 1,
+	}
+	if _, err := c.CrawlOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	by := overCallsByGroup(src.calls)
+	if by[core] != 1 {
+		t.Fatalf("OVER calls by group=%v, want moovee first when CrawlStart=1", by)
+	}
+	if by[firehose] != 0 {
+		t.Fatalf("bloaf OVERed in a 1-chunk pass that started at moovee: %v", by)
+	}
+	wmCore, err := idx.Watermark(ctx, core)
+	if err != nil || wmCore != 3 {
+		t.Fatalf("moovee watermark=%d err=%v, want 3", wmCore, err)
+	}
+	wmFire, err := idx.Watermark(ctx, firehose)
+	if err != nil || wmFire != 0 {
+		t.Fatalf("bloaf watermark=%d err=%v, want 0 (not visited)", wmFire, err)
+	}
+}

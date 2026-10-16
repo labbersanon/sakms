@@ -52,6 +52,12 @@ Every group starts grade 1; Usenet article failures demote one tier (5
 sticky). When grade exceeds the ceiling, crawl stops for that group and
 its index rows are deleted. Advanced customize → Custom.
 
+Forward crawl is bounded like backfill: at most 25 OVER chunks per loop
+iteration and 8 per group, round-robin start. A firehose obfuscated bin
+(`bloaf` / `ath`) is still a member, but it cannot hold the goroutine
+until HIGH — cores get a turn the same pass, and namefix runs between
+passes.
+
 
 ## PreDB provider (name recovery)
 

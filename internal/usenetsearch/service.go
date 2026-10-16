@@ -407,6 +407,7 @@ func (s *Service) loop(ctx context.Context) {
 	// Review if: CrawlInterval is renamed to idle_backoff_seconds in settings KV.
 	budget := &bodyBudget{}
 	backfillStart := 0
+	crawlStart := 0
 	backfillSkipLogged := false
 	for {
 		if ctx.Err() != nil {
@@ -420,12 +421,13 @@ func (s *Service) loop(ctx context.Context) {
 		// Troubleshooting: a pass starving others → check which log line stops
 		//   appearing (repair pass / namefix pass / backfill group=).
 		// Review if: a pass needs its own cadence.
-		cres, crawler := s.runProbeAndCrawl(ctx)
+		cres, crawler := s.runProbeAndCrawl(ctx, crawlStart)
 		if crawler != nil {
 			s.mu.Lock()
 			s.ranges = crawler.ranges
 			s.lastPass = cres
 			s.mu.Unlock()
+			crawlStart = cres.NextStart
 		}
 		busy, advanced := cres.Busy, cres.Advanced
 		if crawler != nil && !busy && crawler.RepairEnabled {
@@ -486,7 +488,7 @@ func (s *Service) idleBackoff() time.Duration {
 	return d
 }
 
-func (s *Service) runProbeAndCrawl(ctx context.Context) (CrawlResult, *Crawler) {
+func (s *Service) runProbeAndCrawl(ctx context.Context, crawlStart int) (CrawlResult, *Crawler) {
 	s.mu.Lock()
 	src := s.src
 	cfg := s.cfg
@@ -538,6 +540,7 @@ func (s *Service) runProbeAndCrawl(ctx context.Context) (CrawlResult, *Crawler) 
 		BackfillBudgetPct:  cfg.BackfillBudgetPct,
 		LanguageFilter:     langFilter,
 		PreferredLanguages: langs,
+		CrawlStart:         crawlStart,
 		// Claude 2026-10-16: publish last OVER chunk as it lands, not after the pass.
 		// Reason: LIST membership is hundreds of groups; a Dashboard poll mid-pass
 		// should show the current chunk, not the previous pass.

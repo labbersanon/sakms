@@ -20,10 +20,26 @@ const overviewChunk = 2000
 // Review if: rate becomes a Settings knob.
 const chunkPause = 250 * time.Millisecond
 
+// Claude 2026-10-16: bound one forward CrawlOnce the same way BackfillOnce is bounded.
+// Reason: LIST ACTIVE membership is hundreds of groups; a firehose bin
+// (bloaf/ath/amazing) never reaches HIGH, so the old per-group-until-caught-up
+// loop never visited moovee/teevee and never returned to namefix.
+// Troubleshooting: o2cli grep "crawl chunk" stuck on one group with admitted=0 —
+// check these caps and CrawlStart rotation, not membership.
+// Review if: pass/group caps become Settings knobs.
+// Related files: backfill.go (backfillChunksPerPass), service.go (crawlStart)
+const (
+	forwardChunksPerPass  = 25
+	forwardChunksPerGroup = 8
+)
+
 // CrawlResult summarizes one continuous crawl pass.
 type CrawlResult struct {
 	Advanced bool // ingested at least one OVER chunk
 	Busy     bool // yielded on ErrBusy
+	// NextStart is the round-robin offset for the next pass; zero when no
+	// groups were considered.
+	NextStart int
 }
 
 // Crawler incrementally OVERs configured groups into the Index.
@@ -73,6 +89,13 @@ type Crawler struct {
 	BackfillBudgetPct int
 	BackfillStart     int
 
+	// CrawlStart is the loop-owned round-robin offset into Groups.
+	// MaxChunksPerPass / MaxChunksPerGroup override the forward caps (0 = defaults);
+	// tests set them small so a firehose group cannot eat the fixture.
+	CrawlStart        int
+	MaxChunksPerPass  int
+	MaxChunksPerGroup int
+
 	// ranges holds each group's last GroupRange (set by crawlGroup); backfill
 	// uses Low as its target. budgetOverride is a test hook.
 	ranges         map[string]usenet.GroupRange
@@ -95,21 +118,50 @@ type Crawler struct {
 	PreferredLanguages []string
 }
 
-// CrawlOnce advances watermarks for every configured group.
+func (c *Crawler) forwardBudget() (pass, perGroup int) {
+	pass = c.MaxChunksPerPass
+	if pass <= 0 {
+		pass = forwardChunksPerPass
+	}
+	perGroup = c.MaxChunksPerGroup
+	if perGroup <= 0 {
+		perGroup = forwardChunksPerGroup
+	}
+	return pass, perGroup
+}
+
+// CrawlOnce advances watermarks round-robin across configured groups, up to
+// forwardChunksPerPass OVER chunks (forwardChunksPerGroup per group), so no
+// group has to reach HIGH before the rest are visited.
 func (c *Crawler) CrawlOnce(ctx context.Context) (CrawlResult, error) {
 	var res CrawlResult
 	if c.Src == nil || c.Index == nil {
 		return res, errors.New("usenetsearch: crawler not configured")
 	}
+	var groups []string
 	for _, group := range c.Groups {
 		group = strings.TrimSpace(group)
-		if group == "" {
+		if group == "" || !c.groupLanguageOK(group) {
 			continue
 		}
-		if !c.groupLanguageOK(group) {
-			continue
+		groups = append(groups, group)
+	}
+	if len(groups) == 0 {
+		return res, nil
+	}
+	rot := c.CrawlStart % len(groups)
+	if rot < 0 {
+		rot = 0
+	}
+	rotated := append(append([]string{}, groups[rot:]...), groups[:rot]...)
+	res.NextStart = c.CrawlStart + 1
+	passCap, groupCap := c.forwardBudget()
+	passChunks := 0
+	for _, group := range rotated {
+		if passChunks >= passCap {
+			break
 		}
-		adv, err := c.crawlGroup(ctx, group)
+		n, adv, err := c.crawlGroup(ctx, group, min(groupCap, passCap-passChunks))
 		if err != nil {
 			if errors.Is(err, usenet.ErrBusy) {
 				log.Printf("usenetsearch: crawl yield (busy) on %s", group)
@@ -119,6 +171,7 @@ func (c *Crawler) CrawlOnce(ctx context.Context) (CrawlResult, error) {
 			log.Printf("usenetsearch: crawl %s: %v", group, err)
 			continue
 		}
+		passChunks += n
 		if adv {
 			res.Advanced = true
 		}
@@ -142,10 +195,10 @@ func (c *Crawler) CrawlOnce(ctx context.Context) (CrawlResult, error) {
 	return res, nil
 }
 
-func (c *Crawler) crawlGroup(ctx context.Context, group string) (advanced bool, err error) {
+func (c *Crawler) crawlGroup(ctx context.Context, group string, maxChunks int) (chunks int, advanced bool, err error) {
 	gr, err := c.Src.GroupRange(ctx, group)
 	if err != nil {
-		return false, err
+		return 0, false, err
 	}
 	if c.ranges == nil {
 		c.ranges = map[string]usenet.GroupRange{}
@@ -153,7 +206,7 @@ func (c *Crawler) crawlGroup(ctx context.Context, group string) (advanced bool, 
 	c.ranges[group] = gr
 	wm, err := c.Index.Watermark(ctx, group)
 	if err != nil {
-		return false, err
+		return 0, false, err
 	}
 	from := wm + 1
 	if from < gr.Low {
@@ -170,40 +223,45 @@ func (c *Crawler) crawlGroup(ctx context.Context, group string) (advanced bool, 
 	if from > gr.High {
 		if wm != gr.High {
 			if err := c.Index.SetWatermark(ctx, group, gr.High); err != nil {
-				return false, err
+				return 0, false, err
 			}
 		}
-		return false, nil
+		return 0, false, nil
 	}
 	for a := from; a <= gr.High; a += overviewChunk {
+		if chunks >= maxChunks {
+			log.Printf("usenetsearch: crawl %s: paused after %d chunks (high=%d watermark=%d)", group, chunks, gr.High, a-1)
+			return chunks, advanced, nil
+		}
 		if err := ctx.Err(); err != nil {
-			return advanced, err
+			return chunks, advanced, err
 		}
 		b := a + overviewChunk - 1
 		if b > gr.High {
 			b = gr.High
 		}
 		if _, err := c.ingestRange(ctx, ingestOpts{Dir: dirForward, CaptureGaps: c.RepairEnabled}, group, a, b); err != nil {
-			return advanced, err
+			return chunks, advanced, err
 		}
 		if err := c.Index.SetWatermark(ctx, group, b); err != nil {
-			return advanced, err
+			return chunks, advanced, err
 		}
 		if wm == 0 && !advanced {
 			// Claude 2026-10-15: a brand-new group's backfill cursor starts at the
 			// first forward chunk (plan D6); it only ever moves down from here.
 			if err := c.Index.EnsureLow(ctx, group, from); err != nil {
-				return advanced, err
+				return chunks, advanced, err
 			}
 		}
+		chunks++
 		advanced = true
 		select {
 		case <-ctx.Done():
-			return advanced, ctx.Err()
+			return chunks, advanced, ctx.Err()
 		case <-time.After(chunkPause):
 		}
 	}
-	return advanced, nil
+	return chunks, advanced, nil
 }
 
 // pruneGroupNonMatching deletes every already-indexed release in group that

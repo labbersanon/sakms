@@ -66,7 +66,7 @@ VALUES (?,?,?,?,0,?) ON CONFLICT (group_name, lo, hi) DO NOTHING`)
 	if _, err := tx.ExecContext(ctx, `
 DELETE FROM usenet_nntp_missed_ranges WHERE group_name=? AND lo < (
   SELECT lo FROM usenet_nntp_missed_ranges WHERE group_name=? ORDER BY lo DESC OFFSET ? LIMIT 1)`,
-		group, group, maxGapRangesPerGroup); err != nil {
+		group, group, maxGapRangesPerGroup-1); err != nil {
 		return err
 	}
 	return tx.Commit()

@@ -9,11 +9,23 @@ func TestInferPackageFromGroups_EmptyIsDefault(t *testing.T) {
 	}
 }
 
-func TestInferPackageFromGroups_ExactStep(t *testing.T) {
+func TestInferPackageFromGroups_FullSetIsDefaultTolerance(t *testing.T) {
+	full := ResolveAllModeGroups("movies")
+	got := InferPackageFromGroups("movies", full, full)
+	if got != FormatPackageStep(DefaultPackageStep) {
+		t.Fatalf("got %q want default tolerance", got)
+	}
+}
+
+func TestInferPackageFromGroups_PartialIsCustom(t *testing.T) {
 	step2 := ResolveGroupsForStep("movies", 2)
-	got := InferPackageFromGroups("movies", step2, step2)
-	if got != "2" {
-		t.Fatalf("got %q want 2", got)
+	full := ResolveAllModeGroups("movies")
+	if sameGroupSet(step2, full) {
+		t.Fatal("need step2 ⊂ full for this assertion")
+	}
+	got := InferPackageFromGroups("movies", step2, nil)
+	if got != PackageCustom {
+		t.Fatalf("partial curated set should be custom, got %q", got)
 	}
 }
 
@@ -24,15 +36,23 @@ func TestInferPackageFromGroups_Custom(t *testing.T) {
 	}
 }
 
-func TestResolvePackageGroups_IntersectsProvider(t *testing.T) {
-	all := ResolveGroupsForStep("movies", 5)
+func TestResolveModeGroups_IntersectsProvider(t *testing.T) {
+	all := ResolveAllModeGroups("movies")
 	if len(all) < 2 {
 		t.Fatal("need curated movies")
 	}
 	only := []string{all[0]}
-	got := ResolvePackageGroups("movies", 5, only)
+	got := ResolveModeGroups("movies", only)
 	if len(got) != 1 || got[0] != all[0] {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestResolveModeGroups_UnfilteredIsFullCuratedSet(t *testing.T) {
+	got := ResolveModeGroups("movies", nil)
+	full := ResolveGroupsForStep("movies", PackageStepMax)
+	if !sameGroupSet(got, full) {
+		t.Fatalf("membership must be full curated set: got=%d full=%d", len(got), len(full))
 	}
 }
 

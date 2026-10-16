@@ -11,22 +11,23 @@ import (
 //go:embed seeds/packages.json
 var packagesJSON []byte
 
-// Claude 2026-10-15: 5-step reliability↔breadth packages (replaces core/extra seeds).
-// Reason: Settings moves from individual group picking to a slider; step N is
-//   cumulative (includes 1..N). pinned anchors never leave via re-rank.
-// Troubleshooting: empty resolve → provider LIST ACTIVE miss or bad step.
-// Review if: unselected-group sampling (slice 5) proposes new package members.
-// Related files: seeds/packages.json, usenetnntp.go, frontend Usenet.tsx
+// Claude 2026-10-16: packages.json lists ALL mode-related groups; slider is
+// grade tolerance only (not which groups are included).
+// Reason: Wade — include every curated mode group ∩ provider; demote/promote
+//   natural selection; when grade > tolerance stop crawl + delete index.
+// Troubleshooting: missing moovee/teevee → group list still step-filtered.
+// Review if: LIST ACTIVE wildmat expands beyond curated packages.json.
+// Related files: package_resolve.go, usenetnntp.go, frontend Usenet.tsx
 
 const (
 	PackageStepMin = 1
 	PackageStepMax = 5
 	PackageCustom  = "custom"
 
-	// Claude 2026-10-15: default ceiling = all relevant (largest selection).
-	// Reason: passive grading — start broad, demote on Usenet failures.
-	// Troubleshooting: first-run drafts step 5; lower slider to shrink crawl.
-	// Review if: operator wants conservative default again.
+	// DefaultPackageStep is the default grade-tolerance ceiling (lenient).
+	// Reason: all curated groups stay in the set; slider only gates demotion.
+	// Troubleshooting: first-run drafts tolerance 5; lower to drop demoted sooner.
+	// Review if: operator wants a stricter default tolerance.
 	DefaultPackageStep = 5
 )
 
@@ -104,6 +105,8 @@ func PackagesForMode(mode string) []PackageSeed {
 }
 
 // ResolveGroupsForStep returns cumulative group names for mode at step (1..N).
+// Kept for Settings package annotations (step badges); crawl group set uses
+// ResolveAllModeGroups instead.
 func ResolveGroupsForStep(mode string, step int) []string {
 	step = ClampPackageStep(step)
 	mode = strings.ToLower(strings.TrimSpace(mode))
@@ -118,6 +121,11 @@ func ResolveGroupsForStep(mode string, step int) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// ResolveAllModeGroups returns every curated group for mode (all package steps).
+func ResolveAllModeGroups(mode string) []string {
+	return ResolveGroupsForStep(mode, PackageStepMax)
 }
 
 // FilterPackagesToProvider keeps seeds whose names appear in available.

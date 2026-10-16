@@ -18,7 +18,8 @@ and prune passes (window days + max GiB).
 | Setting | Notes |
 |---|---|
 | Master + per-mode toggles | Movies / Series / Adult AND-ed with master |
-| Per-mode package slider | Ceiling (default max/all relevant): crawl/search only groups with grade ≤ step; advanced customize → Custom |
+| Per-mode group set | Always all curated `packages.json` groups for the mode ∩ provider LIST ACTIVE (not the slider) |
+| Per-mode package slider | Grade tolerance ceiling only (default 5 = most lenient): crawl/search groups with grade ≤ step; advanced customize → Custom |
 | Passive grades | Start at 1 (most reliable); +1 per Usenet article failure (sticky at 5); grade > ceiling → stop crawl + delete that group's index |
 | Max GiB / soft age days / idle backoff | Soft size budget; soft age display; idle backoff after catch-up (0 = 60s default). Crawl is continuous when enabled |
 | Probe state/detail | Read-only |
@@ -41,11 +42,12 @@ age alone. Soft size budget uses row-count × ~200 B/row (`ApproxBytes`), not
 `pg_total_relation_size` (which does not shrink after `DELETE` and previously
 could wipe the index).
 
-Group picking: curated **5-step packages** (`seeds/packages.json`). The
-Settings slider is a **ceiling** (default 5 = all relevant). Every group
-starts grade 1; Usenet article failures demote one tier (5 sticky). When
-grade exceeds the ceiling, crawl stops for that group and its index rows
-are deleted. Advanced customize → Custom.
+Group membership: every curated group in `seeds/packages.json` for the mode
+∩ provider LIST ACTIVE. The Settings slider is **grade tolerance only**
+(default 5 = most lenient) — it does not shrink the monitored set. Every
+group starts grade 1; Usenet article failures demote one tier (5 sticky).
+When grade exceeds the ceiling, crawl stops for that group and its index
+rows are deleted. Advanced customize → Custom.
 
 
 ## PreDB provider (name recovery)

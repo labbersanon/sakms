@@ -1085,40 +1085,35 @@ const GroupTransferToolbox: Component<{
   );
 };
 
-// Claude 2026-10-15: groupsFromPackageStep returns names for steps 1..N from
-// the packages map, falling back to items filtered by step<=N.
-// Reason: slider preview must match what the server would expand on Save.
-// Troubleshooting: packages undefined → falls back to items step filter.
-// Review if: server changes package expansion logic.
-function groupsFromPackageStep(
-  step: number,
-  avail: UsenetNNTPAvailableGroups,
-): string[] {
+const STEP_MAX = 5;
+
+// Claude 2026-10-16: allModeGroups = every curated packages.json group for the
+// mode (∩ provider), independent of the tolerance slider.
+// Reason: slider is grade ceiling only; membership is always the full curated set.
+// Troubleshooting: empty list → provider LIST miss or packages/items absent.
+// Review if: server ResolveModeGroups shape changes.
+function allModeGroups(avail: UsenetNNTPAvailableGroups): string[] {
   if (avail.packages) {
     const names = new Set<string>();
-    for (let s = 1; s <= step; s++) {
-      const key = String(s);
-      for (const it of avail.packages[key] ?? []) {
+    for (let s = 1; s <= STEP_MAX; s++) {
+      for (const it of avail.packages[String(s)] ?? []) {
         if (it.name) names.add(it.name);
       }
     }
     return [...names].sort((a, b) => a.localeCompare(b));
   }
-  // Fallback: use items annotated with step<=N.
   return (avail.items ?? [])
-    .filter((it) => it.step !== undefined && it.step <= step)
     .map((it) => it.name)
+    .filter(Boolean)
     .sort((a, b) => a.localeCompare(b));
 }
 
-// PackageSliderPanel renders the step slider + optional custom chip + advanced
-// collapse for one mode (movies/series/adult).
+// PackageSliderPanel: tolerance slider + optional custom chip + advanced collapse.
 //
-// Claude 2026-10-15: per-mode slider panel replacing always-visible toolbox.
-// Reason: slider is the primary UX; toolbox is advanced/expert territory.
-// Troubleshooting: steps undefined → cumulative count hidden (server older build).
-// Review if: step count changes from 5 or steps shape changes.
-const STEP_MAX = 5;
+// Claude 2026-10-16: slider sets grade ceiling only; groups stay full curated set.
+// Reason: Wade — demote/promote selects survivors; slider is not membership.
+// Troubleshooting: moving slider shrinks list → still calling step-filtered helper.
+// Review if: custom mode retired once repair always rewrites non-custom.
 
 const PackageSliderPanel: Component<{
   title: string;
@@ -1140,25 +1135,26 @@ const PackageSliderPanel: Component<{
 
   const isCustom = () => props.pkg === "custom";
 
-  const cumulativeCount = () => {
-    if (!props.steps || isCustom()) return null;
-    const step = String(currentStep());
-    return props.steps[step]?.cumulativeCount ?? null;
+  // Always show full curated count (step 5 cumulative), not the tolerance value.
+  const monitoredCount = () => {
+    if (isCustom()) return props.monitored.length;
+    const fullCount = props.steps?.[String(STEP_MAX)]?.cumulativeCount;
+    if (fullCount != null) return fullCount;
+    return allModeGroups(props.avail).length || null;
   };
 
-  const applyStep = (step: number) => {
-    const groups = groupsFromPackageStep(step, props.avail);
-    props.onPackageChange(String(step), groups);
+  const applyTolerance = (step: number) => {
+    props.onPackageChange(String(step), allModeGroups(props.avail));
   };
 
-  const resetToStep = () => applyStep(currentStep());
+  const resetToCurated = () => applyTolerance(currentStep());
 
   const stepLabels: Record<number, string> = {
-    1: "Most reliable",
-    2: "High coverage",
-    3: "Broad coverage",
-    4: "Extended",
-    5: "Largest selection",
+    1: "Strict (drop demoted sooner)",
+    2: "Tight",
+    3: "Balanced",
+    4: "Lenient",
+    5: "Most lenient",
   };
 
   return (
@@ -1174,8 +1170,8 @@ const PackageSliderPanel: Component<{
       <Show when={!isCustom()}>
         <div class="mb-3">
           <div class="flex items-center justify-between text-xs text-muted">
-            <span>Most reliable (narrow)</span>
-            <span>Largest selection</span>
+            <span>Strict tolerance</span>
+            <span>Most lenient</span>
           </div>
           <input
             type="range"
@@ -1183,17 +1179,17 @@ const PackageSliderPanel: Component<{
             max={STEP_MAX}
             step={1}
             class="mt-1 w-full accent-accent"
-            aria-label={`${props.title} package step`}
+            aria-label={`${props.title} grade tolerance`}
             value={currentStep()}
-            onInput={(e) => applyStep(Number(e.currentTarget.value))}
+            onInput={(e) => applyTolerance(Number(e.currentTarget.value))}
           />
           <div class="mt-1 flex items-center gap-2 text-xs text-muted">
             <span>
-              Step {currentStep()} — {stepLabels[currentStep()] ?? ""}
+              Tolerance {currentStep()} — {stepLabels[currentStep()] ?? ""}
             </span>
-            <Show when={cumulativeCount() !== null}>
+            <Show when={monitoredCount() !== null}>
               <span class="text-fg">
-                ({cumulativeCount()} group{cumulativeCount() === 1 ? "" : "s"})
+                ({monitoredCount()} group{monitoredCount() === 1 ? "" : "s"} monitored)
               </span>
             </Show>
           </div>
@@ -1206,9 +1202,9 @@ const PackageSliderPanel: Component<{
           </Muted>
           <Button
             class="!px-2 !py-1 !text-xs"
-            onClick={() => applyStep(currentStep())}
+            onClick={resetToCurated}
           >
-            Reset to step {currentStep()}
+            Reset to curated (tolerance {currentStep()})
           </Button>
         </div>
       </Show>
@@ -1229,8 +1225,8 @@ const PackageSliderPanel: Component<{
             onChange={(groups) => {
               props.onGroupsChange(groups);
             }}
-            resetLabel={`Reset to step ${currentStep()}`}
-            onReset={resetToStep}
+            resetLabel={`Reset to curated (tolerance ${currentStep()})`}
+            onReset={resetToCurated}
             onGradeReset={props.onGradeReset}
           />
         </div>
@@ -1247,8 +1243,8 @@ const NativeSearchCard: Component = () => {
   const [moviesGroups, setMoviesGroups] = createSignal<string[]>([]);
   const [seriesGroups, setSeriesGroups] = createSignal<string[]>([]);
   const [adultGroups, setAdultGroups] = createSignal<string[]>([]);
-  // Claude 2026-10-15: package signals for the 5-step slider.
-  // Reason: "1".."5" drives server-side group expansion; "custom" = manual list.
+  // Claude 2026-10-16: package = grade tolerance ceiling ("1".."5"); "custom" = manual list.
+  // Reason: membership is always full curated ∩ provider; slider does not shrink groups.
   // Troubleshooting: package undefined from older server → default to "5".
   // Review if: step count or package key format changes.
   const [moviesPackage, setMoviesPackage] = createSignal("5");
@@ -1293,20 +1289,17 @@ const NativeSearchCard: Component = () => {
     setProbeDetail(r.probeDetail || "");
   };
 
-  // Claude 2026-10-15: first-run prefill for package="5" (ceiling max) with empty groups.
-  // Reason: cold-start UX — draft step-5 groups unsaved so Save is still required.
+  // Claude 2026-10-16: first-run prefill = full curated mode groups (tolerance unchanged).
+  // Reason: cold-start drafts full membership; Save still required.
   // Troubleshooting: dirty after load with empty groups = expected on first visit.
-  // Review if: wizard step sets groups before Settings opens.
-  const prefillStepIfEmpty = (
-    pkg: string,
+  // Review if: boot LoadUsenetSearchConfig already persisted full sets (prefill no-ops).
+  const prefillFullIfEmpty = (
     current: string[],
     setter: (v: string[]) => void,
     avail: UsenetNNTPAvailableGroups,
   ): boolean => {
     if (current.length > 0) return false;
-    const step = parseInt(pkg, 10);
-    const stepNum = Number.isFinite(step) && step >= 1 && step <= STEP_MAX ? step : 5;
-    const groups = groupsFromPackageStep(stepNum, avail);
+    const groups = allModeGroups(avail);
     if (groups.length === 0) return false;
     setter(groups);
     return true;
@@ -1326,13 +1319,13 @@ const NativeSearchCard: Component = () => {
       if (opts?.prefillEmpty) {
         // Array literal prevents short-circuit so all three modes are checked.
         const filled = [
-          prefillStepIfEmpty(moviesPackage(), moviesGroups(), setMoviesGroups, m),
-          prefillStepIfEmpty(seriesPackage(), seriesGroups(), setSeriesGroups, s),
-          prefillStepIfEmpty(adultPackage(), adultGroups(), setAdultGroups, a),
+          prefillFullIfEmpty(moviesGroups(), setMoviesGroups, m),
+          prefillFullIfEmpty(seriesGroups(), setSeriesGroups, s),
+          prefillFullIfEmpty(adultGroups(), setAdultGroups, a),
         ].includes(true);
         if (filled) {
           setDirty(true);
-          status.set("All relevant groups pre-selected (ceiling max) — Save to apply");
+          status.set("All curated groups pre-selected — Save to apply");
         }
       }
     } catch (e) {
@@ -1540,13 +1533,12 @@ const NativeSearchCard: Component = () => {
         />
       </Show>
       <Muted class="mb-3">
-        The slider sets a grade ceiling — only groups graded at or below that tier
-        are crawled. Groups start at grade 1 (most reliable). Usenet article
-        failures demote a group one tier. Once a group is demoted past the ceiling,
-        crawling stops and its index is deleted. Two successful native imports promote one tier. Grade 5 is sticky on demote — groups at that
-        tier stay regardless of failures. Expand "Customize groups" to edit the list
-        manually; doing so switches that mode to Custom and disables the slider until
-        you reset it.
+        Every curated group for the mode stays monitored (∩ your provider). The
+        slider is grade tolerance only — crawl/search include groups with grade ≤
+        that ceiling. Groups start at grade 1; Usenet article failures demote one
+        tier (5 is sticky). Past the ceiling, crawl stops and that group's index is
+        deleted. Two successful native imports promote one tier. "Customize groups"
+        switches the mode to Custom and disables the slider until you reset.
       </Muted>
       <label class="mb-3 block">
         <span class={labelClass}>Index directory (unused — index is in the SAK Postgres DB)</span>

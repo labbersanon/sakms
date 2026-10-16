@@ -1,6 +1,7 @@
 package usenetsearch
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -12,6 +13,10 @@ func TestMediaWildmats_KnownModes(t *testing.T) {
 	}
 	if got := MediaWildmats("other"); got != nil {
 		t.Fatalf("want nil for unknown mode, got %v", got)
+	}
+	movies := strings.Join(MediaWildmats("movies"), " ")
+	if !strings.Contains(movies, "inner-sanctum") || !strings.Contains(movies, "moovee") {
+		t.Fatalf("movies wildmats missing scene/core bins: %v", MediaWildmats("movies"))
 	}
 }
 

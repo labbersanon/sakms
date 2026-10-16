@@ -234,6 +234,9 @@ func run() error {
 	// Troubleshooting: settings → Usenet → Native search; probe_state/detail.
 	// Review if: NewMux takes the service as an explicit param.
 	nntpSearch := usenetsearch.NewService(nzbManager.HeaderSource(), sqlDB)
+	// Register before Load so applyPackageResolution can LIST ACTIVE (membership
+	// is the provider's mode groups, not packages.json).
+	api.SetNNTPNativeService(nntpSearch)
 	if cfgNative, err := api.LoadUsenetSearchConfig(context.Background(), settingsStore); err != nil {
 		log.Printf("usenetsearch: loading config: %v", err)
 	} else if err := nntpSearch.Apply(cfgNative); err != nil {
@@ -254,7 +257,9 @@ func run() error {
 	// Troubleshooting: crawl indexes non-matching releases → admit is nil → check this line ran.
 	// Review if: NewNNTPAdmissionPolicy gains settings beyond lib/settingsStore.
 	nntpSearch.SetAdmissionPolicy(api.NewNNTPAdmissionPolicy(libStore, settingsStore))
-	api.SetNNTPNativeService(nntpSearch)
+	// Claude 2026-10-16: SetNNTPNativeService moved above LoadUsenetSearchConfig
+	// so boot LIST ACTIVE can expand mode groups. Duplicate register omitted.
+	// api.SetNNTPNativeService(nntpSearch)
 	// Claude 2026-10-15: PreDB (HTTP + optional IRC) for NNTP name recovery.
 	// Reason: name recovery confirms/reverses names via the PreDB; the IRC
 	//   password is decrypted from secretStore inside the api runtime only.

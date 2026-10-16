@@ -11,13 +11,13 @@ import (
 //go:embed seeds/packages.json
 var packagesJSON []byte
 
-// Claude 2026-10-16: packages.json lists ALL mode-related groups; slider is
-// grade tolerance only (not which groups are included).
-// Reason: Wade — include every curated mode group ∩ provider; demote/promote
-//   natural selection; when grade > tolerance stop crawl + delete index.
-// Troubleshooting: missing moovee/teevee → group list still step-filtered.
-// Review if: LIST ACTIVE wildmat expands beyond curated packages.json.
-// Related files: package_resolve.go, usenetnntp.go, frontend Usenet.tsx
+// Claude 2026-10-16: packages.json annotates known cores (step/pinned badges).
+// Membership is mode-scoped LIST ACTIVE (mediagroups.go), not this shortlist.
+// Reason: Wade — all provider groups that apply to the mode; slider = tolerance.
+// Troubleshooting: monitored count == seed count → ResolveModeGroups still
+//   intersecting packages.json instead of using LIST ACTIVE.
+// Review if: a seed is retired from badges (list membership must not shrink).
+// Related files: package_resolve.go, mediagroups.go, usenetnntp.go, Usenet.tsx
 
 const (
 	PackageStepMin = 1
@@ -25,7 +25,7 @@ const (
 	PackageCustom  = "custom"
 
 	// DefaultPackageStep is the default grade-tolerance ceiling (lenient).
-	// Reason: all curated groups stay in the set; slider only gates demotion.
+	// Reason: every LIST ACTIVE mode group stays monitored; slider gates demotion.
 	// Troubleshooting: first-run drafts tolerance 5; lower to drop demoted sooner.
 	// Review if: operator wants a stricter default tolerance.
 	DefaultPackageStep = 5
@@ -104,9 +104,8 @@ func PackagesForMode(mode string) []PackageSeed {
 	return out
 }
 
-// ResolveGroupsForStep returns cumulative group names for mode at step (1..N).
-// Kept for Settings package annotations (step badges); crawl group set uses
-// ResolveAllModeGroups instead.
+// ResolveGroupsForStep returns cumulative seed names for mode at step (1..N).
+// Settings step badges only; crawl membership is ResolveModeGroups / LIST ACTIVE.
 func ResolveGroupsForStep(mode string, step int) []string {
 	step = ClampPackageStep(step)
 	mode = strings.ToLower(strings.TrimSpace(mode))

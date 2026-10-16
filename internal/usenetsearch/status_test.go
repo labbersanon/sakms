@@ -49,3 +49,28 @@ func TestGapFillStatus_NoIndexIsZero(t *testing.T) {
 		t.Fatalf("st=%+v err=%v", st, err)
 	}
 }
+
+func TestCrawlerStatus_DisabledZeros(t *testing.T) {
+	st, err := NewService(nil, nil).CrawlerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Enabled || st.Headers != 0 || st.LastChunk != nil {
+		t.Fatalf("disabled snapshot=%+v", st)
+	}
+	if st.IndexMaxGB != DefaultIndexMaxGB {
+		t.Fatalf("indexMaxGb=%d", st.IndexMaxGB)
+	}
+}
+
+func TestCrawlerStatus_LastChunk(t *testing.T) {
+	s := NewService(nil, nil)
+	s.lastChunk = CrawlChunkStat{Group: "alt.binaries.moovee", Rows: 10, Admitted: 2}
+	st, err := s.CrawlerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.LastChunk == nil || st.LastChunk.Group != "alt.binaries.moovee" || st.LastChunk.Admitted != 2 {
+		t.Fatalf("lastChunk=%+v", st.LastChunk)
+	}
+}

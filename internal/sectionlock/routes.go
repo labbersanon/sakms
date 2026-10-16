@@ -298,7 +298,7 @@ func classifyAdmin(rest []string, out Set) {
 		return
 	}
 	switch rest[0] {
-	case "sysinfo", "storage-allocation":
+	case "sysinfo", "storage-allocation", "nntp-crawler":
 		out.Add(SectionDashboard)
 	default: // watch-folders, entity-sync, recheck
 		out.Add(SectionSettings)

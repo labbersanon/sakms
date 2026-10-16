@@ -11137,3 +11137,20 @@ status stays active.
 |---|---|
 | `frontend/src/screens/settings/Usenet.tsx` | shortened Native NNTP intro |
 
+## 2026-10-16 — NNTP crawler stats on Dashboard
+
+**Problem:** Native NNTP crawl progress was only in logs / Settings GET, not on the Dashboard.
+**Root cause:** No dashboard payload for crawler counters.
+**Fix:** GET `/api/admin/nntp-crawler` (probe, groups, headers, index size, searchable/pending/missed, last OVER chunk). Dashboard card polls every 10s, outside the sysinfo SSE gate.
+**Outcome:** Dashboard shows crawler state when native search is on.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/{status,crawler,service}.go` | CrawlerStatus + last-chunk (OnChunk live) |
+| `internal/api/nntp_crawler_status.go` | admin GET |
+| `frontend/src/api/nntp.ts` | `fetchNNTPCrawlerStatus` |
+| `frontend/src/screens/Dashboard.tsx` | NNTP crawler card |
+| `internal/apidto/dto.go` | NNTPCrawlerStatus |
+

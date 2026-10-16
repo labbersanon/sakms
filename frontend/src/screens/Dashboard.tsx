@@ -9,10 +9,10 @@
 // The backend emits its first data event ~2s after connect (after its initial
 // sample pair), so the loading state is expected on first mount.
 //
-// One section is NOT SSE-fed: Storage Allocation reads
-// GET /api/admin/storage-allocation through createResource, and is deliberately
-// mounted OUTSIDE the <Show when={snap()}> gate so it paints on its own data
-// instead of waiting for a metrics frame that may never arrive.
+// Two sections are NOT SSE-fed: Storage Allocation
+// (GET /api/admin/storage-allocation) and NNTP crawler
+// (GET /api/admin/nntp-crawler). Both sit OUTSIDE the <Show when={snap()}>
+// gate so they paint on their own data if the metrics stream stalls.
 //
 // Layout is a 3-column grid (CPU + GPUs left, Memory/Network/Container middle,
 // aggregate Disk I/O right) followed by a full-width Storage Mounts section: a
@@ -34,7 +34,8 @@ import {
   Show,
 } from "solid-js";
 import { A } from "@solidjs/router";
-import type { StorageAllocationCell, SysinfoSnapshot } from "@dto";
+import type { NNTPCrawlerStatus, StorageAllocationCell, SysinfoSnapshot } from "@dto";
+import { fetchNNTPCrawlerStatus } from "../api/nntp";
 import { fetchStorageAllocation } from "../api/storage";
 import { Card, Muted } from "../components/ui";
 import { discoverOwnedHref } from "./discoverHref";
@@ -50,6 +51,18 @@ function formatBps(bps: number): string {
 // formatGB renders a byte count as gibibytes with one decimal.
 function formatGB(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function formatCount(n: number | undefined): string {
+  return (n ?? 0).toLocaleString();
+}
+
+function formatAgo(atUnixMs: number | undefined): string {
+  if (!atUnixMs) return "";
+  const sec = Math.max(0, Math.round((Date.now() - atUnixMs) / 1000));
+  if (sec < 60) return `${sec}s ago`;
+  if (sec < 3600) return `${Math.round(sec / 60)}m ago`;
+  return `${Math.round(sec / 3600)}h ago`;
 }
 
 // formatSize renders a byte count on the full unit ladder — formatGB above is
@@ -369,6 +382,82 @@ const AllocCell: Component<{ mode: string; cell: StorageAllocationCell }> = (
   );
 };
 
+const NNTPStat: Component<{ label: string; value: string }> = (props) => (
+  <div>
+    <div class="text-xs uppercase tracking-wide text-muted">{props.label}</div>
+    <div class="text-sm text-fg">{props.value}</div>
+  </div>
+);
+
+// Claude 2026-10-16: NNTP crawler card — REST-polled, outside the SSE gate.
+// Reason: crawl counters live in Postgres + process memory, not sysinfo.
+// Troubleshooting: "Native search off" with enabled=false; empty last chunk
+//   until the first OVER after enable.
+// Review if: poll interval should match sysinfo tick.
+const NNTPCrawlerCard: Component<{ st: NNTPCrawlerStatus }> = (props) => {
+  const indexPct = () => {
+    const max = (props.st.indexMaxGb || 20) * 1024 * 1024 * 1024;
+    if (max <= 0) return 0;
+    return Math.min(100, (props.st.indexBytes / max) * 100);
+  };
+  const chunk = () => props.st.lastChunk;
+  return (
+    <Card title="NNTP crawler">
+      <Show
+        when={props.st.enabled}
+        fallback={<Muted>Native search off</Muted>}
+      >
+        <div class="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <NNTPStat
+            label="Probe"
+            value={
+              props.st.probeDetail
+                ? `${props.st.probeState} — ${props.st.probeDetail}`
+                : props.st.probeState || "unknown"
+            }
+          />
+          <NNTPStat label="Groups" value={formatCount(props.st.groups)} />
+          <NNTPStat label="Headers" value={formatCount(props.st.headers)} />
+          <NNTPStat
+            label="Index"
+            value={`${formatSize(props.st.indexBytes) || "0 B"} / ${props.st.indexMaxGb} GB`}
+          />
+        </div>
+        <Bar percent={indexPct()} />
+        <div class="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <NNTPStat
+            label="Searchable"
+            value={formatCount(props.st.releasesSearchable)}
+          />
+          <NNTPStat
+            label="Below gate"
+            value={formatCount(props.st.releasesBelowGate)}
+          />
+          <NNTPStat
+            label="Pending name"
+            value={formatCount(props.st.pendingName)}
+          />
+          <NNTPStat
+            label="Missed ranges"
+            value={formatCount(props.st.missedRanges)}
+          />
+        </div>
+        <Show when={chunk()}>
+          {(c) => (
+            <div class="mt-3 text-xs text-muted">
+              Last chunk: {c().dir} {c().group} · {formatCount(c().rows)} rows ·{" "}
+              {formatCount(c().admitted)} admitted
+              {c().elapsedMs != null ? ` · ${c().elapsedMs}ms` : ""}
+              {c().atUnixMs ? ` · ${formatAgo(c().atUnixMs)}` : ""}
+              {props.st.lastPassBusy ? " · busy" : ""}
+            </div>
+          )}
+        </Show>
+      </Show>
+    </Card>
+  );
+};
+
 export const Dashboard: Component = () => {
   const [snap, setSnap] = createSignal<SysinfoSnapshot | null>(null);
   // history keeps the last 60 snapshots for the CPU/Network sparklines.
@@ -378,8 +467,12 @@ export const Dashboard: Component = () => {
   // separate from the transport-level reconnecting notice: the connection is
   // still alive, but a metric read failed server-side.
   const [error, setError] = createSignal<string | null>(null);
-  // alloc is this screen's only REST call — everything above is SSE-fed.
+  // alloc / nntp are REST-backed (not SSE). Poll crawler so the last-chunk
+  // line stays current without joining the sysinfo stream.
   const [alloc] = createResource(fetchStorageAllocation);
+  const [nntp, { refetch: refetchNntp }] = createResource(fetchNNTPCrawlerStatus);
+  const nntpError = () =>
+    (nntp.error as Error | undefined)?.message || "request failed";
   // allocError is read INSTEAD of alloc(), never alongside it: a Solid resource
   // re-throws on read once its fetcher has errored, and an uncaught throw
   // mid-render leaves the section stuck (the GrabDialog bug, see CLAUDE.md).
@@ -407,6 +500,10 @@ export const Dashboard: Component = () => {
       setError(`Metric read failed: ${(e as MessageEvent).data}`);
     });
     es.onerror = () => setReconnecting(true);
+    const nntpPoll = setInterval(() => {
+      void refetchNntp();
+    }, 10_000);
+    onCleanup(() => clearInterval(nntpPoll));
   });
 
   onCleanup(() => es?.close());
@@ -600,6 +697,23 @@ export const Dashboard: Component = () => {
           </>
         )}
       </Show>
+
+      {/* NNTP crawler — REST-backed, outside the SSE gate like Storage Allocation. */}
+      <div class="mt-4">
+        <Show when={nntp.error}>
+          <div class="mb-4 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-warn">
+            NNTP crawler unavailable — {nntpError()}
+          </div>
+        </Show>
+        <Show when={!nntp.error}>
+          <Show
+            when={nntp()}
+            fallback={<Muted>Loading NNTP crawler…</Muted>}
+          >
+            {(st) => <NNTPCrawlerCard st={st()} />}
+          </Show>
+        </Show>
+      </div>
 
       {/* Storage Allocation — REST-backed (GET /api/admin/storage-allocation),
           deliberately OUTSIDE the <Show when={snap()}> gate above: it has its

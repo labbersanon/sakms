@@ -11154,3 +11154,19 @@ status stays active.
 | `frontend/src/screens/Dashboard.tsx` | NNTP crawler card |
 | `internal/apidto/dto.go` | NNTPCrawlerStatus |
 
+## 2026-10-16 — Sanitize latin1 NNTP headers before parse/INSERT
+
+**Problem:** Crawler loop panicked (`ParseSubject` slice `[:80]` on len 78) every ~2 minutes; German `dvd.*` groups aborted with SQLSTATE 22021 invalid UTF-8.
+**Root cause:** OVER Subject/From are raw 8-bit (latin1/CP1252). `strings.ToLower` expands invalid bytes to U+FFFD so the yEnc slice overshoots; Postgres TEXT rejects the same bytes.
+**Fix:** `nntpUTF8` (`strings.ToValidUTF8`) at `ParseSubject` entry and in `buildHeaders` for Subject/From/MessageID.
+**Outcome:** latin1-before-yEnc no longer panics; Upsert accepts sanitized headers.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/subject.go` | `nntpUTF8` + ParseSubject sanitizes first |
+| `internal/usenetsearch/ingest.go` | buildHeaders stores valid UTF-8 |
+| `internal/usenetsearch/subject_test.go` | latin1-before-yEnc regression |
+| `internal/usenetsearch/ingest_test.go` | sanitizer + Upsert latin1 |
+

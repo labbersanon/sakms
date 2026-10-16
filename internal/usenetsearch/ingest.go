@@ -39,13 +39,23 @@ type ingestOpts struct {
 func (c *Crawler) buildHeaders(group string, rows []usenet.MessageOverview) []HeaderRow {
 	headers := make([]HeaderRow, 0, len(rows))
 	for _, r := range rows {
-		ps := ParseSubject(r.Subject)
+		// Claude 2026-10-16: NNTP headers are 8-bit; Postgres TEXT and
+		//   ParseSubject both require valid UTF-8.
+		// Reason: latin1 subjects aborted whole-group Upsert (SQLSTATE 22021)
+		//   and panicked ParseSubject via ToLower index overshoot.
+		// Troubleshooting: crawl GROUP: invalid byte sequence UTF8 → this
+		//   sanitizer not applied to that column.
+		// Review if: lib/nntp already recodes Overview strings.
+		subj := nntpUTF8(r.Subject)
+		from := nntpUTF8(r.From)
+		msgid := nntpUTF8(r.MessageID)
+		ps := ParseSubject(subj)
 		h := HeaderRow{
 			Group:       group,
 			MsgNum:      r.Number,
-			MsgID:       r.MessageID,
-			Subject:     r.Subject,
-			From:        r.From,
+			MsgID:       msgid,
+			Subject:     subj,
+			From:        from,
 			PostedAt:    r.DateUnix,
 			Bytes:       int64(r.Bytes),
 			ReleaseName: ps.Name,
@@ -54,7 +64,7 @@ func (c *Crawler) buildHeaders(group string, rows []usenet.MessageOverview) []He
 			Filename:    ps.Filename,
 			YencSize:    ps.YencSize,
 			Obfuscated:  ps.Obfuscated || !ps.OK,
-			IsMeta:      ps.Meta || IsMetaSubject(r.Subject, ps.Filename),
+			IsMeta:      ps.Meta || IsMetaSubject(subj, ps.Filename),
 			FileN:       ps.FileN,
 			FileM:       ps.FileM,
 		}

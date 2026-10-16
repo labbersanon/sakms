@@ -313,17 +313,7 @@ func TestCrawlGroup_CrossChunkReleaseStatsOnce(t *testing.T) {
 }
 
 func toHeaderRows(group string, overviews []usenet.MessageOverview) []HeaderRow {
-	out := make([]HeaderRow, 0, len(overviews))
-	for _, r := range overviews {
-		ps := ParseSubject(r.Subject)
-		out = append(out, HeaderRow{
-			Group: group, MsgNum: r.Number, MsgID: r.MessageID, Subject: r.Subject, From: r.From,
-			PostedAt: r.DateUnix, Bytes: int64(r.Bytes), ReleaseName: ps.Name, PartN: ps.PartN,
-			PartM: ps.PartM, Filename: ps.Filename, YencSize: ps.YencSize,
-			Obfuscated: ps.Obfuscated || !ps.OK, IsMeta: ps.Meta || IsMetaSubject(r.Subject, ps.Filename),
-		})
-	}
-	return out
+	return (&Crawler{}).buildHeaders(group, overviews)
 }
 
 func TestCrawlGroup_WatermarkAdvancesEvenWhenEverythingDropped(t *testing.T) {

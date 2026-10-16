@@ -2,6 +2,7 @@ package usenetsearch
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/dbtest"
@@ -14,6 +15,44 @@ func TestParseSubject_Scene(t *testing.T) {
 	}
 	if ps.PartN != 1 || ps.PartM != 120 {
 		t.Fatalf("parts: %+v", ps)
+	}
+	if ps.Name != "[Group] Some.Movie.2024.1080p.BluRay.x264-GROUP" {
+		t.Fatalf("name=%q", ps.Name)
+	}
+}
+
+func TestParseSubject_MultiFileSameStem(t *testing.T) {
+	a := ParseSubject(`[01/73] R.J.Decker.S02E05.1080p.AMZN.WEB-DL.DDP5.1.H.264-RAWR - "r.j.decker.s02e05.1080p.amzn.web-dl.ddp5.1.h.264-rawr.part01.rar" yEnc (1/40)`)
+	b := ParseSubject(`[48/73] R.J.Decker.S02E05.1080p.AMZN.WEB-DL.DDP5.1.H.264-RAWR - "r.j.decker.s02e05.1080p.amzn.web-dl.ddp5.1.h.264-rawr.part48.rar" yEnc (12/40)`)
+	c := ParseSubject(`[73/73] R.J.Decker.S02E05.1080p.AMZN.WEB-DL.DDP5.1.H.264-RAWR - "r.j.decker.s02e05.1080p.amzn.web-dl.ddp5.1.h.264-rawr.vol00+01.par2" yEnc (1/1)`)
+	if !a.OK || a.Name == "" || a.Name != b.Name || a.Name != c.Name {
+		t.Fatalf("stems a=%q b=%q c=%q ok=%v", a.Name, b.Name, c.Name, a.OK)
+	}
+	if a.FileN != 1 || a.FileM != 73 || b.FileN != 48 || c.FileN != 73 || c.FileM != 73 {
+		t.Fatalf("file counters a=%d/%d b=%d/%d c=%d/%d", a.FileN, a.FileM, b.FileN, b.FileM, c.FileN, c.FileM)
+	}
+	if a.PartN != 1 || a.PartM != 40 || b.PartN != 12 || b.PartM != 40 {
+		t.Fatalf("yEnc parts a=%d/%d b=%d/%d", a.PartN, a.PartM, b.PartN, b.PartM)
+	}
+}
+
+func TestParseSubject_ParenFileCountNotYenc(t *testing.T) {
+	ps := ParseSubject(`Bhool.Bhulaiyaa.2007] (72/93) - "Bhool.Bhulaiyaa.2007.Untouched.Blu-ray.1080p.BD50.AVC.DD.DTS-HD.MA.5.1-D0NL1GHT.vol230+" yEnc (1/50)`)
+	if !ps.OK {
+		t.Fatalf("expected usable parse, got %+v", ps)
+	}
+	if ps.PartN != 1 || ps.PartM != 50 {
+		t.Fatalf("yEnc parts: %+v", ps)
+	}
+	if ps.FileN != 72 || ps.FileM != 93 {
+		t.Fatalf("file count: %+v", ps)
+	}
+	if strings.Contains(ps.Name, "72/93") || strings.Contains(ps.Name, "1/50") {
+		t.Fatalf("stem still has counters: %q", ps.Name)
+	}
+	other := ParseSubject(`Bhool.Bhulaiyaa.2007] (1/93) - "Bhool.Bhulaiyaa.2007.Untouched.Blu-ray.1080p.BD50.AVC.DD.DTS-HD.MA.5.1-D0NL1GHT.vol001+" yEnc (3/50)`)
+	if ps.Name != other.Name {
+		t.Fatalf("stems split: %q vs %q", ps.Name, other.Name)
 	}
 }
 

@@ -3,6 +3,7 @@ package usenetsearch
 import (
 	"context"
 	"sort"
+	"unicode/utf8"
 
 	"github.com/labbersanon/sakms/internal/usenet"
 )
@@ -49,43 +50,55 @@ func (c *Crawler) buildHeaders(group string, rows []usenet.MessageOverview) []He
 		subj := nntpUTF8(r.Subject)
 		from := nntpUTF8(r.From)
 		msgid := nntpUTF8(r.MessageID)
-		ps := ParseSubject(subj)
-		h := HeaderRow{
-			Group:       group,
-			MsgNum:      r.Number,
-			MsgID:       msgid,
-			Subject:     subj,
-			From:        from,
-			PostedAt:    r.DateUnix,
-			Bytes:       int64(r.Bytes),
-			ReleaseName: ps.Name,
-			PartN:       ps.PartN,
-			PartM:       ps.PartM,
-			Filename:    ps.Filename,
-			YencSize:    ps.YencSize,
-			Obfuscated:  ps.Obfuscated || !ps.OK,
-			IsMeta:      ps.Meta || IsMetaSubject(subj, ps.Filename),
-			FileN:       ps.FileN,
-			FileM:       ps.FileM,
-		}
-		if c.NameFixEnabled {
-			stageObfuscated(&h, ps)
-		}
-		headers = append(headers, h)
+		headers = append(headers, parseHeader(group, subj, from, msgid, r.Number, r.DateUnix, int64(r.Bytes), c.NameFixEnabled))
 	}
 	return headers
+}
+
+// parseHeader is the shared OVER → HeaderRow path for crawl ingest and the
+// in-place collection-key rewrite.
+func parseHeader(group, subj, from, msgid string, num int, postedAt, bytes int64, nameFix bool) HeaderRow {
+	ps := ParseSubject(subj)
+	h := HeaderRow{
+		Group:       group,
+		MsgNum:      num,
+		MsgID:       msgid,
+		Subject:     subj,
+		From:        from,
+		PostedAt:    postedAt,
+		Bytes:       bytes,
+		ReleaseName: ps.Name,
+		PartN:       ps.PartN,
+		PartM:       ps.PartM,
+		Filename:    ps.Filename,
+		YencSize:    ps.YencSize,
+		Obfuscated:  ps.Obfuscated || !ps.OK,
+		IsMeta:      ps.Meta || IsMetaSubject(subj, ps.Filename),
+		FileN:       ps.FileN,
+		FileM:       ps.FileM,
+	}
+	if nameFix {
+		stageObfuscated(&h, ps)
+	}
+	return h
 }
 
 // stageObfuscated rewrites an obfuscated/unparsed BINARY row (segment counter
 // present) to its staged-set key so it can be name-recovered later. Non-binary
 // junk and readable names are left untouched (plan D3 step 1).
 func stageObfuscated(h *HeaderRow, ps ParsedSubject) {
-	partN, partM := subjectCounters(h.Subject)
+	partN, partM := yencParts(h.Subject)
 	if partM <= 0 {
 		return
 	}
 	skel := obfSkeleton(h.Subject)
-	if skel == "" || !(ps.Obfuscated || !ps.OK || reHexBlob.MatchString(skel) || looksObfuscated(skel)) {
+	// Claude 2026-10-16: refuse empty/short skeletons (collection-grouping 2A).
+	// Reason: hash(group+from+"") collapsed one poster's bluray posts into a
+	//   100k-seg pending_name mega-bucket. NNTmux keeps the hash token in the
+	//   cleaned name; we require a skeleton long enough to be that token.
+	// Troubleshooting: staged_obf=0 on quoted ".part01.rar" subjects is expected.
+	// Review if: a leftover unique filename-base is hashed instead of dropping.
+	if utf8.RuneCountInString(skel) < minObfSkeleton || !(ps.Obfuscated || !ps.OK || reHexBlob.MatchString(skel) || looksObfuscated(skel)) {
 		return
 	}
 	h.ReleaseName = ObfKey(h.Group, h.From, h.Subject)

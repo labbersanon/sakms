@@ -19,17 +19,25 @@ type ParsedSubject struct {
 	Obfuscated bool
 	Meta       bool // par2 / nfo / sfv
 	OK         bool
-	// FileN/FileM carry the "[k/N]" file counter some posters prefix (0 when absent).
+	// FileN/FileM carry the file counter some posters prefix (0 when absent).
 	FileN int
 	FileM int
 }
 
 var (
-	rePartNM  = regexp.MustCompile(`(?i)\(\s*(\d+)\s*/\s*(\d+)\s*\)`)
-	reFileNM  = regexp.MustCompile(`\[\s*(\d+)\s*/\s*(\d+)\s*\]`)
-	reYencSz  = regexp.MustCompile(`(?i)yEnc\s*(?:\(.*?\)\s*)?(?:\[?\s*)?(\d+)\s*(?:bytes?)?`)
-	reFileTok = regexp.MustCompile(`(?i)([\w.\-]+\.(?:rar|r\d{2}|part\d+\.rar|par2|nfo|sfv|mkv|mp4|avi|zip|7z))`)
-	reHexBlob = regexp.MustCompile(`(?i)^[a-f0-9]{16,}$`)
+	rePartNM = regexp.MustCompile(`(?i)\(\s*(\d+)\s*/\s*(\d+)\s*\)`)
+	reFileNM = regexp.MustCompile(`\[\s*(\d+)\s*/\s*(\d+)\s*\]`)
+	// Claude 2026-10-16: NNTmux getFileCount shapes ([01/74], (72/93), 1 of 50, 1-50).
+	// Reason: named ReleaseName used to keep [k/N] / (k/N) in the stem, so a
+	//   73-file episode became 73 keys at ~1% complete.
+	// Troubleshooting: Decker [48/73] vs [42/73] still split → stem still
+	//   contains the file token; Bhool (72/93) in parens is this regex, not reFileNM.
+	// Review if: PAR2 file lists replace [k/N] as the file counter.
+	// Related files: .omc/plans/nntp-collection-grouping.md
+	reFileCount = regexp.MustCompile(`(?i)(?:^|[\[(\s])(\d{1,5})(?:/|[\s_]of[\s_]|-)(\d{1,5})(?:[\])\s:]|$)`)
+	reYencSz    = regexp.MustCompile(`(?i)yEnc\s*(?:\(.*?\)\s*)?(?:\[?\s*)?(\d+)\s*(?:bytes?)?`)
+	reFileTok   = regexp.MustCompile(`(?i)([\w.\-]+\.(?:rar|r\d{2}|part\d+\.rar|par2|nfo|sfv|mkv|mp4|avi|zip|7z))`)
+	reHexBlob   = regexp.MustCompile(`(?i)^[a-f0-9]{16,}$`)
 )
 
 // nntpUTF8 replaces invalid UTF-8 (latin1/CP1252 NNTP headers) with U+FFFD.
@@ -49,23 +57,8 @@ func ParseSubject(subj string) ParsedSubject {
 		return ParsedSubject{}
 	}
 	out := ParsedSubject{}
-	if m := reFileNM.FindStringSubmatch(s); len(m) == 3 {
-		out.FileN, _ = strconv.Atoi(m[1])
-		out.FileM, _ = strconv.Atoi(m[2])
-	}
-	core := s
-	if i := strings.Index(strings.ToLower(core), "yenc"); i > 0 {
-		core = strings.TrimSpace(core[:i])
-	}
-	core = strings.Trim(core, "[]() \"'")
-	if reHexBlob.MatchString(core) || (len(core) >= 20 && mostlyHex(core)) {
-		out.Obfuscated = true
-		return out
-	}
-	if m := rePartNM.FindStringSubmatch(s); len(m) == 3 {
-		out.PartN, _ = strconv.Atoi(m[1])
-		out.PartM, _ = strconv.Atoi(m[2])
-	}
+	out.PartN, out.PartM = yencParts(s)
+	out.FileN, out.FileM = fileCount(s, out.PartN, out.PartM)
 	if m := reYencSz.FindStringSubmatch(s); len(m) == 2 {
 		out.YencSize, _ = strconv.ParseInt(m[1], 10, 64)
 	}
@@ -77,20 +70,86 @@ func ParseSubject(subj string) ParsedSubject {
 			out.Meta = true
 		}
 	}
-	name := core
-	if out.Filename != "" {
-		if i := strings.Index(strings.ToLower(name), strings.ToLower(out.Filename)); i > 0 {
-			name = strings.TrimSpace(name[:i])
-		}
+	name := collectionStem(s, out.Filename)
+	if reHexBlob.MatchString(name) || (len(name) >= 20 && mostlyHex(name)) {
+		out.Obfuscated = true
+		return out
 	}
-	name = strings.Trim(name, "[]()-_ \"'")
-	name = collapseWS(name)
 	if name == "" || len(name) < 4 {
 		return out
 	}
 	out.Name = name
 	out.OK = !out.Obfuscated && (out.PartM > 0 || out.Filename != "" || strings.Contains(name, ".") || strings.Contains(name, "-"))
 	return out
+}
+
+// collectionStem is the named grouping key: the subject with yEnc, file/part
+// counters, and the quoted filename removed. [k/N] is FileN/FileM, not identity.
+func collectionStem(subj, filename string) string {
+	s := subj
+	if i := strings.Index(strings.ToLower(s), "yenc"); i > 0 {
+		s = strings.TrimSpace(s[:i])
+	}
+	if i := strings.Index(s, `"`); i >= 0 {
+		if j := strings.LastIndex(s, `"`); j > i {
+			s = strings.TrimSpace(s[:i] + " " + s[j+1:])
+		}
+	}
+	s = rePartNM.ReplaceAllString(s, " ")
+	s = reFileNM.ReplaceAllString(s, " ")
+	s = reFileCount.ReplaceAllString(s, " ")
+	if filename != "" {
+		if i := strings.Index(strings.ToLower(s), strings.ToLower(filename)); i >= 0 {
+			s = strings.TrimSpace(s[:i])
+		}
+	}
+	s = reObfSuffix.ReplaceAllString(s, "")
+	s = strings.TrimRight(s, "]")
+	s = strings.Trim(s, "-_ ")
+	return collapseWS(s)
+}
+
+// yencParts returns the trailing yEnc (n/m) segment counter. Prefers a match
+// after the yEnc keyword so an earlier (72/93) file counter is not stolen.
+func yencParts(s string) (n, m int) {
+	region := s
+	if i := strings.Index(strings.ToLower(s), "yenc"); i >= 0 {
+		region = s[i:]
+	}
+	all := rePartNM.FindAllStringSubmatch(region, -1)
+	if len(all) == 0 && region != s {
+		all = rePartNM.FindAllStringSubmatch(s, -1)
+	}
+	if len(all) == 0 {
+		return 0, 0
+	}
+	last := all[len(all)-1]
+	n, _ = strconv.Atoi(last[1])
+	m, _ = strconv.Atoi(last[2])
+	return n, m
+}
+
+// fileCount prefers the last [k/N], else the last NNTmux-shaped counter that
+// is not the yEnc part pair.
+func fileCount(s string, partN, partM int) (n, m int) {
+	if all := reFileNM.FindAllStringSubmatch(s, -1); len(all) > 0 {
+		last := all[len(all)-1]
+		n, _ = strconv.Atoi(last[1])
+		m, _ = strconv.Atoi(last[2])
+		return n, m
+	}
+	yencAt := strings.Index(strings.ToLower(s), "yenc")
+	all := reFileCount.FindAllStringSubmatchIndex(s, -1)
+	for i := len(all) - 1; i >= 0; i-- {
+		loc := all[i]
+		fn, _ := strconv.Atoi(s[loc[2]:loc[3]])
+		fm, _ := strconv.Atoi(s[loc[4]:loc[5]])
+		if yencAt >= 0 && loc[0] >= yencAt && fn == partN && fm == partM {
+			continue
+		}
+		return fn, fm
+	}
+	return 0, 0
 }
 
 // Claude 2026-10-15: obfuscated-set grouping skeleton (plan D3 step 1).
@@ -103,6 +162,11 @@ func ParseSubject(subj string) ParsedSubject {
 // Review if: posters start varying the hash base between volumes.
 
 var reObfSuffix = regexp.MustCompile(`(?i)(?:\.vol\d+\+\d+\.par2|\.part\d+\.rar|\.r\d{2,3}|\.7z\.\d{3}|\.z\d{2}|\.par2|\.rar|\.zip|\.7z|\.nfo|\.sfv|\.mkv|\.mp4|\.avi|\.nzb)+$`)
+
+// minObfSkeleton is the shortest skeleton that may be hashed into ObfKey.
+// Shorter values (including empty after suffix strip) would collapse every
+// obfuscated post from one poster in a group into a single mega-bucket.
+const minObfSkeleton = 8
 
 // obfSkeleton returns the grouping skeleton of an overview subject (case kept
 // so looksObfuscated can see case churn; ObfKey lowercases before hashing).
@@ -125,18 +189,17 @@ func obfSkeleton(subj string) string {
 
 // ObfKey returns the staged-set key ("obf:<16-hex>") for one subject.
 func ObfKey(group, from, subj string) string {
+	// Claude 2026-10-16: totalFiles is NOT mixed into this hash.
+	// Reason: plan 2A wanted sha1(name+totalFiles) like NNTmux collections, but
+	//   sakms hashes each header independently. PAR2/NFO subjects often omit
+	//   [k/N], so FileM=0 vs FileM=46 would split one upload. FileM still lives
+	//   on the header for completeness. Mega-buckets are prevented by refusing
+	//   skeletons shorter than minObfSkeleton (see stageObfuscated).
+	// Troubleshooting: two same-poster hashes colliding → skeleton identical;
+	//   empty-skeleton bluray 100k-seg set → stageObfuscated must no-op.
+	// Review if: a collection row caches totalFiles so PAR2 can join later.
 	sum := sha256.Sum256([]byte(group + "\x00" + from + "\x00" + strings.ToLower(obfSkeleton(subj))))
 	return obfKeyPrefix + hex.EncodeToString(sum[:8])
-}
-
-// subjectCounters returns the (n/m) segment counter that ParseSubject skips
-// for obfuscated subjects.
-func subjectCounters(subj string) (partN, partM int) {
-	if m := rePartNM.FindStringSubmatch(subj); len(m) == 3 {
-		partN, _ = strconv.Atoi(m[1])
-		partM, _ = strconv.Atoi(m[2])
-	}
-	return partN, partM
 }
 
 // hashCore returns the skeleton when it is a bare md5 (32) or sha1 (40) hex

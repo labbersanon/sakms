@@ -255,6 +255,14 @@ func run() error {
 	// Review if: NewNNTPAdmissionPolicy gains settings beyond lib/settingsStore.
 	nntpSearch.SetAdmissionPolicy(api.NewNNTPAdmissionPolicy(libStore, settingsStore))
 	api.SetNNTPNativeService(nntpSearch)
+	// Claude 2026-10-15: PreDB (HTTP + optional IRC) for NNTP name recovery.
+	// Reason: name recovery confirms/reverses names via the PreDB; the IRC
+	//   password is decrypted from secretStore inside the api runtime only.
+	// Troubleshooting: names never recovered → o2cli grep "predb"; this line
+	//   missing means SetPreDB was never called (name-fix runs PreDB-less).
+	// Review if: PreDB settings move into usenetsearch.Config.
+	nntpPreDB := api.StartNNTPPreDB(context.Background(), sqlDB, settingsStore, secretStore, nntpSearch)
+	api.SetNNTPPreDB(nntpPreDB)
 	defer nntpSearch.Close()
 	// traktStore persists Trakt's single application connection + linked
 	// account tokens (its own table, not connections.Store — see

@@ -42,8 +42,36 @@ const (
 	//   default true; configFromNNTPResponse carries it into Config.
 	// Review if: a Settings UI toggle for this ships.
 	KeyAdmissionEnabled = "usenet_nntp_admission_enabled"
-	DefaultIndexMaxGB   = 20
-	DefaultWindowDays   = 14
+
+	// Claude 2026-10-15: gap-fill kill switches and knobs (plan nntp-gap-fill).
+	// Reason: every feature has an independent off switch so all-off ≈ the
+	//   pre-gap-fill crawl. KV-only (no Settings UI); read by
+	//   api.loadNNTPNativeSettings on every GET/PUT/boot. PreDB/IRC keys are
+	//   read when the PreDB runtime starts (boot, or after the IRC password PUT).
+	// Troubleshooting: knob ignored → check it is stored under exactly this key.
+	// Review if: a Settings UI for these ships.
+	KeyNameFixEnabled       = "usenet_nntp_namefix_enabled"
+	KeyNameFixBodyMBPerHour = "usenet_nntp_namefix_body_mb_per_hour"
+	KeyUnnamedTTLDays       = "usenet_nntp_unnamed_ttl_days"
+	KeyUnnamedMaxPct        = "usenet_nntp_unnamed_max_pct"
+	KeyPreDBHTTPEnabled     = "usenet_nntp_predb_http_enabled"
+	KeyPreDBHTTPURL         = "usenet_nntp_predb_http_url"
+	KeyPreDBIRCEnabled      = "usenet_nntp_predb_irc_enabled"
+	KeyPreDBIRCServer       = "usenet_nntp_predb_irc_server"
+	KeyPreDBIRCPort         = "usenet_nntp_predb_irc_port"
+	KeyPreDBIRCTLS          = "usenet_nntp_predb_irc_tls"
+	KeyPreDBIRCNick         = "usenet_nntp_predb_irc_nick"
+	KeyPreDBIRCChannels     = "usenet_nntp_predb_irc_channels"
+	KeyPreDBIRCPasswordEnc  = "usenet_nntp_predb_irc_password_enc" // secrets.Store ciphertext, never plaintext
+	KeyMinCompletenessPct   = "usenet_nntp_min_completeness_pct"
+	KeyIncompleteTTLDays    = "usenet_nntp_incomplete_ttl_days"
+	KeyRepairEnabled        = "usenet_nntp_repair_enabled"
+	KeyBackfillEnabled      = "usenet_nntp_backfill_enabled"
+	KeyBackfillDays         = "usenet_nntp_backfill_days"
+	KeyBackfillBudgetPct    = "usenet_nntp_backfill_budget_pct"
+
+	DefaultIndexMaxGB = 20
+	DefaultWindowDays = 14
 )
 
 // Config is a snapshot of operator settings for the native backend.
@@ -229,6 +257,10 @@ type Service struct {
 	prunedOnce map[string]bool
 	// predb resolves recovered names/hashes during name-fix (nil = no PreDB).
 	predb PreDBLookup
+	// ranges is the last crawl pass's per-group provider range (read-only once
+	// stored; each pass builds a fresh map) — GapFillStatus reports backfill
+	// targets from it.
+	ranges map[string]usenet.GroupRange
 }
 
 // SetPreDB wires the PreDB lookup used by name recovery (nil disables it).
@@ -338,6 +370,11 @@ func (s *Service) loop(ctx context.Context) {
 		//   appearing (repair pass / namefix pass / backfill group=).
 		// Review if: a pass needs its own cadence.
 		cres, crawler := s.runProbeAndCrawl(ctx)
+		if crawler != nil {
+			s.mu.Lock()
+			s.ranges = crawler.ranges
+			s.mu.Unlock()
+		}
 		busy, advanced := cres.Busy, cres.Advanced
 		if crawler != nil && !busy && crawler.RepairEnabled {
 			rr, err := crawler.RepairOnce(ctx)

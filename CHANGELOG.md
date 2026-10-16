@@ -11234,3 +11234,18 @@ status stays active.
 | `internal/usenetsearch/service.go` | rewrite at start of crawl loop |
 | `docs/usenet-nntp-native.md` | collection grouping documented |
 
+## 2026-10-16 — Collection regex subset: wrappers and hash tokens
+
+**Problem:** Generic stem still left `[#a.b.teevee]` / `[Group]` in named keys, and obfuscated posts whose quoted filenames differ per file did not cluster (NNTmux collection_regexes job).
+**Root cause:** 3A skipped the 4.8k regex table; only counter-stripping shipped. NNTmux groups those layouts by capturing a wrapper-free title or a leading hash token.
+**Fix:** Three patterns, group-agnostic: strip `[#a.b.*]` / `[Group]` tags; use a 16+ char token before `[k/N]` (dash or glued) as the obfuscated skeleton. Rewrite v2 re-parses stored headers.
+**Outcome:** Teevee files share `Show.S01E01…`; `ah63jk… - [01/22]` and `[22/22]` with different quoted names share one `obf:` key.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/subject.go` | reGroupTag, leadCollectionToken |
+| `internal/usenetsearch/service.go` | rewrite KV v2 |
+| `internal/usenetsearch/{subject,namefix}_test.go` | teevee wrapper + hash-token tests |
+

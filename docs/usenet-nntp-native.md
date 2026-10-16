@@ -109,11 +109,12 @@ collection-key rewrite (once) → forward crawl → repair → name recovery →
 - **Collection grouping.** `headers.release_name` is the upload, not the file.
   `ParseSubject` strips `[k/N]`, `(n/m)`, and `N of M` from the stem (NNTmux
   collection hash input) and stores the file counter on `file_n`/`file_m`.
-  `[48/73] Show…` and `[01/73] Show…` share one key. Obfuscated sets still
-  hash `(group, poster, skeleton)`; skeletons shorter than 8 characters are
-  not staged (empty quoted `.part01.rar` used to mega-bucket a poster).
-  Existing headers are rewritten in place once (`usenet_nntp_collection_rewrite_v1`);
-  watermarks are not rewound.
+  `[48/73] Show…` and `[01/73] Show…` share one key. Leading `[#a.b.teevee]` /
+  `[Group]` tags are stripped. Obfuscated sets hash `(group, poster, skeleton)`;
+  a 16+ character token before `[k/N]` is the skeleton (NNTmux hash-token
+  capture) so per-file random quoted names still cluster. Skeletons shorter
+  than 8 characters are not staged. Existing headers are rewritten in place
+  (`usenet_nntp_collection_rewrite_v2`); watermarks are not rewound.
 - **Strict completeness gate.** A release is searchable only when at least
   `min_completeness_pct` of its payload segments are indexed (default 95,
   clamped 80–100). Computed per release into `usenet_nntp_releases`

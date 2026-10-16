@@ -16,8 +16,19 @@ func TestParseSubject_Scene(t *testing.T) {
 	if ps.PartN != 1 || ps.PartM != 120 {
 		t.Fatalf("parts: %+v", ps)
 	}
-	if ps.Name != "[Group] Some.Movie.2024.1080p.BluRay.x264-GROUP" {
+	if ps.Name != "Some.Movie.2024.1080p.BluRay.x264-GROUP" {
 		t.Fatalf("name=%q", ps.Name)
+	}
+}
+
+func TestParseSubject_TeeveeWrapperSameStem(t *testing.T) {
+	a := ParseSubject(`[#a.b.teevee] Show.S01E01.720p.HDTV.x264-GRP - [01/30] - "show.s01e01.720p.hdtv.x264-grp.part01.rar" yEnc (1/20)`)
+	b := ParseSubject(`[#a.b.teevee] Show.S01E01.720p.HDTV.x264-GRP - [30/30] - "show.s01e01.720p.hdtv.x264-grp.vol00+01.par2" yEnc (1/1)`)
+	if !a.OK || a.Name != b.Name || a.Name != "Show.S01E01.720p.HDTV.x264-GRP" {
+		t.Fatalf("stems a=%q b=%q", a.Name, b.Name)
+	}
+	if strings.Contains(a.Name, "teevee") || strings.Contains(a.Name, "[#") {
+		t.Fatalf("wrapper left in stem: %q", a.Name)
 	}
 }
 

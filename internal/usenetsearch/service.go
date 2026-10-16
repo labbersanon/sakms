@@ -77,9 +77,9 @@ const (
 	//   group\\nmsgid while in progress.
 	// Troubleshooting: o2cli grep "collection rewrite"; stuck cursor → delete
 	//   these two keys and let the next loop resume from the start.
-	// Review if: a second rewrite (v2) is needed after another ParseSubject change.
-	KeyCollectionRewriteDone   = "usenet_nntp_collection_rewrite_v1"
-	KeyCollectionRewriteCursor = "usenet_nntp_collection_rewrite_v1_cursor"
+	// Review if: a v3 rewrite is needed after another ParseSubject change.
+	KeyCollectionRewriteDone   = "usenet_nntp_collection_rewrite_v2"
+	KeyCollectionRewriteCursor = "usenet_nntp_collection_rewrite_v2_cursor"
 
 	DefaultIndexMaxGB = 20
 	DefaultWindowDays = 14

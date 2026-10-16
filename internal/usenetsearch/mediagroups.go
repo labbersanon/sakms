@@ -65,7 +65,8 @@ func MediaWildmats(mode string) []string {
 			"alt.binaries.xxx*",
 			"alt.binaries.pictures.erotica*",
 			"alt.binaries.mom*",
-			"alt.binaries.adult*",
+			// Claude 2026-10-16: do not use alt.binaries.adult* — it matches
+			// alt.binaries.adultswim (TV). erotica*/xxx*/boneless cover adult.
 		}
 	default:
 		return nil

@@ -11201,3 +11201,19 @@ status stays active.
 | `internal/usenetsearch/crawler_admission_test.go` | firehose does not starve cores; round-robin start |
 | `docs/usenet-nntp-native.md` | forward crawl bound documented |
 
+## 2026-10-16 — NNTmux-inspired crawl budget, backfill, and staging
+
+**Problem:** After time-slicing, backfill and obfuscated staging still spent the pass on `bloaf`/`ath`/`amazing` (0 admits, skip_obf_cap filling unnamed budget).
+**Root cause:** NNTmux only backfills groups with `backfill=1` and spends header budget on operator-active groups. sakms treated every LIST ACTIVE member as equally worth backfill and hash staging.
+**Fix:** Keep LIST membership. Cores get 2/3 of each forward pass. Backfill and *new* obfuscated staging only run on package cores or groups that already have a named index row.
+**Outcome:** Firehose bins stay monitored for named posts; they no longer fill the unnamed cap or monopolize backfill.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/crawler.go` | core vs tail pass split + independent rotation |
+| `internal/usenetsearch/ingest.go` | stage new obf sets only on cores/named groups |
+| `internal/usenetsearch/backfill.go` | skip non-core groups with no named index |
+| `internal/usenetsearch/{seeds,index,service}.go` | IsPackageCore, GroupHasNamedRelease, CoreStart |
+

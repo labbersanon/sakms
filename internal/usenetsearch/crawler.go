@@ -37,9 +37,10 @@ const (
 type CrawlResult struct {
 	Advanced bool // ingested at least one OVER chunk
 	Busy     bool // yielded on ErrBusy
-	// NextStart is the round-robin offset for the next pass; zero when no
-	// groups were considered.
-	NextStart int
+	// NextStart is the round-robin offset into non-core groups for the next
+	// pass; NextCoreStart is the same for packages.json cores.
+	NextStart     int
+	NextCoreStart int
 }
 
 // Crawler incrementally OVERs configured groups into the Index.
@@ -89,12 +90,16 @@ type Crawler struct {
 	BackfillBudgetPct int
 	BackfillStart     int
 
-	// CrawlStart is the loop-owned round-robin offset into Groups.
-	// MaxChunksPerPass / MaxChunksPerGroup override the forward caps (0 = defaults);
-	// tests set them small so a firehose group cannot eat the fixture.
+	// CrawlStart / CoreStart are loop-owned round-robin offsets into the
+	// non-core and packages.json-core slices. MaxChunksPerPass /
+	// MaxChunksPerGroup override the forward caps (0 = defaults); tests set
+	// them small so a firehose group cannot eat the fixture.
 	CrawlStart        int
+	CoreStart         int
 	MaxChunksPerPass  int
 	MaxChunksPerGroup int
+	// obfStageOK caches per-group "may stage new obfuscated sets" for this Crawler.
+	obfStageOK map[string]bool
 
 	// ranges holds each group's last GroupRange (set by crawlGroup); backfill
 	// uses Low as its target. budgetOverride is a test hook.
@@ -130,9 +135,66 @@ func (c *Crawler) forwardBudget() (pass, perGroup int) {
 	return pass, perGroup
 }
 
+func rotateGroups(groups []string, start int) []string {
+	n := len(groups)
+	if n == 0 {
+		return groups
+	}
+	rot := start % n
+	if rot < 0 {
+		rot = 0
+	}
+	return append(append([]string{}, groups[rot:]...), groups[:rot]...)
+}
+
+func splitCoreRest(groups []string) (cores, rest []string) {
+	for _, g := range groups {
+		if IsPackageCore(g) {
+			cores = append(cores, g)
+		} else {
+			rest = append(rest, g)
+		}
+	}
+	return cores, rest
+}
+
+// crawlList OVERs list (already language-filtered) until budget chunks, round-robin from start.
+func (c *Crawler) crawlList(ctx context.Context, list []string, start, budget, groupCap int) (adv, busy bool) {
+	if len(list) == 0 || budget <= 0 {
+		return false, false
+	}
+	rotated := rotateGroups(list, start)
+	used := 0
+	for used < budget {
+		progressed := false
+		for _, group := range rotated {
+			if used >= budget {
+				break
+			}
+			n, a, err := c.crawlGroup(ctx, group, min(groupCap, budget-used))
+			if err != nil {
+				if errors.Is(err, usenet.ErrBusy) {
+					log.Printf("usenetsearch: crawl yield (busy) on %s", group)
+					return adv, true
+				}
+				log.Printf("usenetsearch: crawl %s: %v", group, err)
+				continue
+			}
+			used += n
+			progressed = progressed || n > 0
+			adv = adv || a
+		}
+		if !progressed {
+			break
+		}
+	}
+	return adv, false
+}
+
 // CrawlOnce advances watermarks round-robin across configured groups, up to
-// forwardChunksPerPass OVER chunks (forwardChunksPerGroup per group), so no
-// group has to reach HIGH before the rest are visited.
+// forwardChunksPerPass OVER chunks (forwardChunksPerGroup per group). Package
+// cores get 2/3 of the pass when mixed with the LIST tail (NNTmux: spend
+// header budget on groups you actually index).
 func (c *Crawler) CrawlOnce(ctx context.Context) (CrawlResult, error) {
 	var res CrawlResult
 	if c.Src == nil || c.Index == nil {
@@ -149,32 +211,37 @@ func (c *Crawler) CrawlOnce(ctx context.Context) (CrawlResult, error) {
 	if len(groups) == 0 {
 		return res, nil
 	}
-	rot := c.CrawlStart % len(groups)
-	if rot < 0 {
-		rot = 0
+	cores, rest := splitCoreRest(groups)
+	res.NextStart = c.CrawlStart
+	res.NextCoreStart = c.CoreStart
+	if len(rest) > 0 {
+		res.NextStart = c.CrawlStart + 1
 	}
-	rotated := append(append([]string{}, groups[rot:]...), groups[:rot]...)
-	res.NextStart = c.CrawlStart + 1
+	if len(cores) > 0 {
+		res.NextCoreStart = c.CoreStart + 1
+	}
 	passCap, groupCap := c.forwardBudget()
-	passChunks := 0
-	for _, group := range rotated {
-		if passChunks >= passCap {
-			break
-		}
-		n, adv, err := c.crawlGroup(ctx, group, min(groupCap, passCap-passChunks))
-		if err != nil {
-			if errors.Is(err, usenet.ErrBusy) {
-				log.Printf("usenetsearch: crawl yield (busy) on %s", group)
-				res.Busy = true
-				return res, nil
-			}
-			log.Printf("usenetsearch: crawl %s: %v", group, err)
-			continue
-		}
-		passChunks += n
-		if adv {
-			res.Advanced = true
-		}
+	var coreBudget, restBudget int
+	switch {
+	case len(rest) == 0:
+		coreBudget = passCap
+	case len(cores) == 0:
+		restBudget = passCap
+	default:
+		coreBudget = max(1, passCap*2/3)
+		restBudget = passCap - coreBudget
+	}
+	adv, busy := c.crawlList(ctx, cores, c.CoreStart, coreBudget, groupCap)
+	res.Advanced = adv
+	if busy {
+		res.Busy = true
+		return res, nil
+	}
+	adv, busy = c.crawlList(ctx, rest, c.CrawlStart, restBudget, groupCap)
+	res.Advanced = res.Advanced || adv
+	if busy {
+		res.Busy = true
+		return res, nil
 	}
 	// Claude 2026-10-15: age prune disabled as a hard delete.
 	// Reason: continuous index plan — never drop still-available articles for

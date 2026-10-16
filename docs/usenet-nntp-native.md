@@ -58,6 +58,15 @@ iteration and 8 per group, round-robin start. A firehose obfuscated bin
 until HIGH — cores get a turn the same pass, and namefix runs between
 passes.
 
+NNTmux-inspired ingest (membership still full LIST ACTIVE):
+- Package cores (`packages.json`) get 2/3 of each forward pass; the LIST
+  tail gets the rest. Cores and tail rotate independently.
+- Backfill only walks package cores and groups that already have a named
+  (non-`obf:`) index row — analog of NNTmux `usenet_groups.backfill=1`.
+- New obfuscated sets are staged only on those same groups, so firehose
+  hashes cannot fill `unnamed_max_pct`. Already-staged keys still receive
+  continuation rows.
+
 
 ## PreDB provider (name recovery)
 

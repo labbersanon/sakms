@@ -83,7 +83,7 @@ type HeaderRow struct {
 // release table consistent. Rows with an empty ReleaseName (legacy
 // obfuscated junk) get no release row.
 // Troubleshooting: release missing from search after upsert → run
-//   RecomputeDirty; check usenet_nntp_releases.dirty.
+// RecomputeDirty; check usenet_nntp_releases.dirty.
 // Review if: headers gain a surrogate release id.
 func (idx *Index) Upsert(ctx context.Context, rows []HeaderRow) error {
 	if len(rows) == 0 {
@@ -315,6 +315,19 @@ func (idx *Index) Empty(ctx context.Context) (bool, error) {
 func (idx *Index) HasGroup(ctx context.Context, group string) (bool, error) {
 	var n int
 	err := idx.db.QueryRowContext(ctx, `SELECT 1 FROM usenet_nntp_headers WHERE group_name=? LIMIT 1`, group).Scan(&n)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// GroupHasNamedRelease is true when group has at least one non-obfuscated
+// release_name. Used to decide NNTmux-style backfill/staging investment.
+func (idx *Index) GroupHasNamedRelease(ctx context.Context, group string) (bool, error) {
+	var n int
+	err := idx.db.QueryRowContext(ctx,
+		`SELECT 1 FROM usenet_nntp_headers WHERE group_name=? AND release_name<>'' AND release_name NOT LIKE 'obf:%' LIMIT 1`,
+		group).Scan(&n)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}

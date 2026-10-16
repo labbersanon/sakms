@@ -408,7 +408,9 @@ func (s *Service) loop(ctx context.Context) {
 	budget := &bodyBudget{}
 	backfillStart := 0
 	crawlStart := 0
+	coreStart := 0
 	backfillSkipLogged := false
+	backfillFilterLogged := false
 	for {
 		if ctx.Err() != nil {
 			return
@@ -421,13 +423,14 @@ func (s *Service) loop(ctx context.Context) {
 		// Troubleshooting: a pass starving others → check which log line stops
 		//   appearing (repair pass / namefix pass / backfill group=).
 		// Review if: a pass needs its own cadence.
-		cres, crawler := s.runProbeAndCrawl(ctx, crawlStart)
+		cres, crawler := s.runProbeAndCrawl(ctx, crawlStart, coreStart)
 		if crawler != nil {
 			s.mu.Lock()
 			s.ranges = crawler.ranges
 			s.lastPass = cres
 			s.mu.Unlock()
 			crawlStart = cres.NextStart
+			coreStart = cres.NextCoreStart
 		}
 		busy, advanced := cres.Busy, cres.Advanced
 		if crawler != nil && !busy && crawler.RepairEnabled {
@@ -449,6 +452,10 @@ func (s *Service) loop(ctx context.Context) {
 			br, err := crawler.BackfillOnce(ctx)
 			if err != nil {
 				log.Printf("usenetsearch: backfill: %v", err)
+			}
+			if br.Filtered > 0 && !backfillFilterLogged {
+				log.Printf("usenetsearch: backfill skipping %d groups (not a package core and no named index)", br.Filtered)
+				backfillFilterLogged = true
 			}
 			backfillStart = br.NextStart
 			if br.Skipped != "" && !backfillSkipLogged {
@@ -488,7 +495,7 @@ func (s *Service) idleBackoff() time.Duration {
 	return d
 }
 
-func (s *Service) runProbeAndCrawl(ctx context.Context, crawlStart int) (CrawlResult, *Crawler) {
+func (s *Service) runProbeAndCrawl(ctx context.Context, crawlStart, coreStart int) (CrawlResult, *Crawler) {
 	s.mu.Lock()
 	src := s.src
 	cfg := s.cfg
@@ -541,6 +548,7 @@ func (s *Service) runProbeAndCrawl(ctx context.Context, crawlStart int) (CrawlRe
 		LanguageFilter:     langFilter,
 		PreferredLanguages: langs,
 		CrawlStart:         crawlStart,
+		CoreStart:          coreStart,
 		// Claude 2026-10-16: publish last OVER chunk as it lands, not after the pass.
 		// Reason: LIST membership is hundreds of groups; a Dashboard poll mid-pass
 		// should show the current chunk, not the previous pass.

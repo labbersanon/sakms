@@ -137,14 +137,26 @@ func (c *Crawler) capStaged(ctx context.Context, group string, staged []HeaderRo
 	if pct <= 0 {
 		pct = DefaultUnnamedMaxPct
 	}
-	if c.MaxGB <= 0 || len(staged) == 0 {
-		return staged, nil
+	if len(staged) == 0 {
+		return nil, nil
 	}
-	used, err := c.Index.StagedBytes(ctx)
-	if err != nil {
-		return nil, err
+	// Claude 2026-10-16: only stage *new* obfuscated sets on package cores or
+	// groups that already have a named release (NNTmux backfill=1 analog).
+	// Reason: firehose bins (bloaf/ath) filled unnamed_max_pct so cores could
+	//   not stage recoverable PAR2/PreDB sets. Existing keys still flow in.
+	// Troubleshooting: skip_obf_cap high on bloaf with staged_obf=0 is expected.
+	// Review if: an operator opt-in "stage hashes on this LIST group" is added.
+	dropNew := !c.obfStageAllowed(ctx, group)
+	if !dropNew && c.MaxGB > 0 {
+		used, err := c.Index.StagedBytes(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if used >= int64(c.MaxGB)*1024*1024*1024*int64(pct)/100 {
+			dropNew = true
+		}
 	}
-	if used < int64(c.MaxGB)*1024*1024*1024*int64(pct)/100 {
+	if !dropNew {
 		return staged, nil
 	}
 	keys := make([]string, 0, len(staged))
@@ -166,6 +178,25 @@ func (c *Crawler) capStaged(ctx context.Context, group string, staged []HeaderRo
 		}
 	}
 	return kept, nil
+}
+
+func (c *Crawler) obfStageAllowed(ctx context.Context, group string) bool {
+	if IsPackageCore(group) {
+		return true
+	}
+	if c.obfStageOK == nil {
+		c.obfStageOK = map[string]bool{}
+	}
+	if v, ok := c.obfStageOK[group]; ok {
+		return v
+	}
+	ok := false
+	if c.Index != nil {
+		named, err := c.Index.GroupHasNamedRelease(ctx, group)
+		ok = err == nil && named
+	}
+	c.obfStageOK[group] = ok
+	return ok
 }
 
 // ingestRange OVERs [a,b] for group and runs parse → admission → upsert →

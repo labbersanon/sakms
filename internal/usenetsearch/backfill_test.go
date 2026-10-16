@@ -210,3 +210,24 @@ func TestBackfill_SkippedWhenAdmissionOffOrDisabled(t *testing.T) {
 		t.Fatalf("disabled backfill must be a no-op: res=%+v err=%v calls=%v", res, err, src.calls)
 	}
 }
+
+func TestBackfill_SkipsFirehoseWithoutNamedIndex(t *testing.T) {
+	g1, g2 := "alt.binaries.movies", "alt.binaries.bloaf"
+	_, src, c := newBFFixture(t, g1, g2)
+	ctx := context.Background()
+	res, err := c.BackfillOnce(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Filtered != 1 {
+		t.Fatalf("Filtered=%d, want 1 (bloaf)", res.Filtered)
+	}
+	for _, call := range src.calls {
+		if call.group == g2 {
+			t.Fatalf("bloaf was backfilled: %v", src.calls)
+		}
+	}
+	if res.Chunks == 0 {
+		t.Fatal("movies core should still backfill")
+	}
+}

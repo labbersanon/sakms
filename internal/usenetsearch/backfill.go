@@ -48,6 +48,9 @@ type BackfillResult struct {
 	Skipped string
 	// NextStart is the round-robin offset for the next pass.
 	NextStart int
+	// Filtered is how many crawl-eligible groups were skipped because they
+	// are not a package core and have no named index (NNTmux backfill=1).
+	Filtered int
 }
 
 type backfillGroup struct {
@@ -75,6 +78,14 @@ func (c *Crawler) backfillBudget() int64 {
 	return int64(c.MaxGB) * 1024 * 1024 * 1024 * int64(pct) / 100
 }
 
+func (c *Crawler) backfillWanted(ctx context.Context, group string) bool {
+	if IsPackageCore(group) {
+		return true
+	}
+	ok, err := c.Index.GroupHasNamedRelease(ctx, group)
+	return err == nil && ok
+}
+
 // BackfillOnce walks up to backfillChunksPerPass OVER chunks round-robin
 // across groups that still have history below their `low` cursor. It never
 // writes the forward `high` watermark. ErrBusy stops the pass (Busy); the
@@ -96,6 +107,10 @@ func (c *Crawler) BackfillOnce(ctx context.Context) (BackfillResult, error) {
 	for _, g := range c.Groups {
 		gr, ok := c.ranges[g]
 		if !ok {
+			continue
+		}
+		if !c.backfillWanted(ctx, g) {
+			res.Filtered++
 			continue
 		}
 		low, done, _, found, err := c.Index.BackfillState(ctx, g)

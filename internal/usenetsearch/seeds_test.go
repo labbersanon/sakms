@@ -81,3 +81,12 @@ func TestRecommendedForMode_ShimSteps12(t *testing.T) {
 		}
 	}
 }
+
+func TestIsPackageCore(t *testing.T) {
+	if !IsPackageCore("alt.binaries.moovee") || !IsPackageCore("alt.binaries.teevee") {
+		t.Fatal("cores must match packages.json")
+	}
+	if IsPackageCore("alt.binaries.bloaf") || IsPackageCore("") {
+		t.Fatal("firehose / empty must not be cores")
+	}
+}

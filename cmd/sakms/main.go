@@ -257,6 +257,17 @@ func run() error {
 	// Troubleshooting: crawl indexes non-matching releases → admit is nil → check this line ran.
 	// Review if: NewNNTPAdmissionPolicy gains settings beyond lib/settingsStore.
 	nntpSearch.SetAdmissionPolicy(api.NewNNTPAdmissionPolicy(libStore, settingsStore))
+	// Claude 2026-10-16: NNTP index uses Global preferred grab languages.
+	// Reason: same TitleLanguageAllowed rules as autograb (empty = english-assumed).
+	// Troubleshooting: german groups still OVERed → this callback not set.
+	// Review if: per-mode language overrides are added.
+	nntpSearch.SetPreferredLanguagesFn(func(ctx context.Context) []string {
+		langs, err := api.LoadPreferredLanguages(ctx, settingsStore)
+		if err != nil {
+			return nil
+		}
+		return langs
+	})
 	// Claude 2026-10-16: SetNNTPNativeService moved above LoadUsenetSearchConfig
 	// so boot LIST ACTIVE can expand mode groups. Duplicate register omitted.
 	// api.SetNNTPNativeService(nntpSearch)

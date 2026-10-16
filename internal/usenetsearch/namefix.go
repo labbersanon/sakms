@@ -276,6 +276,12 @@ func (n *NameFixer) accept(ctx context.Context, raw, source string, payload int6
 // STAT deletes the set (same irreversibility as crawl admission).
 func (n *NameFixer) promote(ctx context.Context, set PendingSet, rows []HeaderRow, name, source, conf, predb string, res *NameFixResult, statBudget *int) (bool, error) {
 	busy := false
+	if c := n.Crawler; c != nil && !c.languageOK(name) {
+		res.RejectGate++
+		n.markRejected(set)
+		_, err := n.Index.deleteReleaseSets(ctx, []releaseKey{{set.Group, set.Key}})
+		return false, err
+	}
 	if c := n.Crawler; c != nil && c.AdmissionEnabled && c.Admitter != nil {
 		snap, err := c.Admitter.Snapshot(ctx)
 		if err != nil {

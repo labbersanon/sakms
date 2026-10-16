@@ -111,6 +111,61 @@ func captureLog(t *testing.T, fn func()) string {
 	return buf.String()
 }
 
+func TestCrawlOnce_SkipsLanguageNamedGroup(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	const group = "alt.binaries.dvd.german"
+	rows := releaseRows(1, "Some.Movie.2020.GERMAN.1080p.WEB-DL.x264-GROUP", "de", 3)
+	src := &crawlStub{gr: usenet.GroupRange{Low: 1, High: len(rows)}, rows: rows}
+	c := &Crawler{Src: src, Index: idx, Groups: []string{group}, LanguageFilter: true}
+	if _, err := c.CrawlOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	wm, err := idx.Watermark(context.Background(), group)
+	if err != nil || wm != 0 {
+		t.Fatalf("watermark=%d err=%v, want 0 (group not crawled)", wm, err)
+	}
+}
+
+func TestCrawlGroup_LanguageFilterSkipsGermanTitle(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	const group = "alt.binaries.movies"
+	rows := releaseRows(1, "Some.Movie.2020.GERMAN.1080p.WEB-DL.x264-GROUP", "de", 3)
+	src := &crawlStub{gr: usenet.GroupRange{Low: 1, High: len(rows)}, rows: rows}
+	snap := &PolicySnapshot{Modes: map[string]Standard{"movies": movieModeStd([]quality.Tier{quality.Medium}, 0, 0)}}
+	c := &Crawler{
+		Src: src, Index: idx, Groups: []string{group}, AdmissionEnabled: true,
+		GroupModesFn:   func(string) []string { return []string{"movies"} },
+		Admitter:       newAdmitter(&fakePolicy{snap: snap}),
+		LanguageFilter: true,
+	}
+	logs := captureLog(t, func() {
+		if _, err := c.CrawlOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+	})
+	n, err := idx.CountHeaders(ctx)
+	if err != nil || n != 0 {
+		t.Fatalf("count=%d err=%v, want 0", n, err)
+	}
+	if len(src.statCalls) != 0 {
+		t.Fatalf("statCalls=%v, want none (language skip before STAT)", src.statCalls)
+	}
+	if !strings.Contains(logs, "skip_lang=1") {
+		t.Fatalf("logs missing skip_lang=1:\n%s", logs)
+	}
+}
+
 func TestCrawlGroup_NonMatchingReleaseNeverUpserted(t *testing.T) {
 	sqlDB := dbtest.New(t)
 	idx, err := OpenIndex(sqlDB)

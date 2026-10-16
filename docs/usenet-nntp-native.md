@@ -24,6 +24,7 @@ and prune passes (window days + max GiB).
 | Max GiB / soft age days / idle backoff | Soft size budget; soft age display; idle backoff after catch-up (0 = 60s default). Crawl is continuous when enabled |
 | Probe state/detail | Read-only |
 | Dashboard card | GET `/api/admin/nntp-crawler` — groups, headers, index size, searchable/pending/missed, last OVER chunk |
+| Preferred grab languages | Same Global setting as autograb. When the NNTP service is wired, the index skips groups whose name encodes a non-preferred language (e.g. `dvd.german`) and does not admit titles `TitleLanguageAllowed` would reject. Empty list = english-assumed (unmarked + english tags). |
 
 ## Honest limits
 

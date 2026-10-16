@@ -38,6 +38,16 @@ var (
 	reYencSz    = regexp.MustCompile(`(?i)yEnc\s*(?:\(.*?\)\s*)?(?:\[?\s*)?(\d+)\s*(?:bytes?)?`)
 	reFileTok   = regexp.MustCompile(`(?i)([\w.\-]+\.(?:rar|r\d{2}|part\d+\.rar|par2|nfo|sfv|mkv|mp4|avi|zip|7z))`)
 	reHexBlob   = regexp.MustCompile(`(?i)^[a-f0-9]{16,}$`)
+	// Claude 2026-10-16: small NNTmux collection-regex subset (not the 4.8k table).
+	// Reason: [#a.b.teevee] / [Group] wrappers and leading hash tokens are how
+	//   NNTmux clusters files whose quoted names differ; generic stem alone
+	//   keeps the wrapper or hashes per-file random names.
+	// Troubleshooting: teevee stems still start with [#a.b. → reGroupTag;
+	//   ah63jk…[01/22] vs [22/22] split → leadCollectionToken.
+	// Review if: a second group-specific pattern is needed beyond these three.
+	reGroupTag     = regexp.MustCompile(`(?i)^\[(?:#?a\.b\.[a-z0-9.+\-]+|[A-Za-z][^\[\]]{0,40})\]\s*`)
+	reLeadHashDash = regexp.MustCompile(`^([A-Za-z0-9]{16,})\s*-\s*[\[(]\d{1,5}/\d{1,5}`)
+	reLeadHashGlue = regexp.MustCompile(`^([A-Za-z0-9]{16,})\[\d{1,5}/\d{1,5}\]`)
 )
 
 // nntpUTF8 replaces invalid UTF-8 (latin1/CP1252 NNTP headers) with U+FFFD.
@@ -70,6 +80,10 @@ func ParseSubject(subj string) ParsedSubject {
 			out.Meta = true
 		}
 	}
+	if tok := leadCollectionToken(s); tok != "" && tokenLooksObfuscated(tok) {
+		out.Obfuscated = true
+		return out
+	}
 	name := collectionStem(s, out.Filename)
 	if reHexBlob.MatchString(name) || (len(name) >= 20 && mostlyHex(name)) {
 		out.Obfuscated = true
@@ -90,6 +104,7 @@ func collectionStem(subj, filename string) string {
 	if i := strings.Index(strings.ToLower(s), "yenc"); i > 0 {
 		s = strings.TrimSpace(s[:i])
 	}
+	s = reGroupTag.ReplaceAllString(s, "")
 	if i := strings.Index(s, `"`); i >= 0 {
 		if j := strings.LastIndex(s, `"`); j > i {
 			s = strings.TrimSpace(s[:i] + " " + s[j+1:])
@@ -105,8 +120,25 @@ func collectionStem(subj, filename string) string {
 	}
 	s = reObfSuffix.ReplaceAllString(s, "")
 	s = strings.TrimRight(s, "]")
-	s = strings.Trim(s, "-_ ")
+	s = strings.Trim(s, "-_ [")
 	return collapseWS(s)
+}
+
+// leadCollectionToken is the NNTmux hash-token capture: a 16+ char token
+// immediately before [k/N] or (k/N), optionally glued (t2EI3…[08/52]).
+func leadCollectionToken(subj string) string {
+	s := strings.TrimSpace(subj)
+	if m := reLeadHashGlue.FindStringSubmatch(s); len(m) == 2 {
+		return m[1]
+	}
+	if m := reLeadHashDash.FindStringSubmatch(s); len(m) == 2 {
+		return m[1]
+	}
+	return ""
+}
+
+func tokenLooksObfuscated(tok string) bool {
+	return looksObfuscated(tok) || mostlyHex(tok)
 }
 
 // yencParts returns the trailing yEnc (n/m) segment counter. Prefers a match
@@ -171,6 +203,9 @@ const minObfSkeleton = 8
 // obfSkeleton returns the grouping skeleton of an overview subject (case kept
 // so looksObfuscated can see case churn; ObfKey lowercases before hashing).
 func obfSkeleton(subj string) string {
+	if tok := leadCollectionToken(subj); tok != "" {
+		return tok
+	}
 	s := subj
 	if i := strings.Index(strings.ToLower(s), "yenc"); i > 0 {
 		s = s[:i]
@@ -197,7 +232,8 @@ func ObfKey(group, from, subj string) string {
 	//   skeletons shorter than minObfSkeleton (see stageObfuscated).
 	// Troubleshooting: two same-poster hashes colliding → skeleton identical;
 	//   empty-skeleton bluray 100k-seg set → stageObfuscated must no-op.
-	// Review if: a collection row caches totalFiles so PAR2 can join later.
+	// Review if: a collection row caches totalFiles so two same-token uploads
+	//   with different file counts stay separate.
 	sum := sha256.Sum256([]byte(group + "\x00" + from + "\x00" + strings.ToLower(obfSkeleton(subj))))
 	return obfKeyPrefix + hex.EncodeToString(sum[:8])
 }

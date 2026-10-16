@@ -126,6 +126,27 @@ func TestObfSkeletonGroupsVolumes(t *testing.T) {
 	}
 }
 
+func TestObfSkeleton_LeadHashTokenGroupsRandomFilenames(t *testing.T) {
+	const tok = "ah63jka93jf0jh26ahjas558"
+	a := fmt.Sprintf(`%s - [01/22] - "random01.part01.rar" yEnc (1/40)`, tok)
+	b := fmt.Sprintf(`%s - [22/22] - "other.vol00+01.par2" yEnc (1/1)`, tok)
+	c := `t2EI3CdWdF0hi5b8L9tkx[08/52] - "aaa.rar" yEnc (1/9)`
+	d := `t2EI3CdWdF0hi5b8L9tkx[52/52] - "zzz.par2" yEnc (1/1)`
+	if ObfKey("g", "p@x", a) != ObfKey("g", "p@x", b) {
+		t.Fatalf("dash-hash split: %s vs %s", ObfKey("g", "p@x", a), ObfKey("g", "p@x", b))
+	}
+	if ObfKey("g", "p@x", c) != ObfKey("g", "p@x", d) {
+		t.Fatalf("glued-hash split: %s vs %s", ObfKey("g", "p@x", c), ObfKey("g", "p@x", d))
+	}
+	if ObfKey("g", "p@x", a) == ObfKey("g", "p@x", c) {
+		t.Fatal("distinct tokens must not share a key")
+	}
+	ps := ParseSubject(a)
+	if !ps.Obfuscated {
+		t.Fatalf("lead hash should be obfuscated, got %+v", ps)
+	}
+}
+
 func TestStageObfuscated_EmptySkeletonDoesNotStage(t *testing.T) {
 	c := &Crawler{NameFixEnabled: true}
 	rows := c.buildHeaders("alt.binaries.bluray", []usenet.MessageOverview{

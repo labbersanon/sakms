@@ -14,9 +14,9 @@ import (
 // Reason: ParseSubject used to leave [k/N] in ReleaseName; 3M already-stored
 //   rows keep those keys until re-parsed. Watermarks stay put (no re-OVER).
 // Troubleshooting: log "collection rewrite rows=N keys_changed=M"; done flag
-//   usenet_nntp_collection_rewrite_v1. Mega-buckets: obf keys with >20k headers
+//   usenet_nntp_collection_rewrite_v2. Mega-buckets: obf keys with >20k headers
 //   are deleted before releases are rebuilt.
-// Review if: a v2 rewrite is needed after another stem change.
+// Review if: a v3 rewrite is needed after another stem change.
 // Related files: .omc/plans/nntp-collection-grouping.md, subject.go, ingest.go
 
 const (

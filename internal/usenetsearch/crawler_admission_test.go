@@ -658,3 +658,22 @@ func TestCrawlOnce_RoundRobinStartsPastFirehose(t *testing.T) {
 		t.Fatalf("bloaf watermark=%d err=%v, want 0 (not visited)", wmFire, err)
 	}
 }
+
+func TestCrawlOnce_CoresGetMajorityOfPassBudget(t *testing.T) {
+	idx, src := newFirehoseFixture(t)
+	const other = "alt.binaries.amazing"
+	src.rows[other] = releaseRows(1, "Junk.Movie.2001.480p.WEB-DL.x264-GROUP", "a", 5)
+	src.gr[other] = usenet.GroupRange{Low: 1, High: 10000}
+	ctx := context.Background()
+	c := &Crawler{
+		Src: src, Index: idx, Groups: []string{firehose, other, core},
+		MaxChunksPerGroup: 1, MaxChunksPerPass: 3,
+	}
+	if _, err := c.CrawlOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	by := overCallsByGroup(src.calls)
+	if by[core] < 1 {
+		t.Fatalf("OVER calls by group=%v, want moovee visited this pass", by)
+	}
+}

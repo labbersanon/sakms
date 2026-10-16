@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 )
 
 //go:embed seeds/packages.json
@@ -140,6 +141,26 @@ func FilterPackagesToProvider(seeds []PackageSeed, available []string) []Package
 		}
 	}
 	return out
+}
+
+// Membership is still LIST ACTIVE; packageCores only prioritizes crawl/backfill
+// budget the way NNTmux's `active` vs `backfill` flags do.
+var (
+	packageCoreOnce sync.Once
+	packageCores    map[string]bool
+)
+
+// IsPackageCore reports whether name is a packages.json seed (any mode).
+func IsPackageCore(name string) bool {
+	packageCoreOnce.Do(func() {
+		packageCores = map[string]bool{}
+		for _, mode := range []string{"movies", "series", "adult"} {
+			for _, g := range PackagesForMode(mode) {
+				packageCores[g.Name] = true
+			}
+		}
+	})
+	return packageCores[strings.TrimSpace(name)]
 }
 
 // PackageSeedByName maps group name → seed for mode (first match).

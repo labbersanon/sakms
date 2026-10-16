@@ -510,6 +510,21 @@ func TestStaging_CapDropsNewSetsButKeepsExisting(t *testing.T) {
 	}
 }
 
+func TestStaging_FirehoseWithoutNamedDropsNewSets(t *testing.T) {
+	rows := obfuscatedSet("b", nfHash, 1, 5)
+	f := newNFFixture(t, rows, nil)
+	f.crawl.Groups = []string{"alt.binaries.bloaf"}
+	f.nf.Groups = []string{"alt.binaries.bloaf"}
+	f.crawlAndRecompute(t)
+	var n int
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("releases=%d, want 0 (bloaf must not fill the unnamed budget)", n)
+	}
+}
+
 // With namefix off the crawl keeps today's behavior: nothing is staged (no
 // obf-keyed headers, no pending_name release rows); rows are parsed exactly as
 // ParseSubject always did.

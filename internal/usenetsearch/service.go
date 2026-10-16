@@ -67,6 +67,9 @@ type Config struct {
 	// api.LoadUsenetSearchConfig, Step 4). false (or Service.admit unset)
 	// reproduces the pre-admission upsert-everything crawl byte-for-byte.
 	AdmissionEnabled bool
+	// MinCompletenessPct is the strict payload completeness gate (settings key
+	// usenet_nntp_min_completeness_pct; 0 = default 95, clamped 80-100).
+	MinCompletenessPct int
 }
 
 // GroupModesFor returns the enabled modes (a subset of "movies"/"series"/
@@ -276,6 +279,7 @@ func (s *Service) Apply(cfg Config) error {
 		s.probe = Readiness{Ready: false, State: "degraded", Detail: err.Error()}
 		return err
 	}
+	idx.SetMinCompletenessPct(cfg.MinCompletenessPct)
 	s.idx = idx
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
@@ -293,6 +297,7 @@ func (s *Service) loop(ctx context.Context) {
 			return
 		}
 		cres := s.runProbeAndCrawl(ctx)
+		s.runRecompute(ctx)
 		s.runLiveness(ctx)
 
 		var wait time.Duration
@@ -588,6 +593,25 @@ func (s *Service) SearchGroupsForMode(ctx context.Context, mode string) []string
 		return cands
 	}
 	return elig
+}
+
+// runRecompute drains a bounded batch of dirty releases (DB only, no NNTP).
+func (s *Service) runRecompute(ctx context.Context) {
+	s.mu.Lock()
+	idx := s.idx
+	s.mu.Unlock()
+	if idx == nil {
+		return
+	}
+	st, err := idx.RecomputeDirty(ctx, recomputeBatch)
+	if err != nil {
+		log.Printf("usenetsearch: recompute: %v", err)
+		return
+	}
+	if st.Releases > 0 {
+		log.Printf("usenetsearch: completeness recompute releases=%d searchable=%d below_gate=%d undeclared=%d orphans=%d backlog=%d",
+			st.Releases, st.Searchable, st.BelowGate, st.Undeclared, st.Orphans, st.Backlog)
+	}
 }
 
 func (s *Service) runLiveness(ctx context.Context) {

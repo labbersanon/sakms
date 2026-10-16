@@ -156,6 +156,8 @@ func (c *Crawler) crawlGroup(ctx context.Context, group string) (advanced bool, 
 				YencSize:    ps.YencSize,
 				Obfuscated:  ps.Obfuscated || !ps.OK,
 				IsMeta:      ps.Meta || IsMetaSubject(r.Subject, ps.Filename),
+				FileN:       ps.FileN,
+				FileM:       ps.FileM,
 			})
 		}
 		kept := headers

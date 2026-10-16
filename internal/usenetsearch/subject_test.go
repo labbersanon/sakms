@@ -71,6 +71,9 @@ func TestOpenIndexSearch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := idx.RecomputeDirty(context.Background(), 100); err != nil {
+		t.Fatal(err)
+	}
 	cs, err := idx.SearchReleases(context.Background(), Query{Terms: []string{"Foo"}, Groups: []string{"g"}, Limit: 10})
 	if err != nil {
 		t.Fatal(err)

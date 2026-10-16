@@ -17,10 +17,14 @@ type ParsedSubject struct {
 	Obfuscated bool
 	Meta       bool // par2 / nfo / sfv
 	OK         bool
+	// FileN/FileM carry the "[k/N]" file counter some posters prefix (0 when absent).
+	FileN int
+	FileM int
 }
 
 var (
 	rePartNM  = regexp.MustCompile(`(?i)\(\s*(\d+)\s*/\s*(\d+)\s*\)`)
+	reFileNM  = regexp.MustCompile(`\[\s*(\d+)\s*/\s*(\d+)\s*\]`)
 	reYencSz  = regexp.MustCompile(`(?i)yEnc\s*(?:\(.*?\)\s*)?(?:\[?\s*)?(\d+)\s*(?:bytes?)?`)
 	reFileTok = regexp.MustCompile(`(?i)([\w.\-]+\.(?:rar|r\d{2}|part\d+\.rar|par2|nfo|sfv|mkv|mp4|avi|zip|7z))`)
 	reHexBlob = regexp.MustCompile(`(?i)^[a-f0-9]{16,}$`)
@@ -33,6 +37,10 @@ func ParseSubject(subj string) ParsedSubject {
 		return ParsedSubject{}
 	}
 	out := ParsedSubject{}
+	if m := reFileNM.FindStringSubmatch(s); len(m) == 3 {
+		out.FileN, _ = strconv.Atoi(m[1])
+		out.FileM, _ = strconv.Atoi(m[2])
+	}
 	core := s
 	if i := strings.Index(strings.ToLower(core), "yenc"); i > 0 {
 		core = strings.TrimSpace(core[:i])

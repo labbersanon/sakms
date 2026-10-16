@@ -115,6 +115,87 @@ func (idx *Index) markDirty(ctx context.Context, keys []releaseKey) error {
 	return nil
 }
 
+// DefaultIncompleteTTLDays is how long a below-gate named release is kept
+// while repair/backfill may still bring its missing parts.
+const DefaultIncompleteTTLDays = 3
+
+// incompleteSweepBatch bounds releases deleted per sweep call.
+const incompleteSweepBatch = 200
+
+// incompleteForwardMargin: the forward watermark must be this far past a
+// release's last article before it is considered permanently incomplete.
+const incompleteForwardMargin = 50_000
+
+// deleteReleaseSets removes the headers and release rows for keys in one tx.
+// Returns the header rows deleted.
+func (idx *Index) deleteReleaseSets(ctx context.Context, keys []releaseKey) (int64, error) {
+	if len(keys) == 0 {
+		return 0, nil
+	}
+	tx, err := idx.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	var total int64
+	for _, k := range keys {
+		res, err := tx.ExecContext(ctx, `DELETE FROM usenet_nntp_headers WHERE group_name=? AND release_name=?`, k.group, k.key)
+		if err != nil {
+			return 0, err
+		}
+		n, _ := res.RowsAffected()
+		total += n
+		if _, err := tx.ExecContext(ctx, `DELETE FROM usenet_nntp_releases WHERE group_name=? AND release_key=?`, k.group, k.key); err != nil {
+			return 0, err
+		}
+	}
+	return total, tx.Commit()
+}
+
+// SweepIncomplete deletes named releases that stayed below the strict gate
+// when ALL hold (plan D4): ingested more than ttl ago, no queued repair range
+// overlaps the release span, and the forward watermark is past
+// last_msg+incompleteForwardMargin. Returns releases deleted.
+//
+// Claude 2026-10-15: all three conditions so a release still being repaired
+// or still being crawled forward is never reaped early.
+// Troubleshooting: incomplete releases never reaped → check missed_ranges
+//   for the group and that watermarks.high advanced past last_msg+50k.
+// Review if: repair queue semantics change.
+func (idx *Index) SweepIncomplete(ctx context.Context, ttl time.Duration) (int, error) {
+	cutoff := time.Now().Add(-ttl).Unix()
+	rows, err := idx.db.QueryContext(ctx, `
+SELECT r.group_name, r.release_key
+FROM usenet_nntp_releases r
+JOIN usenet_nntp_watermarks w ON w.group_name = r.group_name
+WHERE r.state = 'named' AND r.searchable = FALSE AND r.dirty = FALSE
+  AND r.ingested_at < ? AND w.high > r.last_msg + ?
+  AND NOT EXISTS (
+    SELECT 1 FROM usenet_nntp_missed_ranges m
+    WHERE m.group_name = r.group_name AND m.lo <= r.last_msg + 200 AND m.hi >= r.first_msg - 200)
+LIMIT ?`, cutoff, incompleteForwardMargin, incompleteSweepBatch)
+	if err != nil {
+		return 0, err
+	}
+	var keys []releaseKey
+	for rows.Next() {
+		var k releaseKey
+		if err := rows.Scan(&k.group, &k.key); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		keys = append(keys, k)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if _, err := idx.deleteReleaseSets(ctx, keys); err != nil {
+		return 0, err
+	}
+	return len(keys), nil
+}
+
 // RecomputeStats is one RecomputeDirty pass's aggregate counters.
 type RecomputeStats struct {
 	Releases   int

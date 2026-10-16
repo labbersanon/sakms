@@ -70,6 +70,9 @@ type Config struct {
 	// MinCompletenessPct is the strict payload completeness gate (settings key
 	// usenet_nntp_min_completeness_pct; 0 = default 95, clamped 80-100).
 	MinCompletenessPct int
+	// IncompleteTTLDays reaps below-gate named releases (key
+	// usenet_nntp_incomplete_ttl_days; 0 = default 3).
+	IncompleteTTLDays int
 }
 
 // GroupModesFor returns the enabled modes (a subset of "movies"/"series"/
@@ -298,6 +301,7 @@ func (s *Service) loop(ctx context.Context) {
 		}
 		cres := s.runProbeAndCrawl(ctx)
 		s.runRecompute(ctx)
+		s.runSweeps(ctx)
 		s.runLiveness(ctx)
 
 		var wait time.Duration
@@ -611,6 +615,29 @@ func (s *Service) runRecompute(ctx context.Context) {
 	if st.Releases > 0 {
 		log.Printf("usenetsearch: completeness recompute releases=%d searchable=%d below_gate=%d undeclared=%d orphans=%d backlog=%d",
 			st.Releases, st.Searchable, st.BelowGate, st.Undeclared, st.Orphans, st.Backlog)
+	}
+}
+
+// runSweeps runs the DB-only TTL cleanups (plan D7 step 6).
+func (s *Service) runSweeps(ctx context.Context) {
+	s.mu.Lock()
+	idx := s.idx
+	cfg := s.cfg
+	s.mu.Unlock()
+	if idx == nil {
+		return
+	}
+	days := cfg.IncompleteTTLDays
+	if days <= 0 {
+		days = DefaultIncompleteTTLDays
+	}
+	n, err := idx.SweepIncomplete(ctx, time.Duration(days)*24*time.Hour)
+	if err != nil {
+		log.Printf("usenetsearch: incomplete sweep: %v", err)
+		return
+	}
+	if n > 0 {
+		log.Printf("usenetsearch: incomplete sweep removed=%d ttl_days=%d", n, days)
 	}
 }
 

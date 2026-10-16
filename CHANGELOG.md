@@ -11124,3 +11124,16 @@ status stays active.
 |---|---|
 | `internal/usenetsearch/mediagroups.go` | drop `alt.binaries.adult*` |
 
+## 2026-10-16 — Native NNTP settings blurb is function-only
+
+**Problem:** Settings help still listed fallbacks and "obfuscated posts are not discoverable from headers alone" after name recovery shipped.
+**Root cause:** Leftover caveats in the Native NNTP search intro.
+**Fix:** One sentence: crawl per-mode groups, index headers, search before Prowlarr.
+**Outcome:** UI states function only.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/settings/Usenet.tsx` | shortened Native NNTP intro |
+

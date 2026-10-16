@@ -1424,11 +1424,8 @@ const NativeSearchCard: Component = () => {
   return (
     <Card title="Native NNTP search">
       <Muted class="mb-3">
-        Optional built-in Usenet discovery: crawl only the newsgroups you select
-        per mode, store headers in the SAK Postgres DB, and search that index
-        before Prowlarr. Off by default. Does not replace NZB/Prowlarr — they
-        remain the fallback. Obfuscated posts are not discoverable from headers
-        alone.
+        Crawls per-mode newsgroups, indexes headers in Postgres, and searches
+        that index before Prowlarr.
       </Muted>
       <Show when={loadError()}>
         <ErrorText>

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/labbersanon/sakms/internal/release"
 	"github.com/labbersanon/sakms/internal/usenet"
 )
 
@@ -252,6 +253,10 @@ const (
 // deleted (in-flight native grabs still need ResolveLocator).
 type ProtectedGroupsFn func(ctx context.Context) map[string]bool
 
+// PreferredLanguagesFn returns the Global preferred grab language IDs
+// (empty = english-assumed). Nil fn disables NNTP language scoping.
+type PreferredLanguagesFn func(ctx context.Context) []string
+
 // Service owns the index, crawler loop, and probe state.
 type Service struct {
 	mu             sync.Mutex
@@ -265,6 +270,9 @@ type Service struct {
 	// availCache: mode → last LIST ACTIVE media groups (settings resolve).
 	availCache map[string][]string
 	protectFn  ProtectedGroupsFn
+	langsFn    PreferredLanguagesFn
+	lastLangs  []string
+	langPruned map[string]bool
 	// membershipExpanded is true after a successful LIST ACTIVE rewrite of
 	// non-custom mode groups (retry while false so a boot LIST miss recovers).
 	membershipExpanded bool
@@ -303,6 +311,34 @@ func (s *Service) SetProtectedGroupsFn(fn ProtectedGroupsFn) {
 	s.mu.Lock()
 	s.protectFn = fn
 	s.mu.Unlock()
+}
+
+func (s *Service) SetPreferredLanguagesFn(fn PreferredLanguagesFn) {
+	s.mu.Lock()
+	s.langsFn = fn
+	s.mu.Unlock()
+}
+
+func (s *Service) preferredLanguages(ctx context.Context) (langs []string, filter bool) {
+	s.mu.Lock()
+	fn := s.langsFn
+	s.mu.Unlock()
+	if fn == nil {
+		return nil, false
+	}
+	return fn(ctx), true
+}
+
+func langsEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // SetAdmissionPolicy wires the crawl-time quality admission policy (Step 4,
@@ -467,6 +503,14 @@ func (s *Service) runProbeAndCrawl(ctx context.Context) (CrawlResult, *Crawler) 
 	cfg := s.cfg
 	idx := s.idx
 	s.mu.Unlock()
+	langs, langFilter := s.preferredLanguages(ctx)
+	s.mu.Lock()
+	if langFilter && !langsEqual(s.lastLangs, langs) {
+		s.lastLangs = append([]string(nil), langs...)
+		s.langPruned = nil
+		log.Printf("usenetsearch: preferred languages %v — index scoped to matching groups/titles", langs)
+	}
+	s.mu.Unlock()
 	groups := s.crawlEligibleGroups(ctx)
 	r := Probe(ctx, src, groups)
 	s.mu.Lock()
@@ -491,17 +535,20 @@ func (s *Service) runProbeAndCrawl(ctx context.Context) (CrawlResult, *Crawler) 
 	if admissionEnabled {
 		s.pruneNonMatchingOnce(ctx, groups, cfg, admit, idx)
 	}
+	s.pruneWrongLanguageOnce(ctx, groups, langs, langFilter, idx)
 	c := &Crawler{
 		Src: src, Index: idx, Groups: groups, Window: window, MaxGB: maxGB,
-		AdmissionEnabled:  admissionEnabled,
-		GroupModesFn:      cfg.GroupModesFor,
-		Admitter:          admit,
-		RepairEnabled:     cfg.RepairEnabled,
-		NameFixEnabled:    cfg.NameFixEnabled,
-		UnnamedMaxPct:     cfg.UnnamedMaxPct,
-		BackfillEnabled:   cfg.BackfillEnabled,
-		BackfillDays:      cfg.BackfillDays,
-		BackfillBudgetPct: cfg.BackfillBudgetPct,
+		AdmissionEnabled:   admissionEnabled,
+		GroupModesFn:       cfg.GroupModesFor,
+		Admitter:           admit,
+		RepairEnabled:      cfg.RepairEnabled,
+		NameFixEnabled:     cfg.NameFixEnabled,
+		UnnamedMaxPct:      cfg.UnnamedMaxPct,
+		BackfillEnabled:    cfg.BackfillEnabled,
+		BackfillDays:       cfg.BackfillDays,
+		BackfillBudgetPct:  cfg.BackfillBudgetPct,
+		LanguageFilter:     langFilter,
+		PreferredLanguages: langs,
 		// Claude 2026-10-16: publish last OVER chunk as it lands, not after the pass.
 		// Reason: LIST membership is hundreds of groups; a Dashboard poll mid-pass
 		// should show the current chunk, not the previous pass.
@@ -563,6 +610,59 @@ func (s *Service) pruneNonMatchingOnce(ctx context.Context, groups []string, cfg
 	}
 }
 
+func (s *Service) pruneWrongLanguageOnce(ctx context.Context, groups []string, langs []string, filter bool, idx *Index) {
+	if !filter || idx == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.langPruned == nil {
+		s.langPruned = map[string]bool{}
+	}
+	pending := make([]string, 0, len(groups))
+	for _, g := range groups {
+		if !s.langPruned[g] {
+			pending = append(pending, g)
+		}
+	}
+	s.mu.Unlock()
+	for _, group := range pending {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		n, err := pruneGroupWrongLanguage(ctx, idx, group, langs)
+		if err != nil {
+			log.Printf("usenetsearch: prune language %s: %v", group, err)
+			continue
+		}
+		s.mu.Lock()
+		s.langPruned[group] = true
+		s.mu.Unlock()
+		if n > 0 {
+			log.Printf("usenetsearch: pruned %d non-preferred-language headers for %s", n, group)
+		}
+	}
+}
+
+func pruneGroupWrongLanguage(ctx context.Context, idx *Index, group string, langs []string) (int64, error) {
+	names, err := idx.DistinctReleases(ctx, group)
+	if err != nil {
+		return 0, err
+	}
+	var reject []string
+	for _, name := range names {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		if !release.TitleLanguageAllowed(name, langs) {
+			reject = append(reject, name)
+		}
+	}
+	if len(reject) == 0 {
+		return 0, nil
+	}
+	return idx.DeleteReleases(ctx, group, reject)
+}
+
 // crawlEligibleGroups is the union of per-mode groups with grade ≤ ceiling.
 func (s *Service) crawlEligibleGroups(ctx context.Context) []string {
 	s.mu.Lock()
@@ -570,7 +670,7 @@ func (s *Service) crawlEligibleGroups(ctx context.Context) []string {
 	idx := s.idx
 	s.mu.Unlock()
 	if idx == nil {
-		return cfg.AllGroups()
+		return s.filterGroupsByLanguage(ctx, cfg.AllGroups())
 	}
 	var lists [][]string
 	for _, mode := range []string{"movies", "series", "adult"} {
@@ -585,7 +685,21 @@ func (s *Service) crawlEligibleGroups(ctx context.Context) []string {
 		}
 		lists = append(lists, elig)
 	}
-	return MergeGroups(lists...)
+	return s.filterGroupsByLanguage(ctx, MergeGroups(lists...))
+}
+
+func (s *Service) filterGroupsByLanguage(ctx context.Context, groups []string) []string {
+	langs, filter := s.preferredLanguages(ctx)
+	if !filter {
+		return groups
+	}
+	out := make([]string, 0, len(groups))
+	for _, g := range groups {
+		if languageAllowed(groupLanguageQuery(g), langs, true) {
+			out = append(out, g)
+		}
+	}
+	return out
 }
 
 // PruneBeyondCeilings deletes index rows for groups that no enabled mode still allows.

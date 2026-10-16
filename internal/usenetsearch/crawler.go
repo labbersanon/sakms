@@ -88,6 +88,11 @@ type Crawler struct {
 	curMaxPosted  int64
 	// OnChunk, if set, is invoked after each OVER chunk is admitted (Dashboard).
 	OnChunk func(CrawlChunkStat)
+
+	// LanguageFilter applies Settings preferred grab languages (empty list =
+	// english-assumed, same as autograb). false = tests / unwired Service.
+	LanguageFilter     bool
+	PreferredLanguages []string
 }
 
 // CrawlOnce advances watermarks for every configured group.
@@ -99,6 +104,9 @@ func (c *Crawler) CrawlOnce(ctx context.Context) (CrawlResult, error) {
 	for _, group := range c.Groups {
 		group = strings.TrimSpace(group)
 		if group == "" {
+			continue
+		}
+		if !c.groupLanguageOK(group) {
 			continue
 		}
 		adv, err := c.crawlGroup(ctx, group)
@@ -246,6 +254,7 @@ type chunkStats struct {
 	skipUnparsed int
 	skipRes      int
 	skipTier     int
+	skipLang     int
 	skipStat     int
 	statCalls    int
 	deferred     int
@@ -269,7 +278,7 @@ func (c *Crawler) admitChunk(ctx context.Context, group string, a, b int, header
 	}
 	if snap == nil {
 		// No policy wired despite AdmissionEnabled (defensive) — legacy upsert.
-		return headers, nil
+		return c.dropWrongLanguage(headers), nil
 	}
 
 	buckets := map[string][]HeaderRow{}
@@ -299,6 +308,10 @@ func (c *Crawler) admitChunk(ctx context.Context, group string, a, b int, header
 
 	for _, name := range order {
 		rows := buckets[name]
+		if !c.languageOK(name) {
+			st.skipLang++
+			continue
+		}
 		info := release.Parse(name)
 		// MatchInfo (the release-wide key/year/episode classification) is
 		// not separately logged — std.Match (per-mode outcome) already
@@ -360,8 +373,8 @@ func (c *Crawler) admitChunk(ctx context.Context, group string, a, b int, header
 			Gaps: c.curGaps, ElapsedMs: elapsed, AtUnixMs: time.Now().UnixMilli(),
 		})
 	}
-	log.Printf("usenetsearch: crawl chunk dir=%s group=%s range=%d-%d rows=%d releases=%d admitted=%d staged_obf=%d skip_obf_cap=%d skip_unparsed=%d skip_res=%d skip_tier=%d skip_stat=%d stat_calls=%d deferred=%d gaps=%d elapsed_ms=%d",
-		dir, group, a, b, st.rows, st.releases, st.admitted, c.curStaged, c.curSkipObfCap, st.skipUnparsed, st.skipRes, st.skipTier, st.skipStat, st.statCalls, st.deferred, c.curGaps, elapsed)
+	log.Printf("usenetsearch: crawl chunk dir=%s group=%s range=%d-%d rows=%d releases=%d admitted=%d staged_obf=%d skip_obf_cap=%d skip_unparsed=%d skip_res=%d skip_tier=%d skip_lang=%d skip_stat=%d stat_calls=%d deferred=%d gaps=%d elapsed_ms=%d",
+		dir, group, a, b, st.rows, st.releases, st.admitted, c.curStaged, c.curSkipObfCap, st.skipUnparsed, st.skipRes, st.skipTier, st.skipLang, st.skipStat, st.statCalls, st.deferred, c.curGaps, elapsed)
 
 	return kept, nil
 }

@@ -11170,3 +11170,18 @@ status stays active.
 | `internal/usenetsearch/subject_test.go` | latin1-before-yEnc regression |
 | `internal/usenetsearch/ingest_test.go` | sanitizer + Upsert latin1 |
 
+## 2026-10-16 — NNTP index scoped to preferred grab languages
+
+**Problem:** Native NNTP indexed every language (dvd.german* etc.) even when autograb would reject those titles.
+**Root cause:** Crawl/admit had no TitleLanguageAllowed gate; preferred languages were grab-only.
+**Fix:** Wire Settings preferred languages into the crawler: skip language-named groups, skip non-matching titles at admit, prune already-indexed mismatches, filter Search. Empty list keeps english-assumed (same as autograb).
+**Outcome:** Index membership matches grab language policy.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/language.go` | group/title language helpers |
+| `internal/usenetsearch/{crawler,ingest,service,search,namefix}.go` | skip / prune / search filter |
+| `cmd/sakms/main.go` | SetPreferredLanguagesFn |
+

@@ -234,8 +234,10 @@ func (c *Crawler) ingestRange(ctx context.Context, opts ingestOpts, group string
 		if err != nil {
 			return 0, err
 		}
+	} else {
+		kept = c.dropWrongLanguage(candidates)
 	}
-	kept = append(kept, direct...)
+	kept = append(kept, c.dropWrongLanguage(direct)...)
 	kept = append(kept, staged...)
 	if err := c.Index.Upsert(ctx, kept); err != nil {
 		return 0, err

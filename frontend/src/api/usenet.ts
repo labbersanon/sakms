@@ -153,6 +153,10 @@ export function putUsenetSegmentResume(body: {
   );
 }
 
+// Claude 2026-10-15: package fields added for 5-step slider UX.
+// Reason: server expands monitored groups from a named package when value is "1".."5".
+// Troubleshooting: GET/PUT /api/settings/usenet-nntp-native includes moviesPackage etc.
+// Review if: package step count changes from 5.
 export type UsenetNNTPNativeSettings = {
   enabled: boolean;
   movies: boolean;
@@ -161,6 +165,9 @@ export type UsenetNNTPNativeSettings = {
   moviesGroups: string;
   seriesGroups: string;
   adultGroups: string;
+  moviesPackage?: string;
+  seriesPackage?: string;
+  adultPackage?: string;
   indexDir: string;
   indexMaxGb: number;
   windowDays: number;
@@ -174,6 +181,19 @@ export type UsenetNNTPGroupItem = {
   recommended?: boolean;
   tier?: string;
   note?: string;
+  // Claude 2026-10-15: step/pinned added for package slider.
+  // Reason: server annotates items with their package step; pinned items are always included.
+  step?: number;
+  pinned?: boolean;
+  // Claude 2026-10-15: grade for passive grading — server demotes groups on article failures.
+  // Reason: UI needs to surface the current grade so operators see which groups are degraded.
+  grade?: number;
+};
+
+export type UsenetNNTPPackageStep = {
+  step: number;
+  groupCount: number;
+  cumulativeCount: number;
 };
 
 export type UsenetNNTPAvailableGroups = {
@@ -181,6 +201,10 @@ export type UsenetNNTPAvailableGroups = {
   groups: string[];
   recommended?: UsenetNNTPGroupItem[];
   items?: UsenetNNTPGroupItem[];
+  // Claude 2026-10-15: steps/packages added for 5-step slider UX.
+  // Reason: slider needs cumulative counts and per-step group sets.
+  steps?: Record<string, UsenetNNTPPackageStep>;
+  packages?: Record<string, UsenetNNTPGroupItem[]>;
 };
 
 export function fetchUsenetNNTPNative(): Promise<UsenetNNTPNativeSettings> {
@@ -204,3 +228,16 @@ export function fetchUsenetNNTPGroups(
   );
 }
 
+// Claude 2026-10-15: operator reset for demoted NNTP group grades.
+// Reason: sticky grade 5 / mistaken demotes need a Settings escape hatch.
+// Troubleshooting: 503 → enable Native search so the index is open.
+// Review if: bulk reset-all endpoint is added.
+export function resetUsenetNNTPGroupGrade(
+  mode: "movies" | "series" | "adult",
+  group: string,
+): Promise<{ ok: boolean; mode: string; group: string; grade: number }> {
+  return api("/api/settings/usenet-nntp-native/grades/reset", {
+    method: "POST",
+    body: JSON.stringify({ mode, group }),
+  });
+}

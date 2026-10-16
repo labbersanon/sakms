@@ -10974,3 +10974,55 @@ status stays active.
 | `frontend/src/api/usenet.ts` | group item types |
 | `docs/usenet-nntp-native.md` | continuous index docs |
 
+## 2026-10-15 — NNTP group packages v2 (5-step reliability↔breadth)
+
+**Problem:** Hand-picked newsgroup lists and a flat "recommended" set do not match the intended curated slider UX.
+**Root cause:** seeds/recommended.json only had core/extra; Settings assumed per-group dual-list defaults.
+**Fix:** Embed `seeds/packages.json` v2 with steps 1–5 (cumulative resolve). GET `/api/settings/usenet-nntp-native/groups` adds `steps` and `packages` (provider-filtered). Keep `recommended` as a steps≤2 shim for one release.
+**Outcome:** Backend ready for Settings slider (slice 2). Not a user-visible Settings change until the frontend lands.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/seeds/packages.json` | curated step 1–5 groups per mode |
+| `internal/usenetsearch/seeds.go` | ResolveGroupsForStep / FilterPackagesToProvider |
+| `internal/usenetsearch/seeds/recommended.json` | removed (replaced by packages.json) |
+| `internal/api/usenetnntp.go` | groups response `steps` + `packages` |
+| `docs/usenet-nntp-native.md` | package slider direction |
+
+## 2026-10-15 — NNTP package slider Settings (steps 1–5)
+
+**Problem:** Operators still had to pick individual newsgroups; recommended seeds were a flat list.
+**Root cause:** No package step in settings KV or Settings UI.
+**Fix:** Per-mode `moviesPackage`/`seriesPackage`/`adultPackage` (`1`–`5` or `custom`). PUT expands non-custom packages server-side. Soft-infer package from saved groups. Frontend: reliability↔breadth slider, Custom chip, advanced customize collapse.
+**Outcome:** Native search Settings is package-first; crawl keys unchanged. Re-rank auto-apply and unselected sampling still pending.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/package_resolve.go` | Infer/Resolve/Parse package step |
+| `internal/usenetsearch/service.go` | package KV keys + LIST ACTIVE cache |
+| `internal/api/usenetnntp.go` | package fields on GET/PUT |
+| `frontend/src/screens/settings/Usenet.tsx` | PackageSliderPanel |
+| `frontend/src/api/usenet.ts` | package/step types |
+| `docs/usenet-nntp-native.md` | slider docs |
+
+## 2026-10-15 — NNTP passive group grades (failure demotion)
+
+**Problem:** Active re-rank from index stats was the wrong model; groups should start trusted and lose trust only after Usenet failures.
+**Root cause:** Plan assumed proactive scoring; operator wants passive demotion + ceiling slider.
+**Fix:** Default ceiling step 5. Per-mode grades (migration 0040) start at 1; article-missing failures demote +1 (cap 5 sticky). Crawl/search filter grade≤ceiling; crossing ceiling deletes that group's headers. Settings shows grades; help copy updated.
+**Outcome:** Ready on PR #165 branch. Deploy after merge.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/db/migrations/0040_usenet_nntp_group_grades.sql` | grades table |
+| `internal/usenetsearch/grades.go` | Demote/Eligible/Prune/DeleteGroupIndex |
+| `internal/usenetsearch/service.go` | crawl/search by grade; DemoteForFailure |
+| `internal/api/usenet_nntp_demote.go` | hook from failure/precheck paths |
+| `frontend/.../Usenet.tsx` | ceiling default 5, grade badges, copy |
+

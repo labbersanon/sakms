@@ -374,6 +374,57 @@ func (s *Store) UpdateStatus(ctx context.Context, id int64, status Status) error
 	return dbutil.CheckAffected(res, id, ErrNotFound)
 }
 
+// MarkImportedIfNot sets status=Imported only when it is not already Imported.
+// Returns changed=true when this call performed the transition (safe for
+// one-shot side effects like NNTP grade promotion).
+func (s *Store) MarkImportedIfNot(ctx context.Context, id int64) (changed bool, err error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE grabs SET status = ?, updated_at = sakms_now()
+		WHERE id = ? AND status != ?
+	`, string(Imported), id, string(Imported))
+	if err != nil {
+		return false, fmt.Errorf("marking grab %d imported: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if n == 0 {
+		// Distinguish missing id vs already imported.
+		if _, getErr := s.Get(ctx, id); getErr != nil {
+			return false, getErr
+		}
+		return false, nil
+	}
+	return true, nil
+}
+
+// ListActive returns non-terminal grabs (not imported/failed) across all modes.
+// Used by native NNTP index protection so in-flight locators keep ResolveLocator.
+func (s *Store) ListActive(ctx context.Context) ([]Grab, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,
+		       download_client, client_ref, download_gid, download_status, download_staging_path, status, root_folder_path, flagged_for_review, flag_reason,
+		       download_url_encrypted, retry_after, retry_count, retry_reason, hold_until, monitor_entity_key, next_search_scope,
+		       transport_retry_count, origin, tried_release_keys,
+		       created_at, updated_at
+		FROM grabs WHERE status NOT IN (?, ?) ORDER BY id
+	`, string(Imported), string(Failed))
+	if err != nil {
+		return nil, fmt.Errorf("listing active grabs: %w", err)
+	}
+	defer rows.Close()
+	out := []Grab{}
+	for rows.Next() {
+		g, err := s.scanGrab(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning active grab: %w", err)
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
 // Flag marks a grab for operator review — used by auto-grab's post-grab
 // mislabel check when the imported file's actual duration is wildly
 // inconsistent with the known TMDB/TPDB runtime. It does not touch the grab's

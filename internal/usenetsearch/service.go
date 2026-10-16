@@ -13,22 +13,29 @@ import (
 
 // Settings keys (KV store).
 const (
-	KeyNativeEnabled   = "usenet_nntp_native_enabled"
-	KeyMoviesEnabled   = "movies_nntp_native_enabled"
-	KeySeriesEnabled   = "series_nntp_native_enabled"
-	KeyAdultEnabled    = "adult_nntp_native_enabled"
-	KeyGroups          = "usenet_nntp_groups" // legacy shared list; soft-migrated
-	KeyMoviesGroups    = "usenet_nntp_groups_movies"
-	KeySeriesGroups    = "usenet_nntp_groups_series"
-	KeyAdultGroups     = "usenet_nntp_groups_adult"
-	KeyIndexDir        = "usenet_nntp_index_dir"
-	KeyIndexMaxGB      = "usenet_nntp_index_max_gb"
-	KeyWindowDays      = "usenet_nntp_index_window_days"
-	KeyCrawlInterval   = "usenet_nntp_crawl_interval_seconds"
-	KeyProbeState      = "usenet_nntp_probe_state"
-	KeyProbeDetail     = "usenet_nntp_probe_detail"
-	DefaultIndexMaxGB  = 20
-	DefaultWindowDays  = 14
+	KeyNativeEnabled = "usenet_nntp_native_enabled"
+	KeyMoviesEnabled = "movies_nntp_native_enabled"
+	KeySeriesEnabled = "series_nntp_native_enabled"
+	KeyAdultEnabled  = "adult_nntp_native_enabled"
+	KeyGroups        = "usenet_nntp_groups" // legacy shared list; soft-migrated
+	KeyMoviesGroups  = "usenet_nntp_groups_movies"
+	KeySeriesGroups  = "usenet_nntp_groups_series"
+	KeyAdultGroups   = "usenet_nntp_groups_adult"
+	// Claude 2026-10-15: per-mode package step (1–5) or "custom".
+	// Reason: Settings slider; effective groups still in Key*Groups.
+	// Troubleshooting: missing key → InferPackageFromGroups on read.
+	// Review if: auto-apply re-rank (slice 4) writes these + group keys.
+	KeyMoviesPackage  = "usenet_nntp_package_movies"
+	KeySeriesPackage  = "usenet_nntp_package_series"
+	KeyAdultPackage   = "usenet_nntp_package_adult"
+	KeyIndexDir       = "usenet_nntp_index_dir"
+	KeyIndexMaxGB     = "usenet_nntp_index_max_gb"
+	KeyWindowDays     = "usenet_nntp_index_window_days"
+	KeyCrawlInterval  = "usenet_nntp_crawl_interval_seconds"
+	KeyProbeState     = "usenet_nntp_probe_state"
+	KeyProbeDetail    = "usenet_nntp_probe_detail"
+	DefaultIndexMaxGB = 20
+	DefaultWindowDays = 14
 )
 
 // Config is a snapshot of operator settings for the native backend.
@@ -40,10 +47,32 @@ type Config struct {
 	MoviesGroups  []string
 	SeriesGroups  []string
 	AdultGroups   []string
+	MoviesPackage string // "1".."5" or "custom"
+	SeriesPackage string
+	AdultPackage  string
 	IndexDir      string
 	IndexMaxGB    int
 	WindowDays    int
 	CrawlInterval time.Duration
+}
+
+// PackageCeilingForMode returns the crawl/search ceiling step for mode.
+func (c Config) PackageCeilingForMode(mode string) int {
+	raw := ""
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "movies":
+		raw = c.MoviesPackage
+	case "series":
+		raw = c.SeriesPackage
+	case "adult":
+		raw = c.AdultPackage
+	}
+	step, custom, ok := ParsePackageValue(raw)
+	if !ok || custom {
+		// Custom: treat as max ceiling; grade filter still applies vs step 5.
+		return PackageStepMax
+	}
+	return step
 }
 
 // AllGroups is the deduped union of per-mode selections — what the crawler indexes.
@@ -107,7 +136,9 @@ func ValidateIndexDir(dir string) string {
 
 // Claude 2026-10-15: continuous crawl defaults (conservative — protect downloads).
 // Reason: no nightly cron; idle only when caught up / busy. CrawlInterval setting
-//   is idle backoff when >0; else defaultIdleBackoff.
+//
+//	is idle backoff when >0; else defaultIdleBackoff.
+//
 // Troubleshooting: index lag while downloads idle — lower idle; stall downloads — raise.
 // Review if: rates become Settings knobs separate from CrawlInterval.
 const (
@@ -115,6 +146,10 @@ const (
 	busyBackoff        = 5 * time.Second
 	catchUpPause       = 500 * time.Millisecond
 )
+
+// ProtectedGroupsFn returns newsgroup names that must not have their index
+// deleted (in-flight native grabs still need ResolveLocator).
+type ProtectedGroupsFn func(ctx context.Context) map[string]bool
 
 // Service owns the index, crawler loop, and probe state.
 type Service struct {
@@ -126,11 +161,21 @@ type Service struct {
 	cancel         context.CancelFunc
 	probe          Readiness
 	livenessOffset int
+	// availCache: mode → last LIST ACTIVE media groups (settings resolve).
+	availCache map[string][]string
+	protectFn  ProtectedGroupsFn
 }
 
 // NewService constructs a stopped Service. Call Apply to open the index / start crawl.
 func NewService(src usenet.HeaderSource, sqlDB *sql.DB) *Service {
 	return &Service{src: src, sqlDB: sqlDB, probe: Readiness{State: "unknown"}}
+}
+
+// SetProtectedGroupsFn registers groups whose index must not be deleted.
+func (s *Service) SetProtectedGroupsFn(fn ProtectedGroupsFn) {
+	s.mu.Lock()
+	s.protectFn = fn
+	s.mu.Unlock()
 }
 
 // SetHeaderSource updates the NNTP source (e.g. after SetSubscriptions).
@@ -222,13 +267,15 @@ func (s *Service) runProbeAndCrawl(ctx context.Context) CrawlResult {
 	cfg := s.cfg
 	idx := s.idx
 	s.mu.Unlock()
-	r := Probe(ctx, src, cfg.AllGroups())
+	groups := s.crawlEligibleGroups(ctx)
+	r := Probe(ctx, src, groups)
 	s.mu.Lock()
 	s.probe = r
 	s.mu.Unlock()
 	if !r.Ready || idx == nil || src == nil {
 		return CrawlResult{}
 	}
+	_ = s.PruneBeyondCeilings(ctx)
 	window := time.Duration(cfg.WindowDays) * 24 * time.Hour
 	if cfg.WindowDays <= 0 {
 		window = DefaultWindowDays * 24 * time.Hour
@@ -237,12 +284,194 @@ func (s *Service) runProbeAndCrawl(ctx context.Context) CrawlResult {
 	if maxGB <= 0 {
 		maxGB = DefaultIndexMaxGB
 	}
-	c := &Crawler{Src: src, Index: idx, Groups: cfg.AllGroups(), Window: window, MaxGB: maxGB}
+	c := &Crawler{Src: src, Index: idx, Groups: groups, Window: window, MaxGB: maxGB}
 	cres, err := c.CrawlOnce(ctx)
 	if err != nil {
 		log.Printf("usenetsearch: crawl: %v", err)
 	}
 	return cres
+}
+
+// crawlEligibleGroups is the union of per-mode groups with grade ≤ ceiling.
+func (s *Service) crawlEligibleGroups(ctx context.Context) []string {
+	s.mu.Lock()
+	cfg := s.cfg
+	idx := s.idx
+	s.mu.Unlock()
+	if idx == nil {
+		return cfg.AllGroups()
+	}
+	var lists [][]string
+	for _, mode := range []string{"movies", "series", "adult"} {
+		if !cfg.ModeEnabled(mode) {
+			continue
+		}
+		ceiling := cfg.PackageCeilingForMode(mode)
+		elig, err := idx.EligibleGroups(ctx, mode, ceiling, cfg.GroupsForMode(mode))
+		if err != nil {
+			log.Printf("usenetsearch: eligible %s: %v", mode, err)
+			continue
+		}
+		lists = append(lists, elig)
+	}
+	return MergeGroups(lists...)
+}
+
+// PruneBeyondCeilings deletes index rows for groups that no enabled mode still allows.
+func (s *Service) PruneBeyondCeilings(ctx context.Context) error {
+	s.mu.Lock()
+	cfg := s.cfg
+	idx := s.idx
+	protectFn := s.protectFn
+	s.mu.Unlock()
+	if idx == nil {
+		return nil
+	}
+	allowed := map[string]bool{}
+	for _, g := range s.crawlEligibleGroups(ctx) {
+		allowed[g] = true
+	}
+	var protected map[string]bool
+	if protectFn != nil {
+		protected = protectFn(ctx)
+	}
+	for _, g := range cfg.AllGroups() {
+		if allowed[g] || protected[g] {
+			continue
+		}
+		n, err := idx.DeleteGroupIndex(ctx, g)
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			log.Printf("usenetsearch: pruned %d headers for %s (not eligible under any mode ceiling/grade)", n, g)
+		}
+	}
+	return nil
+}
+
+// PromoteForSuccess records a successful native import for mode/group.
+// After two successes the grade improves by one tier (floor 1).
+func (s *Service) PromoteForSuccess(ctx context.Context, mode, group string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	idx := s.idx
+	s.mu.Unlock()
+	if idx == nil {
+		return
+	}
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	group = strings.TrimSpace(group)
+	if mode == "" || group == "" {
+		return
+	}
+	grade, promoted, err := idx.NoteSuccess(ctx, mode, group)
+	if err != nil {
+		log.Printf("usenetsearch: promote note %s/%s: %v", mode, group, err)
+		return
+	}
+	if promoted {
+		log.Printf("usenetsearch: promote mode=%s group=%s grade=%d (after %d successes)",
+			mode, group, grade, promoteEverySuccesses)
+	}
+}
+
+// DemoteForFailure bumps the group's grade for mode and deletes its index
+// when no enabled mode still allows the group (and no in-flight grab protects it).
+func (s *Service) DemoteForFailure(ctx context.Context, mode, group, downloadGID string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	idx := s.idx
+	protectFn := s.protectFn
+	s.mu.Unlock()
+	if idx == nil {
+		return
+	}
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	group = strings.TrimSpace(group)
+	if mode == "" || group == "" {
+		return
+	}
+	grade, err := idx.DemoteGroup(ctx, mode, group, downloadGID)
+	if err != nil {
+		log.Printf("usenetsearch: demote %s/%s: %v", mode, group, err)
+		return
+	}
+	log.Printf("usenetsearch: demote mode=%s group=%s grade=%d gid=%s", mode, group, grade, downloadGID)
+	// Claude 2026-10-15: never delete index while any enabled mode still allows the group.
+	// Reason: shared groups (multimedia, hdtv.x264) would re-crawl/delete-loop.
+	// Troubleshooting: index empty for series after movies demote — check eligibility union.
+	// Review if: grades become global per group_name.
+	if s.groupAllowedByAnyMode(ctx, group) {
+		return
+	}
+	if protectFn != nil && protectFn(ctx)[group] {
+		log.Printf("usenetsearch: skip index delete for %s (active grab)", group)
+		return
+	}
+	n, err := idx.DeleteGroupIndex(ctx, group)
+	if err != nil {
+		log.Printf("usenetsearch: delete index %s: %v", group, err)
+		return
+	}
+	log.Printf("usenetsearch: deleted %d headers for %s (ineligible in all modes)", n, group)
+}
+
+// ResetGroupGrade restores grade 1 for mode/group (operator escape).
+func (s *Service) ResetGroupGrade(ctx context.Context, mode, group string) error {
+	if s == nil {
+		return errString("usenetsearch: service nil")
+	}
+	s.mu.Lock()
+	idx := s.idx
+	s.mu.Unlock()
+	if idx == nil {
+		return ErrIndexClosed
+	}
+	return idx.ResetGrade(ctx, mode, group)
+}
+
+// groupAllowedByAnyMode reports whether any enabled mode still crawls group.
+func (s *Service) groupAllowedByAnyMode(ctx context.Context, group string) bool {
+	for _, g := range s.crawlEligibleGroups(ctx) {
+		if g == group {
+			return true
+		}
+	}
+	return false
+}
+
+// ListGroupGrades returns stored grades for mode (empty if index closed).
+func (s *Service) ListGroupGrades(ctx context.Context, mode string) ([]GroupGrade, error) {
+	s.mu.Lock()
+	idx := s.idx
+	s.mu.Unlock()
+	if idx == nil {
+		return nil, nil
+	}
+	return idx.ListGrades(ctx, mode)
+}
+
+// SearchGroupsForMode returns grade-eligible groups for search in mode.
+func (s *Service) SearchGroupsForMode(ctx context.Context, mode string) []string {
+	s.mu.Lock()
+	cfg := s.cfg
+	idx := s.idx
+	s.mu.Unlock()
+	cands := cfg.GroupsForMode(mode)
+	if idx == nil {
+		return cands
+	}
+	elig, err := idx.EligibleGroups(ctx, mode, cfg.PackageCeilingForMode(mode), cands)
+	if err != nil {
+		log.Printf("usenetsearch: search eligible %s: %v", mode, err)
+		return cands
+	}
+	return elig
 }
 
 func (s *Service) runLiveness(ctx context.Context) {
@@ -333,7 +562,28 @@ func (s *Service) ListAvailableGroups(ctx context.Context, mode string) ([]strin
 	s.mu.Lock()
 	src := s.src
 	s.mu.Unlock()
-	return ListMediaGroups(ctx, src, mode)
+	groups, err := ListMediaGroups(ctx, src, mode)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	if s.availCache == nil {
+		s.availCache = map[string][]string{}
+	}
+	cp := append([]string{}, groups...)
+	s.availCache[strings.ToLower(strings.TrimSpace(mode))] = cp
+	s.mu.Unlock()
+	return groups, nil
+}
+
+// CachedAvailableGroups returns the last LIST ACTIVE result for mode, or nil.
+func (s *Service) CachedAvailableGroups(mode string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.availCache == nil {
+		return nil
+	}
+	return append([]string{}, s.availCache[strings.ToLower(strings.TrimSpace(mode))]...)
 }
 
 // Close stops the crawler and closes the index.

@@ -49,6 +49,8 @@ import {
   putUsenetMaxConcurrentDownloads,
   putUsenetNNTPNative,
   putUsenetSegmentResume,
+  resetUsenetNNTPGroupGrade,
+  type UsenetNNTPAvailableGroups,
   type UsenetNNTPGroupItem,
   type UsenetNNTPNativeSettings,
 } from "../../api/usenet";
@@ -859,16 +861,27 @@ const AutoGrabCard: Component = () => {
 const listBoxClass =
   "h-48 w-full overflow-y-auto rounded-md border border-border bg-bg px-2 py-1 font-mono text-xs text-fg outline-none focus:border-accent";
 
+// Claude 2026-10-15: resetLabel/onReset replaces hard-coded "Apply recommended"
+// so the advanced-collapse context can say "Reset to current step" instead.
+// Reason: slider step is the source of truth; custom edits branch to package="custom".
+// Troubleshooting: onReset undefined → button hidden; resetLabel controls copy.
+// Review if: a third reset variant is needed.
 const GroupTransferToolbox: Component<{
   title: string;
+  mode: "movies" | "series" | "adult";
   items: UsenetNNTPGroupItem[];
   recommended: UsenetNNTPGroupItem[];
   monitored: string[];
   onChange: (monitored: string[]) => void;
+  resetLabel?: string;
+  onReset?: () => void;
+  onGradeReset?: () => void;
 }> = (props) => {
   const [leftSel, setLeftSel] = createSignal<string[]>([]);
   const [rightSel, setRightSel] = createSignal<string[]>([]);
   const [query, setQuery] = createSignal("");
+  const [gradeBusy, setGradeBusy] = createSignal(false);
+  const [gradeErr, setGradeErr] = createSignal("");
 
   const monitoredSet = () => new Set(props.monitored);
   const itemByName = createMemo(() => {
@@ -876,6 +889,8 @@ const GroupTransferToolbox: Component<{
     for (const it of props.items) m.set(it.name, it);
     return m;
   });
+  const demotedSelection = () =>
+    rightSel().filter((g) => (itemByName().get(g)?.grade ?? 1) > 1);
   const matches = (name: string) => {
     const needle = query().trim().toLowerCase();
     if (!needle) return true;
@@ -913,28 +928,27 @@ const GroupTransferToolbox: Component<{
     setRightSel([]);
   };
 
-  const applyRecommended = () =>
-    addToMonitored(props.recommended.map((r) => r.name).filter(Boolean));
-
   const labelFor = (g: string) => {
     const it = itemByName().get(g);
-    if (!it?.recommended) return g;
-    return it.note ? `★ ${g} — ${it.note}` : `★ ${g}`;
+    const gradePart = it?.grade !== undefined ? ` G${it.grade}` : "";
+    if (!it?.recommended) return `${g}${gradePart}`;
+    return it.note ? `★ ${g}${gradePart} — ${it.note}` : `★ ${g}${gradePart}`;
   };
 
   return (
     <div class="mb-4">
       <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
         <div class={labelClass}>{props.title}</div>
-        <Button
-          class="!px-2 !py-1 !text-xs"
-          disabled={props.recommended.length === 0}
-          title="Add curated recommended groups for this mode"
-          aria-label={`${props.title} apply recommended`}
-          onClick={() => applyRecommended()}
-        >
-          Apply recommended
-        </Button>
+        <Show when={props.onReset}>
+          <Button
+            class="!px-2 !py-1 !text-xs"
+            title={props.resetLabel ?? "Reset"}
+            aria-label={`${props.title} ${props.resetLabel ?? "reset"}`}
+            onClick={() => props.onReset?.()}
+          >
+            {props.resetLabel ?? "Reset"}
+          </Button>
+        </Show>
       </div>
       <label class="mb-2 block min-w-0">
         <span class={labelClass}>Filter</span>
@@ -1034,6 +1048,193 @@ const GroupTransferToolbox: Component<{
           </select>
         </label>
       </div>
+      {/* Claude 2026-10-15: Reset grade for selected monitored groups (G>1).
+          Reason: operator escape for demoted/sticky grades without SQL.
+          Troubleshooting: button disabled until a demoted group is selected.
+          Review if: bulk reset-all-for-mode is added. */}
+      <div class="mt-2 flex flex-wrap items-center gap-2">
+        <Button
+          class="!px-2 !py-1 !text-xs"
+          disabled={gradeBusy() || demotedSelection().length === 0}
+          title="Reset selected groups to grade 1"
+          aria-label={`${props.title} reset grade for selected`}
+          onClick={async () => {
+            const targets = demotedSelection();
+            if (targets.length === 0) return;
+            setGradeBusy(true);
+            setGradeErr("");
+            try {
+              for (const g of targets) {
+                await resetUsenetNNTPGroupGrade(props.mode, g);
+              }
+              props.onGradeReset?.();
+            } catch (e) {
+              setGradeErr(e instanceof Error ? e.message : String(e));
+            } finally {
+              setGradeBusy(false);
+            }
+          }}
+        >
+          Reset grade
+        </Button>
+        <Show when={gradeErr()}>
+          <ErrorText>{gradeErr()}</ErrorText>
+        </Show>
+      </div>
+    </div>
+  );
+};
+
+// Claude 2026-10-15: groupsFromPackageStep returns names for steps 1..N from
+// the packages map, falling back to items filtered by step<=N.
+// Reason: slider preview must match what the server would expand on Save.
+// Troubleshooting: packages undefined → falls back to items step filter.
+// Review if: server changes package expansion logic.
+function groupsFromPackageStep(
+  step: number,
+  avail: UsenetNNTPAvailableGroups,
+): string[] {
+  if (avail.packages) {
+    const names = new Set<string>();
+    for (let s = 1; s <= step; s++) {
+      const key = String(s);
+      for (const it of avail.packages[key] ?? []) {
+        if (it.name) names.add(it.name);
+      }
+    }
+    return [...names].sort((a, b) => a.localeCompare(b));
+  }
+  // Fallback: use items annotated with step<=N.
+  return (avail.items ?? [])
+    .filter((it) => it.step !== undefined && it.step <= step)
+    .map((it) => it.name)
+    .sort((a, b) => a.localeCompare(b));
+}
+
+// PackageSliderPanel renders the step slider + optional custom chip + advanced
+// collapse for one mode (movies/series/adult).
+//
+// Claude 2026-10-15: per-mode slider panel replacing always-visible toolbox.
+// Reason: slider is the primary UX; toolbox is advanced/expert territory.
+// Troubleshooting: steps undefined → cumulative count hidden (server older build).
+// Review if: step count changes from 5 or steps shape changes.
+const STEP_MAX = 5;
+
+const PackageSliderPanel: Component<{
+  title: string;
+  mode: "movies" | "series" | "adult";
+  pkg: string;
+  steps?: UsenetNNTPAvailableGroups["steps"];
+  avail: UsenetNNTPAvailableGroups;
+  monitored: string[];
+  onPackageChange: (pkg: string, groups: string[]) => void;
+  onGroupsChange: (groups: string[]) => void;
+  onGradeReset?: () => void;
+}> = (props) => {
+  const [advOpen, setAdvOpen] = createSignal(false);
+
+  const currentStep = () => {
+    const n = parseInt(props.pkg, 10);
+    return Number.isFinite(n) && n >= 1 && n <= STEP_MAX ? n : 5;
+  };
+
+  const isCustom = () => props.pkg === "custom";
+
+  const cumulativeCount = () => {
+    if (!props.steps || isCustom()) return null;
+    const step = String(currentStep());
+    return props.steps[step]?.cumulativeCount ?? null;
+  };
+
+  const applyStep = (step: number) => {
+    const groups = groupsFromPackageStep(step, props.avail);
+    props.onPackageChange(String(step), groups);
+  };
+
+  const resetToStep = () => applyStep(currentStep());
+
+  const stepLabels: Record<number, string> = {
+    1: "Most reliable",
+    2: "High coverage",
+    3: "Broad coverage",
+    4: "Extended",
+    5: "Largest selection",
+  };
+
+  return (
+    <div class="mb-4 rounded border border-border p-3">
+      <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <span class={labelClass}>{props.title}</span>
+        <Show when={isCustom()}>
+          <span class="rounded bg-accent/10 px-2 py-0.5 text-xs font-medium text-accent">
+            Custom
+          </span>
+        </Show>
+      </div>
+      <Show when={!isCustom()}>
+        <div class="mb-3">
+          <div class="flex items-center justify-between text-xs text-muted">
+            <span>Most reliable (narrow)</span>
+            <span>Largest selection</span>
+          </div>
+          <input
+            type="range"
+            min={1}
+            max={STEP_MAX}
+            step={1}
+            class="mt-1 w-full accent-accent"
+            aria-label={`${props.title} package step`}
+            value={currentStep()}
+            onInput={(e) => applyStep(Number(e.currentTarget.value))}
+          />
+          <div class="mt-1 flex items-center gap-2 text-xs text-muted">
+            <span>
+              Step {currentStep()} — {stepLabels[currentStep()] ?? ""}
+            </span>
+            <Show when={cumulativeCount() !== null}>
+              <span class="text-fg">
+                ({cumulativeCount()} group{cumulativeCount() === 1 ? "" : "s"})
+              </span>
+            </Show>
+          </div>
+        </div>
+      </Show>
+      <Show when={isCustom()}>
+        <div class="mb-3 flex items-center gap-2">
+          <Muted>
+            Groups edited manually. Slider disabled while custom.
+          </Muted>
+          <Button
+            class="!px-2 !py-1 !text-xs"
+            onClick={() => applyStep(currentStep())}
+          >
+            Reset to step {currentStep()}
+          </Button>
+        </div>
+      </Show>
+      <details
+        open={advOpen()}
+        onToggle={(e) => setAdvOpen((e.currentTarget as HTMLDetailsElement).open)}
+      >
+        <summary class="cursor-pointer select-none text-xs text-muted hover:text-fg">
+          Customize groups
+        </summary>
+        <div class="mt-3">
+          <GroupTransferToolbox
+            title={props.title}
+            mode={props.mode}
+            items={props.avail.items ?? []}
+            recommended={props.avail.recommended ?? []}
+            monitored={props.monitored}
+            onChange={(groups) => {
+              props.onGroupsChange(groups);
+            }}
+            resetLabel={`Reset to step ${currentStep()}`}
+            onReset={resetToStep}
+            onGradeReset={props.onGradeReset}
+          />
+        </div>
+      </details>
     </div>
   );
 };
@@ -1046,12 +1247,16 @@ const NativeSearchCard: Component = () => {
   const [moviesGroups, setMoviesGroups] = createSignal<string[]>([]);
   const [seriesGroups, setSeriesGroups] = createSignal<string[]>([]);
   const [adultGroups, setAdultGroups] = createSignal<string[]>([]);
-  const [itemsMovies, setItemsMovies] = createSignal<UsenetNNTPGroupItem[]>([]);
-  const [itemsSeries, setItemsSeries] = createSignal<UsenetNNTPGroupItem[]>([]);
-  const [itemsAdult, setItemsAdult] = createSignal<UsenetNNTPGroupItem[]>([]);
-  const [recMovies, setRecMovies] = createSignal<UsenetNNTPGroupItem[]>([]);
-  const [recSeries, setRecSeries] = createSignal<UsenetNNTPGroupItem[]>([]);
-  const [recAdult, setRecAdult] = createSignal<UsenetNNTPGroupItem[]>([]);
+  // Claude 2026-10-15: package signals for the 5-step slider.
+  // Reason: "1".."5" drives server-side group expansion; "custom" = manual list.
+  // Troubleshooting: package undefined from older server → default to "5".
+  // Review if: step count or package key format changes.
+  const [moviesPackage, setMoviesPackage] = createSignal("5");
+  const [seriesPackage, setSeriesPackage] = createSignal("5");
+  const [adultPackage, setAdultPackage] = createSignal("5");
+  const [availMovies, setAvailMovies] = createSignal<UsenetNNTPAvailableGroups>({ mode: "movies", groups: [] });
+  const [availSeries, setAvailSeries] = createSignal<UsenetNNTPAvailableGroups>({ mode: "series", groups: [] });
+  const [availAdult, setAvailAdult] = createSignal<UsenetNNTPAvailableGroups>({ mode: "adult", groups: [] });
   const [groupsError, setGroupsError] = createSignal("");
   const [indexDir, setIndexDir] = createSignal("");
   const [indexMaxGb, setIndexMaxGb] = createSignal(20);
@@ -1069,14 +1274,6 @@ const NativeSearchCard: Component = () => {
       .map((s) => s.trim())
       .filter(Boolean);
 
-  const toItems = (
-    groups: string[] | undefined,
-    items: UsenetNNTPGroupItem[] | undefined,
-  ): UsenetNNTPGroupItem[] => {
-    if (items && items.length > 0) return items;
-    return (groups ?? []).map((name) => ({ name }));
-  };
-
   const apply = (r: UsenetNNTPNativeSettings) => {
     setEnabled(r.enabled);
     setMovies(r.movies);
@@ -1085,6 +1282,9 @@ const NativeSearchCard: Component = () => {
     setMoviesGroups(parseStored(r.moviesGroups));
     setSeriesGroups(parseStored(r.seriesGroups));
     setAdultGroups(parseStored(r.adultGroups));
+    setMoviesPackage(r.moviesPackage ?? "5");
+    setSeriesPackage(r.seriesPackage ?? "5");
+    setAdultPackage(r.adultPackage ?? "5");
     setIndexDir(r.indexDir ?? "");
     setIndexMaxGb(r.indexMaxGb || 20);
     setWindowDays(r.windowDays || 14);
@@ -1093,22 +1293,22 @@ const NativeSearchCard: Component = () => {
     setProbeDetail(r.probeDetail || "");
   };
 
-  // Claude 2026-10-15: first-run pre-fill recommended as unsaved draft.
-  // Reason: empty monitored lists are a cold start; Save still required.
-  // Troubleshooting: dirty after load with empty saved groups — expected once.
+  // Claude 2026-10-15: first-run prefill for package="5" (ceiling max) with empty groups.
+  // Reason: cold-start UX — draft step-5 groups unsaved so Save is still required.
+  // Troubleshooting: dirty after load with empty groups = expected on first visit.
   // Review if: wizard step sets groups before Settings opens.
-  const prefillRecommendedIfEmpty = (
+  const prefillStepIfEmpty = (
+    pkg: string,
     current: string[],
-    recommended: UsenetNNTPGroupItem[],
     setter: (v: string[]) => void,
+    avail: UsenetNNTPAvailableGroups,
   ): boolean => {
-    if (current.length > 0 || recommended.length === 0) return false;
-    setter(
-      recommended
-        .map((r) => r.name)
-        .filter(Boolean)
-        .sort((a, b) => a.localeCompare(b)),
-    );
+    if (current.length > 0) return false;
+    const step = parseInt(pkg, 10);
+    const stepNum = Number.isFinite(step) && step >= 1 && step <= STEP_MAX ? step : 5;
+    const groups = groupsFromPackageStep(stepNum, avail);
+    if (groups.length === 0) return false;
+    setter(groups);
     return true;
   };
 
@@ -1120,22 +1320,19 @@ const NativeSearchCard: Component = () => {
         fetchUsenetNNTPGroups("series"),
         fetchUsenetNNTPGroups("adult"),
       ]);
-      setItemsMovies(toItems(m.groups, m.items));
-      setItemsSeries(toItems(s.groups, s.items));
-      setItemsAdult(toItems(a.groups, a.items));
-      setRecMovies(m.recommended ?? []);
-      setRecSeries(s.recommended ?? []);
-      setRecAdult(a.recommended ?? []);
+      setAvailMovies(m);
+      setAvailSeries(s);
+      setAvailAdult(a);
       if (opts?.prefillEmpty) {
-        // Array literal so every mode is pre-filled (no short-circuit).
+        // Array literal prevents short-circuit so all three modes are checked.
         const filled = [
-          prefillRecommendedIfEmpty(moviesGroups(), m.recommended ?? [], setMoviesGroups),
-          prefillRecommendedIfEmpty(seriesGroups(), s.recommended ?? [], setSeriesGroups),
-          prefillRecommendedIfEmpty(adultGroups(), a.recommended ?? [], setAdultGroups),
+          prefillStepIfEmpty(moviesPackage(), moviesGroups(), setMoviesGroups, m),
+          prefillStepIfEmpty(seriesPackage(), seriesGroups(), setSeriesGroups, s),
+          prefillStepIfEmpty(adultPackage(), adultGroups(), setAdultGroups, a),
         ].includes(true);
         if (filled) {
           setDirty(true);
-          status.set("Recommended groups pre-filled — Save to apply");
+          status.set("All relevant groups pre-selected (ceiling max) — Save to apply");
         }
       }
     } catch (e) {
@@ -1170,6 +1367,9 @@ const NativeSearchCard: Component = () => {
         moviesGroups: moviesGroups().join("\n"),
         seriesGroups: seriesGroups().join("\n"),
         adultGroups: adultGroups().join("\n"),
+        moviesPackage: moviesPackage(),
+        seriesPackage: seriesPackage(),
+        adultPackage: adultPackage(),
         indexDir: indexDir().trim(),
         indexMaxGb: indexMaxGb(),
         windowDays: windowDays(),
@@ -1197,11 +1397,24 @@ const NativeSearchCard: Component = () => {
     status.set("");
   };
 
-  const setGroups = (
-    setter: (v: string[]) => void,
+  const handlePackageChange = (
+    setPkg: (v: string) => void,
+    setGrp: (v: string[]) => void,
+    pkg: string,
     groups: string[],
   ) => {
-    setter(groups);
+    setPkg(pkg);
+    setGrp(groups);
+    mark();
+  };
+
+  const handleGroupsChange = (
+    setPkg: (v: string) => void,
+    setGrp: (v: string[]) => void,
+    groups: string[],
+  ) => {
+    setPkg("custom");
+    setGrp(groups);
     mark();
   };
 
@@ -1271,32 +1484,69 @@ const NativeSearchCard: Component = () => {
           Couldn't load available newsgroups: {groupsError()}
         </ErrorText>
       </Show>
-      <GroupTransferToolbox
-        title="Movies"
-        items={itemsMovies()}
-        recommended={recMovies()}
-        monitored={moviesGroups()}
-        onChange={(g) => setGroups(setMoviesGroups, g)}
-      />
-      <GroupTransferToolbox
-        title="Series"
-        items={itemsSeries()}
-        recommended={recSeries()}
-        monitored={seriesGroups()}
-        onChange={(g) => setGroups(setSeriesGroups, g)}
-      />
-      <GroupTransferToolbox
-        title="Adult"
-        items={itemsAdult()}
-        recommended={recAdult()}
-        monitored={adultGroups()}
-        onChange={(g) => setGroups(setAdultGroups, g)}
-      />
+      {/* Claude 2026-10-15: per-mode panels shown only when mode toggle is on.
+          Reason: slider + advanced collapse replaces always-visible toolboxes.
+          Troubleshooting: panel hidden despite mode on → check movies()/series()/adult() signal.
+          Review if: all-mode single slider is preferred over per-mode. */}
+      <Show when={movies()}>
+        <PackageSliderPanel
+          title="Movies"
+          mode="movies"
+          pkg={moviesPackage()}
+          steps={availMovies().steps}
+          avail={availMovies()}
+          monitored={moviesGroups()}
+          onPackageChange={(pkg, groups) =>
+            handlePackageChange(setMoviesPackage, setMoviesGroups, pkg, groups)
+          }
+          onGroupsChange={(groups) =>
+            handleGroupsChange(setMoviesPackage, setMoviesGroups, groups)
+          }
+          onGradeReset={() => void loadAvailable()}
+        />
+      </Show>
+      <Show when={series()}>
+        <PackageSliderPanel
+          title="Series"
+          mode="series"
+          pkg={seriesPackage()}
+          steps={availSeries().steps}
+          avail={availSeries()}
+          monitored={seriesGroups()}
+          onPackageChange={(pkg, groups) =>
+            handlePackageChange(setSeriesPackage, setSeriesGroups, pkg, groups)
+          }
+          onGroupsChange={(groups) =>
+            handleGroupsChange(setSeriesPackage, setSeriesGroups, groups)
+          }
+          onGradeReset={() => void loadAvailable()}
+        />
+      </Show>
+      <Show when={adult()}>
+        <PackageSliderPanel
+          title="Adult"
+          mode="adult"
+          pkg={adultPackage()}
+          steps={availAdult().steps}
+          avail={availAdult()}
+          monitored={adultGroups()}
+          onPackageChange={(pkg, groups) =>
+            handlePackageChange(setAdultPackage, setAdultGroups, pkg, groups)
+          }
+          onGroupsChange={(groups) =>
+            handleGroupsChange(setAdultPackage, setAdultGroups, groups)
+          }
+          onGradeReset={() => void loadAvailable()}
+        />
+      </Show>
       <Muted class="mb-3">
-        Filter the provider list, star-mark recommended groups, or Apply
-        recommended. First visit pre-fills recommended as an unsaved draft —
-        Save to commit. Crawl indexes the union of monitored groups; search uses
-        only the active mode&apos;s list.
+        The slider sets a grade ceiling — only groups graded at or below that tier
+        are crawled. Groups start at grade 1 (most reliable). Usenet article
+        failures demote a group one tier. Once a group is demoted past the ceiling,
+        crawling stops and its index is deleted. Two successful native imports promote one tier. Grade 5 is sticky on demote — groups at that
+        tier stay regardless of failures. Expand "Customize groups" to edit the list
+        manually; doing so switches that mode to Custom and disables the slider until
+        you reset it.
       </Muted>
       <label class="mb-3 block">
         <span class={labelClass}>Index directory (unused — index is in the SAK Postgres DB)</span>

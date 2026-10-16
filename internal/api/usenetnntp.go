@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -25,6 +26,9 @@ type usenetNNTPNativeResponse struct {
 	MoviesGroups  string `json:"moviesGroups"`
 	SeriesGroups  string `json:"seriesGroups"`
 	AdultGroups   string `json:"adultGroups"`
+	MoviesPackage string `json:"moviesPackage"`
+	SeriesPackage string `json:"seriesPackage"`
+	AdultPackage  string `json:"adultPackage"`
 	IndexDir      string `json:"indexDir"`
 	IndexMaxGB    int    `json:"indexMaxGb"`
 	WindowDays    int    `json:"windowDays"`
@@ -41,6 +45,9 @@ type usenetNNTPNativeRequest struct {
 	MoviesGroups  *string `json:"moviesGroups"`
 	SeriesGroups  *string `json:"seriesGroups"`
 	AdultGroups   *string `json:"adultGroups"`
+	MoviesPackage *string `json:"moviesPackage"`
+	SeriesPackage *string `json:"seriesPackage"`
+	AdultPackage  *string `json:"adultPackage"`
 	IndexDir      *string `json:"indexDir"`
 	IndexMaxGB    *int    `json:"indexMaxGb"`
 	WindowDays    *int    `json:"windowDays"`
@@ -50,18 +57,29 @@ type usenetNNTPNativeRequest struct {
 type usenetNNTPGroupsResponse struct {
 	Mode   string   `json:"mode"`
 	Groups []string `json:"groups"`
-	// Claude 2026-10-15: recommended + annotated items for searchable picker.
-	// Reason: dual-list of raw names is daunting; seeds mark Apply-recommended.
-	// Troubleshooting: recommended empty → provider lacks curated groups.
-	// Review if: items gain perDay/usablePct from group catalog cache.
-	Recommended []usenetNNTPGroupItem `json:"recommended"`
-	Items       []usenetNNTPGroupItem `json:"items"`
+	// Claude 2026-10-15: 5-step package slider data (reliability → breadth).
+	// Reason: replace individual-group defaults with cumulative curated steps.
+	// Troubleshooting: steps empty → provider lacks package groups.
+	// Review if: slice 2 wires Settings slider; recommended shim removed.
+	Recommended []usenetNNTPGroupItem            `json:"recommended"`
+	Items       []usenetNNTPGroupItem            `json:"items"`
+	Steps       map[string]usenetNNTPStepInfo    `json:"steps"`
+	Packages    map[string][]usenetNNTPGroupItem `json:"packages"`
+}
+
+type usenetNNTPStepInfo struct {
+	Step            int `json:"step"`
+	GroupCount      int `json:"groupCount"`
+	CumulativeCount int `json:"cumulativeCount"`
 }
 
 type usenetNNTPGroupItem struct {
 	Name        string `json:"name"`
 	Recommended bool   `json:"recommended"`
-	Tier        string `json:"tier,omitempty"`
+	Tier        string `json:"tier,omitempty"` // shim: core|extra from step 1|2
+	Step        int    `json:"step,omitempty"`
+	Pinned      bool   `json:"pinned,omitempty"`
+	Grade       int    `json:"grade,omitempty"` // 1=most reliable … 5=least (sticky)
 	Note        string `json:"note,omitempty"`
 }
 
@@ -91,10 +109,18 @@ func getUsenetNNTPGroupsHandler(svc *usenetsearch.Service) http.HandlerFunc {
 			return
 		}
 		active := resolveNNTPNativeService(svc)
+		emptySteps := map[string]usenetNNTPStepInfo{}
+		emptyPkgs := map[string][]usenetNNTPGroupItem{}
+		for s := usenetsearch.PackageStepMin; s <= usenetsearch.PackageStepMax; s++ {
+			key := strconv.Itoa(s)
+			emptySteps[key] = usenetNNTPStepInfo{Step: s}
+			emptyPkgs[key] = []usenetNNTPGroupItem{}
+		}
 		if active == nil {
 			writeJSON(w, usenetNNTPGroupsResponse{
 				Mode: mode, Groups: []string{},
 				Recommended: []usenetNNTPGroupItem{}, Items: []usenetNNTPGroupItem{},
+				Steps: emptySteps, Packages: emptyPkgs,
 			})
 			return
 		}
@@ -106,25 +132,118 @@ func getUsenetNNTPGroupsHandler(svc *usenetsearch.Service) http.HandlerFunc {
 		if groups == nil {
 			groups = []string{}
 		}
-		seeds := usenetsearch.FilterSeedsToProvider(usenetsearch.RecommendedForMode(mode), groups)
-		recByName := make(map[string]usenetNNTPGroupItem, len(seeds))
-		rec := make([]usenetNNTPGroupItem, 0, len(seeds))
-		for _, s := range seeds {
-			it := usenetNNTPGroupItem{Name: s.Name, Recommended: true, Tier: s.Tier, Note: s.Note}
-			recByName[s.Name] = it
-			rec = append(rec, it)
+		pkgSeeds := usenetsearch.FilterPackagesToProvider(usenetsearch.PackagesForMode(mode), groups)
+		byName := map[string]usenetNNTPGroupItem{}
+		packages := map[string][]usenetNNTPGroupItem{}
+		steps := map[string]usenetNNTPStepInfo{}
+		for s := usenetsearch.PackageStepMin; s <= usenetsearch.PackageStepMax; s++ {
+			packages[strconv.Itoa(s)] = []usenetNNTPGroupItem{}
+		}
+		for _, s := range pkgSeeds {
+			tier := ""
+			rec := s.Step <= 2
+			if s.Step == 1 {
+				tier = usenetsearch.SeedTierCore
+			} else if s.Step == 2 {
+				tier = usenetsearch.SeedTierExtra
+			}
+			it := usenetNNTPGroupItem{
+				Name: s.Name, Recommended: rec, Tier: tier,
+				Step: s.Step, Pinned: s.Pinned, Note: s.Note,
+			}
+			byName[s.Name] = it
+			key := strconv.Itoa(s.Step)
+			packages[key] = append(packages[key], it)
+		}
+		for s := usenetsearch.PackageStepMin; s <= usenetsearch.PackageStepMax; s++ {
+			key := strconv.Itoa(s)
+			cumN := 0
+			for _, p := range pkgSeeds {
+				if p.Step <= s {
+					cumN++
+				}
+			}
+			steps[key] = usenetNNTPStepInfo{
+				Step:            s,
+				GroupCount:      len(packages[key]),
+				CumulativeCount: cumN,
+			}
+		}
+		rec := make([]usenetNNTPGroupItem, 0)
+		for _, s := range usenetsearch.FilterSeedsToProvider(usenetsearch.RecommendedForMode(mode), groups) {
+			if it, ok := byName[s.Name]; ok {
+				rec = append(rec, it)
+			}
 		}
 		items := make([]usenetNNTPGroupItem, 0, len(groups))
+		gradeByName := map[string]int{}
+		if active != nil {
+			if grades, gerr := active.ListGroupGrades(r.Context(), mode); gerr == nil {
+				for _, gg := range grades {
+					gradeByName[gg.Group] = gg.Grade
+				}
+			}
+		}
 		for _, g := range groups {
-			it, ok := recByName[g]
+			it, ok := byName[g]
 			if !ok {
 				it = usenetNNTPGroupItem{Name: g}
+			}
+			if gr, ok := gradeByName[g]; ok {
+				it.Grade = gr
+			} else {
+				it.Grade = 1
 			}
 			items = append(items, it)
 		}
 		writeJSON(w, usenetNNTPGroupsResponse{
 			Mode: mode, Groups: groups, Recommended: rec, Items: items,
+			Steps: steps, Packages: packages,
 		})
+	}
+}
+
+// Claude 2026-10-15: operator escape to restore grade 1 after demotions.
+// Reason: sticky grade 5 / mistaken demotes need a Settings reset without SQL.
+// Troubleshooting: POST returns 503 when native index is closed (disabled).
+// Review if: bulk reset-all-for-mode is needed.
+// Related files: usenetsearch.ResetGroupGrade, frontend Usenet.tsx
+type usenetNNTPResetGradeRequest struct {
+	Mode  string `json:"mode"`
+	Group string `json:"group"`
+}
+
+func postUsenetNNTPResetGradeHandler(svc *usenetsearch.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req usenetNNTPResetGradeRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		mode := strings.ToLower(strings.TrimSpace(req.Mode))
+		group := strings.TrimSpace(req.Group)
+		if mode != "movies" && mode != "series" && mode != "adult" {
+			http.Error(w, "mode must be movies, series, or adult", http.StatusBadRequest)
+			return
+		}
+		if group == "" {
+			http.Error(w, "group is required", http.StatusBadRequest)
+			return
+		}
+		active := resolveNNTPNativeService(svc)
+		if active == nil {
+			http.Error(w, "native usenet search is not available", http.StatusServiceUnavailable)
+			return
+		}
+		if err := active.ResetGroupGrade(r.Context(), mode, group); err != nil {
+			if errors.Is(err, usenetsearch.ErrIndexClosed) {
+				http.Error(w, "native index is not open — enable Native search first", http.StatusServiceUnavailable)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "mode": mode, "group": group, "grade": 1})
 	}
 }
 
@@ -153,6 +272,15 @@ func putUsenetNNTPNativeHandler(settingsStore *settings.Store, svc *usenetsearch
 		}
 		if req.Adult != nil {
 			cur.Adult = *req.Adult
+		}
+		if req.MoviesPackage != nil {
+			cur.MoviesPackage = strings.TrimSpace(*req.MoviesPackage)
+		}
+		if req.SeriesPackage != nil {
+			cur.SeriesPackage = strings.TrimSpace(*req.SeriesPackage)
+		}
+		if req.AdultPackage != nil {
+			cur.AdultPackage = strings.TrimSpace(*req.AdultPackage)
 		}
 		if req.MoviesGroups != nil {
 			cur.MoviesGroups = *req.MoviesGroups
@@ -184,6 +312,14 @@ func putUsenetNNTPNativeHandler(settingsStore *settings.Store, svc *usenetsearch
 		if cur.CrawlInterval < 0 {
 			cur.CrawlInterval = 0
 		}
+		// Claude 2026-10-15: non-custom packages expand server-side on Save.
+		// Reason: slider owns the list; client *Groups ignored unless custom.
+		// Troubleshooting: empty after Save → provider filter removed all names.
+		// Review if: re-rank auto-apply writes groups without going through PUT.
+		if errMsg := applyPackageResolution(&cur, active); errMsg != "" {
+			http.Error(w, errMsg, http.StatusBadRequest)
+			return
+		}
 		if cur.Enabled {
 			if errMsg := validatePerModeGroups(cur); errMsg != "" {
 				http.Error(w, errMsg, http.StatusBadRequest)
@@ -203,6 +339,9 @@ func putUsenetNNTPNativeHandler(settingsStore *settings.Store, svc *usenetsearch
 			{usenetsearch.KeyMoviesGroups, cur.MoviesGroups},
 			{usenetsearch.KeySeriesGroups, cur.SeriesGroups},
 			{usenetsearch.KeyAdultGroups, cur.AdultGroups},
+			{usenetsearch.KeyMoviesPackage, cur.MoviesPackage},
+			{usenetsearch.KeySeriesPackage, cur.SeriesPackage},
+			{usenetsearch.KeyAdultPackage, cur.AdultPackage},
 			{usenetsearch.KeyGroups, union}, // legacy mirror for soft-migrate readers
 			{usenetsearch.KeyIndexDir, cur.IndexDir},
 			{usenetsearch.KeyIndexMaxGB, strconv.Itoa(cur.IndexMaxGB)},
@@ -217,6 +356,8 @@ func putUsenetNNTPNativeHandler(settingsStore *settings.Store, svc *usenetsearch
 		}
 		if active != nil {
 			_ = active.Apply(configFromNNTPResponse(cur))
+			// Lowering the ceiling prunes index rows for demoted-beyond groups.
+			_ = active.PruneBeyondCeilings(ctx)
 			probe := active.ProbeSnapshot()
 			_ = settingsStore.Set(ctx, usenetsearch.KeyProbeState, probe.State)
 			_ = settingsStore.Set(ctx, usenetsearch.KeyProbeDetail, probe.Detail)
@@ -238,6 +379,59 @@ func validatePerModeGroups(cur usenetNNTPNativeResponse) string {
 		return "select at least one Adult newsgroup when Adult native search is enabled"
 	}
 	return ""
+}
+
+// applyPackageResolution expands non-custom packages into *Groups on cur.
+func applyPackageResolution(cur *usenetNNTPNativeResponse, svc *usenetsearch.Service) string {
+	type modePack struct {
+		mode string
+		pkg  *string
+		grp  *string
+	}
+	modes := []modePack{
+		{"movies", &cur.MoviesPackage, &cur.MoviesGroups},
+		{"series", &cur.SeriesPackage, &cur.SeriesGroups},
+		{"adult", &cur.AdultPackage, &cur.AdultGroups},
+	}
+	for _, m := range modes {
+		pkg := strings.TrimSpace(*m.pkg)
+		if pkg == "" {
+			pkg = usenetsearch.FormatPackageStep(usenetsearch.DefaultPackageStep)
+			*m.pkg = pkg
+		}
+		step, custom, ok := usenetsearch.ParsePackageValue(pkg)
+		if !ok {
+			return "invalid " + m.mode + " package (want 1–5 or custom)"
+		}
+		if custom {
+			*m.pkg = usenetsearch.PackageCustom
+			continue
+		}
+		var avail []string
+		if svc != nil {
+			avail = svc.CachedAvailableGroups(m.mode)
+		}
+		*m.grp = usenetsearch.FormatGroups(usenetsearch.ResolvePackageGroups(m.mode, step, avail))
+		*m.pkg = usenetsearch.FormatPackageStep(step)
+	}
+	return ""
+}
+
+func loadOrInferPackage(ctx context.Context, settingsStore *settings.Store, key, mode, groups string, svc *usenetsearch.Service) (string, error) {
+	raw, err := settingsStore.Get(ctx, key)
+	if err != nil && !isSettingsNotFound(err) {
+		return "", err
+	}
+	if strings.TrimSpace(raw) != "" {
+		if _, _, ok := usenetsearch.ParsePackageValue(raw); ok {
+			return strings.TrimSpace(raw), nil
+		}
+	}
+	var avail []string
+	if svc != nil {
+		avail = svc.CachedAvailableGroups(mode)
+	}
+	return usenetsearch.InferPackageFromGroups(mode, usenetsearch.ParseGroups(groups), avail), nil
 }
 
 func loadNNTPNativeSettings(ctx context.Context, settingsStore *settings.Store, svc *usenetsearch.Service) (usenetNNTPNativeResponse, error) {
@@ -305,6 +499,18 @@ func loadNNTPNativeSettings(ctx context.Context, settingsStore *settings.Store, 
 	if probeState == "" {
 		probeState = "unknown"
 	}
+	moviesPkg, err := loadOrInferPackage(ctx, settingsStore, usenetsearch.KeyMoviesPackage, "movies", moviesGroups, svc)
+	if err != nil {
+		return usenetNNTPNativeResponse{}, err
+	}
+	seriesPkg, err := loadOrInferPackage(ctx, settingsStore, usenetsearch.KeySeriesPackage, "series", seriesGroups, svc)
+	if err != nil {
+		return usenetNNTPNativeResponse{}, err
+	}
+	adultPkg, err := loadOrInferPackage(ctx, settingsStore, usenetsearch.KeyAdultPackage, "adult", adultGroups, svc)
+	if err != nil {
+		return usenetNNTPNativeResponse{}, err
+	}
 	return usenetNNTPNativeResponse{
 		Enabled:       enabled,
 		Movies:        movies,
@@ -313,6 +519,9 @@ func loadNNTPNativeSettings(ctx context.Context, settingsStore *settings.Store, 
 		MoviesGroups:  moviesGroups,
 		SeriesGroups:  seriesGroups,
 		AdultGroups:   adultGroups,
+		MoviesPackage: moviesPkg,
+		SeriesPackage: seriesPkg,
+		AdultPackage:  adultPkg,
 		IndexDir:      indexDir,
 		IndexMaxGB:    maxGB,
 		WindowDays:    window,
@@ -331,6 +540,9 @@ func configFromNNTPResponse(r usenetNNTPNativeResponse) usenetsearch.Config {
 		MoviesGroups:  usenetsearch.ParseGroups(r.MoviesGroups),
 		SeriesGroups:  usenetsearch.ParseGroups(r.SeriesGroups),
 		AdultGroups:   usenetsearch.ParseGroups(r.AdultGroups),
+		MoviesPackage: r.MoviesPackage,
+		SeriesPackage: r.SeriesPackage,
+		AdultPackage:  r.AdultPackage,
 		IndexDir:      r.IndexDir,
 		IndexMaxGB:    r.IndexMaxGB,
 		WindowDays:    r.WindowDays,

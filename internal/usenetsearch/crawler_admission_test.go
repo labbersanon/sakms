@@ -677,3 +677,137 @@ func TestCrawlOnce_CoresGetMajorityOfPassBudget(t *testing.T) {
 		t.Fatalf("OVER calls by group=%v, want moovee visited this pass", by)
 	}
 }
+
+func TestForwardLag_FirstCrawlWindowAndCaughtUp(t *testing.T) {
+	gr := usenet.GroupRange{Low: 1, High: 1_000_000}
+	if g := forwardLag(0, gr); g != overviewChunk*50 {
+		t.Fatalf("wm=0 lag=%d, want first-crawl window %d", g, overviewChunk*50)
+	}
+	if g := forwardLag(1_000_000, gr); g != 0 {
+		t.Fatalf("caught-up lag=%d, want 0", g)
+	}
+	if g := forwardLag(900_000, gr); g != 100_000 {
+		t.Fatalf("100k-behind lag=%d, want 100000", g)
+	}
+	if g := forwardLag(950_000, gr); g != coreCatchUpLag {
+		t.Fatalf("threshold lag=%d, want %d", g, coreCatchUpLag)
+	}
+}
+
+func TestSplitCoreRest_StagingCoresOnly(t *testing.T) {
+	cores, rest := splitCoreRest([]string{"alt.binaries.tv", "alt.binaries.moovee", "alt.binaries.bloaf"})
+	if len(cores) != 1 || cores[0] != "alt.binaries.moovee" {
+		t.Fatalf("cores=%v, want moovee only (namefix still fills staging first)", cores)
+	}
+	if len(rest) != 2 {
+		t.Fatalf("rest=%v, want tv+bloaf", rest)
+	}
+}
+
+func TestSplitYieldRest_YieldGroupsAreCores(t *testing.T) {
+	cores, rest := splitYieldRest([]string{
+		"alt.binaries.tv",
+		"alt.binaries.bloaf",
+		"alt.binaries.anime",
+		"alt.binaries.dvd",
+		"alt.binaries.moovee",
+	})
+	got := map[string]bool{}
+	for _, g := range cores {
+		got[g] = true
+	}
+	for _, g := range []string{"alt.binaries.tv", "alt.binaries.anime", "alt.binaries.moovee"} {
+		if !got[g] {
+			t.Fatalf("cores=%v missing yield group %s", cores, g)
+		}
+	}
+	if got["alt.binaries.bloaf"] || got["alt.binaries.dvd"] {
+		t.Fatalf("firehose in cores: %v", cores)
+	}
+	if len(rest) != 2 {
+		t.Fatalf("rest=%v, want bloaf+dvd", rest)
+	}
+}
+
+func TestCrawlOnce_SkipsListTailWhileYieldGroupsLag(t *testing.T) {
+	idx, err := OpenIndex(dbtest.New(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { idx.Close() })
+	src := &bfStub{
+		rows: map[string][]usenet.MessageOverview{
+			firehose: releaseRows(1, "Junk.Movie.2001.480p.WEB-DL.x264-GROUP", "j", 5),
+			core:     releaseRows(100001, "Good.Movie.2020.1080p.WEB-DL.x264-GROUP", "g", 3),
+		},
+		gr: map[string]usenet.GroupRange{
+			firehose: {Low: 1, High: 10000},
+			core:     {Low: 1, High: 200_000},
+		},
+	}
+	ctx := context.Background()
+	if err := idx.SetWatermark(ctx, core, 100_000); err != nil {
+		t.Fatal(err)
+	}
+	c := &Crawler{
+		Src: src, Index: idx, Groups: []string{firehose, core},
+		MaxChunksPerGroup: 1, MaxChunksPerPass: 3,
+	}
+	res, err := c.CrawlOnce(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Advanced {
+		t.Fatal("expected Advanced")
+	}
+	if !c.SkipListTail {
+		t.Fatal("expected SkipListTail while moovee is 100k behind HIGH")
+	}
+	if c.shouldBackfill() {
+		t.Fatal("backfill must stay off while SkipListTail")
+	}
+	by := overCallsByGroup(src.calls)
+	if by[firehose] != 0 {
+		t.Fatalf("bloaf OVERed while yield group lagging: %v", by)
+	}
+	if by[core] < 1 {
+		t.Fatalf("moovee not OVERed: %v", by)
+	}
+}
+
+func TestCrawlOnce_ListTailRunsWhenYieldCaughtUp(t *testing.T) {
+	idx, src := newFirehoseFixture(t)
+	ctx := context.Background()
+	c := &Crawler{
+		Src: src, Index: idx, Groups: []string{firehose, core},
+		MaxChunksPerGroup: 1, MaxChunksPerPass: 3,
+	}
+	if _, err := c.CrawlOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if c.SkipListTail {
+		t.Fatal("did not expect SkipListTail when moovee lag is 3")
+	}
+	c.BackfillEnabled = true
+	if !c.shouldBackfill() {
+		t.Fatal("backfill should run when yield groups are caught up")
+	}
+	by := overCallsByGroup(src.calls)
+	if by[firehose] < 1 {
+		t.Fatalf("bloaf should get rest budget when cores caught up: %v", by)
+	}
+	if by[core] < 1 {
+		t.Fatalf("moovee should still run: %v", by)
+	}
+}
+
+func TestCrawler_ShouldBackfillRespectsSkipListTail(t *testing.T) {
+	c := &Crawler{BackfillEnabled: true}
+	if !c.shouldBackfill() {
+		t.Fatal("backfill on when caught up")
+	}
+	c.SkipListTail = true
+	if c.shouldBackfill() {
+		t.Fatal("backfill off while catching up")
+	}
+}

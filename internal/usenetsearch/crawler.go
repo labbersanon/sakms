@@ -33,6 +33,16 @@ const (
 	forwardChunksPerGroup = 8
 )
 
+// Claude 2026-10-16: skip LIST-tail OVER (and backfill) while a yield group
+// lags provider HIGH by this many articles.
+// Reason: each deploy drained a finite complete-pending queue then idle;
+// dvd/bloaf OVER + BackfillOnce STAT burned the loop while x264/hdtv/tv
+// sat ~1.2M behind HIGH at 0% complete — searchable bursted then stopped.
+// Troubleshooting: o2cli grep "skip LIST tail" missing while bloaf/dvd
+// crawl chunks continue and yield watermarks lag HIGH — this gate is off.
+// Review if: coreCatchUpLag becomes a Settings knob.
+const coreCatchUpLag = 50_000
+
 // CrawlResult summarizes one continuous crawl pass.
 type CrawlResult struct {
 	Advanced bool // ingested at least one OVER chunk
@@ -91,13 +101,16 @@ type Crawler struct {
 	BackfillStart     int
 
 	// CrawlStart / CoreStart are loop-owned round-robin offsets into the
-	// non-core and packages.json-core slices. MaxChunksPerPass /
+	// LIST-tail and name-fix-yield slices. MaxChunksPerPass /
 	// MaxChunksPerGroup override the forward caps (0 = defaults); tests set
 	// them small so a firehose group cannot eat the fixture.
 	CrawlStart        int
 	CoreStart         int
 	MaxChunksPerPass  int
 	MaxChunksPerGroup int
+	// SkipListTail is set by CrawlOnce when a yield group is still
+	// coreCatchUpLag+ articles behind HIGH. Service skips BackfillOnce.
+	SkipListTail bool
 	// obfStageOK caches per-group "may stage new obfuscated sets" for this Crawler.
 	obfStageOK map[string]bool
 
@@ -159,6 +172,51 @@ func splitCoreRest(groups []string) (cores, rest []string) {
 	return cores, rest
 }
 
+// Claude 2026-10-16: crawl 2/3 share is yield groups, not staging cores.
+// Reason: tv/anime/highspeed complete-pending sat in the LIST tail (step 3–5)
+// while boneless/dvd took the rest third; searchable bursted then stopped.
+// splitCoreRest stays IsStagingCore so DuePendingNames still fills moovee
+// before anime. Troubleshooting: crawl chunks on bloaf/dvd while tv
+// watermark lags HIGH — this split must put yield groups in the core share.
+// Review if: StagingCoreMaxStep is raised to 4 (then this matches again).
+func splitYieldRest(groups []string) (yield, rest []string) {
+	for _, g := range groups {
+		if IsNameFixYieldGroup(g) {
+			yield = append(yield, g)
+		} else {
+			rest = append(rest, g)
+		}
+	}
+	return yield, rest
+}
+
+func (c *Crawler) shouldBackfill() bool {
+	return c.BackfillEnabled && !c.SkipListTail
+}
+
+// yieldGroupsCatchingUp reports whether any name-fix yield group still has
+// forward OVER work of coreCatchUpLag or more articles.
+func (c *Crawler) yieldGroupsCatchingUp(ctx context.Context, cores []string) bool {
+	for _, g := range cores {
+		gr, err := c.Src.GroupRange(ctx, g)
+		if err != nil {
+			continue
+		}
+		if c.ranges == nil {
+			c.ranges = map[string]usenet.GroupRange{}
+		}
+		c.ranges[g] = gr
+		wm, err := c.Index.Watermark(ctx, g)
+		if err != nil {
+			continue
+		}
+		if forwardLag(wm, gr) >= coreCatchUpLag {
+			return true
+		}
+	}
+	return false
+}
+
 // crawlList OVERs list (already language-filtered) until budget chunks, round-robin from start.
 func (c *Crawler) crawlList(ctx context.Context, list []string, start, budget, groupCap int) (adv, busy bool) {
 	if len(list) == 0 || budget <= 0 {
@@ -200,11 +258,13 @@ func (c *Crawler) crawlList(ctx context.Context, list []string, start, budget, g
 }
 
 // CrawlOnce advances watermarks round-robin across configured groups, up to
-// forwardChunksPerPass OVER chunks (forwardChunksPerGroup per group). Staging
-// cores (pinned / step ≤2) get 2/3 of the pass when mixed with the LIST tail
-// (NNTmux: spend header budget on groups you actually index).
+// forwardChunksPerPass OVER chunks (forwardChunksPerGroup per group). Name-fix
+// yield groups get 2/3 of the pass when mixed with the LIST tail; when any of
+// them is still coreCatchUpLag behind HIGH, they get the whole pass and the
+// LIST tail is skipped (NNTmux: spend header budget on groups you index).
 func (c *Crawler) CrawlOnce(ctx context.Context) (CrawlResult, error) {
 	var res CrawlResult
+	c.SkipListTail = false
 	if c.Src == nil || c.Index == nil {
 		return res, errors.New("usenetsearch: crawler not configured")
 	}
@@ -219,15 +279,9 @@ func (c *Crawler) CrawlOnce(ctx context.Context) (CrawlResult, error) {
 	if len(groups) == 0 {
 		return res, nil
 	}
-	cores, rest := splitCoreRest(groups)
+	cores, rest := splitYieldRest(groups)
 	res.NextStart = c.CrawlStart
 	res.NextCoreStart = c.CoreStart
-	if len(rest) > 0 {
-		res.NextStart = c.CrawlStart + 1
-	}
-	if len(cores) > 0 {
-		res.NextCoreStart = c.CoreStart + 1
-	}
 	passCap, groupCap := c.forwardBudget()
 	var coreBudget, restBudget int
 	switch {
@@ -235,9 +289,19 @@ func (c *Crawler) CrawlOnce(ctx context.Context) (CrawlResult, error) {
 		coreBudget = passCap
 	case len(cores) == 0:
 		restBudget = passCap
+	case c.yieldGroupsCatchingUp(ctx, cores):
+		c.SkipListTail = true
+		coreBudget = passCap
+		log.Printf("usenetsearch: crawl skip LIST tail (yield groups catching up, lag>=%d)", coreCatchUpLag)
 	default:
 		coreBudget = max(1, passCap*2/3)
 		restBudget = passCap - coreBudget
+	}
+	if len(rest) > 0 && restBudget > 0 {
+		res.NextStart = c.CrawlStart + 1
+	}
+	if len(cores) > 0 {
+		res.NextCoreStart = c.CoreStart + 1
 	}
 	adv, busy := c.crawlList(ctx, cores, c.CoreStart, coreBudget, groupCap)
 	res.Advanced = adv
@@ -270,6 +334,31 @@ func (c *Crawler) CrawlOnce(ctx context.Context) (CrawlResult, error) {
 	return res, nil
 }
 
+// forwardFrom is the next article CrawlOnce will OVER in group (wm==0 starts
+// ~100k behind HIGH so a new group does not walk full retention).
+func forwardFrom(wm int, gr usenet.GroupRange) int {
+	from := wm + 1
+	if from < gr.Low {
+		from = gr.Low
+	}
+	if wm == 0 {
+		span := overviewChunk * 50 // ~100k articles first pass
+		from = gr.High - span + 1
+		if from < gr.Low {
+			from = gr.Low
+		}
+	}
+	return from
+}
+
+func forwardLag(wm int, gr usenet.GroupRange) int {
+	from := forwardFrom(wm, gr)
+	if from > gr.High {
+		return 0
+	}
+	return gr.High - from + 1
+}
+
 func (c *Crawler) crawlGroup(ctx context.Context, group string, maxChunks int) (chunks int, advanced bool, err error) {
 	c.curEmpty = false
 	gr, err := c.Src.GroupRange(ctx, group)
@@ -284,18 +373,7 @@ func (c *Crawler) crawlGroup(ctx context.Context, group string, maxChunks int) (
 	if err != nil {
 		return 0, false, err
 	}
-	from := wm + 1
-	if from < gr.Low {
-		from = gr.Low
-	}
-	// First crawl: don't try to index the entire retention — start near high.
-	if wm == 0 {
-		span := overviewChunk * 50 // ~100k articles first pass
-		from = gr.High - span + 1
-		if from < gr.Low {
-			from = gr.Low
-		}
-	}
+	from := forwardFrom(wm, gr)
 	if from > gr.High {
 		if wm != gr.High {
 			if err := c.Index.SetWatermark(ctx, group, gr.High); err != nil {

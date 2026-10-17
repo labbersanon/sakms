@@ -11313,3 +11313,20 @@ status stays active.
 | `internal/usenetsearch/namefix_index.go` | RenameRelease calls recomputeOne |
 | `internal/usenetsearch/{releases,namefix}_test.go` | named-complete first; searchable after rename |
 
+## 2026-10-16 — Searchable stall: namefix BODY spent on boneless dumps
+
+**Problem:** Searchable sat at 36 after the rename-recompute fix. Namefix passes were `renamed=0` with 663 due complete sets.
+**Root cause:** 644 of those due rows were `alt.binaries.boneless` nicovideo `.tar.zst` dumps. Staging cores had 0 due, so newest boneless filled all 20 BODY slots; anime/hdtv.x264/teevee (the groups that actually rename) never ran. Boneless also had 146k subject-named 1-seg rows, so `GroupHasNamedRelease` kept staging more dumps.
+**Fix:** Namefix only queries yield groups (staging cores, package step ≤4, plus anime). `GroupHasNamedRelease` requires a searchable non-subject name. 40 sets per pass.
+**Outcome:** BODY budget goes to anime/highspeed/tv/cores; boneless dumps TTL instead of blocking searchable.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/seeds.go` | `IsNameFixYieldGroup` |
+| `internal/usenetsearch/namefix_index.go` | DuePendingNames filters to yield groups |
+| `internal/usenetsearch/namefix.go` | 40 sets per pass |
+| `internal/usenetsearch/index.go` | GroupHasNamedRelease = searchable + non-subject |
+| `internal/usenetsearch/{seeds,namefix}_test.go` | yield filter + subject-named investment tests |
+

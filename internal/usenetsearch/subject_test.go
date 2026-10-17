@@ -74,6 +74,22 @@ func TestParseSubject_Obfuscated(t *testing.T) {
 	}
 }
 
+func TestParseSubject_ImplausibleYencPartsIgnored(t *testing.T) {
+	ps := ParseSubject(`"UrHfhOEuTZTAP6SWX2HhDYJ6N" yEnc (730696/967646)`)
+	if ps.PartN != 0 || ps.PartM != 0 {
+		t.Fatalf("parts %+v, want 0/0 (unique-ID pair is not a yEnc total)", ps)
+	}
+	h := parseHeader("alt.binaries.hdtv.x264", `"UrHfhOEuTZTAP6SWX2HhDYJ6N" yEnc (730696/967646)`,
+		"p@x", "m@x", 1, 1, 1000, true)
+	if isObfKey(h.ReleaseName) {
+		t.Fatalf("staged %q, want skip_unparsed", h.ReleaseName)
+	}
+	ok := ParseSubject(`a1b2c3d4e5f6789012345678 yEnc (1/80)`)
+	if ok.PartN != 1 || ok.PartM != 80 {
+		t.Fatalf("plausible yEnc still parsed: %+v", ok)
+	}
+}
+
 func TestParseSubject_Latin1BeforeYencDoesNotPanic(t *testing.T) {
 	// Live panic: ToLower expanded latin1 0xe4 → U+FFFD (+2 bytes) so
 	// core[:i] was [:80] on a 78-byte subject.

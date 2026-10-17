@@ -11281,3 +11281,20 @@ status stays active.
 | `frontend/src/screens/Dashboard.tsx` | wrap allocation table in Card |
 | `frontend/src/screens/Dashboard.test.tsx` | heading is h3 inside the bordered card |
 
+## 2026-10-16 — NNTP pending_name stall: unique-ID yEnc (n/m) floods
+
+**Problem:** Native NNTP looked idle (skip_unparsed / empty-skip / skip_obf_cap) and `pending_name` sat near 174k with namefix renaming almost nothing on cores.
+**Root cause:** Obfuscated posters put unique IDs in the yEnc pair (`"UrHfh…" yEnc (730696/967646)`). Each article became its own staged set with `declared_segs=967646` and completeness 0% forever. Live: 104k such sets (tv/hdtv.x264/teevee/boneless), filling per-group unnamed caps so real hashes could not stage. Namefix also preferred newest LIST-tail (boneless) over staging cores.
+**Fix:** Ignore yEnc (n/m) totals above 99999 (same 5-digit cap as `[k/N]`). Completeness treats those part_m values as undeclared. Sweep deletes existing pending_name rows with implausible part_m. DuePendingNames fills staging cores before LIST tail.
+**Outcome:** New floods are skip_unparsed instead of pending_name. Existing junk drains in sweep batches. Namefix BODY budget goes to moovee/teevee/hdtv.x264 first.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/subject.go` | `maxYencPartM`; `yencParts` skips implausible pairs |
+| `internal/usenetsearch/completeness.go` | ignore PartM/fileM > max |
+| `internal/usenetsearch/namefix_index.go` | cores-first DuePendingNames; SweepImplausibleYenc |
+| `internal/usenetsearch/service.go` | sweep catch-up extra batches |
+| `internal/usenetsearch/{subject,completeness,namefix}_test.go` | parse/stage/sweep/order tests |
+

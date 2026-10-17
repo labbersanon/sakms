@@ -991,6 +991,30 @@ func (s *Service) runSweeps(ctx context.Context) {
 	if n > 0 {
 		log.Printf("usenetsearch: incomplete sweep removed=%d ttl_days=%d", n, days)
 	}
+	// Claude 2026-10-16: drain unique-ID yEnc pending_name (part_m > maxYencPartM).
+	// Reason: 104k junk sets sat at 0% complete and held unnamed caps on teevee/hdtv.x264.
+	// Troubleshooting: pending_name not falling after deploy → this log missing.
+	// Review if: the ingest cap made the backlog empty (then this is a no-op).
+	const implausibleYencCatchupMax = 20
+	var removed, extra int
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		n, err := idx.SweepImplausibleYenc(ctx, implausibleYencSweepBatch)
+		if err != nil {
+			log.Printf("usenetsearch: implausible yenc sweep: %v", err)
+			return
+		}
+		removed += n
+		if n < implausibleYencSweepBatch || extra >= implausibleYencCatchupMax {
+			break
+		}
+		extra++
+	}
+	if removed > 0 {
+		log.Printf("usenetsearch: implausible yenc sweep removed=%d extra_batches=%d", removed, extra)
+	}
 }
 
 func (s *Service) runLiveness(ctx context.Context) {

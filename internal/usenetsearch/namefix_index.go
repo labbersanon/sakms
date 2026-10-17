@@ -48,8 +48,27 @@ func (idx *Index) StagedBytes(ctx context.Context, group string) (int64, error) 
 
 // DuePendingNames returns up to limit staged sets in groups whose retry time
 // has passed, recomputed, and at/above the completeness gate (a BODY fetch is
-// only spent on sets that could become searchable), newest first.
+// only spent on sets that could become searchable). Staging cores (step ≤2 /
+// pinned) are filled before LIST-tail groups, newest first inside each slice.
+//
+// Claude 2026-10-16: staging cores before LIST tail.
+// Reason: boneless (step 5) held 80 of 82 due complete sets; cores had 0 because unique-ID yEnc floods never reached the gate.
+// Troubleshooting: namefix pass only boneless while moovee pending exists → splitCoreRest not applied here.
+// Review if: LIST-tail namefix should share the slot 50/50 with cores.
 func (idx *Index) DuePendingNames(ctx context.Context, groups []string, limit int) ([]PendingSet, error) {
+	cores, rest := splitCoreRest(groups)
+	out, err := idx.duePendingNamesIn(ctx, cores, limit)
+	if err != nil || len(out) >= limit {
+		return out, err
+	}
+	more, err := idx.duePendingNamesIn(ctx, rest, limit-len(out))
+	if err != nil {
+		return out, err
+	}
+	return append(out, more...), nil
+}
+
+func (idx *Index) duePendingNamesIn(ctx context.Context, groups []string, limit int) ([]PendingSet, error) {
 	if len(groups) == 0 || limit <= 0 {
 		return nil, nil
 	}
@@ -169,6 +188,52 @@ WHERE state='pending_name' AND (ingested_at < ? OR name_attempts >= ?) LIMIT ?`,
 		return 0, err
 	}
 	if _, err := idx.FinalizeUnnamed(ctx, keys); err != nil {
+		return 0, err
+	}
+	return len(keys), nil
+}
+
+// implausibleYencSweepBatch bounds pending_name sets deleted per sweep call
+// for unique-ID yEnc (n/m) floods (see maxYencPartM).
+const implausibleYencSweepBatch = 2000
+
+// SweepImplausibleYenc deletes pending_name sets whose stored yEnc part_m is
+// above maxYencPartM (unique-ID floods that can never meet the completeness gate).
+//
+// Claude 2026-10-16: ingest now refuses these pairs; this drains the existing pile.
+// Reason: 104k live pending_name rows were seen=1 / declared≈967646, so namefix had nothing complete on cores.
+// Troubleshooting: pending_name still ~100k after deploy → this query not running or part_m already ≤ maxYencPartM.
+// Review if: maxYencPartM changes; dirty the leftover rows instead of deleting.
+func (idx *Index) SweepImplausibleYenc(ctx context.Context, limit int) (int, error) {
+	if limit <= 0 {
+		limit = implausibleYencSweepBatch
+	}
+	rows, err := idx.db.QueryContext(ctx, `
+SELECT r.group_name, r.release_key
+FROM usenet_nntp_releases r
+WHERE r.state='pending_name'
+  AND EXISTS (
+    SELECT 1 FROM usenet_nntp_headers h
+    WHERE h.group_name=r.group_name AND h.release_name=r.release_key AND h.part_m>?
+  )
+LIMIT ?`, maxYencPartM, limit)
+	if err != nil {
+		return 0, err
+	}
+	var keys []releaseKey
+	for rows.Next() {
+		var k releaseKey
+		if err := rows.Scan(&k.group, &k.key); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		keys = append(keys, k)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if _, err := idx.deleteReleaseSets(ctx, keys); err != nil {
 		return 0, err
 	}
 	return len(keys), nil

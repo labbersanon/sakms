@@ -90,3 +90,21 @@ func TestIsPackageCore(t *testing.T) {
 		t.Fatal("firehose / empty must not be cores")
 	}
 }
+
+func TestIsStagingCore(t *testing.T) {
+	if !IsStagingCore("alt.binaries.moovee") || !IsStagingCore("alt.binaries.teevee") || !IsStagingCore("alt.binaries.erotica") {
+		t.Fatal("pinned / step-1 seeds must be staging cores")
+	}
+	if !IsStagingCore("alt.binaries.hdtv.x264") || !IsStagingCore("alt.binaries.x264") {
+		t.Fatal("step-2 seeds must be staging cores")
+	}
+	if IsStagingCore("alt.binaries.boneless") || IsStagingCore("alt.binaries.dvd") || IsStagingCore("alt.binaries.anime") {
+		t.Fatal("step-5 noise must not be staging cores")
+	}
+	if IsStagingCore("alt.binaries.bloaf") || IsStagingCore("") {
+		t.Fatal("firehose / empty must not be staging cores")
+	}
+	if !IsPackageCore("alt.binaries.boneless") {
+		t.Fatal("boneless remains a packages.json seed")
+	}
+}

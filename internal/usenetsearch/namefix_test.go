@@ -547,6 +547,70 @@ func TestStaging_CapDropsNewSetsButKeepsExisting(t *testing.T) {
 	}
 }
 
+func TestStaging_CapIsPerGroup(t *testing.T) {
+	rowsA := obfuscatedSet("a", nfHash, 1, 45)
+	f := newNFFixture(t, rowsA, nil)
+	f.crawl.MaxGB = 1
+	f.crawlAndRecompute(t)
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET payload_bytes=? WHERE group_name=?`, int64(300)<<20, nfGroup); err != nil {
+		t.Fatal(err)
+	}
+	const other = "alt.binaries.moovee"
+	const h2 = "fedcba9876543210fedcba9876543210"
+	rowsB := obfuscatedSet("c", h2, 1, 5)
+	f.src.rows = rowsB
+	f.src.gr = usenet.GroupRange{Low: 1, High: len(rowsB)}
+	f.crawl.Groups = []string{other}
+	if _, err := f.crawl.CrawlOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases WHERE group_name=?`, other).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("moovee sets=%d, want 1 (peer group's cap must not block)", n)
+	}
+}
+
+func TestStaging_Step5NoiseNotStaged(t *testing.T) {
+	rows := obfuscatedSet("b", nfHash, 1, 5)
+	f := newNFFixture(t, rows, nil)
+	f.crawl.Groups = []string{"alt.binaries.boneless"}
+	f.nf.Groups = []string{"alt.binaries.boneless"}
+	f.crawlAndRecompute(t)
+	var n int
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("releases=%d, want 0 (step-5 noise must not fill unnamed budget)", n)
+	}
+}
+
+func TestCrawl_EmptyYieldStopsGroup(t *testing.T) {
+	var rows []usenet.MessageOverview
+	for i := 1; i <= overviewChunk*3; i++ {
+		rows = append(rows, usenet.MessageOverview{
+			Number: i, Subject: "nope", From: "x@y", MessageID: fmt.Sprintf("n%d@t", i),
+			Bytes: 100, DateUnix: 1700000000,
+		})
+	}
+	f := newNFFixture(t, rows, &PolicySnapshot{Modes: map[string]Standard{"movies": movieModeStd(nil, 0, 0)}})
+	f.crawl.MaxChunksPerGroup = 3
+	f.crawl.MaxChunksPerPass = 3
+	if _, err := f.crawl.CrawlOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	wm, err := f.idx.Watermark(context.Background(), nfGroup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wm != overviewChunk {
+		t.Fatalf("watermark=%d, want %d (one empty chunk, not three)", wm, overviewChunk)
+	}
+}
+
 func TestStaging_FirehoseWithoutNamedDropsNewSets(t *testing.T) {
 	rows := obfuscatedSet("b", nfHash, 1, 5)
 	f := newNFFixture(t, rows, nil)

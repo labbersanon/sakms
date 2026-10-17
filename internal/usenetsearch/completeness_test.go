@@ -68,6 +68,28 @@ func TestComputeCompleteness_Table(t *testing.T) {
 	}
 }
 
+func TestAddFilePayload_YencOncePerFile(t *testing.T) {
+	agg := &fileAgg{Seen: map[int]bool{}}
+	var payload int64
+	for i := 0; i < 10; i++ {
+		addFilePayload(&payload, agg, 1_000_000, 100)
+	}
+	if payload != 1_000_000 {
+		t.Fatalf("payload=%d, want 1000000 (yEnc is the file size)", payload)
+	}
+}
+
+func TestAddFilePayload_NoYencSumsScaledBytes(t *testing.T) {
+	agg := &fileAgg{Seen: map[int]bool{}}
+	var payload, raw int64 = 0, 2000
+	addFilePayload(&payload, agg, 0, raw)
+	addFilePayload(&payload, agg, 0, raw)
+	scaled := int64(float64(raw) / 1.37)
+	if payload != 2*scaled {
+		t.Fatalf("payload=%d, want %d", payload, 2*scaled)
+	}
+}
+
 func TestClampMinCompletenessPct(t *testing.T) {
 	for in, want := range map[int]int{0: 95, -3: 95, 10: 80, 80: 80, 95: 95, 100: 100, 150: 100} {
 		if got := ClampMinCompletenessPct(in); got != want {

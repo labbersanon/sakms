@@ -91,6 +91,23 @@ func TestParseSubject_LeadTokenSpaceForm(t *testing.T) {
 	}
 }
 
+func TestParseSubject_LeadToken15CharAndLeadingUnderscore(t *testing.T) {
+	short := ParseSubject(`KLoSR1zOTNoaex3 [10/15] "0AOugJ-kXbvFN0r" yEnc (122/138)`)
+	if !short.Obfuscated || short.Name != "" {
+		t.Fatalf("15-char space token must be obfuscated, got %+v", short)
+	}
+	lead := `_eZL_Gt5Lei3_2pVVtuYg-nzLtYDY [3/18] "PPBdjTAfd_hl0KNGCnkO5-xEujZht" yEnc (52/165)`
+	ps := ParseSubject(lead)
+	if !ps.Obfuscated || ps.Name != "" {
+		t.Fatalf("leading-underscore token must be obfuscated, got %+v", ps)
+	}
+	ka := ObfKey("alt.binaries.teevee", "p@t", lead)
+	kb := ObfKey("alt.binaries.teevee", "p@t", `_eZL_Gt5Lei3_2pVVtuYg-nzLtYDY [18/18] "zzzz.par2" yEnc (1/1)`)
+	if ka != kb {
+		t.Fatalf("keys split on file index: %s vs %s", ka, kb)
+	}
+}
+
 func TestParseSubject_SpaceLeadTokenNotScene(t *testing.T) {
 	ps := ParseSubject(`Some_Show_Name_S01E01 [01/20] "some.show.s01e01.part01.rar" yEnc (1/50)`)
 	if ps.Obfuscated {

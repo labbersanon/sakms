@@ -82,13 +82,20 @@ type completeness struct {
 // (0 when unknown); files includes meta files so they count toward "files
 // seen" without contributing to declared/seen.
 func computeCompleteness(files []fileAgg, fileM int) completeness {
+	// Claude 2026-10-16: ignore unique-ID yEnc (n/m) / [k/N] totals.
+	// Reason: see maxYencPartM; 967646-part "files" made every flood article 0% complete.
+	// Troubleshooting: completeness_bp=0 with seen=1 declared≈1e6 → this clamp.
+	// Review if: maxYencPartM changes.
+	if fileM > maxYencPartM {
+		fileM = 0
+	}
 	var c completeness
 	var payloadM []int
 	for _, f := range files {
 		if f.Meta {
 			continue
 		}
-		if f.PartM <= 0 {
+		if f.PartM <= 0 || f.PartM > maxYencPartM {
 			c.Undeclared = true
 			continue
 		}

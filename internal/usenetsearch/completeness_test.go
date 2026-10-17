@@ -54,6 +54,8 @@ func TestComputeCompleteness_Table(t *testing.T) {
 		{"gate clamps to 80 floor", []fileAgg{{PartM: 100, Seen: seenN(80)}}, 0, 10, true, gateReasonOK},
 		{"73 files one collection meets", completeFiles(73), 73, 95, true, gateReasonOK},
 		{"one file of 73 is below gate", completeFiles(1), 73, 95, false, gateReasonBelow},
+		{"implausible yEnc part_m undeclared", []fileAgg{{PartM: 967646, Seen: map[int]bool{730696: true}}}, 0, 95, false, gateReasonUndeclared},
+		{"implausible fileM ignored", []fileAgg{{PartM: 10, Seen: seenN(10)}}, 967646, 95, true, gateReasonOK},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

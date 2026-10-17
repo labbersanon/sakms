@@ -648,3 +648,78 @@ func TestNameFixOff_ObfuscatedRowsNotStaged(t *testing.T) {
 		t.Fatalf("headers = %d, want %d (legacy upserts every row)", n, len(rows))
 	}
 }
+
+func TestCrawl_ImplausibleYencNotStaged(t *testing.T) {
+	rows := []usenet.MessageOverview{{
+		Number: 1, Subject: `"UrHfhOEuTZTAP6SWX2HhDYJ6N" yEnc (730696/967646)`,
+		From: "p@x", MessageID: "j@t", Bytes: 500000, DateUnix: 1700000000,
+	}}
+	f := newNFFixture(t, rows, nil)
+	f.crawlAndRecompute(t)
+	var n int
+	f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases WHERE state='pending_name'`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("pending_name=%d, want 0 (unique-ID yEnc is not a set)", n)
+	}
+}
+
+func TestSweepImplausibleYenc_RemovesPending(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	const g = "alt.binaries.hdtv.x264"
+	if err := idx.Upsert(ctx, []HeaderRow{{
+		Group: g, MsgNum: 1, MsgID: "j@t", Subject: `"UrHfhOEuTZTAP6SWX2HhDYJ6N" yEnc (730696/967646)`,
+		From: "p@x", PostedAt: 1, Bytes: 1000, ReleaseName: "obf:deadbeefdeadbeef",
+		PartN: 730696, PartM: 967646,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	n, err := idx.SweepImplausibleYenc(ctx, 10)
+	if err != nil || n != 1 {
+		t.Fatalf("removed=%d err=%v, want 1", n, err)
+	}
+	var left int
+	if err := sqlDB.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases`).Scan(&left); err != nil {
+		t.Fatal(err)
+	}
+	if left != 0 {
+		t.Fatalf("releases left=%d, want 0", left)
+	}
+}
+
+func TestDuePendingNames_StagingCoresFirst(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	const core = "alt.binaries.moovee"
+	const tail = "alt.binaries.boneless"
+	rows := append(
+		fileRows(core, "obf:cccccccccccccccc", "c.rar", "c", 0, 10, 10, 0),
+		fileRows(tail, "obf:tttttttttttttttt", "t.rar", "t", 100, 10, 10, 0)...,
+	)
+	if err := idx.Upsert(ctx, rows); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.RecomputeDirty(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqlDB.Exec(`UPDATE usenet_nntp_releases SET dirty=FALSE, next_name_at=0`); err != nil {
+		t.Fatal(err)
+	}
+	sets, err := idx.DuePendingNames(ctx, []string{tail, core}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sets) != 1 || sets[0].Group != core {
+		t.Fatalf("got %+v, want staging core %s first", sets, core)
+	}
+}

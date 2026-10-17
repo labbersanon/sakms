@@ -24,6 +24,13 @@ type ParsedSubject struct {
 	FileM int
 }
 
+// maxYencPartM is the largest yEnc (n/m) total treated as a real segment count.
+// Claude 2026-10-16: yEnc (n/m) had no digit cap; fileCount already limits [k/N] to 5 digits.
+// Reason: unique-ID pairs like (730696/967646) became pending_name at 0% forever (104k live).
+// Troubleshooting: pending_name stuck at 0% with seen=1 declared≈1e6 → this cap; grep "implausible yenc sweep".
+// Review if: a real yEnc file with >99999 parts shows up (~36GB at 384KiB segments).
+const maxYencPartM = 99999
+
 var (
 	rePartNM = regexp.MustCompile(`(?i)\(\s*(\d+)\s*/\s*(\d+)\s*\)`)
 	reFileNM = regexp.MustCompile(`\[\s*(\d+)\s*/\s*(\d+)\s*\]`)
@@ -182,13 +189,14 @@ func yencParts(s string) (n, m int) {
 	if len(all) == 0 && region != s {
 		all = rePartNM.FindAllStringSubmatch(s, -1)
 	}
-	if len(all) == 0 {
-		return 0, 0
+	for i := len(all) - 1; i >= 0; i-- {
+		n, _ = strconv.Atoi(all[i][1])
+		m, _ = strconv.Atoi(all[i][2])
+		if m > 0 && m <= maxYencPartM {
+			return n, m
+		}
 	}
-	last := all[len(all)-1]
-	n, _ = strconv.Atoi(last[1])
-	m, _ = strconv.Atoi(last[2])
-	return n, m
+	return 0, 0
 }
 
 // fileCount prefers the last [k/N], else the last NNTmux-shaped counter that

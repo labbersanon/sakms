@@ -302,6 +302,13 @@ func TestNameFix_StagedThenRenamedFromPar2ThenSearchable(t *testing.T) {
 	if res.Renamed != 1 || res.BySource[sourcePar2] != 1 || res.BodyFetches != 1 {
 		t.Fatalf("result = %+v", res)
 	}
+	var searchable bool
+	if err := f.idx.db.QueryRow(`SELECT searchable FROM usenet_nntp_releases`).Scan(&searchable); err != nil {
+		t.Fatal(err)
+	}
+	if !searchable {
+		t.Fatal("renamed 100% set must be searchable without waiting for RecomputeDirty")
+	}
 	if _, err := f.idx.RecomputeDirty(ctx, 500); err != nil {
 		t.Fatal(err)
 	}

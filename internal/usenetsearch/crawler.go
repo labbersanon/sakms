@@ -449,6 +449,16 @@ func pruneGroupNonMatching(ctx context.Context, idx *Index, group string, groupM
 		if err := ctx.Err(); err != nil {
 			return 0, err
 		}
+		// Claude 2026-10-16: drop already-indexed hash-token "names".
+		// Reason: TOKEN [k/N] teevee collections passed the quality gate
+		// (min_res=0, unknown source) as state=named, so namefix never ran.
+		// Troubleshooting: DistinctReleases still lists 5JSoQ-… after a
+		// restart → this check is not applied (or the name has a dot).
+		// Review if: lead-token parse stages these so this prune is a no-op.
+		if !strings.ContainsAny(name, ". ") && tokenLooksObfuscated(name) {
+			reject = append(reject, name)
+			continue
+		}
 		info := release.Parse(name)
 		stds, _ := snap.Resolve(group, groupModes, name)
 		passes := false

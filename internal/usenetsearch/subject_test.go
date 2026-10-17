@@ -74,6 +74,34 @@ func TestParseSubject_Obfuscated(t *testing.T) {
 	}
 }
 
+func TestParseSubject_LeadTokenSpaceForm(t *testing.T) {
+	const par2Subj = `5JSoQ-2rqpfGRs5hg0JjXx2j7o27 [3/10] "p4v0O75-2qNMayAm3QhP_iIbuaK6.par2" yEnc (58/97)`
+	a := ParseSubject(par2Subj)
+	b := ParseSubject(`5JSoQ-2rqpfGRs5hg0JjXx2j7o27 [7/10] "p4v0O75-2qNMayAm3QhP_iIbuaK6.part01.rar" yEnc (1/50)`)
+	if !a.Obfuscated || a.OK || a.Name != "" {
+		t.Fatalf("space-form token must be obfuscated, got %+v", a)
+	}
+	if !b.Obfuscated || b.Name != "" {
+		t.Fatalf("same collection later file: %+v", b)
+	}
+	ka := ObfKey("alt.binaries.teevee", "p@t", par2Subj)
+	kb := ObfKey("alt.binaries.teevee", "p@t", `5JSoQ-2rqpfGRs5hg0JjXx2j7o27 [7/10] "zzzzzzzzzzzzzzzzzzzz.part01.rar" yEnc (1/50)`)
+	if ka != kb || !strings.HasPrefix(ka, obfKeyPrefix) {
+		t.Fatalf("keys a=%s b=%s, want one obf: key (lead token groups random filenames)", ka, kb)
+	}
+}
+
+func TestParseSubject_SpaceLeadTokenNotScene(t *testing.T) {
+	ps := ParseSubject(`Some_Show_Name_S01E01 [01/20] "some.show.s01e01.part01.rar" yEnc (1/50)`)
+	if ps.Obfuscated {
+		t.Fatalf("episode token must not be obfuscated: %+v", ps)
+	}
+	year := ParseSubject(`Andor-2025 [1/5] "andor.2025.part01.rar" yEnc (1/10)`)
+	if year.Obfuscated {
+		t.Fatalf("year token must not be obfuscated: %+v", year)
+	}
+}
+
 func TestParseSubject_ImplausibleYencPartsIgnored(t *testing.T) {
 	ps := ParseSubject(`"UrHfhOEuTZTAP6SWX2HhDYJ6N" yEnc (730696/967646)`)
 	if ps.PartN != 0 || ps.PartM != 0 {

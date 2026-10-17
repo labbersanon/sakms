@@ -55,6 +55,15 @@ var (
 	reGroupTag     = regexp.MustCompile(`(?i)^\[(?:#?a\.b\.[a-z0-9.+\-]+|[A-Za-z][^\[\]]{0,40})\]\s*`)
 	reLeadHashDash = regexp.MustCompile(`^([A-Za-z0-9]{16,})\s*-\s*[\[(]\d{1,5}/\d{1,5}`)
 	reLeadHashGlue = regexp.MustCompile(`^([A-Za-z0-9]{16,})\[\d{1,5}/\d{1,5}\]`)
+	// Claude 2026-10-16: TOKEN [k/N] with a space (teevee hash collections).
+	// Reason: 5JSoQ-2rqpfGRs5hg0JjXx2j7o27 [3/10] "….par2" parsed as a named
+	// series release (dash/glue patterns need "-" or a glued "["); admit
+	// logged the token and namefix never saw the set.
+	// Troubleshooting: admit release=<hash token> on teevee → this regex
+	// missed the subject or tokenLooksObfuscated rejected a real title.
+	// Review if: posters use a fourth lead-token shape.
+	reLeadHashSpace = regexp.MustCompile(`^([A-Za-z0-9][A-Za-z0-9_\-]{14,}[A-Za-z0-9])\s+[\[(]\d{1,5}/\d{1,5}[\])]`)
+	reEpOrYearLoose = regexp.MustCompile(`(?i)s\d{1,2}e\d{1,3}|(?:19|20)\d{2}`)
 )
 
 // nntpUTF8 replaces invalid UTF-8 (latin1/CP1252 NNTP headers) with U+FFFD.
@@ -162,6 +171,9 @@ func leadCollectionTokenWith(subj string, extra []compiledExtra) string {
 	if m := reLeadHashDash.FindStringSubmatch(s); len(m) == 2 {
 		return m[1]
 	}
+	if m := reLeadHashSpace.FindStringSubmatch(s); len(m) == 2 {
+		return m[1]
+	}
 	return ""
 }
 
@@ -175,7 +187,11 @@ func applyStripPrefix(s string, extra []compiledExtra) string {
 }
 
 func tokenLooksObfuscated(tok string) bool {
-	return looksObfuscated(tok) || mostlyHex(tok)
+	if strings.Count(tok, "-")+strings.Count(tok, "_") > 2 || reEpOrYearLoose.MatchString(tok) {
+		return false
+	}
+	bare := strings.NewReplacer("-", "", "_", "").Replace(tok)
+	return looksObfuscated(bare) || mostlyHex(bare)
 }
 
 // yencParts returns the trailing yEnc (n/m) segment counter. Prefers a match

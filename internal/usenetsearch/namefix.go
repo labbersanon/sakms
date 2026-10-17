@@ -254,7 +254,7 @@ func (n *NameFixer) markRejected(set PendingSet) {
 // PreDB match; NFO-only names need a PreDB hit.
 func (n *NameFixer) accept(ctx context.Context, raw, source string, payload int64) (name, src, conf, predb string, ok bool) {
 	norm := normalizeRecovered(raw)
-	if norm == "" || hashCore(norm) != "" || looksObfuscated(norm) {
+	if norm == "" || hashCore(norm) != "" || looksObfuscated(norm) || tokenLooksObfuscated(norm) {
 		return "", "", "", "", false
 	}
 	predb = "n/a"

@@ -121,14 +121,23 @@ FROM usenet_nntp_headers WHERE group_name=? AND release_name=? ORDER BY filename
 	return out, rows.Err()
 }
 
-// RenameRelease sets the recovered display name on a staged set and marks it
-// dirty so the recompute pass can make it searchable. Headers are untouched,
-// so the rename is reversible (undo SQL in docs/usenet-nntp-native.md).
+// RenameRelease sets the recovered display name on a staged set and recomputes
+// completeness so a 95%+ set becomes searchable in this pass. Headers are
+// untouched, so the rename is reversible (undo SQL in docs/usenet-nntp-native.md).
+//
+// Claude 2026-10-16: recompute here, do not wait for RecomputeDirty.
+// Reason: namefix ran after recompute, so renamed 100% sets sat dirty behind 95k pending and searchable stayed at 12.
+// Troubleshooting: renamed= log with searchable still false → recomputeOne failed.
+// Review if: RenameRelease is called from a second site that must not hit the DB twice.
 func (idx *Index) RenameRelease(ctx context.Context, group, key, display, source, confidence string) error {
 	_, err := idx.db.ExecContext(ctx, `
 UPDATE usenet_nntp_releases SET display_name=?, name_source=?, name_confidence=?,
   state='named', dirty=TRUE, updated_at=? WHERE group_name=? AND release_key=?`,
 		display, source, confidence, time.Now().Unix(), group, key)
+	if err != nil {
+		return err
+	}
+	_, _, _, err = idx.recomputeOne(ctx, releaseKey{group, key}, idx.MinCompletenessPct())
 	return err
 }
 

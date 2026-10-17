@@ -236,3 +236,38 @@ func TestRecomputeDirty_PendingCompleteFirst(t *testing.T) {
 		}
 	}
 }
+
+func TestRecomputeDirty_NamedCompleteBeforePending(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	const g = "alt.binaries.movies"
+	named := fileRows(g, "Named.Show.2020.1080p", "n.mkv", "n", 0, 10, 10, 0)
+	pending := fileRows(g, "obf:aaaaaaaaaaaaaaaa", "a.rar", "a", 100, 10, 1, 0)
+	if err := idx.Upsert(ctx, append(named, pending...)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `UPDATE usenet_nntp_releases SET dirty=TRUE, completeness_bp=9500, updated_at=99 WHERE release_key=?`, "Named.Show.2020.1080p"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `UPDATE usenet_nntp_releases SET dirty=TRUE, completeness_bp=0, updated_at=1 WHERE release_key=?`, "obf:aaaaaaaaaaaaaaaa"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.RecomputeDirty(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	var namedDirty, pendingDirty, searchable bool
+	if err := sqlDB.QueryRowContext(ctx, `SELECT dirty, searchable FROM usenet_nntp_releases WHERE release_key=?`, "Named.Show.2020.1080p").Scan(&namedDirty, &searchable); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlDB.QueryRowContext(ctx, `SELECT dirty FROM usenet_nntp_releases WHERE release_key=?`, "obf:aaaaaaaaaaaaaaaa").Scan(&pendingDirty); err != nil {
+		t.Fatal(err)
+	}
+	if namedDirty || !searchable || !pendingDirty {
+		t.Fatalf("named dirty=%v searchable=%v pending dirty=%v; want named recomputed searchable first", namedDirty, searchable, pendingDirty)
+	}
+}

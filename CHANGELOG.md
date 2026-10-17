@@ -11298,3 +11298,18 @@ status stays active.
 | `internal/usenetsearch/service.go` | sweep catch-up extra batches |
 | `internal/usenetsearch/{subject,completeness,namefix}_test.go` | parse/stage/sweep/order tests |
 
+## 2026-10-16 — Searchable not climbing after namefix rename
+
+**Problem:** Dashboard searchable sat at 12 while namefix was renaming 100% complete sets (Dexter, True Story, etc.).
+**Root cause:** Rename marked dirty and left searchable=false for RecomputeDirty. #183 ordered pending_name first, so 95k incomplete pending ate every 4500-row batch; 16 named-complete dirty rows never ran. Loop order is recompute then namefix, so even the next loop kept skipping them.
+**Fix:** RecomputeDirty prefers complete named, then complete pending, then incomplete pending, then other named. RenameRelease recomputes that one set immediately so it becomes searchable in the same pass.
+**Outcome:** The 16 already-renamed 100% sets become searchable on the next recompute; future namefix hits show up without waiting on the pending backlog.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/releases.go` | RecomputeDirty ORDER BY named-complete first |
+| `internal/usenetsearch/namefix_index.go` | RenameRelease calls recomputeOne |
+| `internal/usenetsearch/{releases,namefix}_test.go` | named-complete first; searchable after rename |
+

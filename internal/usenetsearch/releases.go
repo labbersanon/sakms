@@ -214,8 +214,24 @@ func (idx *Index) RecomputeDirty(ctx context.Context, limit int) (RecomputeStats
 	if limit <= 0 {
 		limit = recomputeBatch
 	}
-	rows, err := idx.db.QueryContext(ctx,
-		`SELECT group_name, release_key FROM usenet_nntp_releases WHERE dirty ORDER BY updated_at LIMIT ?`, limit)
+	// Claude 2026-10-16: pending_name (especially already-complete sets)
+	// before named, not oldest-updated_at.
+	// Reason: migration 0045 + crawl upserts left 314k dirty; FIFO meant the
+	//   73 complete pending_name sets sat behind days of named recompute so
+	//   namefix (dirty=FALSE AND completeness>=gate) had zero due rows.
+	// Troubleshooting: namefix pass missing while pending_name grows → this
+	//   ORDER BY not applied, or runRecompute still after namefix.
+	// Review if: dirty catch-up is a dedicated pass that skips crawl.
+	gateBP := idx.MinCompletenessPct() * 100
+	rows, err := idx.db.QueryContext(ctx, `
+SELECT group_name, release_key FROM usenet_nntp_releases
+WHERE dirty
+ORDER BY CASE
+  WHEN state='pending_name' AND completeness_bp>=? THEN 0
+  WHEN state='pending_name' THEN 1
+  ELSE 2
+END, updated_at
+LIMIT ?`, gateBP, limit)
 	if err != nil {
 		return st, err
 	}

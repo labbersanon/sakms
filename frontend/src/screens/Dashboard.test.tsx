@@ -376,7 +376,9 @@ describe("Dashboard view", () => {
       screen.getByText(/Waiting for the first live reading/i),
     ).toBeInTheDocument();
     expect(await screen.findByText("5.0 TB")).toBeInTheDocument();
-    expect(screen.getByText("Storage Allocation")).toBeInTheDocument();
+    const heading = screen.getByRole("heading", { name: "Storage Allocation" });
+    expect(heading.tagName).toBe("H3");
+    expect(heading.closest(".rounded-xl.border")).toBeTruthy();
   });
 
   it("renders the NNTP crawler card without an SSE frame", async () => {

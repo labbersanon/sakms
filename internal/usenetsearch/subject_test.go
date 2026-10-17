@@ -91,6 +91,13 @@ func TestParseSubject_LeadTokenSpaceForm(t *testing.T) {
 	}
 }
 
+func TestParseSubject_LeadTokenUnderscore14Char(t *testing.T) {
+	ps := ParseSubject(`_1Pfe68F_aYXOyD [3/31] "cc57PmW5-Xk5p2b" yEnc (32/69)`)
+	if !ps.Obfuscated || ps.Name != "" {
+		t.Fatalf("14-char token with underscore must be obfuscated, got %+v", ps)
+	}
+}
+
 func TestParseSubject_LeadToken15CharAndLeadingUnderscore(t *testing.T) {
 	short := ParseSubject(`KLoSR1zOTNoaex3 [10/15] "0AOugJ-kXbvFN0r" yEnc (122/138)`)
 	if !short.Obfuscated || short.Name != "" {

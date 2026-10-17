@@ -189,7 +189,7 @@ func tokenLooksObfuscated(tok string) bool {
 		return false
 	}
 	bare := strings.NewReplacer("-", "", "_", "").Replace(tok)
-	if len(bare) < 14 {
+	if len(bare) < 12 {
 		return false
 	}
 	return obfuscatedChurn(bare) || mostlyHex(bare)

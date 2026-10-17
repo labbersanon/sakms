@@ -290,12 +290,49 @@ func (c *Crawler) ingestRange(ctx context.Context, opts ingestOpts, group string
 	if err := c.Index.Upsert(ctx, kept); err != nil {
 		return 0, err
 	}
+	c.recomputeIngested(ctx, group, staged)
 	if len(gaps) > 0 {
 		if err := c.Index.AddMissedRanges(ctx, group, gaps, "gap"); err != nil {
 			return 0, err
 		}
 	}
 	return len(rows), nil
+}
+
+const ingestRecomputeMaxKeys = 32
+
+// recomputeIngested refreshes completeness for staged keys that gained the
+// most parts in this chunk so namefix can see them this loop.
+//
+// Claude 2026-10-16: do not wait on the 196k dirty FIFO.
+// Reason: x264 had 14k dirty empty pending (headers already stored) while
+// RecomputeDirty spent batches on 150k incomplete subject-named rows;
+// complete yield sets never flipped dirty=FALSE in time for namefix.
+// Troubleshooting: staged_obf>0 but completeness_bp=0 dirty=t on that key
+// next pass → this hook not running. Review if: dirty backlog is tiny.
+func (c *Crawler) recomputeIngested(ctx context.Context, group string, staged []HeaderRow) {
+	if c.Index == nil || len(staged) == 0 {
+		return
+	}
+	n := map[string]int{}
+	var keys []string
+	for _, h := range staged {
+		if h.ReleaseName == "" {
+			continue
+		}
+		if n[h.ReleaseName] == 0 {
+			keys = append(keys, h.ReleaseName)
+		}
+		n[h.ReleaseName]++
+	}
+	sort.Slice(keys, func(i, j int) bool { return n[keys[i]] > n[keys[j]] })
+	if len(keys) > ingestRecomputeMaxKeys {
+		keys = keys[:ingestRecomputeMaxKeys]
+	}
+	gate := c.Index.MinCompletenessPct()
+	for _, k := range keys {
+		_, _, _, _ = c.Index.recomputeOne(ctx, releaseKey{group, k}, gate)
+	}
 }
 
 // missingRanges returns the contiguous article-number runs in [a,b] the

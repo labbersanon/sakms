@@ -485,14 +485,8 @@ func (s *Service) loop(ctx context.Context) {
 			busy = busy || nr.Busy
 			advanced = advanced || nr.Advanced()
 		}
-		// Claude 2026-10-16: skip backfill while yield groups lag HIGH.
-		// Reason: BackfillOnce STAT on dvd/blu-ray/teevee kept HasWork true
-		// so the loop never idled, but those chunks do not complete x264/tv
-		// pending_name — searchable bursted on the leftover namefix queue
-		// then stopped.
-		// Troubleshooting: "backfill group=" every pass while crawl logs
-		// "skip LIST tail" — this gate is not wired.
-		// Review if: backfill is limited to yield groups the same way.
+		// Claude 2026-10-16: backfill still runs while SkipListTail; dvd/bloaf
+		// are filtered in backfillWanted so yield-core history keeps moving.
 		if crawler != nil && !busy && crawler.shouldBackfill() {
 			crawler.BackfillStart = backfillStart
 			br, err := crawler.BackfillOnce(ctx)
@@ -998,6 +992,11 @@ func (s *Service) runSweeps(ctx context.Context) {
 	}
 	if n > 0 {
 		log.Printf("usenetsearch: incomplete sweep removed=%d ttl_days=%d", n, days)
+	}
+	if spans, err := idx.EnqueueStalePendingSpans(ctx); err != nil {
+		log.Printf("usenetsearch: pending span enqueue: %v", err)
+	} else if spans > 0 {
+		log.Printf("usenetsearch: pending span enqueue ranges=%d", spans)
 	}
 	// Claude 2026-10-16: drain unique-ID yEnc pending_name (part_m > maxYencPartM).
 	// Reason: 104k junk sets sat at 0% complete and held unnamed caps on teevee/hdtv.x264.

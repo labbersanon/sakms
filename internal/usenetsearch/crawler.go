@@ -109,7 +109,8 @@ type Crawler struct {
 	MaxChunksPerPass  int
 	MaxChunksPerGroup int
 	// SkipListTail is set by CrawlOnce when a yield group is still
-	// coreCatchUpLag+ articles behind HIGH. Service skips BackfillOnce.
+	// coreCatchUpLag+ articles behind HIGH. LIST-tail OVER is skipped;
+	// backfill still runs on yield groups only.
 	SkipListTail bool
 	// obfStageOK caches per-group "may stage new obfuscated sets" for this Crawler.
 	obfStageOK map[string]bool
@@ -191,7 +192,7 @@ func splitYieldRest(groups []string) (yield, rest []string) {
 }
 
 func (c *Crawler) shouldBackfill() bool {
-	return c.BackfillEnabled && !c.SkipListTail
+	return c.BackfillEnabled
 }
 
 // yieldGroupsCatchingUp reports whether any name-fix yield group still has

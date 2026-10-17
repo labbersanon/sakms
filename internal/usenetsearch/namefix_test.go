@@ -477,6 +477,29 @@ func TestNameFix_UnresolvedBacksOffThenKeepsCompleteYield(t *testing.T) {
 	}
 }
 
+func TestDuePendingNames_SkipsExhaustedKeptSets(t *testing.T) {
+	f := newNFFixture(t, obfuscatedSet("u", nfHash, 1, 45), nil)
+	f.crawlAndRecompute(t)
+	ctx := context.Background()
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET name_attempts=?, next_name_at=0, dirty=FALSE`, maxNameAttempts); err != nil {
+		t.Fatal(err)
+	}
+	sets, err := f.idx.DuePendingNames(ctx, []string{nfGroup}, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sets) != 0 {
+		t.Fatalf("due=%d, want 0 (exhausted kept yield is shelved)", len(sets))
+	}
+	used, err := f.idx.StagedBytes(ctx, nfGroup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used != 0 {
+		t.Fatalf("staged_bytes=%d, want 0 (exhausted sets do not fill the unnamed cap)", used)
+	}
+}
+
 func TestSweepUnnamed_StillDropsFirehoseAfterAttempts(t *testing.T) {
 	f := newNFFixture(t, obfuscatedSet("u", nfHash, 1, 45), nil)
 	f.crawlAndRecompute(t)

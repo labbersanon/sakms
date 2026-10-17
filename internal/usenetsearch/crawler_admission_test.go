@@ -496,6 +496,80 @@ func TestCrawlGroup_NilAdmitterIsLegacyPath(t *testing.T) {
 	}
 }
 
+func TestPruneGroupNonMatching_DropsHashTokenNames(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	const group = "alt.binaries.moovee"
+	const keep = "Admitted.Movie.2020.1080p.WEB-DL.x264-GROUP"
+	const junk = "5JSoQ-2rqpfGRs5hg0JjXx2j7o27"
+	if err := idx.Upsert(ctx, []HeaderRow{
+		{Group: group, MsgNum: 1, MsgID: "keep@x", Subject: "x", ReleaseName: keep, PartN: 1, PartM: 1, Filename: "a.mkv", Bytes: 1, PostedAt: 1},
+		{Group: group, MsgNum: 2, MsgID: "junk@x", Subject: "x", ReleaseName: junk, PartN: 1, PartM: 1, Filename: "b.rar", Bytes: 1, PostedAt: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snap := &PolicySnapshot{Modes: map[string]Standard{"movies": movieModeStd([]quality.Tier{quality.Medium}, 0, 0)}}
+	n, err := pruneGroupNonMatching(ctx, idx, group, []string{"movies"}, snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("pruned=%d, want 1 (hash token only)", n)
+	}
+	var left string
+	if err := idx.db.QueryRowContext(ctx, `SELECT release_name FROM usenet_nntp_headers`).Scan(&left); err != nil {
+		t.Fatal(err)
+	}
+	if left != keep {
+		t.Fatalf("left=%q, want scene name kept", left)
+	}
+}
+
+func TestCrawlGroup_HashTokenCollectionStagedNotNamed(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	const group = "alt.binaries.moovee"
+	const tok = "5JSoQ-2rqpfGRs5hg0JjXx2j7o27"
+	rows := []usenet.MessageOverview{
+		{Number: 1, Subject: tok + ` [3/10] "p4v0O75-2qNMayAm3QhP_iIbuaK6.par2" yEnc (1/2)`, From: "p@t", MessageID: "a@t", Bytes: 1000, DateUnix: 1700000000},
+		{Number: 2, Subject: tok + ` [7/10] "zzzzzzzzzzzzzzzzzzzz.part01.rar" yEnc (1/50)`, From: "p@t", MessageID: "b@t", Bytes: 1000, DateUnix: 1700000000},
+	}
+	src := &crawlStub{gr: usenet.GroupRange{Low: 1, High: 2}, rows: rows}
+	snap := &PolicySnapshot{Modes: map[string]Standard{"movies": movieModeStd([]quality.Tier{quality.Medium}, 0, 0)}}
+	c := &Crawler{
+		Src: src, Index: idx, Groups: []string{group}, AdmissionEnabled: true, NameFixEnabled: true,
+		GroupModesFn: func(string) []string { return []string{"movies"} },
+		Admitter:     newAdmitter(&fakePolicy{snap: snap}),
+	}
+	if _, err := c.CrawlOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var named int
+	if err := sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM usenet_nntp_releases WHERE release_key=?`, tok).Scan(&named); err != nil {
+		t.Fatal(err)
+	}
+	if named != 0 {
+		t.Fatalf("named hash-token rows=%d, want 0 (must stage, not admit)", named)
+	}
+	var staged int
+	if err := sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM usenet_nntp_headers WHERE obfuscated=TRUE AND release_name LIKE 'obf:%'`).Scan(&staged); err != nil {
+		t.Fatal(err)
+	}
+	if staged != 2 {
+		t.Fatalf("staged headers=%d, want 2", staged)
+	}
+}
+
 func TestPruneGroupNonMatching(t *testing.T) {
 	sqlDB := dbtest.New(t)
 	idx, err := OpenIndex(sqlDB)

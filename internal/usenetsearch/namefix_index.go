@@ -40,9 +40,14 @@ type PendingSet struct {
 // Review if: a shared unnamed pool for step-1 cores is added as a Settings knob.
 func (idx *Index) StagedBytes(ctx context.Context, group string) (int64, error) {
 	var n int64
+	// Claude 2026-10-16: exhausted kept yield sets do not fill the unnamed cap.
+	// Reason: hash-named PAR2/RAR sets sit at name_attempts>=3 (keepCompleteYield
+	// skipped the sweep) and SUM(payload_bytes) kept every group in skip_obf_cap.
+	// Troubleshooting: skip_obf_cap with only shelved complete pending → this
+	// filter not applied. Review if: PreDB starts naming those hashes (retry).
 	err := idx.db.QueryRowContext(ctx,
-		`SELECT COALESCE(SUM(payload_bytes),0) FROM usenet_nntp_releases WHERE state='pending_name' AND group_name=?`,
-		group).Scan(&n)
+		`SELECT COALESCE(SUM(payload_bytes),0) FROM usenet_nntp_releases WHERE state='pending_name' AND group_name=? AND name_attempts < ?`,
+		group, maxNameAttempts).Scan(&n)
 	return n, err
 }
 
@@ -86,8 +91,13 @@ func (idx *Index) duePendingNamesIn(ctx context.Context, groups []string, limit 
 		return nil, nil
 	}
 	ph := make([]string, len(groups))
-	args := make([]any, 0, len(groups)+3)
-	args = append(args, idx.MinCompletenessPct()*100, time.Now().Unix())
+	args := make([]any, 0, len(groups)+4)
+	// Claude 2026-10-16: do not BODY-retry after maxNameAttempts.
+	// Reason: keepCompleteYield left hash-named 100% sets on a 10m<<n backoff
+	// forever; namefix spent 12–17 slots/pass re-fetching the same first segment.
+	// Troubleshooting: namefix unresolved=N with the same keys every loop →
+	// name_attempts < max is missing. Review if: PreDB ByHash covers these.
+	args = append(args, idx.MinCompletenessPct()*100, time.Now().Unix(), maxNameAttempts)
 	for i, g := range groups {
 		ph[i] = "?"
 		args = append(args, g)
@@ -96,7 +106,7 @@ func (idx *Index) duePendingNamesIn(ctx context.Context, groups []string, limit 
 	rows, err := idx.db.QueryContext(ctx, `
 SELECT group_name, release_key, payload_bytes, name_attempts, completeness_bp FROM usenet_nntp_releases
 WHERE state='pending_name' AND dirty=FALSE AND declared_segs>0 AND completeness_bp>=?
-  AND next_name_at<=? AND group_name IN (`+strings.Join(ph, ",")+`)
+  AND next_name_at<=? AND name_attempts < ? AND group_name IN (`+strings.Join(ph, ",")+`)
 ORDER BY ingested_at DESC LIMIT ?`, args...)
 	if err != nil {
 		return nil, err

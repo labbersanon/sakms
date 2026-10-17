@@ -11267,3 +11267,17 @@ status stays active.
 | `internal/mode/mode.go` | exported `BuildAIClient` |
 | `docs/usenet-nntp-native.md` | collection drift documented |
 
+## 2026-10-16 — Dashboard Storage Allocation title inside card
+
+**Problem:** "Storage Allocation" sat as an `h2` above the table box, so the heading sat on the page background while CPU/Memory/NNTP titles sit inside `Card`.
+**Root cause:** Section used a raw bordered div plus an outside heading instead of `Card`.
+**Fix:** Render the table in `<Card title="Storage Allocation">` (inner `h3`), keep horizontal scroll on the table.
+**Outcome:** Heading matches the other dashboard cards.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/Dashboard.tsx` | wrap allocation table in Card |
+| `frontend/src/screens/Dashboard.test.tsx` | heading is h3 inside the bordered card |
+

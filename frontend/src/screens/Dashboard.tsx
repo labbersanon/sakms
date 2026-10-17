@@ -718,12 +718,14 @@ export const Dashboard: Component = () => {
       {/* Storage Allocation — REST-backed (GET /api/admin/storage-allocation),
           deliberately OUTSIDE the <Show when={snap()}> gate above: it has its
           own data source, so it must not wait on an SSE metrics frame that a
-          stalled stream may never deliver. */}
+          stalled stream may never deliver.
+          Claude 2026-10-16: title lives on Card, not an h2 above the box.
+          Reason: CPU/Memory/NNTP use Card's inner h3; an outside heading sat
+            on the page background and did not match.
+          Troubleshooting: heading outside the border → this wrapper reverted
+            to a raw bordered div.
+          Review if: Card gains a full-bleed table variant. */}
       <div class="mt-4">
-        <h2 class="mb-2 px-2 text-sm font-semibold text-fg">
-          Storage Allocation
-        </h2>
-
         <Show when={alloc.error}>
           <div class="mb-4 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-warn">
             Storage allocation unavailable — {allocError()}
@@ -736,8 +738,9 @@ export const Dashboard: Component = () => {
             fallback={<Muted>Loading storage allocation…</Muted>}
           >
             {(a) => (
-              <div class="overflow-x-auto rounded-xl border border-border bg-surface p-4">
-                <table class="w-full text-left text-sm">
+              <Card title="Storage Allocation">
+                <div class="overflow-x-auto">
+                  <table class="w-full text-left text-sm">
                   <thead>
                     <tr class="border-b border-border text-xs uppercase tracking-wide text-muted">
                       <th class="px-2 py-2 font-medium" scope="col">
@@ -802,8 +805,9 @@ export const Dashboard: Component = () => {
                       )}
                     </For>
                   </tbody>
-                </table>
-              </div>
+                  </table>
+                </div>
+              </Card>
             )}
           </Show>
         </Show>

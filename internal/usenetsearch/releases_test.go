@@ -271,3 +271,30 @@ func TestRecomputeDirty_NamedCompleteBeforePending(t *testing.T) {
 		t.Fatalf("named dirty=%v searchable=%v pending dirty=%v; want named recomputed searchable first", namedDirty, searchable, pendingDirty)
 	}
 }
+
+func TestRecomputeDirty_StopsAtDeadline(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	const g = "alt.binaries.movies"
+	if err := idx.Upsert(ctx, append(
+		fileRows(g, "A.Show.2020", "a.mkv", "a", 0, 10, 1, 0),
+		fileRows(g, "B.Show.2020", "b.mkv", "b", 100, 10, 1, 0)...,
+	)); err != nil {
+		t.Fatal(err)
+	}
+	st, err := idx.recomputeDirtyBounded(ctx, 10, time.Now().Add(-time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Releases != 0 {
+		t.Fatalf("releases=%d, want 0 (deadline already passed)", st.Releases)
+	}
+	if st.Backlog != 2 {
+		t.Fatalf("backlog=%d, want 2 still dirty", st.Backlog)
+	}
+}

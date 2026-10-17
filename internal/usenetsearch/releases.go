@@ -3,6 +3,7 @@ package usenetsearch
 import (
 	"context"
 	"database/sql"
+	"log"
 	"strings"
 	"time"
 )
@@ -210,6 +211,19 @@ type RecomputeStats struct {
 // releases (DB only, no NNTP). Releases with no headers left are deleted
 // (orphans from prune/liveness/TTL).
 func (idx *Index) RecomputeDirty(ctx context.Context, limit int) (RecomputeStats, error) {
+	return idx.recomputeDirtyBounded(ctx, limit, time.Time{})
+}
+
+// recomputeDirtyBounded is RecomputeDirty with a wall-clock stop. A zero
+// deadline means no time cap. Remaining dirty rows stay queued.
+//
+// Claude 2026-10-16: stop mid-batch when the crawl loop's budget expires.
+// Reason: 9×500 recomputeOne on huge pending keys held WALWrite for ~10 min
+// with no log (dashboard looked crashed; crawl/namefix starved).
+// Troubleshooting: "completeness recompute working" then crawl chunks again
+// within ~20s. If silence returns, deadline is not passed from runRecompute.
+// Review if: dirty backlog is small and each recomputeOne is cheap.
+func (idx *Index) recomputeDirtyBounded(ctx context.Context, limit int, deadline time.Time) (RecomputeStats, error) {
 	var st RecomputeStats
 	if limit <= 0 {
 		limit = recomputeBatch
@@ -247,10 +261,16 @@ LIMIT ?`, gateBP, gateBP, limit)
 	if err := rows.Err(); err != nil {
 		return st, err
 	}
+	if len(keys) > 0 && !deadline.IsZero() {
+		log.Printf("usenetsearch: completeness recompute working keys=%d", len(keys))
+	}
 	gate := idx.MinCompletenessPct()
 	for _, k := range keys {
 		if err := ctx.Err(); err != nil {
 			return st, err
+		}
+		if !deadline.IsZero() && time.Now().After(deadline) {
+			break
 		}
 		searchable, undeclared, orphan, err := idx.recomputeOne(ctx, k, gate)
 		if err != nil {

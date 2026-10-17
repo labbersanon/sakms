@@ -931,10 +931,19 @@ func (s *Service) runNameFix(ctx context.Context, c *Crawler, budget *bodyBudget
 const (
 	recomputeCatchupMax        = 8
 	recomputeCatchupMinBacklog = 2000
+	recomputeMaxDuration       = 20 * time.Second
 )
 
 // runRecompute drains a bounded batch of dirty releases (DB only, no NNTP),
-// plus up to recomputeCatchupMax more while the backlog is large.
+// plus up to recomputeCatchupMax more while the backlog is large and the
+// wall-clock budget remains.
+//
+// Claude 2026-10-16: 20s cap + per-batch log so crawl is not silent for 10 min.
+// Reason: extra_batches=8 × 500 recomputeOne of huge keys blocked the loop
+// (WALWrite) with one summary log at the end; dashboard looked crashed.
+// Troubleshooting: crawl chunks missing >30s after "recompute working" →
+// deadline not stopping the per-key loop.
+// Review if: dirty backlog is gone and extra catch-up is unused.
 func (s *Service) runRecompute(ctx context.Context) {
 	s.mu.Lock()
 	idx := s.idx
@@ -942,7 +951,8 @@ func (s *Service) runRecompute(ctx context.Context) {
 	if idx == nil {
 		return
 	}
-	st, err := idx.RecomputeDirty(ctx, recomputeBatch)
+	deadline := time.Now().Add(recomputeMaxDuration)
+	st, err := idx.recomputeDirtyBounded(ctx, recomputeBatch, deadline)
 	if err != nil {
 		log.Printf("usenetsearch: recompute: %v", err)
 		return
@@ -953,7 +963,10 @@ func (s *Service) runRecompute(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		st, err = idx.RecomputeDirty(ctx, recomputeBatch)
+		if time.Now().After(deadline) {
+			break
+		}
+		st, err = idx.recomputeDirtyBounded(ctx, recomputeBatch, deadline)
 		if err != nil {
 			log.Printf("usenetsearch: recompute: %v", err)
 			return
@@ -965,6 +978,8 @@ func (s *Service) runRecompute(ctx context.Context) {
 		total.Undeclared += st.Undeclared
 		total.Orphans += st.Orphans
 		total.Backlog = st.Backlog
+		log.Printf("usenetsearch: completeness recompute in-progress releases=%d backlog=%d extra_batches=%d",
+			total.Releases, total.Backlog, extra)
 	}
 	if total.Releases > 0 {
 		log.Printf("usenetsearch: completeness recompute releases=%d searchable=%d below_gate=%d undeclared=%d orphans=%d backlog=%d extra_batches=%d",

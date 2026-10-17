@@ -20,6 +20,14 @@ import (
 // repairRangesPerPass bounds ranges processed per loop iteration.
 const repairRangesPerPass = 20
 
+// Claude 2026-10-16: yield the crawl loop even if 20 span ranges are due.
+// Reason: each span can be 20k articles (10 OVER windows) with no log; 20 of
+// those would look like another crash after the recompute hang.
+// Troubleshooting: "repair pass ranges=N" every loop; if N stays 20 and crawl
+// chunks vanish, this budget is not breaking the range loop.
+// Review if: missed_ranges stays empty (then this never fires).
+const repairMaxDuration = 20 * time.Second
+
 // RepairResult summarizes one repair pass.
 type RepairResult struct {
 	Ranges        int
@@ -41,10 +49,15 @@ func (c *Crawler) RepairOnce(ctx context.Context) (RepairResult, error) {
 	if err != nil {
 		return res, err
 	}
+	deadline := time.Now().Add(repairMaxDuration)
 	for i, r := range ranges {
 		if err := ctx.Err(); err != nil {
 			return res, err
 		}
+		if i > 0 && time.Now().After(deadline) {
+			break
+		}
+		log.Printf("usenetsearch: repair range %s %d-%d", r.Group, r.Lo, r.Hi)
 		got, err := c.repairRange(ctx, r)
 		if errors.Is(err, usenet.ErrBusy) {
 			res.Busy = true
@@ -100,6 +113,13 @@ func (c *Crawler) repairRange(ctx context.Context, r MissedRange) (int, error) {
 			return total, err
 		}
 		total += n
+		if a+overviewChunk <= r.Hi {
+			select {
+			case <-ctx.Done():
+				return total, ctx.Err()
+			case <-time.After(chunkPause):
+			}
+		}
 	}
 	return total, nil
 }

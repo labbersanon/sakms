@@ -449,7 +449,7 @@ func TestNameFix_BusyStopsWithoutAttempts(t *testing.T) {
 	}
 }
 
-func TestNameFix_UnresolvedBacksOffThenFinalizesAfterThree(t *testing.T) {
+func TestNameFix_UnresolvedBacksOffThenKeepsCompleteYield(t *testing.T) {
 	f := newNFFixture(t, obfuscatedSet("u", nfHash, 1, 45), nil)
 	f.crawlAndRecompute(t)
 	ctx := context.Background()
@@ -466,19 +466,37 @@ func TestNameFix_UnresolvedBacksOffThenFinalizesAfterThree(t *testing.T) {
 			t.Fatalf("pass %d did nothing: %+v", i, res)
 		}
 	}
-	// Not due again until next_name_at passes.
 	res, _ := f.nf.Run(ctx)
 	if res.Sets != 0 {
 		t.Fatalf("set retried before backoff elapsed: %+v", res)
 	}
 	var n int
 	f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases`).Scan(&n)
-	if n != 0 {
-		t.Fatalf("set survived 3 failed attempts: %d", n)
+	if n != 1 {
+		t.Fatalf("complete yield set deleted after 3 failed attempts: %d", n)
 	}
-	f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_headers`).Scan(&n)
-	if n != 0 {
-		t.Fatalf("headers survived finalize: %d", n)
+}
+
+func TestSweepUnnamed_StillDropsFirehoseAfterAttempts(t *testing.T) {
+	f := newNFFixture(t, obfuscatedSet("u", nfHash, 1, 45), nil)
+	f.crawlAndRecompute(t)
+	ctx := context.Background()
+	const fire = "alt.binaries.boneless"
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET group_name=?`, fire); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_headers SET group_name=?`, fire); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET name_attempts=?`, maxNameAttempts); err != nil {
+		t.Fatal(err)
+	}
+	n, err := f.idx.SweepUnnamed(ctx, DefaultUnnamedTTLDays*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("swept=%d, want 1 boneless complete set", n)
 	}
 }
 
@@ -501,6 +519,13 @@ func TestNameFix_SmallSetFinalizedWithoutBody(t *testing.T) {
 func TestNameFix_TTLFinalizesOldSets(t *testing.T) {
 	f := newNFFixture(t, obfuscatedSet("t", nfHash, 1, 45), nil)
 	f.crawlAndRecompute(t)
+	const fire = "alt.binaries.boneless"
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET group_name=?`, fire); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_headers SET group_name=?`, fire); err != nil {
+		t.Fatal(err)
+	}
 	old := time.Now().Add(-8 * 24 * time.Hour).Unix()
 	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET ingested_at=?`, old); err != nil {
 		t.Fatal(err)

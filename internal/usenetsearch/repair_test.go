@@ -230,6 +230,45 @@ func TestRepair_ExistingKeyUpsertedDirectlyEvenIfPolicyNowRejects(t *testing.T) 
 	}
 }
 
+func TestRepair_SpanEnqueuedForPendingName(t *testing.T) {
+	idx, _, c, group := newGapFixture(t, 100)
+	ctx := context.Background()
+	key := ObfKey(group, "p@t", `[01/1] - "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.part01.rar" yEnc (1/100)`)
+	rows := fileRows(group, key, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.part01.rar", "pn", 1000, 100, 90, 0)
+	for i := range rows {
+		rows[i].From = "p@t"
+		rows[i].Obfuscated = true
+		rows[i].ReleaseName = key
+	}
+	if err := idx.Upsert(ctx, rows); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.SetWatermark(ctx, group, 500_000); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.markDirty(ctx, []releaseKey{{group, key}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.RecomputeDirty(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	var lo, hi int
+	if err := idx.db.QueryRow(`SELECT lo, hi FROM usenet_nntp_missed_ranges WHERE reason='span'`).Scan(&lo, &hi); err != nil {
+		t.Fatalf("pending span range: %v", err)
+	}
+	if lo == 0 || hi <= lo {
+		t.Fatalf("span=%d-%d", lo, hi)
+	}
+	n, err := idx.EnqueueStalePendingSpans(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("stale enqueue=%d, want 0 (already span_requeued)", n)
+	}
+	_ = c
+}
+
 func TestRepair_SpanEnqueuedOncePerRelease(t *testing.T) {
 	idx, _, c, group := newGapFixture(t, 100)
 	ctx := context.Background()

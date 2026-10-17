@@ -763,8 +763,15 @@ func TestCrawlOnce_SkipsListTailWhileYieldGroupsLag(t *testing.T) {
 	if !c.SkipListTail {
 		t.Fatal("expected SkipListTail while moovee is 100k behind HIGH")
 	}
-	if c.shouldBackfill() {
-		t.Fatal("backfill must stay off while SkipListTail")
+	c.BackfillEnabled = true
+	if !c.shouldBackfill() {
+		t.Fatal("yield-core backfill must still run while SkipListTail")
+	}
+	if c.backfillWanted(ctx, firehose) {
+		t.Fatal("bloaf must not backfill while SkipListTail")
+	}
+	if !c.backfillWanted(ctx, core) {
+		t.Fatal("moovee must still backfill while SkipListTail")
 	}
 	by := overCallsByGroup(src.calls)
 	if by[firehose] != 0 {
@@ -801,13 +808,15 @@ func TestCrawlOnce_ListTailRunsWhenYieldCaughtUp(t *testing.T) {
 	}
 }
 
-func TestCrawler_ShouldBackfillRespectsSkipListTail(t *testing.T) {
-	c := &Crawler{BackfillEnabled: true}
+func TestCrawler_SkipListTailFiltersFirehoseBackfill(t *testing.T) {
+	c := &Crawler{BackfillEnabled: true, SkipListTail: true}
 	if !c.shouldBackfill() {
-		t.Fatal("backfill on when caught up")
+		t.Fatal("backfill stays enabled; yield cores still walk history")
 	}
-	c.SkipListTail = true
-	if c.shouldBackfill() {
-		t.Fatal("backfill off while catching up")
+	if c.backfillWanted(context.Background(), firehose) {
+		t.Fatal("bloaf backfill skipped while catching up")
+	}
+	if !c.backfillWanted(context.Background(), core) {
+		t.Fatal("moovee backfill runs while catching up")
 	}
 }

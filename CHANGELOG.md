@@ -11345,3 +11345,20 @@ status stays active.
 | `internal/usenetsearch/service.go` | BackfillOnce gated on `shouldBackfill` |
 | `internal/usenetsearch/crawler_admission_test.go` | lag skip, caught-up rest, yield split tests |
 
+## 2026-10-16 — Searchable stall: complete yield sets deleted, 80% sets never repaired
+
+**Problem:** After skipping LIST-tail OVER, searchable still bursted (namefix renamed=4) then stopped (renamed=0, sets draining).
+**Root cause:** 51 complete yield sets (moovee/hdtv/tv/xxx, 0.3–4.8GB) failed BODY (hash-named PAR2/RAR), went on retry, and SweepUnnamed would delete them at 3 attempts. 15 moovee sets at 82% sit behind HIGH with no missed_ranges; span repair only queued `named` rows. SkipListTail also skipped yield-core backfill. Ingest left 14k x264 pending dirty/empty behind a 196k recompute FIFO.
+**Fix:** Do not TTL/attempt-cap complete (≥80%, ≥100MB) yield pending. Queue span repair for pending_name 80%+ behind HIGH. Backfill yield groups while LIST tail is skipped. Recompute up to 32 staged keys per OVER chunk.
+**Outcome:** Complete yield inventory is kept for retry/PreDB; 82% moovee spans get re-OVER; x264/moovee history keeps backfilling; completeness is visible the same loop.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix_index.go` | SweepUnnamed keeps complete yield |
+| `internal/usenetsearch/releases.go` | pending_name span repair + EnqueueStalePendingSpans |
+| `internal/usenetsearch/backfill.go` | SkipListTail backfill yield-only |
+| `internal/usenetsearch/ingest.go` | recomputeIngested |
+| `internal/usenetsearch/{namefix,repair,crawler_admission}_test.go` | keep-alive, span, backfill filter tests |
+

@@ -186,11 +186,24 @@ func (idx *Index) FinalizeUnnamed(ctx context.Context, keys []releaseKey) (int64
 	return idx.deleteReleaseSets(ctx, keys)
 }
 
+// keepCompleteYield reports whether a staged set is real yield-group inventory
+// that namefix may still recover (do not TTL / attempt-cap delete it).
+func keepCompleteYield(group string, completenessBP int, payload int64) bool {
+	return IsNameFixYieldGroup(group) && completenessBP >= spanRepairFloorBP && payload >= namefixMinPayload
+}
+
 // SweepUnnamed finalizes staged sets older than ttl or out of attempts.
+//
+// Claude 2026-10-16: do not delete ≥80% complete yield sets with real payload.
+// Reason: 51 complete moovee/hdtv/tv/xxx sets (0.3–4.8GB) failed BODY twice
+// (hash-named PAR2/RAR) and would be swept on attempt 3 — searchable bursted
+// then stopped. Firehose/junk still TTL.
+// Troubleshooting: namefix finalized=N while yield complete pending vanishes
+// → this filter not applied. Review if: PreDB names those hashes (then TTL).
 func (idx *Index) SweepUnnamed(ctx context.Context, ttl time.Duration) (int, error) {
 	cutoff := time.Now().Add(-ttl).Unix()
 	rows, err := idx.db.QueryContext(ctx, `
-SELECT group_name, release_key FROM usenet_nntp_releases
+SELECT group_name, release_key, completeness_bp, payload_bytes FROM usenet_nntp_releases
 WHERE state='pending_name' AND (ingested_at < ? OR name_attempts >= ?) LIMIT ?`,
 		cutoff, maxNameAttempts, incompleteSweepBatch)
 	if err != nil {
@@ -199,9 +212,14 @@ WHERE state='pending_name' AND (ingested_at < ? OR name_attempts >= ?) LIMIT ?`,
 	var keys []releaseKey
 	for rows.Next() {
 		var k releaseKey
-		if err := rows.Scan(&k.group, &k.key); err != nil {
+		var bp int
+		var payload int64
+		if err := rows.Scan(&k.group, &k.key, &bp, &payload); err != nil {
 			rows.Close()
 			return 0, err
+		}
+		if keepCompleteYield(k.group, bp, payload) {
+			continue
 		}
 		keys = append(keys, k)
 	}

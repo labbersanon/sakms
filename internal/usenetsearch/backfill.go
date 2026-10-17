@@ -79,6 +79,14 @@ func (c *Crawler) backfillBudget() int64 {
 }
 
 func (c *Crawler) backfillWanted(ctx context.Context, group string) bool {
+	// Claude 2026-10-16: while yield groups lag HIGH, do not backfill dvd/bloaf.
+	// Reason: SkipListTail used to skip ALL backfill, so moovee/x264 history
+	// (the RAR bodies of 80%+ pending sets) never ran; searchable stalled.
+	// Troubleshooting: dir=backfill on bloaf while crawl skip LIST tail →
+	// this filter is off. Review if: backfill is limited to staging cores.
+	if c.SkipListTail && !IsNameFixYieldGroup(group) {
+		return false
+	}
 	if IsPackageCore(group) {
 		return true
 	}

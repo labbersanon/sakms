@@ -286,9 +286,18 @@ const (
 	spanRepairPad         = 200
 )
 
-// enqueueSpan queues one reason='span' range [first-200, last+200] for a named
-// release sitting at 80%..gate whose span is already behind the forward
-// watermark. span_requeued makes it once-per-release.
+// enqueueSpan queues one reason='span' range [first-200, last+200] for a
+// named or pending_name release sitting at 80%..gate whose span is already
+// behind the forward watermark. span_requeued makes it once-per-release.
+//
+// Claude 2026-10-16: pending_name too, not only named.
+// Reason: 15 moovee sets at 82% (and 1 at 97%) sit behind HIGH with no
+// missed_ranges; named-only span repair never re-OVERed them, so they
+// never reached the namefix gate and searchable stalled after the leftover
+// complete queue drained.
+// Troubleshooting: completeness 80–94% pending behind watermark, no
+// reason=span rows → this UPDATE still filters state='named'.
+// Review if: span repair is limited to yield groups (today any group).
 func (idx *Index) enqueueSpan(ctx context.Context, k releaseKey) error {
 	if !idx.spanRepair.Load() {
 		return nil
@@ -298,7 +307,7 @@ func (idx *Index) enqueueSpan(ctx context.Context, k releaseKey) error {
 UPDATE usenet_nntp_releases r SET span_requeued = TRUE
 FROM usenet_nntp_watermarks w
 WHERE r.group_name = ? AND r.release_key = ? AND w.group_name = r.group_name
-  AND r.state = 'named' AND r.searchable = FALSE AND r.span_requeued = FALSE
+  AND r.state IN ('named', 'pending_name') AND r.searchable = FALSE AND r.span_requeued = FALSE
   AND r.gate_reason = 'below_gate' AND r.completeness_bp >= ? AND w.high > r.last_msg
 RETURNING r.first_msg, r.last_msg`, k.group, k.key, spanRepairFloorBP).Scan(&first, &last)
 	if err == sql.ErrNoRows {
@@ -316,6 +325,44 @@ RETURNING r.first_msg, r.last_msg`, k.group, k.key, spanRepairFloorBP).Scan(&fir
 		return nil
 	}
 	return idx.AddMissedRanges(ctx, k.group, [][2]int{{lo, hi}}, "span")
+}
+
+// EnqueueStalePendingSpans queues span repair for already-recomputed 80%+
+// pending_name sets behind HIGH (they will not pass through RecomputeDirty).
+func (idx *Index) EnqueueStalePendingSpans(ctx context.Context) (int, error) {
+	if !idx.spanRepair.Load() {
+		return 0, nil
+	}
+	rows, err := idx.db.QueryContext(ctx, `
+SELECT r.group_name, r.release_key FROM usenet_nntp_releases r
+JOIN usenet_nntp_watermarks w ON w.group_name = r.group_name
+WHERE r.state='pending_name' AND r.span_requeued=FALSE AND r.searchable=FALSE
+  AND r.gate_reason='below_gate' AND r.completeness_bp>=? AND w.high > r.last_msg
+LIMIT ?`, spanRepairFloorBP, repairRangesPerPass)
+	if err != nil {
+		return 0, err
+	}
+	var keys []releaseKey
+	for rows.Next() {
+		var k releaseKey
+		if err := rows.Scan(&k.group, &k.key); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		keys = append(keys, k)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, k := range keys {
+		if err := idx.enqueueSpan(ctx, k); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
 }
 
 func (idx *Index) recomputeOne(ctx context.Context, k releaseKey, gate int) (searchable, undeclared, orphan bool, err error) {

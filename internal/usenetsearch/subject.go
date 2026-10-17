@@ -55,14 +55,12 @@ var (
 	reGroupTag     = regexp.MustCompile(`(?i)^\[(?:#?a\.b\.[a-z0-9.+\-]+|[A-Za-z][^\[\]]{0,40})\]\s*`)
 	reLeadHashDash = regexp.MustCompile(`^([A-Za-z0-9]{16,})\s*-\s*[\[(]\d{1,5}/\d{1,5}`)
 	reLeadHashGlue = regexp.MustCompile(`^([A-Za-z0-9]{16,})\[\d{1,5}/\d{1,5}\]`)
-	// Claude 2026-10-16: TOKEN [k/N] with a space (teevee hash collections).
-	// Reason: 5JSoQ-2rqpfGRs5hg0JjXx2j7o27 [3/10] "….par2" parsed as a named
-	// series release (dash/glue patterns need "-" or a glued "["); admit
-	// logged the token and namefix never saw the set.
-	// Troubleshooting: admit release=<hash token> on teevee → this regex
-	// missed the subject or tokenLooksObfuscated rejected a real title.
-	// Review if: posters use a fourth lead-token shape.
-	reLeadHashSpace = regexp.MustCompile(`^([A-Za-z0-9][A-Za-z0-9_\-]{14,}[A-Za-z0-9])\s+[\[(]\d{1,5}/\d{1,5}[\])]`)
+	// Claude 2026-10-17: TOKEN [k/N] space form, 14+ chars, optional leading _.
+	// Reason: live teevee is 44k headers at 15-char tokens (KLoSR1zOTNoaex3
+	// [10/15]) and _eZL_Gt5… [3/18]; 16-char-only + "start alnum" missed them.
+	// Troubleshooting: admit release=15-char hash on teevee → min length or
+	// leading _ not in this regex. Review if: 13-char tokens become common.
+	reLeadHashSpace = regexp.MustCompile(`^[_-]*([A-Za-z0-9][A-Za-z0-9_\-]{12,}[A-Za-z0-9])\s+[\[(]\d{1,5}/\d{1,5}[\])]`)
 	reEpOrYearLoose = regexp.MustCompile(`(?i)s\d{1,2}e\d{1,3}|(?:19|20)\d{2}`)
 )
 
@@ -187,11 +185,14 @@ func applyStripPrefix(s string, extra []compiledExtra) string {
 }
 
 func tokenLooksObfuscated(tok string) bool {
-	if strings.Count(tok, "-")+strings.Count(tok, "_") > 2 || reEpOrYearLoose.MatchString(tok) {
+	if reEpOrYearLoose.MatchString(tok) {
 		return false
 	}
 	bare := strings.NewReplacer("-", "", "_", "").Replace(tok)
-	return looksObfuscated(bare) || mostlyHex(bare)
+	if len(bare) < 14 {
+		return false
+	}
+	return obfuscatedChurn(bare) || mostlyHex(bare)
 }
 
 // yencParts returns the trailing yEnc (n/m) segment counter. Prefers a match
@@ -317,6 +318,10 @@ func looksObfuscated(skeleton string) bool {
 	if len(skeleton) < 16 || strings.ContainsAny(skeleton, ".-_ ") {
 		return false
 	}
+	return obfuscatedChurn(skeleton)
+}
+
+func obfuscatedChurn(skeleton string) bool {
 	switches := 0
 	prev := rune(0)
 	for _, r := range skeleton {

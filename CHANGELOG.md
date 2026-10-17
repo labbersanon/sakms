@@ -11330,3 +11330,18 @@ status stays active.
 | `internal/usenetsearch/index.go` | GroupHasNamedRelease = searchable + non-subject |
 | `internal/usenetsearch/{seeds,namefix}_test.go` | yield filter + subject-named investment tests |
 
+## 2026-10-16 — Searchable burst-then-stall: LIST tail and backfill steal OVER
+
+**Problem:** Each NNTP fix moved searchable for one pass, then it stopped. After the yield-group namefix filter, one pass renamed 21 (Black Butler / Tokyo Revengers) and later passes were `renamed=0`.
+**Root cause:** Namefix only works on already-complete yield sets. Completing new sets needs forward OVER on tv/x264/hdtv/anime, which were ~1.2M behind HIGH at 0% complete. The loop still spent 1/3 of each crawl on LIST-tail (dvd/bloaf) and then BackfillOnce STAT on dvd/blu-ray, which kept `HasWork` true so the loop looked busy without finishing yield groups.
+**Fix:** Crawl's 2/3 share is name-fix yield groups (`splitYieldRest`). While any of them is still 50k articles behind provider HIGH, they get the whole pass and BackfillOnce is skipped. `splitCoreRest` stays staging cores so namefix still fills moovee before anime.
+**Outcome:** OVER stays on groups that can complete pending_name and become searchable until those groups catch HIGH; firehose/backfill resume after that.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/crawler.go` | `splitYieldRest`; skip LIST tail while lag ≥ 50k; `shouldBackfill` |
+| `internal/usenetsearch/service.go` | BackfillOnce gated on `shouldBackfill` |
+| `internal/usenetsearch/crawler_admission_test.go` | lag skip, caught-up rest, yield split tests |
+

@@ -42,7 +42,11 @@ type PreDBLookup interface {
 }
 
 const (
-	namefixSetsPerPass  = 20
+	// Claude 2026-10-16: 40 (was 20) so one pass can drain yield-group due sets.
+	// Reason: 25 due anime/highspeed/tv were split across loops while boneless ate slots.
+	// Troubleshooting: namefix pass sets=20 with yield due leftover → bump this.
+	// Review if: BODY budget (namefix_body_mb_per_hour) starts hitting BudgetStop.
+	namefixSetsPerPass  = 40
 	namefixBodiesPerSet = 3
 	// namefixMinPayload: smaller sets are finalized without any BODY fetch.
 	namefixMinPayload = 100 << 20

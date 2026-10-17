@@ -485,7 +485,15 @@ func (s *Service) loop(ctx context.Context) {
 			busy = busy || nr.Busy
 			advanced = advanced || nr.Advanced()
 		}
-		if crawler != nil && !busy && crawler.BackfillEnabled {
+		// Claude 2026-10-16: skip backfill while yield groups lag HIGH.
+		// Reason: BackfillOnce STAT on dvd/blu-ray/teevee kept HasWork true
+		// so the loop never idled, but those chunks do not complete x264/tv
+		// pending_name — searchable bursted on the leftover namefix queue
+		// then stopped.
+		// Troubleshooting: "backfill group=" every pass while crawl logs
+		// "skip LIST tail" — this gate is not wired.
+		// Review if: backfill is limited to yield groups the same way.
+		if crawler != nil && !busy && crawler.shouldBackfill() {
 			crawler.BackfillStart = backfillStart
 			br, err := crawler.BackfillOnce(ctx)
 			if err != nil {

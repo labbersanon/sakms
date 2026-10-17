@@ -321,13 +321,26 @@ func (idx *Index) HasGroup(ctx context.Context, group string) (bool, error) {
 	return err == nil, err
 }
 
-// GroupHasNamedRelease is true when group has at least one non-obfuscated
-// release_name. Used to decide NNTmux-style backfill/staging investment.
+// GroupHasNamedRelease is true when group has at least one searchable release
+// whose name did not come from a raw subject stem. Used to decide NNTmux-style
+// backfill/staging investment on non-staging groups.
+//
+// Claude 2026-10-16: require namefix-quality names, not any subject stem.
+// Reason: boneless had 146k subject-named 1-seg rows so obfStageAllowed kept
+//
+//	staging dumps into the unnamed cap.
+//
+// Troubleshooting: staged_obf high on boneless with skip_obf_cap=0 → this
+//
+//	still treating subject-named junk as investment.
+//
+// Review if: complete subject-named scene releases should also unlock staging.
 func (idx *Index) GroupHasNamedRelease(ctx context.Context, group string) (bool, error) {
 	var n int
-	err := idx.db.QueryRowContext(ctx,
-		`SELECT 1 FROM usenet_nntp_headers WHERE group_name=? AND release_name<>'' AND release_name NOT LIKE 'obf:%' LIMIT 1`,
-		group).Scan(&n)
+	err := idx.db.QueryRowContext(ctx, `
+SELECT 1 FROM usenet_nntp_releases
+WHERE group_name=? AND searchable AND name_source<>'' AND name_source<>'subject'
+LIMIT 1`, group).Scan(&n)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}

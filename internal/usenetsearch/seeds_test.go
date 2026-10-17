@@ -108,3 +108,18 @@ func TestIsStagingCore(t *testing.T) {
 		t.Fatal("boneless remains a packages.json seed")
 	}
 }
+
+func TestIsNameFixYieldGroup(t *testing.T) {
+	if !IsNameFixYieldGroup("alt.binaries.moovee") || !IsNameFixYieldGroup("alt.binaries.hdtv.x264") {
+		t.Fatal("staging cores must be namefix yield groups")
+	}
+	if !IsNameFixYieldGroup("alt.binaries.tv") || !IsNameFixYieldGroup("alt.binaries.multimedia.anime.highspeed") {
+		t.Fatal("step 3-4 seeds must be namefix yield groups")
+	}
+	if !IsNameFixYieldGroup("alt.binaries.anime") {
+		t.Fatal("anime is step 5 but par2-renames")
+	}
+	if IsNameFixYieldGroup("alt.binaries.boneless") || IsNameFixYieldGroup("alt.binaries.dvd") || IsNameFixYieldGroup("alt.binaries.bloaf") {
+		t.Fatal("firehose must not get namefix BODY")
+	}
+}

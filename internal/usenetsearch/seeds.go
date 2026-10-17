@@ -146,10 +146,12 @@ func FilterPackagesToProvider(seeds []PackageSeed, available []string) []Package
 // Membership is still LIST ACTIVE; packageCores only prioritizes crawl/backfill
 // budget the way NNTmux's `active` vs `backfill` flags do.
 var (
-	packageCoreOnce sync.Once
-	packageCores    map[string]bool
-	stagingCoreOnce sync.Once
-	stagingCores    map[string]bool
+	packageCoreOnce    sync.Once
+	packageCores       map[string]bool
+	stagingCoreOnce    sync.Once
+	stagingCores       map[string]bool
+	nameFixYieldOnce   sync.Once
+	nameFixYieldGroups map[string]bool
 )
 
 // StagingCoreMaxStep is the packages.json step at/below which a seed may
@@ -193,6 +195,38 @@ func IsStagingCore(name string) bool {
 		}
 	})
 	return stagingCores[strings.TrimSpace(name)]
+}
+
+// NameFixYieldMaxStep is the packages.json step at/below which a seed gets
+// name-recovery BODY fetches. Step 5 firehose (boneless/dvd) is excluded.
+const NameFixYieldMaxStep = 4
+
+// IsNameFixYieldGroup reports whether namefix should spend BODY on this group.
+//
+// Claude 2026-10-16: skip boneless/dvd firehose even when they have due complete sets.
+// Reason: 644 boneless nicovideo dumps filled all 20 namefix slots; anime/hdtv.x264
+//
+//	(the groups that actually rename) never ran, so searchable stalled at 36.
+//
+// Troubleshooting: namefix pass renamed=0 with due_now in the hundreds → due rows
+//
+//	are boneless; this filter must exclude them.
+//
+// Review if: an operator knob to namefix step-5 groups is added.
+func IsNameFixYieldGroup(name string) bool {
+	nameFixYieldOnce.Do(func() {
+		nameFixYieldGroups = map[string]bool{}
+		for _, mode := range []string{"movies", "series", "adult"} {
+			for _, g := range PackagesForMode(mode) {
+				if g.Pinned || g.Step <= NameFixYieldMaxStep {
+					nameFixYieldGroups[g.Name] = true
+				}
+			}
+		}
+		// series anime is step 5 but par2-renames (Black Butler).
+		nameFixYieldGroups["alt.binaries.anime"] = true
+	})
+	return nameFixYieldGroups[strings.TrimSpace(name)]
 }
 
 // PackageSeedByName maps group name → seed for mode (first match).

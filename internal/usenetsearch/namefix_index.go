@@ -48,15 +48,28 @@ func (idx *Index) StagedBytes(ctx context.Context, group string) (int64, error) 
 
 // DuePendingNames returns up to limit staged sets in groups whose retry time
 // has passed, recomputed, and at/above the completeness gate (a BODY fetch is
-// only spent on sets that could become searchable). Staging cores (step ≤2 /
-// pinned) are filled before LIST-tail groups, newest first inside each slice.
+// only spent on sets that could become searchable). Only yield groups are
+// queried (staging cores, package step ≤4, plus anime); within that set,
+// staging cores are filled before the rest, newest first.
 //
-// Claude 2026-10-16: staging cores before LIST tail.
-// Reason: boneless (step 5) held 80 of 82 due complete sets; cores had 0 because unique-ID yEnc floods never reached the gate.
-// Troubleshooting: namefix pass only boneless while moovee pending exists → splitCoreRest not applied here.
-// Review if: LIST-tail namefix should share the slot 50/50 with cores.
+// Claude 2026-10-16: yield groups only; boneless is not padded in.
+// Reason: 644 due boneless nicovideo dumps filled every namefix slot so
+//
+//	searchable stalled at 36 while anime/hdtv.x264 sat idle.
+//
+// Troubleshooting: namefix pass renamed=0 with due_now hundreds → boneless
+//
+//	still in the IN list.
+//
+// Review if: an operator knob to namefix step-5 firehose is added.
 func (idx *Index) DuePendingNames(ctx context.Context, groups []string, limit int) ([]PendingSet, error) {
-	cores, rest := splitCoreRest(groups)
+	var yield []string
+	for _, g := range groups {
+		if IsNameFixYieldGroup(g) {
+			yield = append(yield, g)
+		}
+	}
+	cores, rest := splitCoreRest(yield)
 	out, err := idx.duePendingNamesIn(ctx, cores, limit)
 	if err != nil || len(out) >= limit {
 		return out, err

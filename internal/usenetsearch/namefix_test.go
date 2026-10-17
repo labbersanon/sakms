@@ -730,3 +730,66 @@ func TestDuePendingNames_StagingCoresFirst(t *testing.T) {
 		t.Fatalf("got %+v, want staging core %s first", sets, core)
 	}
 }
+
+func TestDuePendingNames_SkipsBonelessWhenAnimeDue(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	const yield = "alt.binaries.anime"
+	const firehose = "alt.binaries.boneless"
+	rows := append(
+		fileRows(yield, "obf:aaaaaaaaaaaaaaaa", "a.rar", "a", 0, 10, 10, 0),
+		fileRows(firehose, "obf:bbbbbbbbbbbbbbbb", "b.rar", "b", 100, 10, 10, 0)...,
+	)
+	if err := idx.Upsert(ctx, rows); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.RecomputeDirty(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqlDB.Exec(`UPDATE usenet_nntp_releases SET dirty=FALSE, next_name_at=0, ingested_at=CASE WHEN group_name=? THEN 1 ELSE 99 END`, yield); err != nil {
+		t.Fatal(err)
+	}
+	sets, err := idx.DuePendingNames(ctx, []string{firehose, yield}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sets) != 1 || sets[0].Group != yield {
+		t.Fatalf("got %+v, want only yield group %s (boneless must not fill leftover slots)", sets, yield)
+	}
+}
+
+func TestGroupHasNamedRelease_IgnoresSubjectNamed(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	const g = "alt.binaries.boneless"
+	if err := idx.Upsert(ctx, fileRows(g, "Some.Dump.2020.1080p", "d.mkv", "d", 0, 10, 10, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.RecomputeDirty(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := idx.GroupHasNamedRelease(ctx, g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("subject-named rows must not unlock staging/backfill investment")
+	}
+	if _, err := sqlDB.Exec(`UPDATE usenet_nntp_releases SET name_source='par2', searchable=TRUE`); err != nil {
+		t.Fatal(err)
+	}
+	ok, err = idx.GroupHasNamedRelease(ctx, g)
+	if err != nil || !ok {
+		t.Fatalf("par2 searchable should unlock investment: ok=%v err=%v", ok, err)
+	}
+}

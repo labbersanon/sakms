@@ -153,15 +153,17 @@ func (c *Crawler) capStaged(ctx context.Context, group string, staged []HeaderRo
 	if len(staged) == 0 {
 		return nil, nil
 	}
-	// Claude 2026-10-16: only stage *new* obfuscated sets on package cores or
-	// groups that already have a named release (NNTmux backfill=1 analog).
-	// Reason: firehose bins (bloaf/ath) filled unnamed_max_pct so cores could
-	//   not stage recoverable PAR2/PreDB sets. Existing keys still flow in.
-	// Troubleshooting: skip_obf_cap high on bloaf with staged_obf=0 is expected.
+	// Claude 2026-10-16: only stage *new* obfuscated sets on staging cores
+	// (packages.json step ≤2 or pinned) or groups that already have a named
+	// release (NNTmux backfill=1 analog). Cap is per-group.
+	// Reason: IsPackageCore included step-5 noise (boneless/dvd); those filled
+	//   a global unnamed_max_pct so moovee/teevee could not stage. Existing
+	//   keys still flow in.
+	// Troubleshooting: skip_obf_cap high on boneless with staged_obf=0 is expected.
 	// Review if: an operator opt-in "stage hashes on this LIST group" is added.
 	dropNew := !c.obfStageAllowed(ctx, group)
 	if !dropNew && c.MaxGB > 0 {
-		used, err := c.Index.StagedBytes(ctx)
+		used, err := c.Index.StagedBytes(ctx, group)
 		if err != nil {
 			return nil, err
 		}
@@ -194,7 +196,7 @@ func (c *Crawler) capStaged(ctx context.Context, group string, staged []HeaderRo
 }
 
 func (c *Crawler) obfStageAllowed(ctx context.Context, group string) bool {
-	if IsPackageCore(group) {
+	if IsStagingCore(group) {
 		return true
 	}
 	if c.obfStageOK == nil {
@@ -223,6 +225,7 @@ func (c *Crawler) ingestRange(ctx context.Context, opts ingestOpts, group string
 	c.curDir = opts.Dir
 	c.curGaps = 0
 	c.curMaxPosted = 0
+	c.curEmpty = false
 	for _, r := range rows {
 		if r.DateUnix > c.curMaxPosted {
 			c.curMaxPosted = r.DateUnix
@@ -283,6 +286,7 @@ func (c *Crawler) ingestRange(ctx context.Context, opts ingestOpts, group string
 	}
 	kept = append(kept, c.dropWrongLanguage(direct)...)
 	kept = append(kept, staged...)
+	c.curEmpty = len(rows) > 0 && len(kept) == 0
 	if err := c.Index.Upsert(ctx, kept); err != nil {
 		return 0, err
 	}

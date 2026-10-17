@@ -157,3 +157,36 @@ func TestSweepIncomplete_KeepsSearchable(t *testing.T) {
 		t.Fatalf("swept %d err=%v, want 0 (searchable release is never reaped)", n, err)
 	}
 }
+
+func TestRecomputeOne_YencCountedOncePerFile(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	const g = "alt.binaries.movies"
+	const key = "obf:0123456789abcdef"
+	var rows []HeaderRow
+	for i := 1; i <= 10; i++ {
+		rows = append(rows, HeaderRow{
+			Group: g, MsgNum: i, MsgID: fmt.Sprintf("y%d@t", i), Subject: "s", From: "p@t",
+			PostedAt: 1700000000, Bytes: 1000, ReleaseName: key, PartN: i, PartM: 10,
+			Filename: "a.rar", YencSize: 50_000_000, Obfuscated: true,
+		})
+	}
+	if err := idx.Upsert(ctx, rows); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.RecomputeDirty(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	var payload int64
+	if err := sqlDB.QueryRowContext(ctx, `SELECT payload_bytes FROM usenet_nntp_releases WHERE release_key=?`, key).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload != 50_000_000 {
+		t.Fatalf("payload=%d, want 50000000 (once per file, not 10× yEnc)", payload)
+	}
+}

@@ -14,7 +14,7 @@ import (
 // the searchable name (usenet_nntp_releases.display_name) and becomes
 // Candidate.Name. gatePct is the strict threshold used for Candidate.Complete.
 // Troubleshooting: Complete=false on a release that "looks" whole → inspect
-//   CompletenessPct/MissingParts; undeclared part_m reports 0%.
+// CompletenessPct/MissingParts; undeclared part_m reports 0%.
 // Review if: Candidate gains per-file completeness.
 func assembleFromRows(group, release, display string, rows *sql.Rows, gatePct int) (Candidate, error) {
 	if display == "" {
@@ -78,10 +78,8 @@ func assembleFromRows(group, release, display string, rows *sql.Rows, gatePct in
 			MsgID:  msgid,
 		})
 		wire += bytes
-		if yenc > 0 {
-			payload += yenc
-		} else {
-			payload += int64(float64(bytes) / 1.37)
+		if !meta {
+			addFilePayload(&payload, agg, yenc, bytes)
 		}
 		c.SegmentCount++
 	}

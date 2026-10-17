@@ -160,7 +160,7 @@ func (idx *Index) deleteReleaseSets(ctx context.Context, keys []releaseKey) (int
 // Claude 2026-10-15: all three conditions so a release still being repaired
 // or still being crawled forward is never reaped early.
 // Troubleshooting: incomplete releases never reaped → check missed_ranges
-//   for the group and that watermarks.high advanced past last_msg+50k.
+// for the group and that watermarks.high advanced past last_msg+50k.
 // Review if: repair queue semantics change.
 func (idx *Index) SweepIncomplete(ctx context.Context, ttl time.Duration) (int, error) {
 	cutoff := time.Now().Add(-ttl).Unix()
@@ -364,11 +364,7 @@ FROM usenet_nntp_headers WHERE group_name=? AND release_name=?`, k.group, k.key)
 		}
 		agg.Seen[num] = true
 		if !meta {
-			if yenc > 0 {
-				payload += yenc
-			} else {
-				payload += int64(float64(bytes) / 1.37)
-			}
+			addFilePayload(&payload, agg, yenc, bytes)
 		}
 	}
 	rows.Close()

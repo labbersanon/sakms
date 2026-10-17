@@ -106,13 +106,14 @@ type Crawler struct {
 	ranges         map[string]usenet.GroupRange
 	budgetOverride int64
 
-	// curDir/curGaps/curStaged/curSkipObfCap/curMaxPosted describe the chunk
-	// ingestRange is processing; admitChunk and backfill read them. A Crawler
-	// is single-goroutine.
+	// curDir/curGaps/curStaged/curSkipObfCap/curEmpty/curMaxPosted describe the
+	// chunk ingestRange is processing; admitChunk and backfill read them. A
+	// Crawler is single-goroutine.
 	curDir        string
 	curGaps       int
 	curStaged     int
 	curSkipObfCap int
+	curEmpty      bool
 	curMaxPosted  int64
 	// OnChunk, if set, is invoked after each OVER chunk is admitted (Dashboard).
 	OnChunk func(CrawlChunkStat)
@@ -149,7 +150,7 @@ func rotateGroups(groups []string, start int) []string {
 
 func splitCoreRest(groups []string) (cores, rest []string) {
 	for _, g := range groups {
-		if IsPackageCore(g) {
+		if IsStagingCore(g) {
 			cores = append(cores, g)
 		} else {
 			rest = append(rest, g)
@@ -165,11 +166,15 @@ func (c *Crawler) crawlList(ctx context.Context, list []string, start, budget, g
 	}
 	rotated := rotateGroups(list, start)
 	used := 0
+	empty := map[string]bool{}
 	for used < budget {
 		progressed := false
 		for _, group := range rotated {
 			if used >= budget {
 				break
+			}
+			if empty[group] {
+				continue
 			}
 			n, a, err := c.crawlGroup(ctx, group, min(groupCap, budget-used))
 			if err != nil {
@@ -179,6 +184,9 @@ func (c *Crawler) crawlList(ctx context.Context, list []string, start, budget, g
 				}
 				log.Printf("usenetsearch: crawl %s: %v", group, err)
 				continue
+			}
+			if c.curEmpty {
+				empty[group] = true
 			}
 			used += n
 			progressed = progressed || n > 0
@@ -192,9 +200,9 @@ func (c *Crawler) crawlList(ctx context.Context, list []string, start, budget, g
 }
 
 // CrawlOnce advances watermarks round-robin across configured groups, up to
-// forwardChunksPerPass OVER chunks (forwardChunksPerGroup per group). Package
-// cores get 2/3 of the pass when mixed with the LIST tail (NNTmux: spend
-// header budget on groups you actually index).
+// forwardChunksPerPass OVER chunks (forwardChunksPerGroup per group). Staging
+// cores (pinned / step ≤2) get 2/3 of the pass when mixed with the LIST tail
+// (NNTmux: spend header budget on groups you actually index).
 func (c *Crawler) CrawlOnce(ctx context.Context) (CrawlResult, error) {
 	var res CrawlResult
 	if c.Src == nil || c.Index == nil {
@@ -263,6 +271,7 @@ func (c *Crawler) CrawlOnce(ctx context.Context) (CrawlResult, error) {
 }
 
 func (c *Crawler) crawlGroup(ctx context.Context, group string, maxChunks int) (chunks int, advanced bool, err error) {
+	c.curEmpty = false
 	gr, err := c.Src.GroupRange(ctx, group)
 	if err != nil {
 		return 0, false, err
@@ -322,6 +331,17 @@ func (c *Crawler) crawlGroup(ctx context.Context, group string, maxChunks int) (
 		}
 		chunks++
 		advanced = true
+		// Claude 2026-10-16: one empty OVER is enough for this group this pass.
+		// Reason: teevee/moovee were burning groupCap chunks at 100% skip_obf_cap
+		//   and dvd/amazing at 100% skip_unparsed; the watermark still advances.
+		// Troubleshooting: crawl chunk logs skip_*=rows admitted=0 staged_obf=0
+		//   then the next line is a different group — this break.
+		// Review if: a group with rare named posts mixed into noise needs more
+		//   than one probe chunk per pass.
+		if c.curEmpty {
+			log.Printf("usenetsearch: crawl %s: empty chunk, skip rest of group this pass (high=%d watermark=%d)", group, gr.High, b)
+			return chunks, advanced, nil
+		}
 		select {
 		case <-ctx.Done():
 			return chunks, advanced, ctx.Err()

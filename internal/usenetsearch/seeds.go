@@ -148,7 +148,14 @@ func FilterPackagesToProvider(seeds []PackageSeed, available []string) []Package
 var (
 	packageCoreOnce sync.Once
 	packageCores    map[string]bool
+	stagingCoreOnce sync.Once
+	stagingCores    map[string]bool
 )
+
+// StagingCoreMaxStep is the packages.json step at/below which a seed may
+// occupy the unnamed staging budget and the 2/3 core OVER share. Pinned
+// seeds qualify at any step.
+const StagingCoreMaxStep = 2
 
 // IsPackageCore reports whether name is a packages.json seed (any mode).
 func IsPackageCore(name string) bool {
@@ -161,6 +168,31 @@ func IsPackageCore(name string) bool {
 		}
 	})
 	return packageCores[strings.TrimSpace(name)]
+}
+
+// IsStagingCore reports whether name is a high-yield packages.json seed
+// (pinned or step ≤ StagingCoreMaxStep) in any mode.
+//
+// Claude 2026-10-16: crawl 2/3 budget and new-obf staging use this instead of
+// IsPackageCore (which includes step-5 noise like boneless/dvd).
+// Reason: those firehose seeds filled unnamed_max_pct and burned OVER on
+// 100% skip_obf_cap / skip_unparsed chunks.
+// Troubleshooting: skip_obf_cap on moovee while boneless has staged_obf=0 →
+// IsStagingCore(moovee) must be true and the cap must be per-group.
+// Review if: the operator slider should also gate staging (today slider is
+// grade-tolerance only; crawl membership stays LIST ACTIVE).
+func IsStagingCore(name string) bool {
+	stagingCoreOnce.Do(func() {
+		stagingCores = map[string]bool{}
+		for _, mode := range []string{"movies", "series", "adult"} {
+			for _, g := range PackagesForMode(mode) {
+				if g.Pinned || g.Step <= StagingCoreMaxStep {
+					stagingCores[g.Name] = true
+				}
+			}
+		}
+	})
+	return stagingCores[strings.TrimSpace(name)]
 }
 
 // PackageSeedByName maps group name → seed for mode (first match).

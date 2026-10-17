@@ -29,12 +29,20 @@ type PendingSet struct {
 	CompletenessBP int
 }
 
-// StagedBytes is the payload size of all unresolved staged sets (as of their
-// last recompute; sets staged this very chunk count 0 until then).
-func (idx *Index) StagedBytes(ctx context.Context) (int64, error) {
+// StagedBytes is the payload size of unresolved staged sets in group (as of
+// their last recompute; sets staged this very chunk count 0 until then).
+//
+// Claude 2026-10-16: cap is per-group, not a global SUM.
+// Reason: boneless/teevee pending (~1 TiB real header bytes) filled a global
+// unnamed_max_pct so moovee (0 pending) skip_obf_cap'd every new set.
+// Troubleshooting: skip_obf_cap on a core with staged_obf=0 → that group's
+// own pending_name payload is over unnamed_max_pct of MaxGB.
+// Review if: a shared unnamed pool for step-1 cores is added as a Settings knob.
+func (idx *Index) StagedBytes(ctx context.Context, group string) (int64, error) {
 	var n int64
 	err := idx.db.QueryRowContext(ctx,
-		`SELECT COALESCE(SUM(payload_bytes),0) FROM usenet_nntp_releases WHERE state='pending_name'`).Scan(&n)
+		`SELECT COALESCE(SUM(payload_bytes),0) FROM usenet_nntp_releases WHERE state='pending_name' AND group_name=?`,
+		group).Scan(&n)
 	return n, err
 }
 

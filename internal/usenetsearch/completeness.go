@@ -47,6 +47,27 @@ type fileAgg struct {
 	Meta  bool
 	PartM int          // declared segment count (max seen); 0 = undeclared
 	Seen  map[int]bool // distinct part numbers seen
+	yenc  int64        // first yEnc file size seen; counted once into payload
+}
+
+// addFilePayload adds one segment of agg's file to payload: the yEnc file size
+// once per file, or the segment's wire bytes less yEnc overhead when the
+// subject carried no yEnc size.
+//
+// Claude 2026-10-16: yEnc size is the whole file, not the segment.
+// Reason: summing yenc on every part made one pending_name set report ~688GB
+// and the unnamed cap read 8.5 TiB, so skip_obf_cap fired on every core.
+// Troubleshooting: payload_bytes ≈ file count × yenc, not segments × yenc.
+// Review if: yEnc size is stored per-segment instead of copied from the subject.
+func addFilePayload(payload *int64, agg *fileAgg, yenc, bytes int64) {
+	if yenc > 0 {
+		if agg.yenc == 0 {
+			agg.yenc = yenc
+			*payload += yenc
+		}
+		return
+	}
+	*payload += int64(float64(bytes) / 1.37)
 }
 
 // completeness is the strict-gate accounting for one release.

@@ -190,3 +190,49 @@ func TestRecomputeOne_YencCountedOncePerFile(t *testing.T) {
 		t.Fatalf("payload=%d, want 50000000 (once per file, not 10× yEnc)", payload)
 	}
 }
+
+func TestRecomputeDirty_PendingCompleteFirst(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	const g = "alt.binaries.movies"
+	// Oldest updated_at first, so FIFO order would pick the named release.
+	releases := []struct {
+		key            string
+		completenessBP int
+		updatedAt      int64
+		wantDirty      bool
+	}{
+		{"Named.Show.2020.1080p", 0, 1, true},
+		{"obf:aaaaaaaaaaaaaaaa", 0, 2, true},
+		{"obf:bbbbbbbbbbbbbbbb", 9500, 99, false},
+	}
+	named := fileRows(g, releases[0].key, "n.mkv", "n", 0, 10, 1, 0)
+	inc := fileRows(g, releases[1].key, "a.rar", "a", 100, 10, 1, 0)
+	comp := fileRows(g, releases[2].key, "b.rar", "b", 200, 10, 10, 0)
+	if err := idx.Upsert(ctx, append(append(named, inc...), comp...)); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range releases {
+		if _, err := sqlDB.ExecContext(ctx, `UPDATE usenet_nntp_releases SET dirty=TRUE, completeness_bp=?, updated_at=? WHERE release_key=?`,
+			r.completenessBP, r.updatedAt, r.key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := idx.RecomputeDirty(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range releases {
+		var dirty bool
+		if err := sqlDB.QueryRowContext(ctx, `SELECT dirty FROM usenet_nntp_releases WHERE release_key=?`, r.key).Scan(&dirty); err != nil {
+			t.Fatal(err)
+		}
+		if dirty != r.wantDirty {
+			t.Errorf("%s dirty=%v, want %v (only the complete pending_name set is recomputed first)", r.key, dirty, r.wantDirty)
+		}
+	}
+}

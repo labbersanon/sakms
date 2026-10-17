@@ -447,7 +447,7 @@ func (s *Service) loop(ctx context.Context) {
 		s.runCollectionRewrite(ctx)
 		s.refreshMembershipFromList(ctx)
 		// Claude 2026-10-16: D7 pass order — one-shot collection rewrite, then
-		// forward crawl, repair, (name-fix), recompute, (backfill), sweeps,
+		// forward crawl, repair, recompute, (name-fix), (backfill), sweeps,
 		// liveness, (idle collection-drift). Any NNTP pass reporting busy
 		// short-circuits the remaining NNTP passes and waits busyBackoff.
 		// Reason: one goroutine, existing constants, never starve downloads.
@@ -472,12 +472,19 @@ func (s *Service) loop(ctx context.Context) {
 			busy = busy || rr.Busy
 			advanced = advanced || rr.Advanced
 		}
+		// Claude 2026-10-16: recompute before namefix, and drain extra dirty
+		// batches when the queue is huge.
+		// Reason: DuePendingNames requires dirty=FALSE; a 314k FIFO backlog
+		//   (0045 + crawl upserts) left complete pending_name un-namefixed.
+		// Troubleshooting: namefix pass sets=0 with pending_name in the 100ks
+		//   → dirty complete sets are not at the front of RecomputeDirty.
+		// Review if: crawl should pause while dirty pending_name exceeds a knob.
+		s.runRecompute(ctx)
 		if crawler != nil && !busy && crawler.NameFixEnabled {
 			nr := s.runNameFix(ctx, crawler, budget)
 			busy = busy || nr.Busy
 			advanced = advanced || nr.Advanced()
 		}
-		s.runRecompute(ctx)
 		if crawler != nil && !busy && crawler.BackfillEnabled {
 			crawler.BackfillStart = backfillStart
 			br, err := crawler.BackfillOnce(ctx)
@@ -919,7 +926,13 @@ func (s *Service) runNameFix(ctx context.Context, c *Crawler, budget *bodyBudget
 	return res
 }
 
-// runRecompute drains a bounded batch of dirty releases (DB only, no NNTP).
+const (
+	recomputeCatchupMax        = 8
+	recomputeCatchupMinBacklog = 2000
+)
+
+// runRecompute drains a bounded batch of dirty releases (DB only, no NNTP),
+// plus up to recomputeCatchupMax more while the backlog is large.
 func (s *Service) runRecompute(ctx context.Context) {
 	s.mu.Lock()
 	idx := s.idx
@@ -932,9 +945,28 @@ func (s *Service) runRecompute(ctx context.Context) {
 		log.Printf("usenetsearch: recompute: %v", err)
 		return
 	}
-	if st.Releases > 0 {
-		log.Printf("usenetsearch: completeness recompute releases=%d searchable=%d below_gate=%d undeclared=%d orphans=%d backlog=%d",
-			st.Releases, st.Searchable, st.BelowGate, st.Undeclared, st.Orphans, st.Backlog)
+	total := st
+	extra := 0
+	for extra < recomputeCatchupMax && st.Backlog >= recomputeCatchupMinBacklog {
+		if ctx.Err() != nil {
+			return
+		}
+		st, err = idx.RecomputeDirty(ctx, recomputeBatch)
+		if err != nil {
+			log.Printf("usenetsearch: recompute: %v", err)
+			return
+		}
+		extra++
+		total.Releases += st.Releases
+		total.Searchable += st.Searchable
+		total.BelowGate += st.BelowGate
+		total.Undeclared += st.Undeclared
+		total.Orphans += st.Orphans
+		total.Backlog = st.Backlog
+	}
+	if total.Releases > 0 {
+		log.Printf("usenetsearch: completeness recompute releases=%d searchable=%d below_gate=%d undeclared=%d orphans=%d backlog=%d extra_batches=%d",
+			total.Releases, total.Searchable, total.BelowGate, total.Undeclared, total.Orphans, total.Backlog, extra)
 	}
 }
 

@@ -38,6 +38,10 @@ describe("sectionForPath — the route table's one special case", () => {
     expect(sectionForPath("/library/adult")).toBe("discover");
   });
 
+  it("does not gate leftover /collections after it left the sidebar", () => {
+    expect(sectionForPath("/collections")).toBeNull();
+  });
+
   it("maps '/' to discover", () => {
     // "/" is in APP_ROUTES and renders Discover, but it is NOT in NAV_ITEMS
     // (the sidebar links /discover). A bare slice(1) would yield "" and leave

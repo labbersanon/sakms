@@ -6,8 +6,8 @@
 // Troubleshooting: empty listing — GET /api/organize/browse?path=; 403 —
 //   Organize section lock. Stat 404 — path vanished after a mutate.
 //   Unreadable table — listing/pane must use bg-surface (white) over the
-//   wallpaper; transparent wrappers show cream-ticket paper through navy ink.
-//   Gold text-accent on crumbs/folder names is unreadable on cream; path
+//   wallpaper; transparent wrappers show dock grain through slate ink.
+//   Brass text-accent on crumbs/folder names is unreadable on sand; path
 //   and names use text-fg like the rest of Organize. Path lives in an
 //   inset folder bar on the listing card, not a loose breadcrumb row.
 //   Tracked badges come from GET /api/organize/browse/tracked, not the
@@ -79,7 +79,7 @@ const dtClass = "text-[11px] uppercase tracking-wide text-muted";
 const menuItemClass =
   "block w-full px-3 py-1.5 text-left text-sm text-fg hover:bg-surface-2 disabled:text-muted";
 // Same card chrome as Rename/Dedup queues so the listing sits on white
-// ticket-surface, not the page wallpaper.
+// surface, not the page wallpaper.
 const panelClass =
   "rounded-xl border border-border bg-surface/95 shadow-sm backdrop-blur-md";
 

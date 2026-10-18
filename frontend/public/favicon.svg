@@ -1,23 +1,14 @@
 <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-  <rect x="8" y="8" width="84" height="84" rx="20" fill="#F3E8C7"/>
+  <!-- Claude 2026-10-14: Lubber dock-piling glyph (replaces film-strip).
+       Reason: header/tab icon must read at 16px; two pilings + play mark
+         media-from-land without pirate or cinema cues.
+       Review if: the product is renamed from SAK. -->
+  <rect x="8" y="8" width="84" height="84" rx="20" fill="#E6DFD2"/>
 
-  <!-- clip body -->
-  <rect x="26" y="16" width="48" height="68" fill="#1B2A4A"/>
+  <rect x="24" y="22" width="14" height="56" rx="2" fill="#1A2C30"/>
+  <rect x="44" y="28" width="14" height="50" rx="2" fill="#173036"/>
+  <ellipse cx="31" cy="22" rx="9" ry="4" fill="#C9A43A"/>
+  <ellipse cx="51" cy="28" rx="9" ry="4" fill="#C9A43A"/>
 
-  <!-- left sprocket notches -->
-  <rect x="22" y="19" width="8" height="8" fill="#F3E8C7"/>
-  <rect x="22" y="32.5" width="8" height="8" fill="#F3E8C7"/>
-  <rect x="22" y="46" width="8" height="8" fill="#F3E8C7"/>
-  <rect x="22" y="59.5" width="8" height="8" fill="#F3E8C7"/>
-  <rect x="22" y="73" width="8" height="8" fill="#F3E8C7"/>
-
-  <!-- right sprocket notches -->
-  <rect x="70" y="19" width="8" height="8" fill="#F3E8C7"/>
-  <rect x="70" y="32.5" width="8" height="8" fill="#F3E8C7"/>
-  <rect x="70" y="46" width="8" height="8" fill="#F3E8C7"/>
-  <rect x="70" y="59.5" width="8" height="8" fill="#F3E8C7"/>
-  <rect x="70" y="73" width="8" height="8" fill="#F3E8C7"/>
-
-  <!-- play triangle -->
-  <polygon points="43,37 43,63 65,50" fill="#F3E8C7"/>
+  <polygon points="66,38 66,66 88,52" fill="#1A2C30"/>
 </svg>

@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// SL-11: TabSections() equals the seven canonical sidebar ids.
+// SL-11: TabSections() equals the five canonical sidebar ids.
 //
 // This is the Go half of the three-layer nav drift guard. The other two
 // are in the frontend (NAV_ITEMS becomes an export, and a TS test
@@ -23,7 +23,7 @@ func TestTabSectionsMatchesSidebar(t *testing.T) {
 		// "library" retired as a sidebar tab 2026-09-24 (Discover merge).
 		"queue",
 		"organize",
-		"collections",
+		// "collections" retired as a sidebar tab 2026-10-14.
 		"settings",
 	}
 	if got := TabSections(); !reflect.DeepEqual(got, want) {

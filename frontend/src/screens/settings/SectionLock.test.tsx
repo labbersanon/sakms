@@ -56,7 +56,7 @@ const typeCurrentPin = (pin: string) => {
 
 describe("FE-2 — lock everything equals checking every box", () => {
   it("both paths PUT a byte-identical body", async () => {
-    // Path A: check all seven boxes by hand, then Save.
+    // Path A: check every lockable box by hand, then Save.
     const fetchA = stubFetch();
     const viewA = renderPanel();
     typeCurrentPin("hunter2");
@@ -106,7 +106,7 @@ describe("SectionLock panel", () => {
         screen.getByLabelText(`Lock ${sectionLabel(section)}`),
       ).toBeInTheDocument();
     }
-    // The ninth entry is the mode-scoped pseudo-section, not a sidebar tab.
+    // Adult content is the mode-scoped pseudo-section, not a sidebar tab.
     expect(screen.getByLabelText("Lock Adult content")).toBeInTheDocument();
   });
 
@@ -114,7 +114,7 @@ describe("SectionLock panel", () => {
     const fetchMock = stubFetch();
     renderPanel();
     typeCurrentPin("hunter2");
-    fireEvent.click(screen.getByLabelText("Lock Organize"));
+    fireEvent.click(screen.getByLabelText("Lock Dry dock"));
     fireEvent.click(screen.getByText("Save locked sections"));
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const body = JSON.parse(String(fetchMock.mock.calls[0]![1]?.body));
@@ -167,7 +167,7 @@ describe("SectionLock panel", () => {
         <SectionLockSection />
       </SectionLockContext.Provider>
     ));
-    expect(screen.getByLabelText("Lock Organize")).toBeDisabled();
+    expect(screen.getByLabelText("Lock Dry dock")).toBeDisabled();
     expect(screen.getByText("Lock everything")).toBeDisabled();
     expect(screen.getByText("Save locked sections")).toBeDisabled();
   });

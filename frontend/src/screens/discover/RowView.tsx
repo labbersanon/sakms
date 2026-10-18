@@ -64,12 +64,12 @@ import { type DetailTarget, DetailPopup } from "./DetailPopup";
 const WRAP = MEDIA_POSTER_GRID_CLASS;
 
 // Claude 2026-08-13: chip class shared with ViewAllLink (not text-accent).
-// Reason: gold-on-cream wallpaper swallowed the back link on mobile View All.
+// Reason: brass-on-sand wallpaper swallowed the back link on mobile View All.
 // mb-3 is BackLink-only — View all sits in a flex header and must not grow.
 // Review if: DISCOVER_NAV_LINK_CLASS is retired.
 const BackLink: Component<{ href: string }> = (props) => (
   <A href={props.href} class={`${DISCOVER_NAV_LINK_CLASS} mb-3`}>
-    Back to Discover
+    Back to Lighthouse
   </A>
 );
 

@@ -10951,6 +10951,77 @@ status stays active.
 | `frontend/src/components/ui.Button.test.tsx` | variant class updates after click |
 | `frontend/src/screens/Import.test.tsx` | Series chip gains `bg-accent` when clicked |
 
+## 2026-10-14 — Lubber shore/dock visual identity (SAK name unchanged)
+
+**Problem:** The app still wore the 2026-07-14 vintage cinema-ticket look (cream paper, navy ink, gold stars, film-strip favicon, ticket-stub wallpaper). That identity does not match Lubber — landside, off the *arr ship — and the product rename is held until release.
+**Fix:** Re-theme through the existing `@theme` token block plus matching mark and wallpaper. Palette is salt-fog linen, harbor slate chrome, brass accent, rust danger. Logo is a dock sign (pilings, rope, LANDSIDE / DRY DOCK) keeping the SAK MEDIA SERVER wordmark. Favicon is two pilings + play. Wallpaper is quiet plank grain with faint pilings, still two pre-composed 4K WebPs for collapsed/expanded sidebar. No GitHub/module/container rename.
+**Outcome:** Visual identity is landside without pirate kitsch; operators still see SAK until the release rename.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/index.css` | Lubber `@theme` tokens; chrome stays dark-on-sand vs white cards |
+| `frontend/public/logo.svg` | dock-sign mark, SAK wordmark kept |
+| `frontend/public/favicon.svg` | piling + play glyph |
+| `frontend/public/wallpaper-collapsed.webp` | quiet dock grain |
+| `frontend/public/wallpaper-expanded.webp` | same, pilings shifted for expanded sidebar |
+| `frontend/src/screens/AppShell.tsx` | wallpaper comment |
+| `frontend/src/components/ViewAllLink.tsx` | brass-on-sand chip rationale |
+| `frontend/src/screens/Dashboard.tsx` | palette comment |
+| `frontend/src/screens/Activity.tsx` | wallpaper contrast comment |
+| `frontend/src/screens/Browse.tsx` | wallpaper contrast comments |
+| `frontend/src/screens/discover/RowView.tsx` | back-link contrast comment |
+| `frontend/src/screens/Downloads.tsx` | phase-pill contrast comment |
+| `frontend/src/screens/PurgeRulesCard.tsx` | sand-form comments |
+| `frontend/src/components/TrackedPlayback.tsx` | fullscreen pillarbox comment |
+
+## 2026-10-14 — Off-LAN Lubber theme mock-up
+
+**Problem:** The landside re-theme could only be reviewed on wade-pc; screenshots lived in the agent transcript.
+**Fix:** Added a single-file HTML mock-up (auth, app shell, token swatches) with the live palette inlined so it renders from a public GitHub HTML preview URL.
+**Outcome:** The mock can be opened in any browser, including away from the LAN.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `docs/lubber-theme-mockup.html` | static Login / App shell / Palette preview |
+
+## 2026-10-14 — Landside sidebar names
+
+**Problem:** The Lubber look still said Dashboard / Discover / Queue / Organize / Collections / Settings — *arr-style operator words, not landside.
+**Fix:** Visible labels now come from `SECTION_LABELS`: Dock, Lighthouse, Wharf, Dry dock, Locker, Harbormaster. Route paths are unchanged. Nested tools (Rename, Downloads, …) stay operational; Settings children that named a parent became “Dry dock scans” and “Lighthouse UI”.
+**Outcome:** Sidebar, lock overlay, and PIN checkboxes share one glossary. Mock-up Palette tab shows the mapping.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/api/sectionLock.ts` | Dock / Lighthouse / Wharf / Dry dock / Locker / Harbormaster |
+| `frontend/src/screens/AppShell.tsx` | NAV_ITEMS + group aria labels from `sectionLabel` |
+| `frontend/src/screens/settingsTabs.ts` | Dry dock scans, Lighthouse UI |
+| `frontend/src/screens/settings/UI.tsx` | Lighthouse subsection heading |
+| `frontend/src/screens/discover/RowView.tsx` | Back to Lighthouse |
+| `docs/lubber-theme-mockup.html` | sidebar names + glossary |
+| tests | match the new labels |
+
+## 2026-10-14 — Cargo, drop Collections, Settings stays Settings
+
+**Problem:** Wharf was the wrong word for Queue; Collections did not belong on the landside nav; Harbormaster was an unwanted rename of Settings.
+**Fix:** Queue label is Cargo. Collections is commented out of NAV_ITEMS and the lockable-tab lists (page remains at `/collections`). Settings label is Settings again.
+**Outcome:** Sidebar is Dock, Lighthouse, Cargo, Dry dock, Settings.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/api/sectionLock.ts` | queue=Cargo; settings=Settings; collections off lock tabs |
+| `frontend/src/screens/AppShell.tsx` | Collections nav item commented out |
+| `internal/sectionlock/sections.go` | SectionCollections off tabSections |
+| `docs/lubber-theme-mockup.html` | matching sidebar + glossary |
+| tests | Cargo / Settings; no Collections nav |
+
 ## 2026-10-15 — Continuous NNTP index: searchable groups + STAT liveness
 
 **Problem:** Native NNTP search needed a usable local index without nightly/monthly schedules, a less-daunting group picker, and a size prune that could wipe the whole header table.

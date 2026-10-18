@@ -147,7 +147,7 @@ export const PlayFullscreenLink: Component<{
         {playLabel()}
       </button>
       <Show when={open()}>
-        {/* Claude 2026-08-14: bg-black so fullscreen pillarbox is not cream.
+        {/* Claude 2026-08-14: bg-black so fullscreen pillarbox is not sand.
             Reason: bg-surface-2 painted the unused fullscreen area.
             Review if: a themed player chrome is added. */}
         <PlaybackVideo

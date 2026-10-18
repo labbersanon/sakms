@@ -11433,3 +11433,20 @@ status stays active.
 | `internal/usenetsearch/ingest.go` | recomputeIngested |
 | `internal/usenetsearch/{namefix,repair,crawler_admission}_test.go` | keep-alive, span, backfill filter tests |
 
+## 2026-10-18 — Skip stubs for settled incomplete NNTP sets
+
+**Problem:** The NNTP index was ~1.3GB / 6.7M headers with a few hundred searchable titles. SweepIncomplete deleted below-gate sets, then backfill re-admitted the same 0% scraps because the key was forgotten.
+**Root cause:** Incomplete sets behind provider HIGH almost never complete. The 3-day TTL never fired (ingested_at stayed fresh). Deleting headers without a skip row let the next OVER rebuild them. Searchable stays named+≥95%; in-window and ≥80% sets can still finish.
+**Fix:** `usenet_nntp_skips` holds `(group, release_key)`. Settled incompletes (named or pending_name, not searchable, completeness <80%, HIGH past last_msg+50k, no overlapping missed_ranges) get a skip stub then headers/releases are deleted. Ingest `DropSkipped` drops those keys. Namefix unnamed/implausible/rejected/orphan paths write skip reasons too. Sweeps catch up 20s×500/batch. Crawl chunk logs `skip_stub=`.
+**Outcome:** Future crawls do not rebuild settled junk. Searchable, ≥80%, and in-window sets keep headers. Searchable gate is unchanged at 95%.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/db/migrations/0046_usenet_nntp_skips.sql` | skip table |
+| `internal/usenetsearch/skip.go` | skipAndDelete / DropSkipped |
+| `internal/usenetsearch/releases.go` | SweepIncomplete settled predicates, no TTL |
+| `internal/usenetsearch/ingest.go` | DropSkipped on every OVER chunk |
+| `internal/usenetsearch/{namefix,namefix_index,service,crawler}.go` | skip reasons, sweep catch-up, skip_stub log |
+| `internal/usenetsearch/{skip,releases,ingest}_test.go` | ingest drop, keep ≥80%/in-window/searchable |

@@ -121,60 +121,40 @@ func (idx *Index) markDirty(ctx context.Context, keys []releaseKey) error {
 const DefaultIncompleteTTLDays = 3
 
 // incompleteSweepBatch bounds releases deleted per sweep call.
-const incompleteSweepBatch = 200
+const incompleteSweepBatch = 500
 
 // incompleteForwardMargin: the forward watermark must be this far past a
 // release's last article before it is considered permanently incomplete.
 const incompleteForwardMargin = 50_000
 
-// deleteReleaseSets removes the headers and release rows for keys in one tx.
-// Returns the header rows deleted.
-func (idx *Index) deleteReleaseSets(ctx context.Context, keys []releaseKey) (int64, error) {
-	if len(keys) == 0 {
-		return 0, nil
-	}
-	tx, err := idx.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
-	var total int64
-	for _, k := range keys {
-		res, err := tx.ExecContext(ctx, `DELETE FROM usenet_nntp_headers WHERE group_name=? AND release_name=?`, k.group, k.key)
-		if err != nil {
-			return 0, err
-		}
-		n, _ := res.RowsAffected()
-		total += n
-		if _, err := tx.ExecContext(ctx, `DELETE FROM usenet_nntp_releases WHERE group_name=? AND release_key=?`, k.group, k.key); err != nil {
-			return 0, err
-		}
-	}
-	return total, tx.Commit()
-}
-
-// SweepIncomplete deletes named releases that stayed below the strict gate
-// when ALL hold (plan D4): ingested more than ttl ago, no queued repair range
-// overlaps the release span, and the forward watermark is past
-// last_msg+incompleteForwardMargin. Returns releases deleted.
+// SweepIncomplete skip-stubs named and pending sets that stayed below 80%
+// when the forward watermark is past last_msg+incompleteForwardMargin and no
+// queued repair range overlaps the span. Searchable and ≥80% sets are kept.
+// ttl is accepted for call-site compatibility and is not used: once HIGH has
+// passed, remaining parts will not arrive (operator 1B).
 //
-// Claude 2026-10-15: all three conditions so a release still being repaired
-// or still being crawled forward is never reaped early.
-// Troubleshooting: incomplete releases never reaped → check missed_ranges
-// for the group and that watermarks.high advanced past last_msg+50k.
-// Review if: repair queue semantics change.
+// Claude 2026-10-18: skip stub instead of forget; include pending_name; no TTL.
+// Reason: 149k named 0% scraps were already behind HIGH; 3-day TTL never
+// fired because ingested_at was fresh; deleting without a skip let backfill
+// rebuild them.
+// Troubleshooting: index still 1.3GB of 0% sets → this query's HIGH/repair
+// predicates or DropSkipped on ingest.
+// Review if: span-repair floor moves off 80%.
 func (idx *Index) SweepIncomplete(ctx context.Context, ttl time.Duration) (int, error) {
-	cutoff := time.Now().Add(-ttl).Unix()
+	_ = ttl
 	rows, err := idx.db.QueryContext(ctx, `
 SELECT r.group_name, r.release_key
 FROM usenet_nntp_releases r
 JOIN usenet_nntp_watermarks w ON w.group_name = r.group_name
-WHERE r.state = 'named' AND r.searchable = FALSE AND r.dirty = FALSE
-  AND r.ingested_at < ? AND w.high > r.last_msg + ?
+WHERE r.searchable = FALSE
+  AND r.state IN ('named', 'pending_name')
+  AND r.completeness_bp < ?
+  AND r.last_msg > 0
+  AND w.high > r.last_msg + ?
   AND NOT EXISTS (
     SELECT 1 FROM usenet_nntp_missed_ranges m
     WHERE m.group_name = r.group_name AND m.lo <= r.last_msg + 200 AND m.hi >= r.first_msg - 200)
-LIMIT ?`, cutoff, incompleteForwardMargin, incompleteSweepBatch)
+LIMIT ?`, spanRepairFloorBP, incompleteForwardMargin, incompleteSweepBatch)
 	if err != nil {
 		return 0, err
 	}
@@ -191,7 +171,7 @@ LIMIT ?`, cutoff, incompleteForwardMargin, incompleteSweepBatch)
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
-	if _, err := idx.deleteReleaseSets(ctx, keys); err != nil {
+	if _, err := idx.skipAndDelete(ctx, keys, skipReasonIncomplete); err != nil {
 		return 0, err
 	}
 	return len(keys), nil

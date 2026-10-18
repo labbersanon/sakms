@@ -237,6 +237,13 @@ func (c *Crawler) ingestRange(ctx context.Context, opts ingestOpts, group string
 		c.curGaps = len(gaps)
 	}
 	headers := c.buildHeaders(group, rows)
+	c.curSkipStub = 0
+	if c.Index != nil {
+		headers, c.curSkipStub, err = c.Index.DropSkipped(ctx, group, headers)
+		if err != nil {
+			return 0, err
+		}
+	}
 
 	c.curStaged, c.curSkipObfCap = 0, 0
 	var staged []HeaderRow

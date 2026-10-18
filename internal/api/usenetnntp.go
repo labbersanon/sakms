@@ -640,8 +640,14 @@ func configFromNNTPResponse(r usenetNNTPNativeResponse) usenetsearch.Config {
 }
 
 // loadNNTPGapFill reads the gap-fill KV knobs. Defaults make every feature on
-// (including repair, whose Go zero value is false) except the IRC feed; each
-// bool key is its feature's kill switch.
+// (including repair, whose Go zero value is false, and the synIRC PRE feed);
+// each bool key is its feature's kill switch.
+// Claude 2026-10-18: PreDB IRC defaults on (random nick, no NickServ).
+// Reason: synIRC confirm mail never arrived; #PreNNTmux allows unregistered
+// JOIN. Kill switch remains usenet_nntp_predb_irc_enabled=false.
+// Troubleshooting: no "predb irc connected" → this default did not apply or
+// outbound 6697 is blocked.
+// Review if: the feed is disabled per-deploy via KV.
 func loadNNTPGapFill(ctx context.Context, st *settings.Store) (usenetNNTPGapFill, error) {
 	var g usenetNNTPGapFill
 	var err error
@@ -652,7 +658,7 @@ func loadNNTPGapFill(ctx context.Context, st *settings.Store) (usenetNNTPGapFill
 	}{
 		{&g.NameFixEnabled, usenetsearch.KeyNameFixEnabled, true},
 		{&g.PreDBHTTPEnabled, usenetsearch.KeyPreDBHTTPEnabled, true},
-		{&g.PreDBIRCEnabled, usenetsearch.KeyPreDBIRCEnabled, false},
+		{&g.PreDBIRCEnabled, usenetsearch.KeyPreDBIRCEnabled, true},
 		{&g.RepairEnabled, usenetsearch.KeyRepairEnabled, true},
 		{&g.BackfillEnabled, usenetsearch.KeyBackfillEnabled, true},
 		{&g.CollectionDriftEnabled, usenetsearch.KeyCollectionDriftEnabled, true},

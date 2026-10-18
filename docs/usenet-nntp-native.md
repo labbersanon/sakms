@@ -72,7 +72,7 @@ NNTmux-inspired ingest (membership still full LIST ACTIVE):
 
 Claude 2026-10-15: obfuscated sets are renamed from a local PreDB table
 (`usenet_nntp_predb`) fed by an on-demand HTTP lookup (default on) and an
-optional IRC announce feed (default off).
+IRC announce feed (default on: synIRC `#PreNNTmux`).
 
 **Default HTTP provider: `https://api.predb.net/`** (setting
 `usenet_nntp_predb_http_url`). Verified live on 2026-10-16:
@@ -95,8 +95,11 @@ optional IRC announce feed (default off).
 
 The IRC feed (`usenet_nntp_predb_irc_enabled`) is the only way to reverse
 md5/sha1(title) subjects, because a name-lookup API cannot reverse a hash. It is
-forward-only (no history), so it is off by default. The NickServ password is
-stored encrypted (`secrets.Store`) and is never logged.
+forward-only (no history). Default is on: synIRC `#PreNNTmux`, TLS 6697, a
+random unregistered nick, client PING heartbeat. NickServ is optional and unused
+by default (synIRC confirm mail does not arrive). The NickServ password, if set,
+is stored encrypted (`secrets.Store`) and is never logged. `#nZEDbPRE` is dead;
+do not point the scraper there.
 
 ## Gap fill (completeness, repair, name recovery, backfill)
 
@@ -161,8 +164,8 @@ are dropped again and completeness is still recorded.
 | `namefix_body_mb_per_hour` | 512 | Hourly BODY budget |
 | `unnamed_ttl_days` / `unnamed_max_pct` | 7 / 25 | Staging TTL / cap |
 | `predb_http_enabled` / `predb_http_url` | true / `https://api.predb.net/` | HTTP lookup |
-| `predb_irc_enabled` | false | Optional IRC feed |
-| `predb_irc_server`, `_port`, `_tls`, `_nick`, `_channels` | —, 6697, true, —, — | IRC connection (channels comma-separated) |
+| `predb_irc_enabled` | true | synIRC PRE feed (random nick, no NickServ) |
+| `predb_irc_server`, `_port`, `_tls`, `_nick`, `_channels` | `irc.synirc.net`, 6697, true, generated, `#PreNNTmux` | IRC connection (channels comma-separated; empty nick is generated) |
 | `predb_irc_password_enc` | — | NickServ password, `secrets.Store` ciphertext; set via `PUT /api/settings/usenet-nntp-native/predb-irc-password` `{"password":"…"}` (empty clears) |
 | `min_completeness_pct` / `incomplete_ttl_days` | 95 / 3 | Completeness gate / reap |
 | `repair_enabled` | true | Gap capture + repair |
@@ -185,11 +188,10 @@ counters under `gapFillStatus` (`releasesSearchable`, `releasesBelowGate`,
   `UPDATE usenet_nntp_releases SET display_name='', state='pending_name', name_source='', name_attempts=0, next_name_at=0, dirty=TRUE WHERE group_name='…' AND release_key='obf:…';`
 - Migration `0044` has a Down that drops the new tables/columns; the `release_name`
   grouping key on headers is unchanged, so rolling back loses only recovered names.
-- **IRC format caveat.** The IRC parser targets NNTmux-style announce lines
-  (`[PRE] [section] release` plus size/files/nuke variants). The exact lines of any
-  given network/channel were not verified against a live feed; the parser
-  ignores lines it cannot read, and the feed is off by default. Verify with a
-  real channel before relying on md5/sha1 hash reversal.
+- **IRC format.** `#PreNNTmux` lines are tagged (`[TT:]` title, `[CT:]` category,
+  `[SZ:]`/`[FL:]` size/files, nuke tags). NNTmux-style `NEW:`/`NUKE:` lines still
+  parse. Keepalive `INFO:` lines have no `TT` and are ignored. The feed is on
+  by default.
 - With `namefix_enabled=false`, legacy subjects like `"<hash>.part01.rar"` can
   still produce bogus per-filename release names (pre-existing behavior).
 

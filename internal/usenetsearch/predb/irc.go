@@ -3,17 +3,27 @@ package predb
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"errors"
 	"fmt"
 	"log"
 	"net"
 	"strings"
+	"sync"
 	"time"
+)
+
+// Default public PRE feed (synIRC). NickServ is not required to join.
+const (
+	DefaultIRCServer  = "irc.synirc.net"
+	DefaultIRCPort    = 6697
+	DefaultIRCChannel = "#PreNNTmux"
 )
 
 // IRCConfig configures the optional PreDB announce feed. Password is the
 // NickServ password (decrypted by the caller; never logged or persisted here).
+// Empty Nick is filled with a random password-style identity at Run().
 type IRCConfig struct {
 	Server   string
 	Port     int
@@ -27,10 +37,17 @@ const (
 	ircReadTimeout = 15 * time.Minute
 	ircMinBackoff  = 5 * time.Second
 	ircMaxBackoff  = 5 * time.Minute
+	// ircHeartbeat is how often we PING the server so NAT/idle drops do not
+	// silently kill the socket (server PINGs alone can be minutes apart).
+	ircHeartbeat = 45 * time.Second
+	ircNickLen   = 16
+	ircNickAlpha = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	ircNickRest  = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 )
 
-// IRCClient is a minimal one-connection IRC client: NICK/USER, NickServ
-// IDENTIFY, JOIN, PING/PONG, and channel-line parsing into the local Store.
+// IRCClient is a minimal one-connection IRC client: NICK/USER, optional
+// NickServ IDENTIFY, JOIN, server PONG + client heartbeat PING, and
+// channel-line parsing into the local Store.
 // It never logs message bodies or credentials.
 type IRCClient struct {
 	Cfg   IRCConfig
@@ -40,31 +57,79 @@ type IRCClient struct {
 	Dial func(ctx context.Context) (net.Conn, error)
 	// Backoff overrides the reconnect delay schedule start (tests).
 	Backoff time.Duration
+	// Heartbeat overrides ircHeartbeat (tests). Zero uses the default.
+	Heartbeat time.Duration
 
 	parsed int
 }
 
+// RandomNick returns a 16-character letter-prefixed alphanumeric nick.
+// Claude 2026-10-18: unregistered synIRC identity; no NickServ mail.
+// Reason: Gmail/iCloud/Proton never received synIRC confirm mail; #PreNNTmux
+// allows unregistered JOIN. A high-entropy nick is hard to squat.
+// Troubleshooting: 433 nick-in-use → generate another, do not IDENTIFY.
+// Review if: the channel bans password-looking nicks (nZEDb scraper warns
+// "pick a normal name"); then switch to a word+digits shape.
+func RandomNick() (string, error) {
+	b := make([]byte, ircNickLen)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	b[0] = ircNickAlpha[int(b[0])%len(ircNickAlpha)]
+	for i := 1; i < len(b); i++ {
+		b[i] = ircNickRest[int(b[i])%len(ircNickRest)]
+	}
+	return string(b), nil
+}
+
 func (c *IRCClient) dial(ctx context.Context) (net.Conn, error) {
+	var conn net.Conn
+	var err error
 	if c.Dial != nil {
-		return c.Dial(ctx)
+		conn, err = c.Dial(ctx)
+	} else {
+		port := c.Cfg.Port
+		if port <= 0 {
+			port = DefaultIRCPort
+		}
+		addr := net.JoinHostPort(c.Cfg.Server, fmt.Sprint(port))
+		d := &net.Dialer{Timeout: 20 * time.Second, KeepAlive: 30 * time.Second}
+		if c.Cfg.TLS {
+			conn, err = (&tls.Dialer{NetDialer: d, Config: &tls.Config{ServerName: c.Cfg.Server, MinVersion: tls.VersionTLS12}}).DialContext(ctx, "tcp", addr)
+		} else {
+			conn, err = d.DialContext(ctx, "tcp", addr)
+		}
 	}
-	port := c.Cfg.Port
-	if port <= 0 {
-		port = 6697
+	if err != nil {
+		return nil, err
 	}
-	addr := net.JoinHostPort(c.Cfg.Server, fmt.Sprint(port))
-	d := &net.Dialer{Timeout: 20 * time.Second}
-	if c.Cfg.TLS {
-		return (&tls.Dialer{NetDialer: d, Config: &tls.Config{ServerName: c.Cfg.Server, MinVersion: tls.VersionTLS12}}).DialContext(ctx, "tcp", addr)
+	setTCPKeepAlive(conn)
+	return conn, nil
+}
+
+func setTCPKeepAlive(c net.Conn) {
+	switch c := c.(type) {
+	case *net.TCPConn:
+		_ = c.SetKeepAlive(true)
+		_ = c.SetKeepAlivePeriod(30 * time.Second)
+	case *tls.Conn:
+		setTCPKeepAlive(c.NetConn())
 	}
-	return d.DialContext(ctx, "tcp", addr)
 }
 
 // Run connects and reconnects (exponential backoff) until ctx is cancelled.
 func (c *IRCClient) Run(ctx context.Context) {
-	if c.Cfg.Server == "" || c.Cfg.Nick == "" || c.Store == nil {
-		log.Printf("usenetsearch: predb irc disabled (server/nick not configured)")
+	if c.Cfg.Server == "" || c.Store == nil {
+		log.Printf("usenetsearch: predb irc disabled (server not configured)")
 		return
+	}
+	if strings.TrimSpace(c.Cfg.Nick) == "" {
+		n, err := RandomNick()
+		if err != nil {
+			log.Printf("usenetsearch: predb irc nick: %v", err)
+			return
+		}
+		c.Cfg.Nick = n
 	}
 	backoff := c.Backoff
 	if backoff <= 0 {
@@ -74,7 +139,7 @@ func (c *IRCClient) Run(ctx context.Context) {
 	for ctx.Err() == nil {
 		conn, err := c.dial(ctx)
 		if err == nil {
-			log.Printf("usenetsearch: predb irc connected")
+			log.Printf("usenetsearch: predb irc connected nick=%s", c.Cfg.Nick)
 			c.parsed = 0
 			registered, serr := c.session(ctx, conn)
 			conn.Close()
@@ -121,13 +186,37 @@ func (c *IRCClient) session(ctx context.Context, conn net.Conn) (registered bool
 		case <-done:
 		}
 	}()
+	var mu sync.Mutex
 	w := bufio.NewWriter(conn)
 	send := func(format string, args ...any) error {
+		mu.Lock()
+		defer mu.Unlock()
 		if _, err := fmt.Fprintf(w, format+"\r\n", args...); err != nil {
 			return err
 		}
 		return w.Flush()
 	}
+	hb := c.Heartbeat
+	if hb <= 0 {
+		hb = ircHeartbeat
+	}
+	go func() {
+		t := time.NewTicker(hb)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-done:
+				return
+			case <-t.C:
+				if err := send("PING :sakms"); err != nil {
+					_ = conn.Close()
+					return
+				}
+			}
+		}
+	}()
 	if err := send("NICK %s", c.Cfg.Nick); err != nil {
 		return false, err
 	}
@@ -170,8 +259,13 @@ func (c *IRCClient) session(ctx context.Context, conn net.Conn) (registered bool
 					}
 				}
 			}
-		case "433": // nick in use
-			c.Cfg.Nick += "_"
+		case "433": // nick in use — mint another unregistered identity
+			n, nerr := RandomNick()
+			if nerr != nil {
+				c.Cfg.Nick += "_"
+			} else {
+				c.Cfg.Nick = n
+			}
 			if err := send("NICK %s", c.Cfg.Nick); err != nil {
 				return registered, err
 			}

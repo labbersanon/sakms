@@ -377,6 +377,16 @@ func TestGrabHandler_Torrent_SendsToAria2AndRecordsGrab(t *testing.T) {
 	if g.DownloadClient != "anacrolix" || g.DownloadGID != "gid-abc" || g.Status != grabs.Queued {
 		t.Errorf("unexpected grab: %+v", g)
 	}
+	if g.Origin != grabOriginSearchPick {
+		t.Errorf("origin = %q, want %q", g.Origin, grabOriginSearchPick)
+	}
+	stored, err := grabsStore.Get(ctx, g.ID)
+	if err != nil {
+		t.Fatalf("loading stored grab: %v", err)
+	}
+	if stored.Origin != grabOriginSearchPick {
+		t.Errorf("stored origin = %q, want %q", stored.Origin, grabOriginSearchPick)
+	}
 }
 
 // TestGrabHandler_UnreleasedMovieReturns409 — the gate blocks a manual grab

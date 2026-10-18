@@ -12,6 +12,7 @@ import (
 	"github.com/labbersanon/sakms/internal/grabs"
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/quality"
 	"github.com/labbersanon/sakms/internal/release"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenet"
@@ -27,8 +28,24 @@ import (
 
 const contentBelowFloorReason = "the downloaded video is below the quality floor — trying a different release"
 
+// grabOriginSearchPick is grabs.origin for POST /api/modes/{mode}/search/grab.
+// A release the operator clicked is imported even when it misses the floor.
+// Upgrade-watch still replaces it: the library tier is the one the file
+// actually meets, and that pass already includes the HDR/channel switch.
+const grabOriginSearchPick = "search-pick"
+
 func refuseImportBelowFloor(ctx context.Context, libStore *library.Store, settingsStore *settings.Store, sess *mode.Session, g *grabs.Grab, videoPath string, prober dedup.Prober) error {
 	if g == nil || g.Mode == mode.Adult {
+		return nil
+	}
+	// Claude 2026-10-18: Search-screen picks skip the import floor.
+	// Reason: a clicked release was downloaded, then deleted for missing
+	//   the bitrate floor, and the alternate search never kept the file.
+	// Troubleshooting: journal "import: search-pick kept"; origin stays
+	//   empty on drain/auto-grab, which still returns ErrBelowQualityFloor.
+	// Review if: Discover one-click Grab should share this exemption.
+	// Related files: internal/api/search.go grabHandler; searchPickLibraryTier.
+	if g.Origin == grabOriginSearchPick {
 		return nil
 	}
 	c, ok := importQualityCandidate(ctx, libStore, sess, g, videoPath, prober)
@@ -57,6 +74,51 @@ func refuseImportBelowFloor(ctx context.Context, libStore *library.Store, settin
 	default:
 		return nil
 	}
+}
+
+// searchPickLibraryTier is the library quality_tier for one imported video.
+// Search-screen picks that miss the title floor are stamped with the highest
+// tier they actually meet (Low when they meet none), so upgrade-watch can
+// replace them. Every other grab keeps fallback, which is the mode floor.
+func searchPickLibraryTier(ctx context.Context, libStore *library.Store, settingsStore *settings.Store, sess *mode.Session, g *grabs.Grab, videoPath string, prober dedup.Prober, fallback string) string {
+	if g == nil || g.Origin != grabOriginSearchPick || g.Mode == mode.Adult {
+		return fallback
+	}
+	c, ok := importQualityCandidate(ctx, libStore, sess, g, videoPath, prober)
+	if !ok {
+		return fallback
+	}
+	floors := resolveAutoGrabFloorsForTitle(ctx, libStore, settingsStore, g.Mode, g.TMDBID)
+	floor := autograb.FloorForResolution(floors, c)
+	// Claude 2026-10-18: grade the file, not the swarm.
+	// Reason: import candidates have Seeders 0. GradeCandidate then returns
+	//   low-seeders before the bitrate check, and every torrent Search pick
+	//   stamped Low.
+	// Troubleshooting: a grabbed remux's library tier is "low".
+	// Review if: Candidate gains a probed-bitrate grade that ignores protocol.
+	graded := c
+	graded.Protocol = ""
+	gr := autograb.GradeCandidate(graded, floor, 0)
+	if !gr.BitrateKnown || gr.Qualified {
+		return fallback
+	}
+	met := quality.Low
+	for i := len(quality.AllTiers) - 1; i >= 0; i-- {
+		if autograb.GradeCandidate(graded, quality.AllTiers[i], 0).Qualified {
+			met = quality.AllTiers[i]
+			break
+		}
+	}
+	// Claude 2026-10-18: stamp the met tier, not the mode floor.
+	// Reason: import used to record Medium on a file that missed Medium, so
+	//   upgrade-watch treated the kept Search pick as already good enough.
+	// Troubleshooting: library quality_tier stays "low" while the floor is
+	//   medium; upgrade-watch then lists the episode.
+	// Review if: episode rows store probed Mbps and the watch reads that.
+	// Related files: fileNeedsQualityUpgrade; grabOriginSearchPick.
+	log.Printf("import: search-pick kept file=%q title=%q status=%s score=%.2fMbps floor=%.2fMbps stamped=%s",
+		filepath.Base(videoPath), g.Title, gr.Status, gr.Score, gr.FloorMbps, met)
+	return string(met)
 }
 
 func importQualityCandidate(ctx context.Context, libStore *library.Store, sess *mode.Session, g *grabs.Grab, videoPath string, prober dedup.Prober) (autograb.Candidate, bool) {

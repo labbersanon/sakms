@@ -12,6 +12,7 @@ import (
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mediainfo"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/quality"
 	"github.com/labbersanon/sakms/internal/tvdb"
 	"github.com/labbersanon/sakms/internal/usenet"
 )
@@ -178,6 +179,43 @@ func TestRefuseImportBelowFloor_LiveAction480FailsMedium(t *testing.T) {
 	})
 	if err == nil || !errors.Is(err, autograb.ErrBelowQualityFloor) {
 		t.Fatalf("live-action 480p Medium must still reject Honey-Mousers-sized file, got %v", err)
+	}
+}
+
+func TestRefuseImportBelowFloor_SearchPickKeptAndStamped(t *testing.T) {
+	ctx := context.Background()
+	_, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	if err := settingsStore.Set(ctx, qualityTiersKey(mode.Series), `["medium","high","lossless"]`); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "American.Horror.Story.S13E09.2160p.x265.mkv")
+	if err := os.WriteFile(path, make([]byte, 1<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	probe := importQualityProber{height: 2160, codec: "hevc", duration: 33 * 60}
+	picked := &grabs.Grab{Mode: mode.Series, Title: "American Horror Story", TMDBID: 1413, SeasonNumber: 13, EpisodeNumber: 9, Protocol: "usenet", Origin: grabOriginSearchPick}
+	if err := refuseImportBelowFloor(ctx, libStore, settingsStore, nil, picked, path, probe); err != nil {
+		t.Fatalf("search-pick must be kept, got %v", err)
+	}
+	if got := searchPickLibraryTier(ctx, libStore, settingsStore, nil, picked, path, probe, "medium"); got != string(quality.Low) {
+		t.Fatalf("stamped tier = %q, want %q", got, quality.Low)
+	}
+	auto := &grabs.Grab{Mode: mode.Series, Title: "American Horror Story", TMDBID: 1413, SeasonNumber: 13, EpisodeNumber: 9, Protocol: "usenet"}
+	if err := refuseImportBelowFloor(ctx, libStore, settingsStore, nil, auto, path, probe); err == nil || !errors.Is(err, autograb.ErrBelowQualityFloor) {
+		t.Fatalf("auto-grab must still reject, got %v", err)
+	}
+	if got := searchPickLibraryTier(ctx, libStore, settingsStore, nil, auto, path, probe, "medium"); got != "medium" {
+		t.Fatalf("auto-grab stamp = %q, want medium", got)
+	}
+	// A downloaded torrent has no seeder count. Bitrate still decides the stamp.
+	big := filepath.Join(t.TempDir(), "Movie.2020.2160p.REMUX.mkv")
+	if err := os.WriteFile(big, make([]byte, 8<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	torrent := &grabs.Grab{Mode: mode.Movies, Title: "Movie", TMDBID: 42, Protocol: "torrent", Origin: grabOriginSearchPick}
+	torrentProbe := importQualityProber{height: 2160, codec: "hevc", duration: 1}
+	if got := searchPickLibraryTier(ctx, libStore, settingsStore, nil, torrent, big, torrentProbe, "medium"); got != "medium" {
+		t.Fatalf("torrent search-pick stamp = %q, want medium", got)
 	}
 }
 

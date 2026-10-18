@@ -300,6 +300,7 @@ func importGrabMovies(ctx context.Context, libStore *library.Store, g *grabs.Gra
 	if err := refuseImportBelowFloor(ctx, libStore, settingsStore, sess, g, videoPath, prober); err != nil {
 		return nil, err
 	}
+	tier = searchPickLibraryTier(ctx, libStore, settingsStore, sess, g, videoPath, prober, tier)
 	year := movieYearFromTMDB(ctx, sess, g.TMDBID)
 	// Claude 2026-09-22: capture prior library path before Upsert replaces it.
 	// Reason: quality-upgrade re-grabs left the inferior movie file on disk.
@@ -391,6 +392,7 @@ func importGrabSeries(ctx context.Context, libStore *library.Store, g *grabs.Gra
 		if err := refuseImportBelowFloor(ctx, libStore, settingsStore, sess, g, videoPath, prober); err != nil {
 			return changes, err
 		}
+		fileTier := searchPickLibraryTier(ctx, libStore, settingsStore, sess, g, videoPath, prober, tier)
 		// Claude 2026-10-01: Loose parse so Season-dir NN-NN duals import as two episodes.
 		// Reason: Phineas files are "06-07 Title, Other Title.mp4" under Season 2 —
 		//   ParseEpisodeNumbers is SxxExx-only (releasematch has no parent dir).
@@ -432,7 +434,7 @@ func importGrabSeries(ctx context.Context, libStore *library.Store, g *grabs.Gra
 		for _, episode := range episodes {
 			if _, err := libStore.UpsertEpisode(ctx, library.Episode{
 				SeriesID: series.ID, SeasonNumber: season, EpisodeNumber: episode, FilePath: destPath,
-				Size: videoSize, QualityTier: tier,
+				Size: videoSize, QualityTier: fileTier,
 			}); err != nil {
 				return changes, fmt.Errorf("file relocated but recording episode s%de%d failed: %w", season, episode, err)
 			}

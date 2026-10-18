@@ -456,6 +456,18 @@ func grabHandler(httpClient *http.Client, connStore *connections.Store, scStore 
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// Claude 2026-10-18: stamp Search-screen picks before import.
+		// Reason: import keeps origin=search-pick when the file misses the
+		//   quality floor. Precheck parks stay unmarked so an alternate NZB
+		//   is still graded.
+		// Troubleshooting: a clicked release deleted after "below quality floor".
+		// Review if: Discover one-click Grab should use the same origin.
+		// Related files: internal/api/import_quality.go grabOriginSearchPick.
+		if err := grabsStore.SetOrigin(ctx, created.ID, grabOriginSearchPick); err != nil {
+			log.Printf("grabHandler: failed to mark grab %d as search-pick: %v", created.ID, err)
+		} else {
+			created.Origin = grabOriginSearchPick
+		}
 
 		// Record the download GID so the downloader's onComplete callback can tie
 		// a finished download back to this grab for auto-import. Best-effort:

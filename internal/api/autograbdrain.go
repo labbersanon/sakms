@@ -201,6 +201,17 @@ func runAutoGrabDrainCycle(
 		return
 	}
 
+	// Claude 2026-10-18: replay a Search pick the old build had parked.
+	// Reason: a click already fetched the NZB, import deleted it for the
+	//   bitrate floor, and the URL is still on the pending_retry row.
+	//   Stamping origin=search-pick and restarting lets this tick AddNZB
+	//   that same URL. The new import keeps the file.
+	// Troubleshooting: grab stays pending_retry with origin search-pick
+	//   and an empty download_gid.
+	// Review if: Search clicks can retry from the UI without a drain tick.
+	// Related files: grabOriginSearchPick; refuseImportBelowFloor.
+	redispatchSearchPicks(ctx, deps, now)
+
 	if deps.LibStore == nil {
 		return
 	}
@@ -425,6 +436,41 @@ func drainEscalatedDueRetries(
 	}
 }
 
+// redispatchSearchPicks sends the clicked NZB again. It does not search.
+// Only usenet rows are replayed; a torrent pick has no AddNZB URL path here.
+func redispatchSearchPicks(ctx context.Context, deps AutoGrabDrainDeps, now time.Time) {
+	nzb := deps.NZBManager
+	if nzb == nil {
+		nzb = deps.NZB
+	}
+	if nzb == nil || deps.GrabsStore == nil {
+		return
+	}
+	due, err := deps.GrabsStore.DueForRetry(ctx, now)
+	if err != nil {
+		log.Printf("autograb drain: listing search-pick replays: %v", err)
+		return
+	}
+	for _, g := range due {
+		if g.Origin != grabOriginSearchPick || g.DownloadURL == "" || g.Protocol == string(prowlarr.Torrent) {
+			continue
+		}
+		gid, addErr := nzb.AddNZB(ctx, g.DownloadURL, g.Title)
+		if addErr != nil {
+			log.Printf("autograb drain: search-pick grab %d (%s) replay failed (%T)", g.ID, g.Title, addErr)
+			continue
+		}
+		if err := deps.GrabsStore.SetDownloadGID(ctx, g.ID, gid); err != nil {
+			log.Printf("autograb drain: search-pick grab %d gid persist failed: %v", g.ID, err)
+			continue
+		}
+		if err := deps.GrabsStore.UpdateStatus(ctx, g.ID, grabs.Queued); err != nil {
+			log.Printf("autograb drain: search-pick grab %d status: %v", g.ID, err)
+		}
+		log.Printf("autograb drain: search-pick grab %d (%s) replay %s", g.ID, g.Title, gid)
+	}
+}
+
 // drainAlternateReleaseRetries picks up pending_retry rows that are due-now
 // AND carry non-empty tried_release_keys — content-failure alternate-release
 // rows parked by parkUsenetContentFailure. These rows have empty
@@ -463,6 +509,9 @@ func drainAlternateReleaseRetries(
 	for _, g := range due {
 		if g.TriedReleaseKeys == "" || g.NextSearchScope != "" {
 			continue // not an alternate-release row (drainEscalatedDueRetries handles scope ones)
+		}
+		if g.Origin == grabOriginSearchPick {
+			continue // redispatchSearchPicks owns the clicked URL
 		}
 		if excluded[excludes.Key(string(g.Mode), g.TMDBID, g.Title)] {
 			continue

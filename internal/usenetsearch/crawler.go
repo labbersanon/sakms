@@ -120,13 +120,14 @@ type Crawler struct {
 	ranges         map[string]usenet.GroupRange
 	budgetOverride int64
 
-	// curDir/curGaps/curStaged/curSkipObfCap/curEmpty/curMaxPosted describe the
-	// chunk ingestRange is processing; admitChunk and backfill read them. A
-	// Crawler is single-goroutine.
+	// curDir/curGaps/curStaged/curSkipObfCap/curSkipStub/curEmpty/curMaxPosted
+	// describe the chunk ingestRange is processing; admitChunk and backfill
+	// read them. A Crawler is single-goroutine.
 	curDir        string
 	curGaps       int
 	curStaged     int
 	curSkipObfCap int
+	curSkipStub   int
 	curEmpty      bool
 	curMaxPosted  int64
 	// OnChunk, if set, is invoked after each OVER chunk is admitted (Dashboard).
@@ -607,8 +608,8 @@ func (c *Crawler) admitChunk(ctx context.Context, group string, a, b int, header
 			Gaps: c.curGaps, ElapsedMs: elapsed, AtUnixMs: time.Now().UnixMilli(),
 		})
 	}
-	log.Printf("usenetsearch: crawl chunk dir=%s group=%s range=%d-%d rows=%d releases=%d admitted=%d staged_obf=%d skip_obf_cap=%d skip_unparsed=%d skip_res=%d skip_tier=%d skip_lang=%d skip_stat=%d stat_calls=%d deferred=%d gaps=%d elapsed_ms=%d",
-		dir, group, a, b, st.rows, st.releases, st.admitted, c.curStaged, c.curSkipObfCap, st.skipUnparsed, st.skipRes, st.skipTier, st.skipLang, st.skipStat, st.statCalls, st.deferred, c.curGaps, elapsed)
+	log.Printf("usenetsearch: crawl chunk dir=%s group=%s range=%d-%d rows=%d releases=%d admitted=%d staged_obf=%d skip_obf_cap=%d skip_stub=%d skip_unparsed=%d skip_res=%d skip_tier=%d skip_lang=%d skip_stat=%d stat_calls=%d deferred=%d gaps=%d elapsed_ms=%d",
+		dir, group, a, b, st.rows, st.releases, st.admitted, c.curStaged, c.curSkipObfCap, c.curSkipStub, st.skipUnparsed, st.skipRes, st.skipTier, st.skipLang, st.skipStat, st.statCalls, st.deferred, c.curGaps, elapsed)
 
 	return kept, nil
 }

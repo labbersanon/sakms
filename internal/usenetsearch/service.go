@@ -1000,13 +1000,28 @@ func (s *Service) runSweeps(ctx context.Context) {
 	if days <= 0 {
 		days = DefaultIncompleteTTLDays
 	}
-	n, err := idx.SweepIncomplete(ctx, time.Duration(days)*24*time.Hour)
-	if err != nil {
-		log.Printf("usenetsearch: incomplete sweep: %v", err)
-		return
+	ttl := time.Duration(days) * 24 * time.Hour
+	const incompleteCatchupMax = 40
+	const incompleteSweepBudget = 20 * time.Second
+	deadline := time.Now().Add(incompleteSweepBudget)
+	var removed, extra int
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		n, err := idx.SweepIncomplete(ctx, ttl)
+		if err != nil {
+			log.Printf("usenetsearch: incomplete sweep: %v", err)
+			return
+		}
+		removed += n
+		if n < incompleteSweepBatch || extra >= incompleteCatchupMax || time.Now().After(deadline) {
+			break
+		}
+		extra++
 	}
-	if n > 0 {
-		log.Printf("usenetsearch: incomplete sweep removed=%d ttl_days=%d", n, days)
+	if removed > 0 {
+		log.Printf("usenetsearch: incomplete sweep removed=%d extra_batches=%d ttl_days=%d", removed, extra, days)
 	}
 	if spans, err := idx.EnqueueStalePendingSpans(ctx); err != nil {
 		log.Printf("usenetsearch: pending span enqueue: %v", err)
@@ -1018,7 +1033,7 @@ func (s *Service) runSweeps(ctx context.Context) {
 	// Troubleshooting: pending_name not falling after deploy → this log missing.
 	// Review if: the ingest cap made the backlog empty (then this is a no-op).
 	const implausibleYencCatchupMax = 20
-	var removed, extra int
+	removed, extra = 0, 0
 	for {
 		if ctx.Err() != nil {
 			return

@@ -79,12 +79,6 @@ func TestSweepIncomplete_RequiresAllThreeConditions(t *testing.T) {
 	if _, err := idx.RecomputeDirty(ctx, 10); err != nil {
 		t.Fatal(err)
 	}
-	ttl := 72 * time.Hour
-	age := func(secs int64) {
-		if _, err := sqlDB.ExecContext(ctx, `UPDATE usenet_nntp_releases SET ingested_at=? WHERE release_key='Stale.Partial.2020'`, time.Now().Unix()-secs); err != nil {
-			t.Fatal(err)
-		}
-	}
 	setHigh := func(high int) {
 		if _, err := sqlDB.ExecContext(ctx, `
 INSERT INTO usenet_nntp_watermarks (group_name, high) VALUES (?, ?)
@@ -94,14 +88,13 @@ ON CONFLICT (group_name) DO UPDATE SET high=EXCLUDED.high`, g, high); err != nil
 	}
 	sweep := func() int {
 		t.Helper()
-		n, err := idx.SweepIncomplete(ctx, ttl)
+		n, err := idx.SweepIncomplete(ctx, time.Hour)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return n
 	}
 
-	age(int64(ttl/time.Second) + 60)
 	setHigh(100 + 50 + 49_000) // watermark NOT past last_msg(150)+50k
 	if n := sweep(); n != 0 {
 		t.Fatalf("watermark not past margin: swept %d, want 0", n)
@@ -116,19 +109,23 @@ ON CONFLICT (group_name) DO UPDATE SET high=EXCLUDED.high`, g, high); err != nil
 	if _, err := sqlDB.ExecContext(ctx, `DELETE FROM usenet_nntp_missed_ranges`); err != nil {
 		t.Fatal(err)
 	}
-	age(60) // too young
-	if n := sweep(); n != 0 {
-		t.Fatalf("within ttl: swept %d, want 0", n)
-	}
-	age(int64(ttl/time.Second) + 60)
 	if n := sweep(); n != 1 {
-		t.Fatalf("all conditions met: swept %d, want 1", n)
+		t.Fatalf("settled incomplete: swept %d, want 1", n)
 	}
-	var hdr, rel int
+	var hdr, rel, skips int
 	_ = sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM usenet_nntp_headers WHERE group_name=?`, g).Scan(&hdr)
 	_ = sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM usenet_nntp_releases WHERE group_name=?`, g).Scan(&rel)
-	if hdr != 0 || rel != 0 {
-		t.Fatalf("headers=%d releases=%d, want 0/0", hdr, rel)
+	_ = sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM usenet_nntp_skips WHERE group_name=? AND release_key='Stale.Partial.2020'`, g).Scan(&skips)
+	if hdr != 0 || rel != 0 || skips != 1 {
+		t.Fatalf("headers=%d releases=%d skips=%d, want 0/0/1", hdr, rel, skips)
+	}
+	replay := fileRows(g, "Stale.Partial.2020", "s.mkv", "s", 200, 100, 50, 0)
+	kept, dropped, err := idx.DropSkipped(ctx, g, replay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dropped != len(replay) || len(kept) != 0 {
+		t.Fatalf("DropSkipped kept=%d dropped=%d, want 0/%d", len(kept), dropped, len(replay))
 	}
 }
 
@@ -155,6 +152,81 @@ func TestSweepIncomplete_KeepsSearchable(t *testing.T) {
 	}
 	if n, err := idx.SweepIncomplete(ctx, time.Hour); err != nil || n != 0 {
 		t.Fatalf("swept %d err=%v, want 0 (searchable release is never reaped)", n, err)
+	}
+}
+
+func TestSweepIncomplete_KeepsNearCompleteAndInWindow(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	const g = "alt.binaries.movies"
+	// 80/100 = 8000 bp: keep-headers floor, not the 95% searchable gate.
+	if err := idx.Upsert(ctx, fileRows(g, "Almost.Rel.2020", "a.mkv", "a", 100, 100, 80, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Upsert(ctx, fileRows(g, "Window.Rel.2020", "w.mkv", "w", 1000, 100, 10, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.RecomputeDirty(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	var lastAlmost, lastWindow int
+	if err := sqlDB.QueryRowContext(ctx, `SELECT last_msg FROM usenet_nntp_releases WHERE release_key='Almost.Rel.2020'`).Scan(&lastAlmost); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlDB.QueryRowContext(ctx, `SELECT last_msg FROM usenet_nntp_releases WHERE release_key='Window.Rel.2020'`).Scan(&lastWindow); err != nil {
+		t.Fatal(err)
+	}
+	// HIGH is past Almost's 50k margin (Almost is ≥80%, so still kept) and
+	// inside Window's margin (10% incomplete, still eligible to complete).
+	high := lastWindow + incompleteForwardMargin - 1
+	if high <= lastAlmost+incompleteForwardMargin {
+		t.Fatalf("fixture HIGH=%d does not isolate the two keep reasons", high)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `INSERT INTO usenet_nntp_watermarks (group_name, high) VALUES (?, ?)`, g, high); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := idx.SweepIncomplete(ctx, time.Hour); err != nil || n != 0 {
+		t.Fatalf("swept %d err=%v, want 0 (≥80%% and in-window stay)", n, err)
+	}
+}
+
+func TestSweepIncomplete_PendingNameSettled(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	const g = "alt.binaries.movies"
+	const key = "obf:0123456789abcdef"
+	if err := idx.Upsert(ctx, fileRows(g, key, "a.rar", "h", 100, 100, 10, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.RecomputeDirty(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	var last int
+	if err := sqlDB.QueryRowContext(ctx, `SELECT last_msg FROM usenet_nntp_releases WHERE release_key=?`, key).Scan(&last); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `
+INSERT INTO usenet_nntp_watermarks (group_name, high) VALUES (?, ?)`, g, last+incompleteForwardMargin+1); err != nil {
+		t.Fatal(err)
+	}
+	n, err := idx.SweepIncomplete(ctx, time.Hour)
+	if err != nil || n != 1 {
+		t.Fatalf("swept %d err=%v, want 1 settled pending_name", n, err)
+	}
+	var skips int
+	_ = sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM usenet_nntp_skips WHERE release_key=? AND reason='incomplete'`, key).Scan(&skips)
+	if skips != 1 {
+		t.Fatalf("skips=%d, want 1 incomplete stub", skips)
 	}
 }
 

@@ -187,7 +187,7 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		return false, err
 	}
 	if len(rows) == 0 {
-		_, err := n.Index.deleteReleaseSets(ctx, []releaseKey{{set.Group, set.Key}})
+		_, err := n.Index.skipAndDelete(ctx, []releaseKey{{set.Group, set.Key}}, skipReasonOrphan)
 		return false, err
 	}
 	res.Sets++
@@ -283,7 +283,7 @@ func (n *NameFixer) promote(ctx context.Context, set PendingSet, rows []HeaderRo
 	if c := n.Crawler; c != nil && !c.languageOK(name) {
 		res.RejectGate++
 		n.markRejected(set)
-		_, err := n.Index.deleteReleaseSets(ctx, []releaseKey{{set.Group, set.Key}})
+		_, err := n.Index.skipAndDelete(ctx, []releaseKey{{set.Group, set.Key}}, skipReasonRejected)
 		return false, err
 	}
 	if c := n.Crawler; c != nil && c.AdmissionEnabled && c.Admitter != nil {
@@ -308,7 +308,7 @@ func (n *NameFixer) promote(ctx context.Context, set PendingSet, rows []HeaderRo
 			if !passed {
 				res.RejectGate++
 				n.markRejected(set)
-				_, err := n.Index.deleteReleaseSets(ctx, []releaseKey{{set.Group, set.Key}})
+				_, err := n.Index.skipAndDelete(ctx, []releaseKey{{set.Group, set.Key}}, skipReasonRejected)
 				return false, err
 			}
 			var st chunkStats
@@ -316,7 +316,7 @@ func (n *NameFixer) promote(ctx context.Context, set PendingSet, rows []HeaderRo
 			if !keep {
 				res.RejectStat++
 				n.markRejected(set)
-				_, err := n.Index.deleteReleaseSets(ctx, []releaseKey{{set.Group, set.Key}})
+				_, err := n.Index.skipAndDelete(ctx, []releaseKey{{set.Group, set.Key}}, skipReasonRejected)
 				return false, err
 			}
 		}

@@ -179,8 +179,8 @@ WHERE group_name=? AND release_key=?`, next, time.Now().Unix(), group, key)
 	return err
 }
 
-// FinalizeUnnamed marks sets unnamed_final and deletes their headers + release
-// rows (aggregate logging only; the mark exists for the delete's audit trail).
+// FinalizeUnnamed skip-stubs unnamed sets, then deletes headers + release
+// rows so a later OVER of the same key does not rebuild them.
 func (idx *Index) FinalizeUnnamed(ctx context.Context, keys []releaseKey) (int64, error) {
 	if len(keys) == 0 {
 		return 0, nil
@@ -193,7 +193,7 @@ func (idx *Index) FinalizeUnnamed(ctx context.Context, keys []releaseKey) (int64
 			return 0, err
 		}
 	}
-	return idx.deleteReleaseSets(ctx, keys)
+	return idx.skipAndDelete(ctx, keys, skipReasonUnnamed)
 }
 
 // keepCompleteYield reports whether a staged set is real yield-group inventory
@@ -283,7 +283,7 @@ LIMIT ?`, maxYencPartM, limit)
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
-	if _, err := idx.deleteReleaseSets(ctx, keys); err != nil {
+	if _, err := idx.skipAndDelete(ctx, keys, skipReasonImplausible); err != nil {
 		return 0, err
 	}
 	return len(keys), nil

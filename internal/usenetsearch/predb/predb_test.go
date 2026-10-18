@@ -36,6 +36,15 @@ func TestParseAnnounce(t *testing.T) {
 		{line: "UNNUKE: Some.Movie.2021.1080p.BluRay.x264-GRP [fixed]", kind: "UNNUKE", title: "Some.Movie.2021.1080p.BluRay.x264-GRP", reason: "fixed", ok: true},
 		{line: "hello channel, anyone here?"},
 		{line: "NEW: [MOVIES] short"},
+		{line: "INFO: [2026-10-18 22:13:34 This message is to confirm I am still active.]"},
+		{
+			line: "[DT: 2026-10-18 22:13:34] [TT: Some.Show.S01E02.720p.HDTV.x264-GRP] [SC: #a.b.teevee] [CT: TV-X264] [RQ: N/A] [SZ: 700MB] [FL: 12] [FN: N/A]",
+			kind: "NEW", title: "Some.Show.S01E02.720p.HDTV.x264-GRP", cat: "TV-X264", size: 700 << 20, files: 12, ok: true,
+		},
+		{
+			line: "[DT: 2026-10-18 22:13:34] [TT: Some.Movie.2021.1080p.BluRay.x264-GRP] [SC: srrdb] [CT: MOVIES] [RQ: N/A] [SZ: N/A] [FL: N/A] [NUKED: dupe.2021-05-01]",
+			kind: "NUKE", title: "Some.Movie.2021.1080p.BluRay.x264-GRP", cat: "MOVIES", nuked: true, reason: "dupe.2021-05-01", ok: true,
+		},
 	}
 	for _, c := range cases {
 		a, ok := ParseAnnounce(c.line)
@@ -176,6 +185,32 @@ func TestHTTPClient_RateLimiterSpacesRequests(t *testing.T) {
 	}
 }
 
+func TestRandomNick_LetterPrefixedAlnum(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 8; i++ {
+		n, err := RandomNick()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(n) != ircNickLen {
+			t.Fatalf("len=%d want %d (%q)", len(n), ircNickLen, n)
+		}
+		if n[0] < 'A' || (n[0] > 'Z' && n[0] < 'a') || n[0] > 'z' {
+			t.Fatalf("nick %q must start with a letter", n)
+		}
+		for _, r := range n {
+			if r >= '0' && r <= '9' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' {
+				continue
+			}
+			t.Fatalf("nick %q has non-alnum %q", n, r)
+		}
+		if seen[n] {
+			t.Fatalf("duplicate nick %q", n)
+		}
+		seen[n] = true
+	}
+}
+
 func TestIRCClient_ConnectsIdentifiesJoinsParsesAndReconnects(t *testing.T) {
 	const pw = "s3cr3t-nickserv-pw"
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -197,7 +232,6 @@ func TestIRCClient_ConnectsIdentifiesJoinsParsesAndReconnects(t *testing.T) {
 			go func(c net.Conn, n int32) {
 				defer c.Close()
 				r := bufio.NewReader(c)
-				gotPong := false
 				for {
 					c.SetReadDeadline(time.Now().Add(3 * time.Second))
 					line, err := r.ReadString('\n')
@@ -214,7 +248,6 @@ func TestIRCClient_ConnectsIdentifiesJoinsParsesAndReconnects(t *testing.T) {
 					case strings.HasPrefix(line, "JOIN "):
 						fmt.Fprint(c, "PING :tick\r\n")
 					case strings.HasPrefix(line, "PONG "):
-						gotPong = true
 						if n == 1 {
 							fmt.Fprint(c, ":pre!x@y PRIVMSG #pre :\x0303NEW:\x0f [MOVIES] Fed.Movie.2022.1080p.WEB.h264-GRP [3GB - 40F]\r\n")
 							fmt.Fprint(c, ":pre!x@y PRIVMSG #pre :chatter that is not an announce\r\n")
@@ -222,7 +255,6 @@ func TestIRCClient_ConnectsIdentifiesJoinsParsesAndReconnects(t *testing.T) {
 							return // drop -> client must reconnect
 						}
 					}
-					_ = gotPong
 				}
 			}(c, n)
 		}
@@ -301,5 +333,97 @@ func TestIRCClient_DialErrorNeverLeaksPassword(t *testing.T) {
 	cl.Run(ctx)
 	if strings.Contains(logBuf.String(), pw) {
 		t.Fatalf("password leaked:\n%s", logBuf.String())
+	}
+}
+
+func TestIRCClient_RandomNickHeartbeatNoNickServ(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	var mu sync.Mutex
+	var seen []string
+	gotPing := make(chan struct{}, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		r := bufio.NewReader(c)
+		sentLine := false
+		for {
+			c.SetReadDeadline(time.Now().Add(3 * time.Second))
+			line, err := r.ReadString('\n')
+			if err != nil {
+				return
+			}
+			line = strings.TrimRight(line, "\r\n")
+			mu.Lock()
+			seen = append(seen, line)
+			mu.Unlock()
+			switch {
+			case strings.HasPrefix(line, "USER "):
+				fmt.Fprint(c, ":srv 001 guest :Welcome\r\n")
+			case strings.HasPrefix(line, "PING :sakms"):
+				select {
+				case gotPing <- struct{}{}:
+				default:
+				}
+				if !sentLine {
+					sentLine = true
+					fmt.Fprint(c, ":pre!x@y PRIVMSG #PreNNTmux :[DT: 2026-10-18 22:13:34] [TT: Heart.Beat.2022.1080p.WEB.h264-GRP] [SC: srrdb] [CT: MOVIES] [RQ: N/A] [SZ: 2GB] [FL: 20]\r\n")
+				}
+			}
+		}
+	}()
+
+	store := newStore(t)
+	cl := &IRCClient{
+		Cfg:       IRCConfig{Server: "x", Channels: []string{"#PreNNTmux"}},
+		Store:     store,
+		Heartbeat: 40 * time.Millisecond,
+		Backoff:   time.Hour,
+		Dial: func(ctx context.Context) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "tcp", ln.Addr().String())
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() { cl.Run(ctx); close(done) }()
+
+	select {
+	case <-gotPing:
+	case <-time.After(2 * time.Second):
+		t.Fatal("client never sent heartbeat PING :sakms")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if e, ok, _ := store.ByTitle(context.Background(), "Heart.Beat.2022.1080p.WEB.h264-GRP"); ok && e.Category == "MOVIES" && e.Files == 20 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	e, ok, err := store.ByTitle(context.Background(), "Heart.Beat.2022.1080p.WEB.h264-GRP")
+	if err != nil || !ok || e.Category != "MOVIES" || e.SizeBytes != 2<<30 || e.Files != 20 {
+		t.Fatalf("irc entry = %+v ok=%v err=%v", e, ok, err)
+	}
+	if cl.Cfg.Nick == "" || len(cl.Cfg.Nick) != ircNickLen {
+		t.Fatalf("generated nick %q", cl.Cfg.Nick)
+	}
+	mu.Lock()
+	joined := strings.Join(seen, "\n")
+	mu.Unlock()
+	if strings.Contains(joined, "NickServ") {
+		t.Fatalf("NickServ IDENTIFY must not run without a password:\n%s", joined)
+	}
+	if !strings.Contains(joined, "JOIN #PreNNTmux") {
+		t.Fatalf("missing JOIN:\n%s", joined)
 	}
 }

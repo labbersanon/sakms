@@ -81,8 +81,13 @@ func (p *NNTPPreDB) Reload(ctx context.Context) {
 	go (&predb.IRCClient{Cfg: cfg, Store: store}).Run(ircCtx)
 }
 
+// Claude 2026-10-18: empty server/channel/nick fall back to synIRC #PreNNTmux
+// and a generated nick. NickServ password stays optional (usually unset).
+// Reason: unregistered JOIN works; confirm mail does not.
+// Troubleshooting: connected but parsed=0 → tagged TT parser, not JOIN.
+// Review if: DefaultIRCChannel moves off #PreNNTmux.
 func (p *NNTPPreDB) ircConfig(ctx context.Context) (predb.IRCConfig, error) {
-	cfg := predb.IRCConfig{Port: 6697}
+	cfg := predb.IRCConfig{}
 	get := func(key string) (string, error) {
 		v, err := p.settings.Get(ctx, key)
 		if err != nil && !isSettingsNotFound(err) {
@@ -94,10 +99,13 @@ func (p *NNTPPreDB) ircConfig(ctx context.Context) (predb.IRCConfig, error) {
 	if cfg.Server, err = get(usenetsearch.KeyPreDBIRCServer); err != nil {
 		return cfg, err
 	}
+	if cfg.Server == "" {
+		cfg.Server = predb.DefaultIRCServer
+	}
 	if cfg.Nick, err = get(usenetsearch.KeyPreDBIRCNick); err != nil {
 		return cfg, err
 	}
-	if cfg.Port, err = getSettingInt(ctx, p.settings, usenetsearch.KeyPreDBIRCPort, 6697); err != nil {
+	if cfg.Port, err = getSettingInt(ctx, p.settings, usenetsearch.KeyPreDBIRCPort, predb.DefaultIRCPort); err != nil {
 		return cfg, err
 	}
 	if cfg.TLS, err = p.settings.GetBool(ctx, usenetsearch.KeyPreDBIRCTLS, true); err != nil {
@@ -108,6 +116,9 @@ func (p *NNTPPreDB) ircConfig(ctx context.Context) (predb.IRCConfig, error) {
 		return cfg, err
 	}
 	cfg.Channels = strings.FieldsFunc(chans, func(r rune) bool { return r == ',' || r == '\n' || r == ' ' })
+	if len(cfg.Channels) == 0 {
+		cfg.Channels = []string{predb.DefaultIRCChannel}
+	}
 	enc, err := get(usenetsearch.KeyPreDBIRCPasswordEnc)
 	if err != nil {
 		return cfg, err

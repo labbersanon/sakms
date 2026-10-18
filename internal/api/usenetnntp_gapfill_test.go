@@ -15,7 +15,7 @@ import (
 	"github.com/labbersanon/sakms/internal/usenetsearch"
 )
 
-func TestNNTPGapFill_DefaultsAreOnExceptIRC(t *testing.T) {
+func TestNNTPGapFill_DefaultsAreOnIncludingIRC(t *testing.T) {
 	store := newSettingsStore(t)
 	r, err := loadNNTPNativeSettings(context.Background(), store, nil)
 	if err != nil {
@@ -31,7 +31,7 @@ func TestNNTPGapFill_DefaultsAreOnExceptIRC(t *testing.T) {
 		t.Fatalf("defaults: %+v", cfg)
 	}
 	g := r.GapFill
-	if !g.PreDBHTTPEnabled || g.PreDBIRCEnabled || g.IRCPasswordSet || g.PreDBHTTPURL != "https://api.predb.net/" {
+	if !g.PreDBHTTPEnabled || !g.PreDBIRCEnabled || g.IRCPasswordSet || g.PreDBHTTPURL != "https://api.predb.net/" {
 		t.Fatalf("predb defaults: %+v", g)
 	}
 }

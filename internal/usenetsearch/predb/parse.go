@@ -20,6 +20,18 @@ var (
 	reSize    = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(kb|mb|gb|tb)\b`)
 	reFiles   = regexp.MustCompile(`(?i)\b(\d+)\s*(?:x|f|files?)\b`)
 	reRelease = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._()+\-]*-[A-Za-z0-9_]+$`)
+	// Claude 2026-10-18: #PreNNTmux / nZEDb tagged bot lines (TT/CT/SZ/FL).
+	// Reason: TmuxPREBot does not use NEW: [section] Title-GRP; the channel
+	//   topic documents DT/TT/SC/CT/RQ/SZ/FL/FN tags. Live keepalive is
+	//   INFO: [ts …] with no TT and must not parse.
+	// Troubleshooting: parsed=0 while PRIVMSG traffic exists → line has no
+	//   [TT:] and no NEW:/PRE: prefix.
+	// Review if: TmuxPREBot changes its tag letters.
+	reTaggedTT   = regexp.MustCompile(`(?i)\[TT:\s*([^\]]+)\]`)
+	reTaggedCT   = regexp.MustCompile(`(?i)\[CT:\s*([^\]]+)\]`)
+	reTaggedSZ   = regexp.MustCompile(`(?i)\[SZ:\s*([^\]]+)\]`)
+	reTaggedFL   = regexp.MustCompile(`(?i)\[FL:\s*([^\]]+)\]`)
+	reTaggedNuke = regexp.MustCompile(`(?i)\[((?:UN|MOD|RE|OLD)?NUKE(?:D)?):\s*([^\]]*)\]`)
 )
 
 // ParseAnnounce parses an NNTmux-style PreDB announce line:
@@ -27,10 +39,17 @@ var (
 //	NEW: [CATEGORY] Release.Name-GRP [optional size / file-count brackets]
 //	NUKE: Release.Name-GRP [reason]
 //
+// or a tagged nZEDb/TmuxPREBot line:
+//
+//	[DT: …] [TT: Release.Name-GRP] [SC: …] [CT: TV] [SZ: 800MB] [FL: 12]
+//
 // IRC colour/format codes are stripped first. Lines that do not carry a
 // scene-style release token return ok=false.
 func ParseAnnounce(line string) (Announce, bool) {
 	line = strings.TrimSpace(reIRCFmt.ReplaceAllString(line, ""))
+	if a, ok := parseTaggedAnnounce(line); ok {
+		return a, true
+	}
 	m := reKind.FindStringSubmatch(line)
 	if m == nil {
 		return Announce{}, false
@@ -72,6 +91,52 @@ func ParseAnnounce(line string) (Announce, bool) {
 		}
 	}
 	a.Entry.Nuked = a.Kind == "NUKE" || a.Kind == "MODNUKE"
+	return a, true
+}
+
+func parseTaggedAnnounce(line string) (Announce, bool) {
+	tt := reTaggedTT.FindStringSubmatch(line)
+	if tt == nil {
+		return Announce{}, false
+	}
+	title := strings.TrimSpace(tt[1])
+	if title == "" || strings.EqualFold(title, "N/A") {
+		return Announce{}, false
+	}
+	a := Announce{Kind: "NEW", Entry: Entry{Title: title}}
+	if ct := reTaggedCT.FindStringSubmatch(line); ct != nil {
+		cat := strings.TrimSpace(ct[1])
+		if cat != "" && !strings.EqualFold(cat, "N/A") {
+			a.Entry.Category = cat
+		}
+	}
+	if sz := reTaggedSZ.FindStringSubmatch(line); sz != nil {
+		raw := strings.TrimSpace(sz[1])
+		if sm := reSize.FindStringSubmatch(raw); sm != nil {
+			a.Entry.SizeBytes = sizeBytes(sm[1], sm[2])
+		}
+	}
+	if fl := reTaggedFL.FindStringSubmatch(line); fl != nil {
+		raw := strings.TrimSpace(fl[1])
+		if n, err := strconv.Atoi(raw); err == nil {
+			a.Entry.Files = n
+		} else if fm := reFiles.FindStringSubmatch(raw); fm != nil {
+			a.Entry.Files, _ = strconv.Atoi(fm[1])
+		}
+	}
+	if nk := reTaggedNuke.FindStringSubmatch(line); nk != nil {
+		tag := strings.ToUpper(strings.TrimSpace(nk[1]))
+		switch {
+		case strings.HasPrefix(tag, "UN"):
+			a.Kind = "UNNUKE"
+		case strings.HasPrefix(tag, "MOD"):
+			a.Kind = "MODNUKE"
+		default:
+			a.Kind = "NUKE"
+		}
+		a.Reason = strings.TrimSpace(nk[2])
+		a.Entry.Nuked = a.Kind == "NUKE" || a.Kind == "MODNUKE"
+	}
 	return a, true
 }
 

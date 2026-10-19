@@ -11484,3 +11484,18 @@ status stays active.
 | `internal/api/usenetnntp.go` | writable `predbDumpPath`; Reload on set |
 | `internal/api/usenetnntp_gapfill_test.go` | set / omit / reject / clear |
 | `docs/usenet-nntp-native.md` | PUT + SQL/restart notes |
+
+## 2026-10-19 — nZEDb dump quote stripping; live `/data/predb/predb.tsv.gz`
+
+**Problem:** Official nZEDb daily dumps (`nZEDbPre_Dumps` `*_predb_dump.csv.gz`) quote every field and use `\N` for NULL. Importing them as-is stored `'Title'` as the PK, so `md5(title)` never matched obfuscated hashes.
+**Root cause:** `entryFromDump` only trimmed whitespace.
+**Fix:** `unquoteDumpField` strips wrapping quotes / `\N`. Combined 2014–2024-05-02 dailies into `/data/predb/predb.tsv.gz` and set `usenet_nntp_predb_dump_path`.
+**Outcome:** Quoted nZEDb export lines hash-match. Live dump file is on server1 (corpus ends 2024-05-02; IRC covers newer).
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/predb/dump.go` | `unquoteDumpField` |
+| `internal/usenetsearch/predb/predb_test.go` | quoted MySQL export fixture |
+| `docs/usenet-nntp-native.md` | dump corpus path + quote note |

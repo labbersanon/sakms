@@ -246,7 +246,7 @@ func entryFromDump(fields, cols []string) (Entry, bool) {
 	get := func(name string) string {
 		for i, c := range cols {
 			if c == name && i < len(fields) {
-				return strings.TrimSpace(fields[i])
+				return unquoteDumpField(fields[i])
 			}
 		}
 		return ""
@@ -281,6 +281,34 @@ func entryFromDump(fields, cols []string) (Entry, bool) {
 		e.Nuked = true
 	}
 	return e, true
+}
+
+// Claude 2026-10-19: nZEDb daily dumps quote every field and use \N for NULL.
+// Reason: github.com/nZEDb/nZEDbPre_Dumps csv.gz is MySQL-style ('Title'\t\t\N).
+//   Leaving the quotes in title makes md5(title) miss every obfuscated hash.
+// Troubleshooting: dump imported with titles that start with a quote → this
+//   helper was skipped; o2cli grep "predb dump imported".
+// Review if: dumps are emitted as unquoted TSV (then this is a no-op).
+func unquoteDumpField(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" || s == `\N` || strings.EqualFold(s, "null") {
+		return ""
+	}
+	n := len(s)
+	if n >= 2 {
+		q := s[0]
+		if (q == '\'' || q == '"') && s[n-1] == q {
+			s = s[1 : n-1]
+			s = strings.ReplaceAll(s, `\\`, `\`)
+			s = strings.ReplaceAll(s, `\'`, `'`)
+			s = strings.ReplaceAll(s, `\"`, `"`)
+			s = strings.TrimSpace(s)
+		}
+	}
+	if s == `\N` {
+		return ""
+	}
+	return s
 }
 
 // ImportURL GETs an nZEDb TSV/gz dump file and streams it into the local table.

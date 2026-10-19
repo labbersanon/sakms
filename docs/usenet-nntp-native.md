@@ -97,8 +97,9 @@ A name-lookup HTTP API cannot reverse a hash. Reverse lookups use the local
 table: IRC announces (forward-only, including `[FN:]` filenames and `[RQ:]`
 request ids) plus an operator-supplied nZEDb dump (`usenet_nntp_predb_dump_path`,
 local TSV/gz or an http(s) dump *file* URL). Do not scrape `api.predb.net` to
-populate that table. nZEDbPre_Dumps is discontinued; there is no default dump
-URL. Default IRC is on: synIRC `#PreNNTmux`, TLS 6697, a random unregistered
+populate that table. nZEDbPre_Dumps stopped publishing new daily files in
+2024-05; historical `dumps/*/*_predb_dump.csv.gz` are still on GitHub and
+import as quoted MySQL TSV (`\N` nulls). There is no default dump URL. Default IRC is on: synIRC `#PreNNTmux`, TLS 6697, a random unregistered
 nick, client PING heartbeat. NickServ is optional and unused by default (synIRC
 confirm mail does not arrive). The NickServ password, if set, is stored
 encrypted (`secrets.Store`) and is never logged. `#nZEDbPRE` is dead; do not
@@ -181,7 +182,7 @@ are dropped again and completeness is still recorded.
 | `predb_irc_enabled` | true | synIRC PRE feed (random nick, no NickServ) |
 | `predb_irc_server`, `_port`, `_tls`, `_nick`, `_channels` | `irc.synirc.net`, 6697, true, generated, `#PreNNTmux` | IRC connection (channels comma-separated; empty nick is generated) |
 | `predb_irc_password_enc` | — | NickServ password, `secrets.Store` ciphertext; set via `PUT /api/settings/usenet-nntp-native/predb-irc-password` `{"password":"…"}` (empty clears) |
-| `predb_dump_path` | empty | nZEDb PreDB dump file, directory, or http(s) dump *file* URL (`\t\t` TSV, optional `.gz`). PUT `predbDumpPath` reloads the importer; SQL still needs a restart. Imported on boot/reload and every 15 minutes when mtime/size (or URL ETag) changes. Search APIs (`api.predb.net`, `?type=pre`) are rejected. |
+| `predb_dump_path` | empty | nZEDb PreDB dump file, directory, or http(s) dump *file* URL (`\t\t` TSV, optional `.gz`; quoted MySQL fields and `\N` are stripped). PUT `predbDumpPath` reloads the importer; SQL still needs a restart. Imported on boot/reload and every 15 minutes when mtime/size (or URL ETag) changes. Search APIs (`api.predb.net`, `?type=pre`) are rejected. Live file: `/data/predb/predb.tsv.gz` (host `/mnt/iscsi/sakms/predb/predb.tsv.gz`, nZEDb dailies through 2024-05-02). |
 | `min_completeness_pct` / `incomplete_ttl_days` | 95 / 3 | Completeness gate / reap |
 | `repair_enabled` | true | Gap capture + repair |
 | `backfill_enabled` / `backfill_days` / `backfill_budget_pct` | true / 0 (retention) / 90 | Backfill |

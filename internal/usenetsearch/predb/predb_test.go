@@ -494,6 +494,31 @@ func TestImportDump_NZEdbDoubleTabAndHeader(t *testing.T) {
 	}
 }
 
+func TestImportDump_NZEdbQuotedMySQLExport(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	const title = "Watch.What.Happens.Live.2023.07.10.1080p.WEB.h264-EDITH"
+	line := "'Watch.What.Happens.Live.2023.07.10.1080p.WEB.h264-EDITH'\t\t\\N\t\t'1229MB'\t\t\\N\t\t''\t\t'0'\t\t\\N\t\t'PRE'\t\t'2023-07-11 12:07:27'\t\t'xrel'\t\t'0'\t\t\\N\r\n"
+	stats, err := s.ImportDump(ctx, strings.NewReader(line))
+	if err != nil || stats.Read != 1 || stats.Upserted != 1 {
+		t.Fatalf("stats = %+v err=%v", stats, err)
+	}
+	e, ok, err := s.ByTitle(ctx, title)
+	if err != nil || !ok {
+		t.Fatalf("ByTitle quoted dump: ok=%v err=%v", ok, err)
+	}
+	if e.Title != title || e.Filename != "" || e.Category != "PRE" || e.Nuked || e.RequestID != 0 {
+		t.Fatalf("entry = %+v", e)
+	}
+	m, _ := HashesOf(title)
+	if got, ok, err := s.ByHash(ctx, m); err != nil || !ok || got.Title != title {
+		t.Fatalf("ByHash after quoted dump = %+v ok=%v err=%v", got, ok, err)
+	}
+	if _, ok, _ := s.ByTitle(ctx, "'"+title+"'"); ok {
+		t.Fatal("quoted title must not be stored as the PK")
+	}
+}
+
 func TestImportDump_RequestIDAndGroup(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()

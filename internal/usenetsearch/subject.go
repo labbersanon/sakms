@@ -194,7 +194,30 @@ func tokenLooksObfuscated(tok string) bool {
 	if len(bare) < 12 {
 		return false
 	}
-	return obfuscatedChurn(bare) || mostlyHex(bare)
+	if obfuscatedChurn(bare) || mostlyHex(bare) {
+		return true
+	}
+	// Claude 2026-10-18: mostly-lowercase random alnum fails churn.
+	// Reason: live teevee `Njabzsard2xrgxGUQIT [1/17]` is 3 class-switches
+	//   in 19 chars (3*4 < 19), so TOKEN [k/N] was admitted as named at 0%
+	//   and namefix never ran. Searchable stayed flat.
+	// Troubleshooting: teevee display_name matches ^[A-Za-z0-9_-]{16,}$ →
+	//   this check missed a new shape.
+	// Review if: a 16+ letter CamelCase title without year/episode is staged
+	//   (PAR2 namefix can still recover).
+	if len(bare) < 16 {
+		return false
+	}
+	digits, vowels := 0, 0
+	for _, r := range strings.ToLower(bare) {
+		switch {
+		case r >= '0' && r <= '9':
+			digits++
+		case r == 'a' || r == 'e' || r == 'i' || r == 'o' || r == 'u':
+			vowels++
+		}
+	}
+	return digits > 0 || vowels*4 < len(bare)
 }
 
 // yencParts returns the trailing yEnc (n/m) segment counter. Prefers a match

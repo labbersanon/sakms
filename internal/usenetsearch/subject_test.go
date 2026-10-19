@@ -98,6 +98,28 @@ func TestParseSubject_LeadTokenUnderscore14Char(t *testing.T) {
 	}
 }
 
+func TestParseSubject_LowChurnLiveTeeveeToken(t *testing.T) {
+	// Live 2026-10-18: admitted as named because churn was 3/19.
+	for _, subj := range []string{
+		`Njabzsard2xrgxGUQIT [1/17] "ghFYYdm8wzKU4p5qpqK.rar" yEnc (67/77)`,
+		`YqhgxTKELhBTzNPdC [2/12] "0G6IJMEdZG_f-Evmq.par2" yEnc (13/21)`,
+		`GPmdeCQPiAYfvskRv [5/7] "6NHr2KAtKsF0O82q4.rar" yEnc (5/72)`,
+		`_KpudSiWIppvqepljgyXbMXsP [2/3] "J6QcK4_JgLGk2dRCirRQ49Zsi.rar" yEnc (44/88)`,
+	} {
+		ps := ParseSubject(subj)
+		if !ps.Obfuscated || ps.OK || ps.Name != "" {
+			t.Fatalf("%q: want obfuscated unnamed, got %+v", subj, ps)
+		}
+		h := parseHeader("alt.binaries.teevee", subj, "p@t", "m@x", 1, 1, 1000, true)
+		if !isObfKey(h.ReleaseName) {
+			t.Fatalf("%q staged as %q, want obf:", subj, h.ReleaseName)
+		}
+	}
+	if tokenLooksObfuscated("AmericanHorrorStory") {
+		t.Fatal("CamelCase title without a digit must not look obfuscated")
+	}
+}
+
 func TestParseSubject_LeadToken15CharAndLeadingUnderscore(t *testing.T) {
 	short := ParseSubject(`KLoSR1zOTNoaex3 [10/15] "0AOugJ-kXbvFN0r" yEnc (122/138)`)
 	if !short.Obfuscated || short.Name != "" {

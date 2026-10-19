@@ -506,7 +506,7 @@ func TestPruneGroupNonMatching_DropsHashTokenNames(t *testing.T) {
 	ctx := context.Background()
 	const group = "alt.binaries.moovee"
 	const keep = "Admitted.Movie.2020.1080p.WEB-DL.x264-GROUP"
-	const junk = "5JSoQ-2rqpfGRs5hg0JjXx2j7o27"
+	const junk = "Njabzsard2xrgxGUQIT"
 	if err := idx.Upsert(ctx, []HeaderRow{
 		{Group: group, MsgNum: 1, MsgID: "keep@x", Subject: "x", ReleaseName: keep, PartN: 1, PartM: 1, Filename: "a.mkv", Bytes: 1, PostedAt: 1},
 		{Group: group, MsgNum: 2, MsgID: "junk@x", Subject: "x", ReleaseName: junk, PartN: 1, PartM: 1, Filename: "b.rar", Bytes: 1, PostedAt: 1},
@@ -539,7 +539,7 @@ func TestCrawlGroup_HashTokenCollectionStagedNotNamed(t *testing.T) {
 	defer idx.Close()
 	ctx := context.Background()
 	const group = "alt.binaries.moovee"
-	const tok = "5JSoQ-2rqpfGRs5hg0JjXx2j7o27"
+	const tok = "Njabzsard2xrgxGUQIT"
 	rows := []usenet.MessageOverview{
 		{Number: 1, Subject: tok + ` [3/10] "p4v0O75-2qNMayAm3QhP_iIbuaK6.par2" yEnc (1/2)`, From: "p@t", MessageID: "a@t", Bytes: 1000, DateUnix: 1700000000},
 		{Number: 2, Subject: tok + ` [7/10] "zzzzzzzzzzzzzzzzzzzz.part01.rar" yEnc (1/50)`, From: "p@t", MessageID: "b@t", Bytes: 1000, DateUnix: 1700000000},

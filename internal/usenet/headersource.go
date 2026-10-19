@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Tensai75/nntp"
 )
@@ -230,7 +231,26 @@ func (h *managerHeaderSource) BodyHead(ctx context.Context, msgID string, maxByt
 	if err != nil {
 		return BodySample{}, err
 	}
-	res, ferr := fetchSegment(c, msgID)
+	// Claude 2026-10-19: cap the BODY socket at the caller's ctx deadline.
+	// Reason: namefix 20s budget could not stop a 60s articleIOTimeout read,
+	//   so crawl froze on hash PAR2/RAR while yield groups waited.
+	// Troubleshooting: namefix starting with no pass for >90s → until is
+	//   still articleIOTimeout because ctx has no deadline.
+	// Review if: downloads should also pass a job ctx into fetchSegment.
+	now := time.Now()
+	until := now.Add(articleIOTimeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(until) {
+		if !d.After(now) {
+			p.put(c, true)
+			err := ctx.Err()
+			if err == nil {
+				err = context.DeadlineExceeded
+			}
+			return BodySample{}, err
+		}
+		until = d
+	}
+	res, ferr := fetchSegmentUntil(c, msgID, until)
 	keep := ferr == nil || errors.Is(ferr, ErrArticleNotFound) || errors.Is(ferr, ErrArticleRemoved)
 	p.put(c, keep)
 	if ferr != nil {

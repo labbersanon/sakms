@@ -15,14 +15,17 @@ import (
 	"github.com/labbersanon/sakms/internal/usenet"
 )
 
-// Claude 2026-10-18: obfuscated-set name recovery (plan D2/D3 + PreDB reverse).
+// Claude 2026-10-19: obfuscated-set name recovery (plan D2/D3 + PreDB reverse).
 // Reason: obfuscated posts carry no release name; a staged set is renamed from
 //   a local PreDB hash (md5/md5md5/sha1 in subject or filename), PreDB
 //   filename / IRC [FN:], a scene-shaped header filename, or first-segment
 //   PAR2/RAR/yEnc/NFO sampling, then the same admission gate + STAT as crawl.
+//   PreDB-only also runs on ≥80% sets still below the 95% BODY/autograb gate
+//   so the real title is searchable (NewsLeecher SuperSearch) before grab.
 // Troubleshooting: sets never renamed → o2cli grep "namefix pass"; check
-//   body_fetches (0 = nothing due, or PreDB-only exhausted yield), hash_hits,
-//   unresolved, and namefix_body_mb_per_hour. Undo: docs/usenet-nntp-native.md.
+//   body_fetches (0 = nothing due, or PreDB-only exhausted/below-gate yield),
+//   hash_hits, unresolved, and namefix_body_mb_per_hour.
+//   Undo: docs/usenet-nntp-native.md.
 // Review if: BODY traffic needs download-activity-aware (bytes) throttling.
 
 // PreDBHit is one scene-release record resolved from the local PreDB.

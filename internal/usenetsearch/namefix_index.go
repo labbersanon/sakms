@@ -56,7 +56,8 @@ func (idx *Index) StagedBytes(ctx context.Context, group string) (int64, error) 
 
 // DuePendingNames returns up to limit staged sets in groups whose retry time
 // has passed, recomputed, and at/above the completeness gate (a BODY fetch is
-// only spent on sets that could become searchable). Only yield groups are
+// only spent on sets that could become grab-complete). PreDB-only below-gate
+// sets go through DueExhaustedYield instead. Only yield groups are
 // queried (staging cores, package step ≤4, plus anime); within that set,
 // staging cores are filled before the rest, newest first.
 //
@@ -96,8 +97,16 @@ ORDER BY ingested_at DESC LIMIT ?`, args...)
 	return scanPendingSets(rows, false)
 }
 
-// DueExhaustedYield returns complete yield-group pending_name sets that already
-// spent their BODY attempts. Namefix looks them up in PreDB only (no BODY).
+// DueExhaustedYield returns yield-group pending_name sets that namefix may
+// resolve from PreDB without a BODY fetch: already-exhausted complete sets,
+// and ≥80% sets still below the searchable completeness gate (those never
+// entered DuePendingNames, so they never spent BODY attempts).
+//
+// Claude 2026-10-19: include 80–94% pending, not only name_attempts>=3.
+// Reason: DuePendingNames required 95%, so 80–94% obfuscated yield sat
+//   unnamed forever; PreDB hash lookup is local and does not need BODY.
+// Troubleshooting: 90% pending never renamed → this (completeness_bp < gate)
+//   predicate missing. Review if: PreDB-only should run below the 80% floor.
 func (idx *Index) DueExhaustedYield(ctx context.Context, groups []string, limit int) ([]PendingSet, error) {
 	return idx.dueYieldPrefixed(ctx, groups, limit, idx.dueExhaustedYieldIn)
 }
@@ -106,11 +115,12 @@ func (idx *Index) dueExhaustedYieldIn(ctx context.Context, groups []string, limi
 	if len(groups) == 0 || limit <= 0 {
 		return nil, nil
 	}
-	in, args := groupLimitArgs([]any{spanRepairFloorBP, namefixMinPayload, time.Now().Unix(), maxNameAttempts}, groups, limit)
+	gateBP := idx.MinCompletenessPct() * 100
+	in, args := groupLimitArgs([]any{spanRepairFloorBP, namefixMinPayload, time.Now().Unix(), gateBP, maxNameAttempts}, groups, limit)
 	rows, err := idx.db.QueryContext(ctx, `
 SELECT group_name, release_key, payload_bytes, name_attempts, completeness_bp FROM usenet_nntp_releases
 WHERE state='pending_name' AND dirty=FALSE AND declared_segs>0 AND completeness_bp>=? AND payload_bytes>=?
-  AND next_name_at<=? AND name_attempts>=? AND group_name IN (`+in+`)
+  AND next_name_at<=? AND (completeness_bp < ? OR name_attempts>=?) AND group_name IN (`+in+`)
 ORDER BY next_name_at ASC, ingested_at DESC LIMIT ?`, args...)
 	if err != nil {
 		return nil, err
@@ -196,7 +206,8 @@ FROM usenet_nntp_headers WHERE group_name=? AND release_name=? ORDER BY filename
 }
 
 // RenameRelease sets the recovered display name on a staged set and recomputes
-// completeness so a 95%+ set becomes searchable in this pass. Headers are
+// completeness. A 95%+ set, or a PreDB-exact name at ≥80%, becomes searchable
+// in this pass. Headers are
 // untouched, so the rename is reversible (undo SQL in docs/usenet-nntp-native.md).
 //
 // Claude 2026-10-16: recompute here, do not wait for RecomputeDirty.

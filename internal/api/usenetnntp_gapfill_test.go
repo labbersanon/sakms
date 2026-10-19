@@ -31,7 +31,7 @@ func TestNNTPGapFill_DefaultsAreOnIncludingIRC(t *testing.T) {
 		t.Fatalf("defaults: %+v", cfg)
 	}
 	g := r.GapFill
-	if !g.PreDBHTTPEnabled || !g.PreDBIRCEnabled || g.IRCPasswordSet || g.PreDBHTTPURL != "https://api.predb.net/" {
+	if !g.PreDBHTTPEnabled || !g.PreDBIRCEnabled || g.IRCPasswordSet || g.PreDBHTTPURL != "https://api.predb.net/" || g.PreDBDumpPath != "" {
 		t.Fatalf("predb defaults: %+v", g)
 	}
 }

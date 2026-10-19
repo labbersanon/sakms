@@ -5,10 +5,15 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/labbersanon/sakms/internal/secrets"
 	"github.com/labbersanon/sakms/internal/settings"
@@ -35,8 +40,9 @@ type NNTPPreDB struct {
 	svc      *usenetsearch.Service
 	parent   context.Context
 
-	mu        sync.Mutex
-	cancelIRC context.CancelFunc
+	mu         sync.Mutex
+	cancelIRC  context.CancelFunc
+	cancelDump context.CancelFunc
 }
 
 // StartNNTPPreDB builds the runtime, wires the PreDB into svc, and starts the
@@ -67,6 +73,15 @@ func (p *NNTPPreDB) Reload(ctx context.Context) {
 	if p.cancelIRC != nil {
 		p.cancelIRC()
 		p.cancelIRC = nil
+	}
+	if p.cancelDump != nil {
+		p.cancelDump()
+		p.cancelDump = nil
+	}
+	if path := strings.TrimSpace(g.PreDBDumpPath); path != "" && !strings.Contains(path, "://") {
+		dumpCtx, dumpCancel := context.WithCancel(p.parent)
+		p.cancelDump = dumpCancel
+		go p.dumpLoop(dumpCtx, path)
 	}
 	if !g.PreDBIRCEnabled {
 		return
@@ -133,6 +148,80 @@ func (p *NNTPPreDB) ircConfig(ctx context.Context) (predb.IRCConfig, error) {
 }
 
 var errIRCPasswordUndecryptable = errors.New("stored IRC password could not be decrypted (secret.key changed?); set it again")
+
+const dumpPoll = 15 * time.Minute
+
+// dumpLoop imports an operator-supplied nZEDb TSV when the path's mtime/size
+// changes. It never fetches a URL (api.predb.net ToS: don't build a DB).
+func (p *NNTPPreDB) dumpLoop(ctx context.Context, path string) {
+	p.importDump(ctx, path)
+	t := time.NewTicker(dumpPoll)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			p.importDump(ctx, path)
+		}
+	}
+}
+
+func (p *NNTPPreDB) importDump(ctx context.Context, path string) {
+	stamp, err := dumpStamp(path)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			log.Printf("usenetsearch: predb dump path: %v", err)
+		}
+		return
+	}
+	prev, err := p.settings.Get(ctx, usenetsearch.KeyPreDBDumpImported)
+	if err != nil && !isSettingsNotFound(err) {
+		log.Printf("usenetsearch: predb dump stamp: %v", err)
+		return
+	}
+	if prev == stamp {
+		return
+	}
+	stats, err := predb.NewStore(p.sqlDB).ImportPath(ctx, path)
+	if err != nil {
+		log.Printf("usenetsearch: predb dump import failed: %v", err)
+		return
+	}
+	if err := p.settings.Set(ctx, usenetsearch.KeyPreDBDumpImported, stamp); err != nil {
+		log.Printf("usenetsearch: predb dump stamp save: %v", err)
+	}
+	log.Printf("usenetsearch: predb dump imported files=%d read=%d upserted=%d skipped=%d",
+		stats.Files, stats.Read, stats.Upserted, stats.Skipped)
+}
+
+func dumpStamp(path string) (string, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if !st.IsDir() {
+		return fmt.Sprintf("%s|%d|%d", path, st.ModTime().Unix(), st.Size()), nil
+	}
+	ents, err := os.ReadDir(path)
+	if err != nil {
+		return "", err
+	}
+	var parts []string
+	for _, e := range ents {
+		if e.IsDir() || strings.HasPrefix(e.Name(), ".") || !predb.IsDumpFilename(e.Name()) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		fp := filepath.Join(path, e.Name())
+		parts = append(parts, fmt.Sprintf("%s|%d|%d", fp, info.ModTime().Unix(), info.Size()))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "\n"), nil
+}
 
 var (
 	nntpPreDBMu sync.RWMutex

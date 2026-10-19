@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net"
@@ -20,15 +22,16 @@ import (
 
 func TestParseAnnounce(t *testing.T) {
 	cases := []struct {
-		line   string
-		kind   string
-		title  string
-		cat    string
-		size   int64
-		files  int
-		nuked  bool
-		reason string
-		ok     bool
+		line     string
+		kind     string
+		title    string
+		cat      string
+		size     int64
+		files    int
+		filename string
+		nuked    bool
+		reason   string
+		ok       bool
 	}{
 		{line: "NEW: [MOVIES-X264] Some.Movie.2021.1080p.BluRay.x264-GRP", kind: "NEW", title: "Some.Movie.2021.1080p.BluRay.x264-GRP", cat: "MOVIES-X264", ok: true},
 		{line: "\x02\x0304NEW:\x0f [TV-X264] Some.Show.S01E02.720p.HDTV.x264-GRP [700MB - 12F]", kind: "NEW", title: "Some.Show.S01E02.720p.HDTV.x264-GRP", cat: "TV-X264", size: 700 << 20, files: 12, ok: true},
@@ -40,6 +43,16 @@ func TestParseAnnounce(t *testing.T) {
 		{
 			line: "[DT: 2026-10-18 22:13:34] [TT: Some.Show.S01E02.720p.HDTV.x264-GRP] [SC: #a.b.teevee] [CT: TV-X264] [RQ: N/A] [SZ: 700MB] [FL: 12] [FN: N/A]",
 			kind: "NEW", title: "Some.Show.S01E02.720p.HDTV.x264-GRP", cat: "TV-X264", size: 700 << 20, files: 12, ok: true,
+		},
+		{
+			line:     "[DT: 2026-10-18 22:13:34] [TT: Some.Movie.2021.1080p.BluRay.x264-GRP] [SC: srrdb] [CT: MOVIES] [SZ: 4GB] [FL: 50] [FN: abcdef0123456789abcdef0123456789.part1.rar]",
+			kind:     "NEW",
+			title:    "Some.Movie.2021.1080p.BluRay.x264-GRP",
+			cat:      "MOVIES",
+			size:     4 << 30,
+			files:    50,
+			filename: "abcdef0123456789abcdef0123456789.part1.rar",
+			ok:       true,
 		},
 		{
 			line: "[DT: 2026-10-18 22:13:34] [TT: Some.Movie.2021.1080p.BluRay.x264-GRP] [SC: srrdb] [CT: MOVIES] [RQ: N/A] [SZ: N/A] [FL: N/A] [NUKED: dupe.2021-05-01]",
@@ -55,7 +68,7 @@ func TestParseAnnounce(t *testing.T) {
 			continue
 		}
 		if a.Kind != c.kind || a.Entry.Title != c.title || a.Entry.Category != c.cat || a.Entry.SizeBytes != c.size ||
-			a.Entry.Files != c.files || a.Entry.Nuked != c.nuked || a.Reason != c.reason {
+			a.Entry.Files != c.files || a.Entry.Filename != c.filename || a.Entry.Nuked != c.nuked || a.Reason != c.reason {
 			t.Fatalf("%q = %+v", c.line, a)
 		}
 	}
@@ -71,10 +84,12 @@ func TestStore_HashLookupMissCacheAndNoMissHit(t *testing.T) {
 	ctx := context.Background()
 	const title = "Another.Movie.2020.1080p.WEB-DL.x264-GRP"
 	m, sh := HashesOf(title)
-	if err := s.Upsert(ctx, Entry{Title: title, SizeBytes: 4 << 30, Files: 50}, SourceIRC); err != nil {
+	if err := s.Upsert(ctx, Entry{Title: title, SizeBytes: 4 << 30, Files: 50, Filename: "hashed.part1.rar"}, SourceIRC); err != nil {
 		t.Fatal(err)
 	}
-	for _, h := range []string{m, sh, strings.ToUpper(m)} {
+	inner := md5.Sum([]byte(m))
+	md5md5 := hex.EncodeToString(inner[:])
+	for _, h := range []string{m, sh, strings.ToUpper(m), md5md5} {
 		e, ok, err := s.ByHash(ctx, h)
 		if err != nil || !ok || e.Title != title || e.SizeBytes != 4<<30 {
 			t.Fatalf("ByHash(%s) = %+v ok=%v err=%v", h, e, ok, err)
@@ -82,6 +97,13 @@ func TestStore_HashLookupMissCacheAndNoMissHit(t *testing.T) {
 	}
 	if _, ok, _ := s.ByHash(ctx, "abc"); ok {
 		t.Fatal("bad-length hash must not match")
+	}
+	e, ok, err := s.ByFilename(ctx, "HASHED.part1.rar")
+	if err != nil || !ok || e.Title != title {
+		t.Fatalf("ByFilename = %+v ok=%v err=%v", e, ok, err)
+	}
+	if _, ok, _ := s.ByFilename(ctx, "missing.rar"); ok {
+		t.Fatal("unknown filename must miss")
 	}
 	if err := s.RecordMiss(ctx, "Nope.2020.1080p-X"); err != nil {
 		t.Fatal(err)
@@ -425,5 +447,44 @@ func TestIRCClient_RandomNickHeartbeatNoNickServ(t *testing.T) {
 	}
 	if !strings.Contains(joined, "JOIN #PreNNTmux") {
 		t.Fatalf("missing JOIN:\n%s", joined)
+	}
+}
+
+func TestImportDump_NZEdbDoubleTabAndHeader(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	const title = "Dump.Movie.2021.1080p.BluRay.x264-GRP"
+	m, sh := HashesOf(title)
+	inner := md5.Sum([]byte(m))
+	md5md5 := hex.EncodeToString(inner[:])
+	tsv := "title\t\tnfo\t\tsize\t\tfiles\t\tfilename\t\tnuked\t\tnukereason\t\tcategory\t\tcreated\t\tsource\t\trequestid\t\tgroupname\n" +
+		title + "\t\tnfohash\t\t4294967296\t\t50\t\thashed.part1.rar\t\t0\t\t\t\tX264\t\t1700000000\t\tsrrdb\t\t0\t\talt.binaries.moovee\n" +
+		"\n"
+	stats, err := s.ImportDump(ctx, strings.NewReader(tsv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Read != 1 || stats.Upserted != 1 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	e, ok, err := s.ByTitle(ctx, title)
+	if err != nil || !ok || e.Filename != "hashed.part1.rar" || e.SizeBytes != 4294967296 || e.Files != 50 || e.Category != "X264" {
+		t.Fatalf("entry = %+v ok=%v err=%v", e, ok, err)
+	}
+	for _, h := range []string{m, md5md5, sh} {
+		if got, ok, err := s.ByHash(ctx, h); err != nil || !ok || got.Title != title {
+			t.Fatalf("ByHash(%s) = %+v ok=%v err=%v", h, got, ok, err)
+		}
+	}
+	if got, ok, err := s.ByFilename(ctx, "hashed.part1.rar"); err != nil || !ok || got.Title != title {
+		t.Fatalf("ByFilename = %+v ok=%v err=%v", got, ok, err)
+	}
+}
+
+func TestImportPath_RejectsURL(t *testing.T) {
+	s := newStore(t)
+	stats, err := s.ImportPath(context.Background(), "https://example.com/predb.csv")
+	if err != nil || stats != (DumpStats{}) {
+		t.Fatalf("url import = %+v err=%v", stats, err)
 	}
 }

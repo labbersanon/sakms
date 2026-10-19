@@ -2,6 +2,7 @@ package usenetsearch
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"time"
 )
@@ -27,6 +28,8 @@ type PendingSet struct {
 	Attempts     int
 	// CompletenessBP is the set's completeness in basis points (log only).
 	CompletenessBP int
+	// PreDBOnly skips BODY: exhausted keepCompleteYield waiting on dump/IRC.
+	PreDBOnly bool
 }
 
 // StagedBytes is the payload size of unresolved staged sets in group (as of
@@ -68,6 +71,54 @@ func (idx *Index) StagedBytes(ctx context.Context, group string) (int64, error) 
 //
 // Review if: an operator knob to namefix step-5 firehose is added.
 func (idx *Index) DuePendingNames(ctx context.Context, groups []string, limit int) ([]PendingSet, error) {
+	return idx.dueYieldPrefixed(ctx, groups, limit, idx.duePendingNamesIn)
+}
+
+func (idx *Index) duePendingNamesIn(ctx context.Context, groups []string, limit int) ([]PendingSet, error) {
+	if len(groups) == 0 || limit <= 0 {
+		return nil, nil
+	}
+	// Claude 2026-10-18: BODY retries stop at maxNameAttempts; PreDB continues
+	// via DueExhaustedYield (no BODY).
+	// Reason: keepCompleteYield left hash-named 100% sets on a 10m<<n backoff
+	//   forever; namefix spent 12–17 slots/pass re-fetching the same PAR2.
+	// Troubleshooting: namefix unresolved=N with the same keys every loop →
+	//   this filter missing. Review if: BODY is retried after a dump import.
+	in, args := groupLimitArgs([]any{idx.MinCompletenessPct() * 100, time.Now().Unix(), maxNameAttempts}, groups, limit)
+	rows, err := idx.db.QueryContext(ctx, `
+SELECT group_name, release_key, payload_bytes, name_attempts, completeness_bp FROM usenet_nntp_releases
+WHERE state='pending_name' AND dirty=FALSE AND declared_segs>0 AND completeness_bp>=?
+  AND next_name_at<=? AND name_attempts < ? AND group_name IN (`+in+`)
+ORDER BY ingested_at DESC LIMIT ?`, args...)
+	if err != nil {
+		return nil, err
+	}
+	return scanPendingSets(rows, false)
+}
+
+// DueExhaustedYield returns complete yield-group pending_name sets that already
+// spent their BODY attempts. Namefix looks them up in PreDB only (no BODY).
+func (idx *Index) DueExhaustedYield(ctx context.Context, groups []string, limit int) ([]PendingSet, error) {
+	return idx.dueYieldPrefixed(ctx, groups, limit, idx.dueExhaustedYieldIn)
+}
+
+func (idx *Index) dueExhaustedYieldIn(ctx context.Context, groups []string, limit int) ([]PendingSet, error) {
+	if len(groups) == 0 || limit <= 0 {
+		return nil, nil
+	}
+	in, args := groupLimitArgs([]any{spanRepairFloorBP, namefixMinPayload, time.Now().Unix(), maxNameAttempts}, groups, limit)
+	rows, err := idx.db.QueryContext(ctx, `
+SELECT group_name, release_key, payload_bytes, name_attempts, completeness_bp FROM usenet_nntp_releases
+WHERE state='pending_name' AND dirty=FALSE AND declared_segs>0 AND completeness_bp>=? AND payload_bytes>=?
+  AND next_name_at<=? AND name_attempts>=? AND group_name IN (`+in+`)
+ORDER BY next_name_at ASC, ingested_at DESC LIMIT ?`, args...)
+	if err != nil {
+		return nil, err
+	}
+	return scanPendingSets(rows, true)
+}
+
+func (idx *Index) dueYieldPrefixed(ctx context.Context, groups []string, limit int, query func(context.Context, []string, int) ([]PendingSet, error)) ([]PendingSet, error) {
 	var yield []string
 	for _, g := range groups {
 		if IsNameFixYieldGroup(g) {
@@ -75,42 +126,18 @@ func (idx *Index) DuePendingNames(ctx context.Context, groups []string, limit in
 		}
 	}
 	cores, rest := splitCoreRest(yield)
-	out, err := idx.duePendingNamesIn(ctx, cores, limit)
+	out, err := query(ctx, cores, limit)
 	if err != nil || len(out) >= limit {
 		return out, err
 	}
-	more, err := idx.duePendingNamesIn(ctx, rest, limit-len(out))
+	more, err := query(ctx, rest, limit-len(out))
 	if err != nil {
 		return out, err
 	}
 	return append(out, more...), nil
 }
 
-func (idx *Index) duePendingNamesIn(ctx context.Context, groups []string, limit int) ([]PendingSet, error) {
-	if len(groups) == 0 || limit <= 0 {
-		return nil, nil
-	}
-	ph := make([]string, len(groups))
-	args := make([]any, 0, len(groups)+4)
-	// Claude 2026-10-16: do not BODY-retry after maxNameAttempts.
-	// Reason: keepCompleteYield left hash-named 100% sets on a 10m<<n backoff
-	// forever; namefix spent 12–17 slots/pass re-fetching the same first segment.
-	// Troubleshooting: namefix unresolved=N with the same keys every loop →
-	// name_attempts < max is missing. Review if: PreDB ByHash covers these.
-	args = append(args, idx.MinCompletenessPct()*100, time.Now().Unix(), maxNameAttempts)
-	for i, g := range groups {
-		ph[i] = "?"
-		args = append(args, g)
-	}
-	args = append(args, limit)
-	rows, err := idx.db.QueryContext(ctx, `
-SELECT group_name, release_key, payload_bytes, name_attempts, completeness_bp FROM usenet_nntp_releases
-WHERE state='pending_name' AND dirty=FALSE AND declared_segs>0 AND completeness_bp>=?
-  AND next_name_at<=? AND name_attempts < ? AND group_name IN (`+strings.Join(ph, ",")+`)
-ORDER BY ingested_at DESC LIMIT ?`, args...)
-	if err != nil {
-		return nil, err
-	}
+func scanPendingSets(rows *sql.Rows, preDBOnly bool) ([]PendingSet, error) {
 	defer rows.Close()
 	var out []PendingSet
 	for rows.Next() {
@@ -118,9 +145,33 @@ ORDER BY ingested_at DESC LIMIT ?`, args...)
 		if err := rows.Scan(&p.Group, &p.Key, &p.PayloadBytes, &p.Attempts, &p.CompletenessBP); err != nil {
 			return nil, err
 		}
+		p.PreDBOnly = preDBOnly
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+func groupLimitArgs(prefix []any, groups []string, limit int) (string, []any) {
+	ph := make([]string, len(groups))
+	args := make([]any, 0, len(prefix)+len(groups)+1)
+	args = append(args, prefix...)
+	for i, g := range groups {
+		ph[i] = "?"
+		args = append(args, g)
+	}
+	return strings.Join(ph, ","), append(args, limit)
+}
+
+// ScheduleNameRetry sets next_name_at without incrementing name_attempts
+// (PreDB-only exhausted yield waiting on dump/IRC).
+func (idx *Index) ScheduleNameRetry(ctx context.Context, group, key string, wait time.Duration) error {
+	if wait <= 0 {
+		wait = exhaustedPreDBRetry
+	}
+	_, err := idx.db.ExecContext(ctx, `
+UPDATE usenet_nntp_releases SET next_name_at=?, updated_at=? WHERE group_name=? AND release_key=?`,
+		time.Now().Add(wait).Unix(), time.Now().Unix(), group, key)
+	return err
 }
 
 // SetRows loads every header row of one release/staged-set key.

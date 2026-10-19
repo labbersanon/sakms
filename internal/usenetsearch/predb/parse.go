@@ -31,6 +31,7 @@ var (
 	reTaggedCT   = regexp.MustCompile(`(?i)\[CT:\s*([^\]]+)\]`)
 	reTaggedSZ   = regexp.MustCompile(`(?i)\[SZ:\s*([^\]]+)\]`)
 	reTaggedFL   = regexp.MustCompile(`(?i)\[FL:\s*([^\]]+)\]`)
+	reTaggedFN   = regexp.MustCompile(`(?i)\[FN:\s*([^\]]+)\]`)
 	reTaggedNuke = regexp.MustCompile(`(?i)\[((?:UN|MOD|RE|OLD)?NUKE(?:D)?):\s*([^\]]*)\]`)
 )
 
@@ -41,7 +42,7 @@ var (
 //
 // or a tagged nZEDb/TmuxPREBot line:
 //
-//	[DT: …] [TT: Release.Name-GRP] [SC: …] [CT: TV] [SZ: 800MB] [FL: 12]
+//	[DT: …] [TT: Release.Name-GRP] [SC: …] [CT: TV] [SZ: 800MB] [FL: 12] [FN: file.rar]
 //
 // IRC colour/format codes are stripped first. Lines that do not carry a
 // scene-style release token return ok=false.
@@ -94,21 +95,26 @@ func ParseAnnounce(line string) (Announce, bool) {
 	return a, true
 }
 
-func parseTaggedAnnounce(line string) (Announce, bool) {
-	tt := reTaggedTT.FindStringSubmatch(line)
-	if tt == nil {
-		return Announce{}, false
+func taggedNA(line string, re *regexp.Regexp) string {
+	m := re.FindStringSubmatch(line)
+	if m == nil {
+		return ""
 	}
-	title := strings.TrimSpace(tt[1])
-	if title == "" || strings.EqualFold(title, "N/A") {
+	s := strings.TrimSpace(m[1])
+	if s == "" || strings.EqualFold(s, "N/A") {
+		return ""
+	}
+	return s
+}
+
+func parseTaggedAnnounce(line string) (Announce, bool) {
+	title := taggedNA(line, reTaggedTT)
+	if title == "" {
 		return Announce{}, false
 	}
 	a := Announce{Kind: "NEW", Entry: Entry{Title: title}}
-	if ct := reTaggedCT.FindStringSubmatch(line); ct != nil {
-		cat := strings.TrimSpace(ct[1])
-		if cat != "" && !strings.EqualFold(cat, "N/A") {
-			a.Entry.Category = cat
-		}
+	if cat := taggedNA(line, reTaggedCT); cat != "" {
+		a.Entry.Category = cat
 	}
 	if sz := reTaggedSZ.FindStringSubmatch(line); sz != nil {
 		raw := strings.TrimSpace(sz[1])
@@ -123,6 +129,9 @@ func parseTaggedAnnounce(line string) (Announce, bool) {
 		} else if fm := reFiles.FindStringSubmatch(raw); fm != nil {
 			a.Entry.Files, _ = strconv.Atoi(fm[1])
 		}
+	}
+	if fn := taggedNA(line, reTaggedFN); fn != "" {
+		a.Entry.Filename = fn
 	}
 	if nk := reTaggedNuke.FindStringSubmatch(line); nk != nil {
 		tag := strings.ToUpper(strings.TrimSpace(nk[1]))

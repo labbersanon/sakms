@@ -178,8 +178,9 @@ func TestParsesAsRelease(t *testing.T) {
 }
 
 type fakePreDB struct {
-	hashes map[string]PreDBHit
-	names  map[string]PreDBHit
+	hashes    map[string]PreDBHit
+	names     map[string]PreDBHit
+	filenames map[string]PreDBHit
 }
 
 func (f *fakePreDB) ByHash(_ context.Context, h string) (PreDBHit, bool) {
@@ -188,6 +189,10 @@ func (f *fakePreDB) ByHash(_ context.Context, h string) (PreDBHit, bool) {
 }
 func (f *fakePreDB) ByName(_ context.Context, n string) (PreDBHit, bool) {
 	v, ok := f.names[n]
+	return v, ok
+}
+func (f *fakePreDB) ByFilename(_ context.Context, n string) (PreDBHit, bool) {
+	v, ok := f.filenames[strings.ToLower(n)]
 	return v, ok
 }
 
@@ -839,5 +844,127 @@ func TestGroupHasNamedRelease_IgnoresSubjectNamed(t *testing.T) {
 	ok, err = idx.GroupHasNamedRelease(ctx, g)
 	if err != nil || !ok {
 		t.Fatalf("par2 searchable should unlock investment: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestHashTokens_StripsArchiveSuffix(t *testing.T) {
+	const h = "a3de4a915e25ce1f8c0e7b315e6e0257"
+	got := hashTokens(h + ".7z.001")
+	if len(got) != 1 || got[0] != h {
+		t.Fatalf("hashTokens = %v", got)
+	}
+	if hashCore(h+".7z.001") != "" {
+		t.Fatal("hashCore must not accept a suffixed filename")
+	}
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	got = hashTokens(`"` + sha + `.part01.rar"`)
+	if len(got) != 1 || got[0] != sha {
+		t.Fatalf("sha1 token = %v", got)
+	}
+}
+
+func leadTokenHashSet(prefix, token, hash string, startNum, files int) []usenet.MessageOverview {
+	var out []usenet.MessageOverview
+	n := startNum
+	for f := 1; f <= files; f++ {
+		fn := fmt.Sprintf("%s.part%02d.rar", hash, f)
+		for p := 1; p <= 2; p++ {
+			out = append(out, usenet.MessageOverview{
+				Number:    n,
+				Subject:   fmt.Sprintf(`%s - [%02d/%d] - "%s" yEnc (%d/2)`, token, f, files+1, fn, p),
+				From:      "poster@obf",
+				MessageID: fmt.Sprintf("%s%d_%d@t", prefix, f, p),
+				Bytes:     2_000_000,
+				DateUnix:  1700000000,
+			})
+			n++
+		}
+	}
+	out = append(out, usenet.MessageOverview{
+		Number:    n,
+		Subject:   fmt.Sprintf(`%s - [%02d/%d] - "%s.par2" yEnc (1/1)`, token, files+1, files+1, hash),
+		From:      "poster@obf",
+		MessageID: prefix + "par2",
+		Bytes:     40_000,
+		DateUnix:  1700000000,
+	})
+	return out
+}
+
+func TestNameFix_FilenameHashResolvesFromPreDB(t *testing.T) {
+	const title = "Lead.Token.2021.1080p.WEB-DL.x264-GRP"
+	const token = "ah63jka93jf0jh26ahjas558"
+	sum := md5.Sum([]byte(title))
+	h := hex.EncodeToString(sum[:])
+	rows := leadTokenHashSet("lh", token, h, 1, 45)
+	if hashCore(obfSkeleton(rows[0].Subject)) == h {
+		t.Fatal("setup: grouping skeleton must be the lead token, not the filename hash")
+	}
+	f := newNFFixture(t, rows, nil)
+	f.nf.PreDB = &fakePreDB{hashes: map[string]PreDBHit{h: {Title: title}}}
+	f.crawlAndRecompute(t)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.HashHits != 1 || res.Renamed != 1 || res.BodyFetches != 0 || len(f.src.bodyCalls) != 0 {
+		t.Fatalf("result = %+v bodyCalls=%v", res, f.src.bodyCalls)
+	}
+	if _, _, display, _ := f.release(t); display != title {
+		t.Fatalf("display = %q", display)
+	}
+}
+
+func TestNameFix_PreDBFilenameResolvesRandomArchiveName(t *testing.T) {
+	const title = "Named.From.File.2020.1080p.BluRay.x264-GRP"
+	const token = "KLoSR1zOTNoaex3x"
+	rows := leadTokenHashSet("fn", token, "v1AAqzDH11LfEAAN9yuzTJ", 1, 45)
+	f := newNFFixture(t, rows, nil)
+	f.nf.PreDB = &fakePreDB{filenames: map[string]PreDBHit{
+		"v1aaqzdh11lfeaan9yuztj.part01.rar": {Title: title},
+	}}
+	f.crawlAndRecompute(t)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.HashHits != 1 || res.Renamed != 1 || len(f.src.bodyCalls) != 0 {
+		t.Fatalf("result = %+v bodyCalls=%v", res, f.src.bodyCalls)
+	}
+}
+
+func TestNameFix_ExhaustedYieldPreDBRetryNoBody(t *testing.T) {
+	const title = "Later.Irc.2022.1080p.WEB-DL.x264-GRP"
+	sum := md5.Sum([]byte(title))
+	h := hex.EncodeToString(sum[:])
+	f := newNFFixture(t, obfuscatedSet("ex", h, 1, 45), nil)
+	f.crawlAndRecompute(t)
+	ctx := context.Background()
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET name_attempts=?, next_name_at=0, dirty=FALSE`, maxNameAttempts); err != nil {
+		t.Fatal(err)
+	}
+	res, err := f.nf.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Renamed != 0 || res.BodyFetches != 0 || len(f.src.bodyCalls) != 0 {
+		t.Fatalf("miss must not BODY: %+v bodyCalls=%v", res, f.src.bodyCalls)
+	}
+	if res.Sets != 1 {
+		t.Fatalf("exhausted yield should still be tried: %+v", res)
+	}
+	f.nf.PreDB = &fakePreDB{hashes: map[string]PreDBHit{h: {Title: title}}}
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET next_name_at=0`); err != nil {
+		t.Fatal(err)
+	}
+	res, err = f.nf.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.HashHits != 1 || res.Renamed != 1 || len(f.src.bodyCalls) != 0 {
+		t.Fatalf("later PreDB hit = %+v bodyCalls=%v", res, f.src.bodyCalls)
+	}
+	if _, _, display, _ := f.release(t); display != title {
+		t.Fatalf("display = %q", display)
 	}
 }

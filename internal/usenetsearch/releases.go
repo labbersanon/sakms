@@ -365,6 +365,13 @@ LIMIT ?`, spanRepairFloorBP, repairRangesPerPass)
 	return n, nil
 }
 
+func (idx *Index) dirtyIdentifiableNamed(ctx context.Context) {
+	_, _ = idx.db.ExecContext(ctx, `
+UPDATE usenet_nntp_releases SET dirty=TRUE
+WHERE state='named' AND searchable=FALSE AND dirty=FALSE AND completeness_bp>=?
+  AND (`+identNameSQL+`)`, spanRepairFloorBP)
+}
+
 func (idx *Index) recomputeOne(ctx context.Context, k releaseKey, gate int) (searchable, undeclared, orphan bool, err error) {
 	rows, err := idx.db.QueryContext(ctx, `
 SELECT subject, filename, part_n, part_m, file_m, is_meta, bytes, yenc_size, msg_num, posted_at
@@ -401,7 +408,7 @@ FROM usenet_nntp_headers WHERE group_name=? AND release_name=?`, k.group, k.key)
 			posted = postedAt
 		}
 		meta := isMeta || IsMetaSubject(subject, filename)
-		if isMeta {
+		if meta {
 			hasPar2 = true
 		}
 		fn := filename
@@ -444,19 +451,16 @@ FROM usenet_nntp_headers WHERE group_name=? AND release_name=?`, k.group, k.key)
 	}
 	comp := computeCompleteness(files, fileM)
 	meets := comp.Meets(gate)
-	// Claude 2026-10-19: PreDB-exact names are searchable below the 95% gate.
-	// Reason: NewsLeecher SuperSearch shows the real title before the set is
-	//   grab-complete; autograb/ToNZB still require Candidate.Complete.
-	// Troubleshooting: named predb row with searchable=false at 80–94% → this
-	//   OR name_source='predb' missing. Review if: guessed par2/rar names join it.
+	near := comp.BP() >= spanRepairFloorBP
+	// Claude 2026-10-19: recovered/scene names are searchable at ≥80%, not 0%.
 	err = idx.db.QueryRowContext(ctx, `
 UPDATE usenet_nntp_releases SET
   declared_segs=?, seen_segs=?, completeness_bp=?, gate_reason=?,
-  searchable=(state='named' AND display_name<>'' AND (?::boolean OR name_source='predb')),
+  searchable=(state='named' AND display_name<>'' AND (?::boolean OR ((`+identNameSQL+`) AND ?::boolean))),
   first_msg=?, last_msg=?, posted_at=?, payload_bytes=?, has_par2=?, dirty=FALSE
 WHERE group_name=? AND release_key=?
 RETURNING searchable`,
-		comp.Declared, comp.Seen, comp.BP(), comp.Reason(gate), meets,
+		comp.Declared, comp.Seen, comp.BP(), comp.Reason(gate), meets, near,
 		first, last, posted, payload, hasPar2, k.group, k.key).Scan(&searchable)
 	if err == sql.ErrNoRows {
 		return false, false, true, nil

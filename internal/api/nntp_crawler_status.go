@@ -41,6 +41,9 @@ type nntpCrawlerStatusResponse struct {
 	ReleasesBelowGate  int64             `json:"releasesBelowGate"`
 	PendingName        int64             `json:"pendingName"`
 	MissedRanges       int64             `json:"missedRanges"`
+	HeadersBinary      int64             `json:"headersBinary"`
+	HeadersIdentified  int64             `json:"headersIdentified"`
+	IdentifiedPct      int               `json:"identifiedPct"`
 	LastPassBusy       bool              `json:"lastPassBusy"`
 	LastPassAdvanced   bool              `json:"lastPassAdvanced"`
 	LastChunk          *nntpCrawlerChunk `json:"lastChunk,omitempty"`
@@ -75,6 +78,9 @@ func nntpCrawlerStatusFrom(st usenetsearch.CrawlerStatus) nntpCrawlerStatusRespo
 		ReleasesBelowGate:  st.ReleasesBelowGate,
 		PendingName:        st.PendingName,
 		MissedRanges:       st.MissedRanges,
+		HeadersBinary:      st.HeadersBinary,
+		HeadersIdentified:  st.HeadersIdentified,
+		IdentifiedPct:      st.IdentifiedPct,
 		LastPassBusy:       st.LastPassBusy,
 		LastPassAdvanced:   st.LastPassAdvanced,
 	}

@@ -102,6 +102,9 @@ const nntpStatus = (over: Partial<NNTPCrawlerStatus> = {}): NNTPCrawlerStatus =>
   releasesBelowGate: 0,
   pendingName: 0,
   missedRanges: 0,
+  headersBinary: 0,
+  headersIdentified: 0,
+  identifiedPct: 0,
   lastPassBusy: false,
   lastPassAdvanced: false,
   ...over,
@@ -406,6 +409,9 @@ describe("Dashboard view", () => {
               indexMaxGb: 20,
               releasesSearchable: 31,
               pendingName: 4,
+              headersBinary: 80000,
+              headersIdentified: 64000,
+              identifiedPct: 80,
               lastChunk: {
                 dir: "forward",
                 group: "alt.binaries.moovee",
@@ -431,6 +437,7 @@ describe("Dashboard view", () => {
     expect(await screen.findByText("NNTP crawler")).toBeInTheDocument();
     expect(screen.getByText("12")).toBeInTheDocument();
     expect(screen.getByText(/96.?000/)).toBeInTheDocument();
+    expect(screen.getByText(/64.?000 \/ 80.?000 \(80%\)/)).toBeInTheDocument();
     expect(screen.getByText(/alt\.binaries\.moovee/)).toBeInTheDocument();
     expect(screen.getByText(/3 admitted/)).toBeInTheDocument();
   });

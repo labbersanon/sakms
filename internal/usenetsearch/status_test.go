@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/usenet"
 )
 
@@ -60,6 +61,35 @@ func TestCrawlerStatus_DisabledZeros(t *testing.T) {
 	}
 	if st.IndexMaxGB != DefaultIndexMaxGB {
 		t.Fatalf("indexMaxGb=%d", st.IndexMaxGB)
+	}
+}
+
+func TestIdentifiedStats_BinarySceneVsPictures(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	const g = "alt.binaries.movies"
+	const p = "alt.binaries.pictures.erotica"
+	var rows []HeaderRow
+	rows = append(rows, fileRows(g, "Full.Movie.2020.1080p", "full.mkv", "full", 0, 10, 10, 0)...)
+	rows = append(rows, fileRows(p, "20260905", "a.jpg", "pic", 0, 2, 2, 0)...)
+	rows = append(rows, fileRows(g, "obf:abcdabcdabcdabcd", "x.rar", "obf", 100, 5, 5, 0)...)
+	if err := idx.Upsert(ctx, rows); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.RecomputeDirty(ctx, 100); err != nil {
+		t.Fatal(err)
+	}
+	id, bin, err := idx.identifiedStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bin != 15 || id != 10 {
+		t.Fatalf("identified=%d binary=%d want 10/15 (pictures excluded, pending not named)", id, bin)
 	}
 }
 

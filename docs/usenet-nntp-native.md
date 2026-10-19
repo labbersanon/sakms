@@ -101,13 +101,11 @@ populate that table. nZEDbPre_Dumps stopped publishing new daily files in
 2024-05; historical `dumps/*/*_predb_dump.csv.gz` are still on GitHub and
 import as quoted MySQL TSV (`\N` nulls). There is no default dump URL.
 Default IRC is on: synIRC `#PreNNTmux`, TLS 6697, a random unregistered
-nick, client PING heartbeat, **plus** a second client on Corrupt-net `#pre`
-(`irc.corrupt-net.org:6697` TLS). The dump file is a snapshot through
-2024-05-02; `api.predb.net` forbids using the search API to build a local DB,
-so a second IRC network is the live backup. NickServ is optional and unused by
-default (synIRC confirm mail does not arrive). The NickServ password, if set,
-is stored encrypted (`secrets.Store`) and is never logged. `#nZEDbPRE` is
-dead; do not point the scraper there. Extra feeds: KV
+nick, client PING heartbeat, plus a second client on Corrupt-net `#pre`
+(`irc.corrupt-net.org:6697` TLS). NickServ is optional and unused by default
+(synIRC confirm mail does not arrive). The NickServ password, if set, is
+stored encrypted (`secrets.Store`) and is never logged. `#nZEDbPRE` is dead;
+do not point the scraper there. Extra feeds: KV
 `usenet_nntp_predb_irc_extra` JSON `[{server,port,tls,channels}]`. Empty =
 Corrupt-net default. `[]` or `none` turns extras off (primary synIRC stays).
 

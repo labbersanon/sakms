@@ -49,7 +49,7 @@ type extraFeedJSON struct {
 	Channels []string `json:"channels"`
 }
 
-// DefaultExtraIRCFeeds is the second live writer: Corrupt-net #pre.
+// DefaultExtraIRCFeeds is the Corrupt-net #pre feed.
 func DefaultExtraIRCFeeds() []IRCConfig {
 	return []IRCConfig{{
 		Server:   DefaultCorruptServer,
@@ -76,13 +76,9 @@ func ParseExtraIRCFeeds(raw string) ([]IRCConfig, error) {
 	out := make([]IRCConfig, 0, len(in))
 	for _, f := range in {
 		cfg := IRCConfig{
-			Server:   strings.TrimSpace(f.Server),
-			Port:     f.Port,
-			TLS:      true,
-			Channels: nil,
-		}
-		if f.TLS != nil {
-			cfg.TLS = *f.TLS
+			Server: strings.TrimSpace(f.Server),
+			Port:   f.Port,
+			TLS:    f.TLS == nil || *f.TLS,
 		}
 		if cfg.Port <= 0 {
 			cfg.Port = DefaultIRCPort

@@ -725,13 +725,13 @@ func loadNNTPGapFill(ctx context.Context, st *settings.Store) (usenetNNTPGapFill
 		return g, err
 	}
 	g.PreDBDumpPath = strings.TrimSpace(g.PreDBDumpPath)
-	extraRaw, extraErr := st.Get(ctx, usenetsearch.KeyPreDBIRCExtra)
-	if extraErr != nil && !isSettingsNotFound(extraErr) {
-		return g, extraErr
+	extraRaw, err := st.Get(ctx, usenetsearch.KeyPreDBIRCExtra)
+	if err != nil && !isSettingsNotFound(err) {
+		return g, err
 	}
-	feeds, ferr := predb.ParseExtraIRCFeeds(extraRaw)
-	if ferr != nil {
-		log.Printf("usenetsearch: predb irc extra: %v", ferr)
+	feeds, err := predb.ParseExtraIRCFeeds(extraRaw)
+	if err != nil {
+		log.Printf("usenetsearch: predb irc extra: %v", err)
 	} else {
 		g.PreDBIRCExtra = feeds
 	}

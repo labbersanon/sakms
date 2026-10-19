@@ -63,9 +63,10 @@ NNTmux-inspired ingest (membership still full LIST ACTIVE):
   tail gets the rest. Cores and tail rotate independently.
 - Backfill only walks package cores and groups that already have a named
   (non-`obf:`) index row — analog of NNTmux `usenet_groups.backfill=1`.
-- New obfuscated sets are staged only on those same groups, so firehose
-  hashes cannot fill `unnamed_max_pct`. Already-staged keys still receive
-  continuation rows.
+- New obfuscated sets stage on namefix yield groups (packages.json step ≤4
+  plus `alt.binaries.anime`) and on groups that already have a recovered
+  name, so firehose hashes cannot fill `unnamed_max_pct`. Already-staged
+  keys still receive continuation rows.
 
 ## PreDB provider (name recovery)
 
@@ -179,12 +180,11 @@ collection-key rewrite (once) → forward crawl → repair → name recovery →
   import can still name them. Staged header occupancy (pending_name rows × ~200 B,
   same units as `index_max_gb`) is capped at `unnamed_max_pct` of `index_max_gb`
   **per group**; BODY volume is `namefix_body_mb_per_hour`.
-  New obfuscated headers stage on namefix yield groups (packages.json step ≤4
-  plus `alt.binaries.anime`) even when the group has no recovered name yet.
-  Step-5 firehose (boneless/dvd/bloaf) still needs a searchable recovered name.
+  New obfuscated headers stage on yield groups (step ≤4 + anime) even with
+  no recovered name yet; step-5 firehose still needs a searchable recovered
+  name.
   Claude 2026-10-19: occupancy, not yEnc payload_bytes — that mismatch was
-  skip_obf_cap on every yield core. Yield groups must stage after a wipe or
-  `GroupHasNamedRelease` never becomes true (Searchable stays 0).
+  skip_obf_cap on every yield core.
   Review if: ApproxBytes stops using ~200 B/row.
   Historical names come from an operator-supplied nZEDb TSV dump
   (`usenet_nntp_predb_dump_path`, local file or dump-file URL); sakms does not

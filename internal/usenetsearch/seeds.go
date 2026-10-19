@@ -183,7 +183,6 @@ func IsPackageCore(name string) bool {
 // IsStagingCore(moovee) must be true and the cap must be per-group.
 // Review if: the operator slider should also gate staging (today slider is
 // grade-tolerance only; crawl membership stays LIST ACTIVE).
-// Related files: ingest.go obfStageAllowed (yield groups stage hashes).
 func IsStagingCore(name string) bool {
 	stagingCoreOnce.Do(func() {
 		stagingCores = map[string]bool{}

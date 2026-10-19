@@ -130,7 +130,7 @@ func TestCrawlerStatus_IdentifiedFromCacheNotInlineScan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.HeadersIdentified != 0 || st.HeadersBinary != 0 || st.IdentifiedPct != 0 {
+	if st.HeadersIdentified != 0 || st.HeadersBinary != 0 || st.IdentifiedPct != 0 || st.Headers != 0 {
 		t.Fatalf("status GET must use cache, not scan: %+v", st)
 	}
 	s.refreshIdentified(ctx)
@@ -138,7 +138,7 @@ func TestCrawlerStatus_IdentifiedFromCacheNotInlineScan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.HeadersIdentified != 10 || st.HeadersBinary != 10 || st.IdentifiedPct != 100 {
-		t.Fatalf("after refresh identified=%d binary=%d pct=%d", st.HeadersIdentified, st.HeadersBinary, st.IdentifiedPct)
+	if st.HeadersIdentified != 10 || st.HeadersBinary != 10 || st.IdentifiedPct != 100 || st.Headers != 10 {
+		t.Fatalf("after refresh identified=%d binary=%d pct=%d headers=%d", st.HeadersIdentified, st.HeadersBinary, st.IdentifiedPct, st.Headers)
 	}
 }

@@ -11619,3 +11619,18 @@ status stays active.
 | `internal/usenetsearch/status.go` | cache Identified; GROUP BY identifiedStats |
 | `internal/usenetsearch/service.go` | refreshIdentified after Apply and recompute |
 | `internal/usenetsearch/status_test.go` | GET must not inline-scan |
+
+## 2026-10-19 — dashboard crawler GET skips header COUNT
+
+**Problem:** After #208 the card loaded but each 10s poll still took ~2s (`COUNT(*)` twice on 13.6M headers).
+**Root cause:** `CrawlerStatus` still called `CountHeaders` + `ApproxBytes` (another COUNT) on every GET.
+**Fix:** Header count is part of the same memory snapshot as Identified. GET only reads releases counters.
+**Outcome:** Dashboard poll is the small releases query, not a 13M count.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/status.go` | Headers/IndexBytes from cache |
+| `internal/usenetsearch/service.go` | headerN on snapshot |
+| `internal/usenetsearch/status_test.go` | cached header count |

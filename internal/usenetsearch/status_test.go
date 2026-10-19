@@ -78,6 +78,8 @@ func TestIdentifiedStats_BinarySceneVsPictures(t *testing.T) {
 	rows = append(rows, fileRows(g, "Full.Movie.2020.1080p", "full.mkv", "full", 0, 10, 10, 0)...)
 	rows = append(rows, fileRows(p, "20260905", "a.jpg", "pic", 0, 2, 2, 0)...)
 	rows = append(rows, fileRows(g, "obf:abcdabcdabcdabcd", "x.rar", "obf", 100, 5, 5, 0)...)
+	rows = append(rows, fileRows(g, "(????)", "q.mkv", "q", 200, 3, 3, 0)...)
+	rows = append(rows, fileRows(g, "SubsPlease LIAR GAME 720p Batch", "b.mkv", "b", 300, 4, 4, 0)...)
 	if err := idx.Upsert(ctx, rows); err != nil {
 		t.Fatal(err)
 	}
@@ -88,8 +90,8 @@ func TestIdentifiedStats_BinarySceneVsPictures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bin != 15 || id != 10 {
-		t.Fatalf("identified=%d binary=%d want 10/15 (pictures excluded, pending not named)", id, bin)
+	if bin != 19 || id != 14 {
+		t.Fatalf("identified=%d binary=%d want 14/19 (pictures+junk excluded, batch+scene named, pending in binary)", id, bin)
 	}
 }
 

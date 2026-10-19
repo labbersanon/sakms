@@ -65,14 +65,20 @@ const (
 	KeyPreDBIRCNick         = "usenet_nntp_predb_irc_nick"
 	KeyPreDBIRCChannels     = "usenet_nntp_predb_irc_channels"
 	KeyPreDBIRCPasswordEnc  = "usenet_nntp_predb_irc_password_enc" // secrets.Store ciphertext, never plaintext
-	KeyPreDBDumpPath        = "usenet_nntp_predb_dump_path"        // local nZEDb TSV or http(s) dump file URL; empty = off
-	KeyPreDBDumpImported    = "usenet_nntp_predb_dump_imported"    // path|mtime|size stamp, not a knob
-	KeyMinCompletenessPct   = "usenet_nntp_min_completeness_pct"
-	KeyIncompleteTTLDays    = "usenet_nntp_incomplete_ttl_days"
-	KeyRepairEnabled        = "usenet_nntp_repair_enabled"
-	KeyBackfillEnabled      = "usenet_nntp_backfill_enabled"
-	KeyBackfillDays         = "usenet_nntp_backfill_days"
-	KeyBackfillBudgetPct    = "usenet_nntp_backfill_budget_pct"
+	// Claude 2026-10-19: extra IRC feeds besides the primary synIRC client.
+	// Reason: dump file ends 2024-05; api.predb.net forbids building a local DB;
+	//   a second network keeps reverse-lookup fresh if synIRC drops.
+	// Troubleshooting: empty KV uses Corrupt-net #pre; "[]" or "none" disables extras.
+	// Review if: Corrupt-net #pre requires a key or goes invite-only.
+	KeyPreDBIRCExtra      = "usenet_nntp_predb_irc_extra"     // JSON []{server,port,tls,channels}; empty = default
+	KeyPreDBDumpPath      = "usenet_nntp_predb_dump_path"     // local nZEDb TSV or http(s) dump file URL; empty = off
+	KeyPreDBDumpImported  = "usenet_nntp_predb_dump_imported" // path|mtime|size stamp, not a knob
+	KeyMinCompletenessPct = "usenet_nntp_min_completeness_pct"
+	KeyIncompleteTTLDays  = "usenet_nntp_incomplete_ttl_days"
+	KeyRepairEnabled      = "usenet_nntp_repair_enabled"
+	KeyBackfillEnabled    = "usenet_nntp_backfill_enabled"
+	KeyBackfillDays       = "usenet_nntp_backfill_days"
+	KeyBackfillBudgetPct  = "usenet_nntp_backfill_budget_pct"
 	// Claude 2026-10-16: one-shot in-place collection-key rewrite (plan D5).
 	// Reason: 315k per-file release keys stay wrong until subjects are re-parsed;
 	//   watermarks must not rewind. Value "true" when finished; cursor is

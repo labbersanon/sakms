@@ -11499,3 +11499,20 @@ status stays active.
 | `internal/usenetsearch/predb/dump.go` | `unquoteDumpField` |
 | `internal/usenetsearch/predb/predb_test.go` | quoted MySQL export fixture |
 | `docs/usenet-nntp-native.md` | dump corpus path + quote note |
+
+## 2026-10-19 — second PreDB IRC feed (Corrupt-net #pre)
+
+**Problem:** The nZEDb dump ends 2024-05-02. The only live writer was synIRC `#PreNNTmux`. `api.predb.net` forbids building a local DB from the search API (`Don't use the API to create your own DB`).
+**Root cause:** One IRC network is both the freshness path and a single point of failure.
+**Fix:** Keep `#PreNNTmux`. Start a second IRC client on `irc.corrupt-net.org` `#pre` (public JOIN, TLS 6697, independent nick). KV `usenet_nntp_predb_irc_extra` overrides (`[]` disables extras).
+**Outcome:** Reverse-lookup table stays fresh from two networks. Master kill switch is still `predb_irc_enabled`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/predb/irc.go` | extra feeds; connect log includes server |
+| `internal/usenetsearch/service.go` | `KeyPreDBIRCExtra` |
+| `internal/api/usenetnntp_predb.go` | Reload starts extra clients |
+| `internal/api/usenetnntp.go` | GET `predbIrcExtra` |
+| `docs/usenet-nntp-native.md` | second feed |

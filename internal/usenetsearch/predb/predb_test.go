@@ -36,6 +36,7 @@ func TestParseAnnounce(t *testing.T) {
 		ok        bool
 	}{
 		{line: "NEW: [MOVIES-X264] Some.Movie.2021.1080p.BluRay.x264-GRP", kind: "NEW", title: "Some.Movie.2021.1080p.BluRay.x264-GRP", cat: "MOVIES-X264", ok: true},
+		{line: "PRE: [TV-X264] Tinga.Tinga.Fabeln.S02E11.GERMAN.720p.HDTV.x264-RFG", kind: "NEW", title: "Tinga.Tinga.Fabeln.S02E11.GERMAN.720p.HDTV.x264-RFG", cat: "TV-X264", ok: true},
 		{line: "\x02\x0304NEW:\x0f [TV-X264] Some.Show.S01E02.720p.HDTV.x264-GRP [700MB - 12F]", kind: "NEW", title: "Some.Show.S01E02.720p.HDTV.x264-GRP", cat: "TV-X264", size: 700 << 20, files: 12, ok: true},
 		{line: "NUKE: Some.Movie.2021.1080p.BluRay.x264-GRP [dupe.2021-05-01]", kind: "NUKE", title: "Some.Movie.2021.1080p.BluRay.x264-GRP", nuked: true, reason: "dupe.2021-05-01", ok: true},
 		{line: "UNNUKE: Some.Movie.2021.1080p.BluRay.x264-GRP [fixed]", kind: "UNNUKE", title: "Some.Movie.2021.1080p.BluRay.x264-GRP", reason: "fixed", ok: true},
@@ -341,7 +342,7 @@ func TestIRCClient_ConnectsIdentifiesJoinsParsesAndReconnects(t *testing.T) {
 	if strings.Contains(logs, pw) {
 		t.Fatalf("NickServ password leaked into logs:\n%s", logs)
 	}
-	for _, want := range []string{"predb irc connected", "predb irc disconnected parsed=1"} {
+	for _, want := range []string{"predb irc connected server=x", "predb irc disconnected server=x parsed=1"} {
 		if !strings.Contains(logs, want) {
 			t.Fatalf("logs missing %q:\n%s", want, logs)
 		}
@@ -608,5 +609,24 @@ func TestImportPath_FetchesGzipDumpURL(t *testing.T) {
 	}
 	if _, ok, err := s.ByTitle(ctx, title); err != nil || !ok {
 		t.Fatalf("gz title ok=%v err=%v", ok, err)
+	}
+}
+
+func TestParseExtraIRCFeeds(t *testing.T) {
+	def, err := ParseExtraIRCFeeds("")
+	if err != nil || len(def) != 1 || def[0].Server != DefaultCorruptServer || def[0].Channels[0] != DefaultCorruptChannel || !def[0].TLS {
+		t.Fatalf("default extra = %+v err=%v", def, err)
+	}
+	off, err := ParseExtraIRCFeeds("[]")
+	if err != nil || off != nil {
+		t.Fatalf("disabled extra = %+v err=%v", off, err)
+	}
+	custom, err := ParseExtraIRCFeeds(`[{"server":"irc.example.net","channels":["#pre"]}]`)
+	if err != nil || len(custom) != 1 || custom[0].Server != "irc.example.net" || !custom[0].TLS || custom[0].Port != DefaultIRCPort {
+		t.Fatalf("custom extra = %+v err=%v", custom, err)
+	}
+	plain, err := ParseExtraIRCFeeds(`[{"server":"irc.example.net","tls":false,"channels":["#pre"]}]`)
+	if err != nil || len(plain) != 1 || plain[0].TLS {
+		t.Fatalf("tls false extra = %+v err=%v", plain, err)
 	}
 }

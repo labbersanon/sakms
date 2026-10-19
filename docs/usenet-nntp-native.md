@@ -101,10 +101,15 @@ populate that table. nZEDbPre_Dumps stopped publishing new daily files in
 2024-05; historical `dumps/*/*_predb_dump.csv.gz` are still on GitHub and
 import as quoted MySQL TSV (`\N` nulls). There is no default dump URL.
 Default IRC is on: synIRC `#PreNNTmux`, TLS 6697, a random unregistered
-nick, client PING heartbeat. NickServ is optional and unused by default (synIRC
-confirm mail does not arrive). The NickServ password, if set, is stored
-encrypted (`secrets.Store`) and is never logged. `#nZEDbPRE` is dead; do not
-point the scraper there.
+nick, client PING heartbeat, **plus** a second client on Corrupt-net `#pre`
+(`irc.corrupt-net.org:6697` TLS). The dump file is a snapshot through
+2024-05-02; `api.predb.net` forbids using the search API to build a local DB,
+so a second IRC network is the live backup. NickServ is optional and unused by
+default (synIRC confirm mail does not arrive). The NickServ password, if set,
+is stored encrypted (`secrets.Store`) and is never logged. `#nZEDbPRE` is
+dead; do not point the scraper there. Extra feeds: KV
+`usenet_nntp_predb_irc_extra` JSON `[{server,port,tls,channels}]`. Empty =
+Corrupt-net default. `[]` or `none` turns extras off (primary synIRC stays).
 
 ## Gap fill (completeness, repair, name recovery, backfill)
 
@@ -180,8 +185,9 @@ are dropped again and completeness is still recorded.
 | `namefix_body_mb_per_hour` | 512 | Hourly BODY budget |
 | `unnamed_ttl_days` / `unnamed_max_pct` | 7 / 25 | Staging TTL / cap |
 | `predb_http_enabled` / `predb_http_url` | true / `https://api.predb.net/` | HTTP lookup |
-| `predb_irc_enabled` | true | synIRC PRE feed (random nick, no NickServ) |
-| `predb_irc_server`, `_port`, `_tls`, `_nick`, `_channels` | `irc.synirc.net`, 6697, true, generated, `#PreNNTmux` | IRC connection (channels comma-separated; empty nick is generated) |
+| `predb_irc_enabled` | true | All IRC feeds (primary + extras) |
+| `predb_irc_server`, `_port`, `_tls`, `_nick`, `_channels` | `irc.synirc.net`, 6697, true, generated, `#PreNNTmux` | Primary IRC connection (channels comma-separated; empty nick is generated) |
+| `predb_irc_extra` | Corrupt-net `#pre` | JSON extra feeds on other networks. Empty = default. `[]`/`none` = primary only |
 | `predb_irc_password_enc` | — | NickServ password, `secrets.Store` ciphertext; set via `PUT /api/settings/usenet-nntp-native/predb-irc-password` `{"password":"…"}` (empty clears) |
 | `predb_dump_path` | empty | nZEDb PreDB dump file, directory, or http(s) dump *file* URL (`\t\t` TSV, optional `.gz`; quoted MySQL fields and `\N` are stripped). PUT `predbDumpPath` reloads the importer; SQL still needs a restart. Imported on boot/reload and every 15 minutes when mtime/size (or URL ETag) changes. Search APIs (`api.predb.net`, `?type=pre`) are rejected. Live file: `/data/predb/predb.tsv.gz` (host `/mnt/iscsi/sakms/predb/predb.tsv.gz`, nZEDb dailies through 2024-05-02). |
 | `min_completeness_pct` / `incomplete_ttl_days` | 95 / 3 | Completeness gate / reap |

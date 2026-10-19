@@ -34,6 +34,9 @@ func TestNNTPGapFill_DefaultsAreOnIncludingIRC(t *testing.T) {
 	if !g.PreDBHTTPEnabled || !g.PreDBIRCEnabled || g.IRCPasswordSet || g.PreDBHTTPURL != "https://api.predb.net/" || g.PreDBDumpPath != "" {
 		t.Fatalf("predb defaults: %+v", g)
 	}
+	if len(g.PreDBIRCExtra) != 1 || g.PreDBIRCExtra[0].Server != "irc.corrupt-net.org" || len(g.PreDBIRCExtra[0].Channels) != 1 || g.PreDBIRCExtra[0].Channels[0] != "#pre" {
+		t.Fatalf("predb extra default: %+v", g.PreDBIRCExtra)
+	}
 }
 
 func TestNNTPGapFill_KillSwitchesReachConfig(t *testing.T) {

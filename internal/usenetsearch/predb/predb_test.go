@@ -3,6 +3,7 @@ package predb
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/md5"
 	"encoding/hex"
@@ -22,16 +23,17 @@ import (
 
 func TestParseAnnounce(t *testing.T) {
 	cases := []struct {
-		line     string
-		kind     string
-		title    string
-		cat      string
-		size     int64
-		files    int
-		filename string
-		nuked    bool
-		reason   string
-		ok       bool
+		line      string
+		kind      string
+		title     string
+		cat       string
+		size      int64
+		files     int
+		filename  string
+		requestID int64
+		nuked     bool
+		reason    string
+		ok        bool
 	}{
 		{line: "NEW: [MOVIES-X264] Some.Movie.2021.1080p.BluRay.x264-GRP", kind: "NEW", title: "Some.Movie.2021.1080p.BluRay.x264-GRP", cat: "MOVIES-X264", ok: true},
 		{line: "\x02\x0304NEW:\x0f [TV-X264] Some.Show.S01E02.720p.HDTV.x264-GRP [700MB - 12F]", kind: "NEW", title: "Some.Show.S01E02.720p.HDTV.x264-GRP", cat: "TV-X264", size: 700 << 20, files: 12, ok: true},
@@ -55,6 +57,16 @@ func TestParseAnnounce(t *testing.T) {
 			ok:       true,
 		},
 		{
+			line:      "[DT: 2026-10-19 07:00:00] [TT: Grey.S21E03.720p.HDTV.x264-GRP] [SC: #a.b.teevee] [CT: TV] [RQ: 23051509] [SZ: 700MB] [FL: 12] [FN: N/A]",
+			kind:      "NEW",
+			title:     "Grey.S21E03.720p.HDTV.x264-GRP",
+			cat:       "TV",
+			size:      700 << 20,
+			files:     12,
+			requestID: 23051509,
+			ok:        true,
+		},
+		{
 			line: "[DT: 2026-10-18 22:13:34] [TT: Some.Movie.2021.1080p.BluRay.x264-GRP] [SC: srrdb] [CT: MOVIES] [RQ: N/A] [SZ: N/A] [FL: N/A] [NUKED: dupe.2021-05-01]",
 			kind: "NUKE", title: "Some.Movie.2021.1080p.BluRay.x264-GRP", cat: "MOVIES", nuked: true, reason: "dupe.2021-05-01", ok: true,
 		},
@@ -68,7 +80,8 @@ func TestParseAnnounce(t *testing.T) {
 			continue
 		}
 		if a.Kind != c.kind || a.Entry.Title != c.title || a.Entry.Category != c.cat || a.Entry.SizeBytes != c.size ||
-			a.Entry.Files != c.files || a.Entry.Filename != c.filename || a.Entry.Nuked != c.nuked || a.Reason != c.reason {
+			a.Entry.Files != c.files || a.Entry.Filename != c.filename || a.Entry.RequestID != c.requestID ||
+			a.Entry.Nuked != c.nuked || a.Reason != c.reason {
 			t.Fatalf("%q = %+v", c.line, a)
 		}
 	}
@@ -481,10 +494,97 @@ func TestImportDump_NZEdbDoubleTabAndHeader(t *testing.T) {
 	}
 }
 
-func TestImportPath_RejectsURL(t *testing.T) {
+func TestImportDump_RequestIDAndGroup(t *testing.T) {
 	s := newStore(t)
-	stats, err := s.ImportPath(context.Background(), "https://example.com/predb.csv")
-	if err != nil || stats != (DumpStats{}) {
-		t.Fatalf("url import = %+v err=%v", stats, err)
+	ctx := context.Background()
+	const title = "Grey.S21E03.720p.HDTV.x264-GRP"
+	tsv := "title\t\tfilename\t\trequestid\t\tgroupname\n" +
+		title + "\t\tgrey.part1.rar\t\t23051509\t\ta.b.teevee\n"
+	stats, err := s.ImportDump(ctx, strings.NewReader(tsv))
+	if err != nil || stats.Upserted != 1 {
+		t.Fatalf("stats = %+v err=%v", stats, err)
+	}
+	e, ok, err := s.ByRequestID(ctx, 23051509, "alt.binaries.teevee")
+	if err != nil || !ok || e.Title != title || e.RequestID != 23051509 || e.GroupName != "alt.binaries.teevee" {
+		t.Fatalf("ByRequestID = %+v ok=%v err=%v", e, ok, err)
+	}
+	if _, ok, _ := s.ByRequestID(ctx, 0, "alt.binaries.teevee"); ok {
+		t.Fatal("request id 0 must not match")
+	}
+}
+
+func TestImportPath_RejectsSearchAPI(t *testing.T) {
+	s := newStore(t)
+	for _, u := range []string{
+		"https://api.predb.net/?type=pre&q=x",
+		"https://api.predb.net/dump.csv",
+		"ftp://files.example/predb.tsv",
+		"https://example.com/search?type=pre",
+	} {
+		stats, err := s.ImportPath(context.Background(), u)
+		if err != nil || stats != (DumpStats{}) {
+			t.Fatalf("%s import = %+v err=%v", u, stats, err)
+		}
+	}
+}
+
+func TestImportPath_FetchesDumpURL(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	const title = "Fetched.Movie.2022.1080p.WEB.h264-GRP"
+	tsv := "title\t\tfilename\t\trequestid\t\tgroupname\n" +
+		title + "\t\tfetched.part1.rar\t\t42\t\talt.binaries.moovee\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/json" {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"status":"success","data":[]}`)
+			return
+		}
+		w.Header().Set("ETag", `"dump-1"`)
+		w.Header().Set("Content-Type", "text/tab-separated-values")
+		fmt.Fprint(w, tsv)
+	}))
+	defer srv.Close()
+	stats, err := s.ImportPath(ctx, srv.URL+"/predb.tsv")
+	if err != nil || stats.Read != 1 || stats.Upserted != 1 || stats.Files != 1 {
+		t.Fatalf("fetch = %+v err=%v", stats, err)
+	}
+	e, ok, err := s.ByTitle(ctx, title)
+	if err != nil || !ok || e.Filename != "fetched.part1.rar" || e.RequestID != 42 {
+		t.Fatalf("entry = %+v ok=%v err=%v", e, ok, err)
+	}
+	stamp, err := HeadStamp(ctx, srv.URL+"/predb.tsv")
+	if err != nil || !strings.Contains(stamp, "dump-1") {
+		t.Fatalf("stamp = %q err=%v", stamp, err)
+	}
+	stats, err = s.ImportPath(ctx, srv.URL+"/json")
+	if err == nil {
+		t.Fatalf("json dump must fail, stats=%+v", stats)
+	}
+}
+
+func TestImportPath_FetchesGzipDumpURL(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	const title = "Gz.Movie.2022.1080p.WEB.h264-GRP"
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write([]byte("title\t\tfilename\n" + title + "\t\tgz.part1.rar\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/gzip")
+		_, _ = w.Write(buf.Bytes())
+	}))
+	defer srv.Close()
+	stats, err := s.ImportPath(ctx, srv.URL+"/predb.tsv.gz")
+	if err != nil || stats.Upserted != 1 {
+		t.Fatalf("gz fetch = %+v err=%v", stats, err)
+	}
+	if _, ok, err := s.ByTitle(ctx, title); err != nil || !ok {
+		t.Fatalf("gz title ok=%v err=%v", ok, err)
 	}
 }

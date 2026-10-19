@@ -78,10 +78,17 @@ func (p *NNTPPreDB) Reload(ctx context.Context) {
 		p.cancelDump()
 		p.cancelDump = nil
 	}
-	if path := strings.TrimSpace(g.PreDBDumpPath); path != "" && !strings.Contains(path, "://") {
-		dumpCtx, dumpCancel := context.WithCancel(p.parent)
-		p.cancelDump = dumpCancel
-		go p.dumpLoop(dumpCtx, path)
+	path := strings.TrimSpace(g.PreDBDumpPath)
+	// Claude 2026-10-18: never fetch a URL (api.predb.net ToS: don't build a DB).
+	// if path := strings.TrimSpace(g.PreDBDumpPath); path != "" && !strings.Contains(path, "://") {
+	if path != "" {
+		if strings.Contains(path, "://") && !predb.IsFetchURL(path) {
+			log.Printf("usenetsearch: predb dump path is not a dump file URL (search APIs are not imported)")
+		} else {
+			dumpCtx, dumpCancel := context.WithCancel(p.parent)
+			p.cancelDump = dumpCancel
+			go p.dumpLoop(dumpCtx, path)
+		}
 	}
 	if !g.PreDBIRCEnabled {
 		return
@@ -151,8 +158,8 @@ var errIRCPasswordUndecryptable = errors.New("stored IRC password could not be d
 
 const dumpPoll = 15 * time.Minute
 
-// dumpLoop imports an operator-supplied nZEDb TSV when the path's mtime/size
-// changes. It never fetches a URL (api.predb.net ToS: don't build a DB).
+// dumpLoop imports an operator-supplied nZEDb TSV (local path or dump-file URL)
+// when the stamp changes. Search APIs are not fetched (api.predb.net ToS).
 func (p *NNTPPreDB) dumpLoop(ctx context.Context, path string) {
 	p.importDump(ctx, path)
 	t := time.NewTicker(dumpPoll)
@@ -168,7 +175,7 @@ func (p *NNTPPreDB) dumpLoop(ctx context.Context, path string) {
 }
 
 func (p *NNTPPreDB) importDump(ctx context.Context, path string) {
-	stamp, err := dumpStamp(path)
+	stamp, err := dumpStamp(ctx, path)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			log.Printf("usenetsearch: predb dump path: %v", err)
@@ -195,7 +202,10 @@ func (p *NNTPPreDB) importDump(ctx context.Context, path string) {
 		stats.Files, stats.Read, stats.Upserted, stats.Skipped)
 }
 
-func dumpStamp(path string) (string, error) {
+func dumpStamp(ctx context.Context, path string) (string, error) {
+	if predb.IsFetchURL(path) {
+		return predb.HeadStamp(ctx, path)
+	}
 	st, err := os.Stat(path)
 	if err != nil {
 		return "", err

@@ -82,6 +82,32 @@ var goldenStemFixtures = []stemFixture{
 		wantObf:   true,
 		wantFileM: 52,
 	},
+	{
+		name: "efnet-request-wrapper",
+		subjects: []string{
+			`[23051509]-[FULL]-[#a.b.teevee@EFNet]-[ Greys.Anatomy.S21E03.720p.HDTV.x264-GROUP ]-[01/30] - "greys.anatomy.s21e03.part01.rar" yEnc (1/50)`,
+			`[23051509]-[FULL]-[#a.b.teevee@EFNet]-[ Greys.Anatomy.S21E03.720p.HDTV.x264-GROUP ]-[30/30] - "greys.anatomy.s21e03.vol00+01.par2" yEnc (1/1)`,
+		},
+		wantName:  "Greys.Anatomy.S21E03.720p.HDTV.x264-GROUP",
+		wantFileM: 30,
+	},
+	{
+		name: "binreq-wrapper",
+		subjects: []string{
+			`www.Bin-Req.net Presents: #23051508 - Precure.S01E01.720p.HDTV.x264-GRP - "precure.s01e01.part01.rar" yEnc (1/20)`,
+		},
+		wantName:  "Precure.S01E01.720p.HDTV.x264-GRP",
+		wantPartM: 20,
+	},
+	{
+		name: "request-id-only",
+		subjects: []string{
+			`[23051509]-[FULL]-[#a.b.teevee@EFNet]-[ ]-[01/10] - "abc.part01.rar" yEnc (1/50)`,
+			`[23051509]-[FULL]-[#a.b.teevee@EFNet]-[ ]-[10/10] - "zzz.par2" yEnc (1/1)`,
+		},
+		wantObf:   true,
+		wantFileM: 10,
+	},
 }
 
 func fixturesHold(extra []compiledExtra) (ok bool, why string) {

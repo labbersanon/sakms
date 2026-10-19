@@ -148,6 +148,50 @@ func TestParseSubject_SpaceLeadTokenNotScene(t *testing.T) {
 	}
 }
 
+func TestParseSubject_EFNetRequestWrapper(t *testing.T) {
+	a := ParseSubject(`[23051509]-[FULL]-[#a.b.teevee@EFNet]-[ Greys.Anatomy.S21E03.720p.HDTV.x264-GROUP ]-[01/30] - "greys.anatomy.s21e03.part01.rar" yEnc (1/50)`)
+	b := ParseSubject(`[23051509]-[FULL]-[#a.b.teevee@EFNet]-[ Greys.Anatomy.S21E03.720p.HDTV.x264-GROUP ]-[30/30] - "greys.anatomy.s21e03.vol00+01.par2" yEnc (1/1)`)
+	if !a.OK || a.Obfuscated || a.Name != "Greys.Anatomy.S21E03.720p.HDTV.x264-GROUP" {
+		t.Fatalf("a=%+v", a)
+	}
+	if a.Name != b.Name {
+		t.Fatalf("split %q vs %q", a.Name, b.Name)
+	}
+	if strings.Contains(a.Name, "FULL") || strings.Contains(a.Name, "EFNet") || strings.Contains(a.Name, "23051509") {
+		t.Fatalf("wrapper left in stem: %q", a.Name)
+	}
+}
+
+func TestParseSubject_BinReqWrapper(t *testing.T) {
+	ps := ParseSubject(`www.Bin-Req.net Presents: #23051508 - Precure.S01E01.720p.HDTV.x264-GRP - "precure.s01e01.part01.rar" yEnc (1/20)`)
+	if !ps.OK || ps.Obfuscated || ps.Name != "Precure.S01E01.720p.HDTV.x264-GRP" {
+		t.Fatalf("%+v", ps)
+	}
+	if strings.Contains(strings.ToLower(ps.Name), "bin-req") || strings.Contains(ps.Name, "23051508") {
+		t.Fatalf("wrapper left in stem: %q", ps.Name)
+	}
+}
+
+func TestParseSubject_RequestIDOnlyIsObfuscated(t *testing.T) {
+	a := ParseSubject(`[23051509]-[FULL]-[#a.b.teevee@EFNet]-[ ]-[01/10] - "abc.part01.rar" yEnc (1/50)`)
+	b := ParseSubject(`[23051509]-[FULL]-[#a.b.teevee@EFNet]-[ ]-[10/10] - "zzz.par2" yEnc (1/1)`)
+	if !a.Obfuscated || a.OK || a.Name != "" {
+		t.Fatalf("want obfuscated unnamed, got %+v", a)
+	}
+	ka := ObfKey("alt.binaries.teevee", "p@t", `[23051509]-[FULL]-[#a.b.teevee@EFNet]-[ ]-[01/10] - "abc.part01.rar" yEnc (1/50)`)
+	kb := ObfKey("alt.binaries.teevee", "p@t", `[23051509]-[FULL]-[#a.b.teevee@EFNet]-[ ]-[10/10] - "zzz.par2" yEnc (1/1)`)
+	if ka != kb || !strings.HasPrefix(ka, obfKeyPrefix) {
+		t.Fatalf("request id must group files: %s vs %s", ka, kb)
+	}
+	if b.Obfuscated != a.Obfuscated {
+		t.Fatalf("b=%+v", b)
+	}
+	junk := ParseSubject(`23051509 ] - "file.part01.rar" yEnc (1/10)`)
+	if !junk.Obfuscated || junk.OK || junk.Name != "" {
+		t.Fatalf("numeric leftover must not be named: %+v", junk)
+	}
+}
+
 func TestParseSubject_ImplausibleYencPartsIgnored(t *testing.T) {
 	ps := ParseSubject(`"UrHfhOEuTZTAP6SWX2HhDYJ6N" yEnc (730696/967646)`)
 	if ps.PartN != 0 || ps.PartM != 0 {

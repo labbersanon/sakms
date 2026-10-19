@@ -41,6 +41,8 @@ type PreDBLookup interface {
 	ByName(ctx context.Context, name string) (PreDBHit, bool)
 	// ByFilename resolves a PreDB inner/archive filename.
 	ByFilename(ctx context.Context, filename string) (PreDBHit, bool)
+	// ByRequestID resolves an nZEDb/IRC request id, preferring group.
+	ByRequestID(ctx context.Context, id int64, group string) (PreDBHit, bool)
 }
 
 const (
@@ -347,7 +349,8 @@ func (n *NameFixer) promote(ctx context.Context, set PendingSet, rows []HeaderRo
 }
 
 // lookupPreDB tries nZEDb-style reverse lookups: md5/sha1/md5md5 tokens from
-// every header's subject and filename, then PreDB.filename / IRC [FN:].
+// every header's subject and filename, then PreDB.filename / IRC [FN:], then
+// dump/IRC request ids from EFNet/Bin-Req wrappers.
 func (n *NameFixer) lookupPreDB(ctx context.Context, set PendingSet, rows []HeaderRow) (PreDBHit, bool) {
 	if n.PreDB == nil {
 		return PreDBHit{}, false
@@ -362,6 +365,11 @@ func (n *NameFixer) lookupPreDB(ctx context.Context, set PendingSet, rows []Head
 	}
 	for _, fn := range filenameCandidates(rows) {
 		if hit, ok := n.PreDB.ByFilename(ctx, fn); okHit(hit, ok) {
+			return hit, true
+		}
+	}
+	for _, id := range requestIDCandidates(rows) {
+		if hit, ok := n.PreDB.ByRequestID(ctx, id, set.Group); okHit(hit, ok) {
 			return hit, true
 		}
 	}
@@ -387,6 +395,23 @@ func hashCandidates(rows []HeaderRow) []string {
 	}
 	if len(out) > 8 {
 		out = out[:8]
+	}
+	return out
+}
+
+func requestIDCandidates(rows []HeaderRow) []int64 {
+	seen := map[int64]bool{}
+	var out []int64
+	for _, r := range rows {
+		id := requestIDFromSubject(r.Subject)
+		if id == 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+		if len(out) >= 4 {
+			break
+		}
 	}
 	return out
 }

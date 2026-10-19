@@ -11652,3 +11652,17 @@ status stays active.
 | `internal/usenetsearch/namefix_test.go` | PreDB-before-slow-BODY; hash FileDesc once |
 | `internal/usenetsearch/subject_test.go` | live xxx hash stem |
 | `docs/usenet-nntp-native.md` | pass order |
+
+## 2026-10-19 — PreDB-only samples headers; BODY keeps its own 20s
+
+**Problem:** After PreDB-first (#210), the first pass was `hash_hits=1 leftover=222 body_fetches=0` in 39s.
+**Root cause:** Due PreDB sets are 3k–7k headers. One `SetRows` burned the shared 20s deadline, so remaining PreDB and all BODY were skipped.
+**Fix:** PreDB-only loads 64 headers (enough for hash/filename tokens). PreDB and BODY each get their own 20s budget.
+**Outcome:** PreDB lookups stay indexed-fast; BODY still runs after a slow PreDB set.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix.go` | PreDB sample 64; split deadline |
+| `internal/usenetsearch/namefix_index.go` | `setRows` LIMIT |

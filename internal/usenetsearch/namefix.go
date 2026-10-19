@@ -65,6 +65,8 @@ const (
 	//   → this deadline missing or BodyHead ignoring articleIOTimeout.
 	// Review if: 20s leaves 95% yield unnamed (raise, do not remove).
 	namefixMaxDuration = 20 * time.Second
+	// PreDB-only needs hash/filename tokens, not every header.
+	namefixPreDBHeaderSample = 64
 	// namefixMinPayload: smaller sets without PAR2 are finalized (no BODY).
 	namefixMinPayload = 100 << 20
 	// namefixHeadBytes caps the decoded bytes kept from one BODY.
@@ -200,22 +202,7 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 			preOnly = append(preOnly, set)
 		}
 	}
-	seen := map[string]bool{}
-	var all []PendingSet
-	add := func(in []PendingSet) {
-		for _, set := range in {
-			k := keyOf(set)
-			if seen[k] {
-				continue
-			}
-			seen[k] = true
-			all = append(all, set)
-		}
-	}
-	add(preOnly)
-	add(ident)
-	add(sets)
-	if len(all) > 0 {
+	if len(sets)+len(ident)+len(predbSets) > 0 {
 		log.Printf("usenetsearch: namefix starting body=%d ident=%d predb=%d skip_body=%t",
 			len(sets), len(ident), len(predbSets), n.SkipBody)
 	}
@@ -223,22 +210,39 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 	if budget <= 0 {
 		budget = namefixMaxDuration
 	}
-	deadline := time.Now().Add(budget)
-	for i, set := range all {
-		if err := ctx.Err(); err != nil {
-			return res, err
+	run := func(in []PendingSet, phase string) error {
+		deadline := time.Now().Add(budget)
+		for i, set := range in {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if time.Now().After(deadline) {
+				log.Printf("usenetsearch: namefix deadline phase=%s leftover=%d", phase, len(in)-i)
+				return nil
+			}
+			stop, err := n.fixSet(ctx, set, &res, &statBudget)
+			if err != nil {
+				return err
+			}
+			if stop {
+				return nil
+			}
 		}
-		if time.Now().After(deadline) {
-			log.Printf("usenetsearch: namefix deadline leftover=%d", len(all)-i)
-			break
-		}
-		stop, err := n.fixSet(ctx, set, &res, &statBudget)
-		if err != nil {
-			return res, err
-		}
-		if stop {
-			break
-		}
+		return nil
+	}
+	// Claude 2026-10-19: PreDB-only and BODY each get the 20s budget.
+	// Reason: live due PreDB sets have 3k–7k headers; SetRows of one set
+	//   burned the shared deadline (hash_hits=1 leftover=222 body_fetches=0).
+	// Troubleshooting: leftover=predb with body_fetches=0 after a hit →
+	//   BODY phase missing. Review if: PreDB sample 64 misses a hash token.
+	if err := run(preOnly, "predb"); err != nil {
+		return res, err
+	}
+	var body []PendingSet
+	body = append(body, ident...)
+	body = append(body, sets...)
+	if err := run(body, "body"); err != nil {
+		return res, err
 	}
 	if res.Sets > 0 || res.Finalized > 0 {
 		log.Printf("usenetsearch: namefix pass sets=%d hash_hits=%d body_fetches=%d body_bytes=%d renamed=%d by_source=%s reject_gate=%d reject_stat=%d unresolved=%d finalized=%d busy=%t",
@@ -263,7 +267,11 @@ func formatBySource(m map[string]int) string {
 
 // fixSet attempts one staged set. stop=true ends the pass (busy / budget).
 func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResult, statBudget *int) (stop bool, err error) {
-	rows, err := n.Index.SetRows(ctx, set.Group, set.Key)
+	limit := 0
+	if set.PreDBOnly {
+		limit = namefixPreDBHeaderSample
+	}
+	rows, err := n.Index.setRows(ctx, set.Group, set.Key, limit)
 	if err != nil {
 		return false, err
 	}

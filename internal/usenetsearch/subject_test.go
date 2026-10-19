@@ -234,6 +234,19 @@ func TestStageObfuscated_MooveeYencLessTrailingParts(t *testing.T) {
 	}
 }
 
+func TestParseSubject_QuotedFansubFilename(t *testing.T) {
+	clover := `[02/11] - "[UQW] Black Clover - Ep170 [BDRip 1080p HEVC-YUV420P10 FLAC].par2" yEnc (1/1)`
+	ps := ParseSubject(clover)
+	if !strings.Contains(ps.Filename, "Black Clover") || !ps.Meta {
+		t.Fatalf("quoted fansub filename=%q meta=%v", ps.Filename, ps.Meta)
+	}
+	juu := `[3/8] - "[Onalrie] Juuou Mujin Dandivine - S01E02 [1080p WEBRip AV1].vol00+01.par2" yEnc (2/2)`
+	ps = ParseSubject(juu)
+	if ps.Filename == "01.par2" || !strings.Contains(ps.Filename, "Dandivine") {
+		t.Fatalf("vol+ quoted filename=%q, want full title not 01.par2", ps.Filename)
+	}
+}
+
 func TestParseSubject_XxxHashStemIsObfuscated(t *testing.T) {
 	// Live 2026-10-19: xxx backfill admitted hyphenated hash stems as named.
 	subj := `V-DtfXhDFjheDo7MLtjcb4LKQBjf2DsCzWn0_eMjneFNs0yDtdeBAJl0ub9oLloKyWSsyY9V6Lnyu9-jZ1gYHTjRWp8`

@@ -1343,6 +1343,69 @@ func TestNameFix_PreDBOnlyBeforeSlowBODY(t *testing.T) {
 	}
 }
 
+func TestNameFix_QuotedFansubTitleFromSubject(t *testing.T) {
+	const title = "[UQW] Black Clover - Ep170 [BDRip 1080p HEVC-YUV420P10 FLAC]"
+	rows := []usenet.MessageOverview{
+		{Number: 1, Subject: `[01/2] - "` + title + `.mkv" yEnc (1/2)`, From: "poster@obf", MessageID: "qc1@t", Bytes: 80_000_000, DateUnix: 1700000000},
+		{Number: 2, Subject: `[01/2] - "` + title + `.mkv" yEnc (2/2)`, From: "poster@obf", MessageID: "qc2@t", Bytes: 80_000_000, DateUnix: 1700000000},
+		{Number: 3, Subject: `[02/2] - "` + title + `.par2" yEnc (1/1)`, From: "poster@obf", MessageID: "qcpar2", Bytes: 40_000, DateUnix: 1700000000},
+	}
+	f := newNFFixture(t, rows, nil)
+	f.crawlAndRecompute(t)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Renamed != 1 || len(f.src.bodyCalls) != 0 {
+		t.Fatalf("quoted title must rename without BODY: %+v bodyCalls=%v", res, f.src.bodyCalls)
+	}
+	_, _, display, _ := f.release(t)
+	if display != title {
+		t.Fatalf("display=%q", display)
+	}
+	var searchable bool
+	if err := f.idx.db.QueryRow(`SELECT searchable FROM usenet_nntp_releases`).Scan(&searchable); err != nil {
+		t.Fatal(err)
+	}
+	if !searchable {
+		t.Fatal("ident-shaped quoted title at 100% must be searchable")
+	}
+}
+
+func TestNameFix_QuotedFansubTitleSurvivesStrictAdmission(t *testing.T) {
+	const title = "[UQW] Black Clover - Ep170 [BDRip 1080p HEVC-YUV420P10 FLAC]"
+	rows := []usenet.MessageOverview{
+		{Number: 1, Subject: `[01/2] - "` + title + `.mkv" yEnc (1/2)`, From: "poster@obf", MessageID: "qa1@t", Bytes: 80_000_000, DateUnix: 1700000000},
+		{Number: 2, Subject: `[01/2] - "` + title + `.mkv" yEnc (2/2)`, From: "poster@obf", MessageID: "qa2@t", Bytes: 80_000_000, DateUnix: 1700000000},
+		{Number: 3, Subject: `[02/2] - "` + title + `.par2" yEnc (1/1)`, From: "poster@obf", MessageID: "qapar2", Bytes: 40_000, DateUnix: 1700000000},
+	}
+	snap := &PolicySnapshot{Modes: map[string]Standard{"movies": movieModeStd([]quality.Tier{quality.High}, 2160, 0)}}
+	f := newNFFixture(t, rows, snap)
+	f.crawlAndRecompute(t)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RejectGate != 0 || res.Renamed != 1 {
+		t.Fatalf("quoted ident title must not gate-delete: %+v", res)
+	}
+	if _, _, display, _ := f.release(t); display != title {
+		t.Fatalf("display=%q", display)
+	}
+}
+
+func TestNameFix_QuotedHashFilenameDoesNotRename(t *testing.T) {
+	f := newNFFixture(t, obfuscatedSet("qh", "uzmv2D5wxtEsPRJRjBN30g", 1, 45), nil)
+	f.crawlAndRecompute(t)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Renamed != 0 {
+		t.Fatalf("hash quoted filename must stay unnamed: %+v", res)
+	}
+}
+
 func TestNameFix_HashFileDescShelvesBody(t *testing.T) {
 	f := newNFFixture(t, obfuscatedSet("hf", nfHash, 1, 45), nil)
 	f.src.bodies["hfpar2"] = par2Body(nfHash + ".part01.rar")

@@ -57,6 +57,14 @@ const (
 	namefixIdentBodyPerPass = 20
 	namefixPreDBPerPass     = 200
 	namefixBodiesPerSet     = 3
+	// namefixMaxDuration: stop mid-pass so a hung BODY cannot freeze crawl.
+	// Claude 2026-10-19: 20s wall clock like recompute.
+	// Reason: after #204 the loop went silent 14 min in namefix BODY
+	//   (60s articleIOTimeout × dozens of sets, log only at pass end).
+	// Troubleshooting: "namefix starting" with no "namefix pass" for >90s
+	//   → this deadline missing or BodyHead ignoring articleIOTimeout.
+	// Review if: 20s leaves 95% yield unnamed (raise, do not remove).
+	namefixMaxDuration = 20 * time.Second
 	// namefixMinPayload: smaller sets without PAR2 are finalized (no BODY).
 	namefixMinPayload = 100 << 20
 	// namefixHeadBytes caps the decoded bytes kept from one BODY.
@@ -192,9 +200,14 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 		log.Printf("usenetsearch: namefix starting body=%d ident=%d predb=%d skip_body=%t",
 			len(sets), len(ident), len(predbSets), n.SkipBody)
 	}
-	for _, set := range all {
+	deadline := time.Now().Add(namefixMaxDuration)
+	for i, set := range all {
 		if err := ctx.Err(); err != nil {
 			return res, err
+		}
+		if time.Now().After(deadline) {
+			log.Printf("usenetsearch: namefix deadline leftover=%d", len(all)-i)
+			break
 		}
 		stop, err := n.fixSet(ctx, set, &res, &statBudget)
 		if err != nil {

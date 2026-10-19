@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -19,18 +20,85 @@ const (
 	DefaultIRCServer  = "irc.synirc.net"
 	DefaultIRCPort    = 6697
 	DefaultIRCChannel = "#PreNNTmux"
+	// Claude 2026-10-19: second live PRE network (nZEDb IRCScraper "corrupt").
+	// Reason: independent of synIRC; public JOIN without a channel key (probed
+	//   2026-10-19). Line shape is PRE: [SECTION] Title-GRP.
+	// Troubleshooting: no "predb irc connected" for this host → outbound 6697
+	//   or the channel went +k/+i; o2cli grep "predb irc".
+	// Review if: JOIN returns 473/475/477.
+	DefaultCorruptServer  = "irc.corrupt-net.org"
+	DefaultCorruptChannel = "#pre"
 )
 
 // IRCConfig configures the optional PreDB announce feed. Password is the
 // NickServ password (decrypted by the caller; never logged or persisted here).
 // Empty Nick is filled with a random password-style identity at Run().
 type IRCConfig struct {
-	Server   string
-	Port     int
-	TLS      bool
-	Nick     string
-	Password string
-	Channels []string
+	Server   string   `json:"server"`
+	Port     int      `json:"port"`
+	TLS      bool     `json:"tls"`
+	Nick     string   `json:"nick,omitempty"`
+	Password string   `json:"-"`
+	Channels []string `json:"channels"`
+}
+
+type extraFeedJSON struct {
+	Server   string   `json:"server"`
+	Port     int      `json:"port"`
+	TLS      *bool    `json:"tls"`
+	Channels []string `json:"channels"`
+}
+
+// DefaultExtraIRCFeeds is the second live writer: Corrupt-net #pre.
+func DefaultExtraIRCFeeds() []IRCConfig {
+	return []IRCConfig{{
+		Server:   DefaultCorruptServer,
+		Port:     DefaultIRCPort,
+		TLS:      true,
+		Channels: []string{DefaultCorruptChannel},
+	}}
+}
+
+// ParseExtraIRCFeeds reads usenet_nntp_predb_irc_extra. Empty uses the Corrupt-net
+// default. "[]" / "none" / "-" disables extras. NickServ password is never set here.
+func ParseExtraIRCFeeds(raw string) ([]IRCConfig, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return DefaultExtraIRCFeeds(), nil
+	}
+	if raw == "[]" || raw == "-" || strings.EqualFold(raw, "none") {
+		return nil, nil
+	}
+	var in []extraFeedJSON
+	if err := json.Unmarshal([]byte(raw), &in); err != nil {
+		return nil, err
+	}
+	out := make([]IRCConfig, 0, len(in))
+	for _, f := range in {
+		cfg := IRCConfig{
+			Server:   strings.TrimSpace(f.Server),
+			Port:     f.Port,
+			TLS:      true,
+			Channels: nil,
+		}
+		if f.TLS != nil {
+			cfg.TLS = *f.TLS
+		}
+		if cfg.Port <= 0 {
+			cfg.Port = DefaultIRCPort
+		}
+		for _, ch := range f.Channels {
+			ch = strings.TrimSpace(ch)
+			if ch != "" {
+				cfg.Channels = append(cfg.Channels, ch)
+			}
+		}
+		if cfg.Server == "" || len(cfg.Channels) == 0 {
+			continue
+		}
+		out = append(out, cfg)
+	}
+	return out, nil
 }
 
 const (
@@ -139,11 +207,11 @@ func (c *IRCClient) Run(ctx context.Context) {
 	for ctx.Err() == nil {
 		conn, err := c.dial(ctx)
 		if err == nil {
-			log.Printf("usenetsearch: predb irc connected nick=%s", c.Cfg.Nick)
+			log.Printf("usenetsearch: predb irc connected server=%s nick=%s", c.Cfg.Server, c.Cfg.Nick)
 			c.parsed = 0
 			registered, serr := c.session(ctx, conn)
 			conn.Close()
-			log.Printf("usenetsearch: predb irc disconnected parsed=%d", c.parsed)
+			log.Printf("usenetsearch: predb irc disconnected server=%s parsed=%d", c.Cfg.Server, c.parsed)
 			if registered {
 				delay = backoff
 			}

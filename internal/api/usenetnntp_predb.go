@@ -101,6 +101,19 @@ func (p *NNTPPreDB) Reload(ctx context.Context) {
 	ircCtx, cancel := context.WithCancel(p.parent)
 	p.cancelIRC = cancel
 	go (&predb.IRCClient{Cfg: cfg, Store: store}).Run(ircCtx)
+	// Claude 2026-10-19: second (and further) IRC networks besides synIRC.
+	// Reason: dump is a snapshot; api.predb.net forbids building a local DB;
+	//   Corrupt-net #pre is a live independent announce feed.
+	// Troubleshooting: only one "predb irc connected" line → extra JSON failed
+	//   or KV is "[]"; o2cli grep "predb irc extra".
+	// Review if: DefaultExtraIRCFeeds changes.
+	// Related files: irc.go ParseExtraIRCFeeds, service.go KeyPreDBIRCExtra
+	for _, extra := range g.PreDBIRCExtra {
+		if strings.EqualFold(extra.Server, cfg.Server) {
+			continue
+		}
+		go (&predb.IRCClient{Cfg: extra, Store: store}).Run(ircCtx)
+	}
 }
 
 // Claude 2026-10-18: empty server/channel/nick fall back to synIRC #PreNNTmux

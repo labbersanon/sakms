@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -58,22 +59,23 @@ type usenetNNTPNativeResponse struct {
 // PreDB provider state. IRCPasswordSet reports presence only — the password
 // never leaves the server.
 type usenetNNTPGapFill struct {
-	NameFixEnabled         bool   `json:"namefixEnabled"`
-	NameFixBodyMBPerHour   int    `json:"namefixBodyMbPerHour"`
-	UnnamedTTLDays         int    `json:"unnamedTtlDays"`
-	UnnamedMaxPct          int    `json:"unnamedMaxPct"`
-	PreDBHTTPEnabled       bool   `json:"predbHttpEnabled"`
-	PreDBHTTPURL           string `json:"predbHttpUrl"`
-	PreDBIRCEnabled        bool   `json:"predbIrcEnabled"`
-	IRCPasswordSet         bool   `json:"predbIrcPasswordSet"`
-	PreDBDumpPath          string `json:"predbDumpPath"`
-	MinCompletenessPct     int    `json:"minCompletenessPct"`
-	IncompleteTTLDays      int    `json:"incompleteTtlDays"`
-	RepairEnabled          bool   `json:"repairEnabled"`
-	BackfillEnabled        bool   `json:"backfillEnabled"`
-	BackfillDays           int    `json:"backfillDays"`
-	BackfillBudgetPct      int    `json:"backfillBudgetPct"`
-	CollectionDriftEnabled bool   `json:"collectionDriftEnabled"`
+	NameFixEnabled         bool              `json:"namefixEnabled"`
+	NameFixBodyMBPerHour   int               `json:"namefixBodyMbPerHour"`
+	UnnamedTTLDays         int               `json:"unnamedTtlDays"`
+	UnnamedMaxPct          int               `json:"unnamedMaxPct"`
+	PreDBHTTPEnabled       bool              `json:"predbHttpEnabled"`
+	PreDBHTTPURL           string            `json:"predbHttpUrl"`
+	PreDBIRCEnabled        bool              `json:"predbIrcEnabled"`
+	IRCPasswordSet         bool              `json:"predbIrcPasswordSet"`
+	PreDBIRCExtra          []predb.IRCConfig `json:"predbIrcExtra"`
+	PreDBDumpPath          string            `json:"predbDumpPath"`
+	MinCompletenessPct     int               `json:"minCompletenessPct"`
+	IncompleteTTLDays      int               `json:"incompleteTtlDays"`
+	RepairEnabled          bool              `json:"repairEnabled"`
+	BackfillEnabled        bool              `json:"backfillEnabled"`
+	BackfillDays           int               `json:"backfillDays"`
+	BackfillBudgetPct      int               `json:"backfillBudgetPct"`
+	CollectionDriftEnabled bool              `json:"collectionDriftEnabled"`
 }
 
 type usenetNNTPNativeRequest struct {
@@ -723,6 +725,16 @@ func loadNNTPGapFill(ctx context.Context, st *settings.Store) (usenetNNTPGapFill
 		return g, err
 	}
 	g.PreDBDumpPath = strings.TrimSpace(g.PreDBDumpPath)
+	extraRaw, extraErr := st.Get(ctx, usenetsearch.KeyPreDBIRCExtra)
+	if extraErr != nil && !isSettingsNotFound(extraErr) {
+		return g, extraErr
+	}
+	feeds, ferr := predb.ParseExtraIRCFeeds(extraRaw)
+	if ferr != nil {
+		log.Printf("usenetsearch: predb irc extra: %v", ferr)
+	} else {
+		g.PreDBIRCExtra = feeds
+	}
 	return g, nil
 }
 

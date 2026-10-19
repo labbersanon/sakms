@@ -145,6 +145,8 @@ type NameFixer struct {
 	Budget  *bodyBudget
 	// SkipBody runs PreDB-only (OVER/download busy). PAR2 BODY waits.
 	SkipBody bool
+	// PassBudget caps one Run; zero uses namefixMaxDuration. Tests shorten it.
+	PassBudget time.Duration
 
 	UnnamedTTL time.Duration
 }
@@ -178,14 +180,31 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 			return res, err
 		}
 	}
-	// BODY-capable yield first (95% grab, then 80%+ PAR2 ident). PreDB-only
-	// fills remaining keys so boneless/below-gate are not skipped, and a
-	// 95% yield set is not processed twice as PreDBOnly.
+	// Claude 2026-10-19: PreDB-only first, then ident BODY, then 95% BODY.
+	// Reason: live leftover=220 after one ~750KB BODY; hash_hits=0 for hours
+	//   while 200 PreDB keys (1883 complete boneless) never ran. 95% yield
+	//   still stays BODY-capable (not in preOnly) so a PreDB miss can PAR2.
+	// Troubleshooting: namefix deadline leftover≈predb with hash_hits=0 →
+	//   add(sets) ran before preOnly. Review if: 20s is raised, not removed.
+	bodyKeys := map[string]bool{}
+	keyOf := func(set PendingSet) string { return set.Group + "\x00" + set.Key }
+	for _, set := range sets {
+		bodyKeys[keyOf(set)] = true
+	}
+	for _, set := range ident {
+		bodyKeys[keyOf(set)] = true
+	}
+	var preOnly []PendingSet
+	for _, set := range predbSets {
+		if !bodyKeys[keyOf(set)] {
+			preOnly = append(preOnly, set)
+		}
+	}
 	seen := map[string]bool{}
 	var all []PendingSet
 	add := func(in []PendingSet) {
 		for _, set := range in {
-			k := set.Group + "\x00" + set.Key
+			k := keyOf(set)
 			if seen[k] {
 				continue
 			}
@@ -193,14 +212,18 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 			all = append(all, set)
 		}
 	}
-	add(sets)
+	add(preOnly)
 	add(ident)
-	add(predbSets)
+	add(sets)
 	if len(all) > 0 {
 		log.Printf("usenetsearch: namefix starting body=%d ident=%d predb=%d skip_body=%t",
 			len(sets), len(ident), len(predbSets), n.SkipBody)
 	}
-	deadline := time.Now().Add(namefixMaxDuration)
+	budget := n.PassBudget
+	if budget <= 0 {
+		budget = namefixMaxDuration
+	}
+	deadline := time.Now().Add(budget)
 	for i, set := range all {
 		if err := ctx.Err(); err != nil {
 			return res, err
@@ -269,6 +292,8 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		return false, n.finalize(ctx, set)
 	}
 
+	hashOnly := false
+	sampled := false
 	for _, pick := range pickBodyTargets(rows) {
 		if !n.Budget.fits(pick.Bytes) {
 			res.BudgetStop = true
@@ -283,17 +308,34 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		if berr != nil {
 			continue
 		}
+		sampled = true
 		n.Budget.add(sample.WireBytes)
 		res.BodyBytes += sample.WireBytes
-		for _, cand := range candidatesFromSample(sample, pick.NFO) {
+		cands := candidatesFromSample(sample, pick.NFO)
+		if len(cands) == 0 {
+			continue
+		}
+		allHash := true
+		for _, cand := range cands {
+			if recoveredUnusable(cand.name) {
+				continue
+			}
+			allHash = false
 			name, source, conf, predb, ok := n.accept(ctx, cand.name, cand.source, set.PayloadBytes)
 			if ok {
 				return n.promote(ctx, set, rows, name, source, conf, predb, res, statBudget)
 			}
 		}
+		if allHash {
+			hashOnly = true
+			break
+		}
 	}
 
 	res.Unresolved++
+	if sampled && hashOnly && keepCompleteYield(set.Group, set.CompletenessBP, set.PayloadBytes) {
+		return false, n.Index.ShelveBodyAttempts(ctx, set.Group, set.Key)
+	}
 	return false, n.Index.BumpNameAttempt(ctx, set.Group, set.Key, set.Attempts)
 }
 
@@ -311,15 +353,20 @@ func (n *NameFixer) markRejected(set PendingSet) {
 	}
 }
 
+func recoveredUnusable(raw string) bool {
+	norm := normalizeRecovered(raw)
+	return norm == "" || hashCore(norm) != "" || looksObfuscated(norm) || tokenLooksObfuscated(norm)
+}
+
 // accept normalizes a recovered name and applies the D2 acceptance rules:
 // PreDB exact (size within ±15%) is always accepted; par2/rar/ybegin names that
 // parse as title + (year|episode) + (resolution|source) are accepted without a
 // PreDB match; NFO-only names need a PreDB hit.
 func (n *NameFixer) accept(ctx context.Context, raw, source string, payload int64) (name, src, conf, predb string, ok bool) {
-	norm := normalizeRecovered(raw)
-	if norm == "" || hashCore(norm) != "" || looksObfuscated(norm) || tokenLooksObfuscated(norm) {
+	if recoveredUnusable(raw) {
 		return "", "", "", "", false
 	}
+	norm := normalizeRecovered(raw)
 	predb = "n/a"
 	// Only release-shaped names are worth a (rate-limited) PreDB lookup.
 	if n.PreDB != nil && hasTitleAndMarker(norm) {

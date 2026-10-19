@@ -234,6 +234,23 @@ func TestStageObfuscated_MooveeYencLessTrailingParts(t *testing.T) {
 	}
 }
 
+func TestParseSubject_XxxHashStemIsObfuscated(t *testing.T) {
+	// Live 2026-10-19: xxx backfill admitted hyphenated hash stems as named.
+	subj := `V-DtfXhDFjheDo7MLtjcb4LKQBjf2DsCzWn0_eMjneFNs0yDtdeBAJl0ub9oLloKyWSsyY9V6Lnyu9-jZ1gYHTjRWp8`
+	ps := ParseSubject(subj)
+	if !ps.Obfuscated || ps.OK || ps.Name != "" {
+		t.Fatalf("partless xxx hash must be obfuscated unnamed, got %+v", ps)
+	}
+	h := parseHeader("alt.binaries.xxx", subj, "p@x", "m@x", 1, 1, 1000, true)
+	if isObfKey(h.ReleaseName) || h.ReleaseName != "" {
+		t.Fatalf("no [k/N]/yEnc: want skip_unparsed, got %q", h.ReleaseName)
+	}
+	scene := ParseSubject(`Some.Movie.2021.1080p.WEB-DL.x264-GRP yEnc (1/10)`)
+	if scene.Obfuscated || !scene.OK || scene.Name != "Some.Movie.2021.1080p.WEB-DL.x264-GRP" {
+		t.Fatalf("scene name with dots must stay named, got %+v", scene)
+	}
+}
+
 func TestStageObfuscated_HdtvQuotedHashMkv(t *testing.T) {
 	h := parseHeader("alt.binaries.hdtv.x264", `"htgdyhl2tbpvyqihkd.mkv" yEnc (3837/3928) 2750952218`,
 		"p@x", "m@x", 1, 1, 1000, true)

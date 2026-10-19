@@ -1307,3 +1307,58 @@ func TestNameFix_SkipBodyStillHitsPreDB(t *testing.T) {
 		t.Fatalf("display=%q", display)
 	}
 }
+
+func TestNameFix_PreDBOnlyBeforeSlowBODY(t *testing.T) {
+	const title = "Boneless.Hit.2022.1080p.WEB-DL.x264-GRP"
+	sum := md5.Sum([]byte(title))
+	h := hex.EncodeToString(sum[:])
+	mv := obfuscatedSet("mv", nfHash, 1, 45)
+	bo := obfuscatedSet("bo", h, len(mv)+1, 45)
+	f := newNFFixture(t, append(mv, bo...), nil)
+	f.nf.PreDB = &fakePreDB{hashes: map[string]PreDBHit{h: {Title: title}}}
+	f.nf.PassBudget = 50 * time.Millisecond
+	f.src.bodyDelay = 200 * time.Millisecond
+	f.src.bodies["mvpar2"] = par2Body(nfHash + ".part01.rar")
+	f.crawlAndRecompute(t)
+	boKey := ObfKey(nfGroup, "poster@obf", bo[0].Subject)
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET group_name=? WHERE release_key=?`, "alt.binaries.boneless", boKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_headers SET group_name=? WHERE release_name=?`, "alt.binaries.boneless", boKey); err != nil {
+		t.Fatal(err)
+	}
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.HashHits != 1 || res.Renamed != 1 {
+		t.Fatalf("PreDB-only must run before slow BODY: %+v bodyCalls=%v", res, f.src.bodyCalls)
+	}
+	var display, src string
+	if err := f.idx.db.QueryRow(`SELECT display_name, name_source FROM usenet_nntp_releases WHERE release_key=?`, boKey).Scan(&display, &src); err != nil {
+		t.Fatal(err)
+	}
+	if display != title || src != sourcePreDB {
+		t.Fatalf("boneless display=%q source=%s", display, src)
+	}
+}
+
+func TestNameFix_HashFileDescShelvesBody(t *testing.T) {
+	f := newNFFixture(t, obfuscatedSet("hf", nfHash, 1, 45), nil)
+	f.src.bodies["hfpar2"] = par2Body(nfHash + ".part01.rar")
+	f.crawlAndRecompute(t)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Renamed != 0 || res.Unresolved != 1 || res.BodyFetches != 1 || len(f.src.bodyCalls) != 1 {
+		t.Fatalf("hash FileDesc must BODY once: %+v bodyCalls=%v", res, f.src.bodyCalls)
+	}
+	var attempts int
+	if err := f.idx.db.QueryRow(`SELECT name_attempts FROM usenet_nntp_releases`).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != maxNameAttempts {
+		t.Fatalf("attempts=%d, want shelved at %d", attempts, maxNameAttempts)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/quality"
@@ -28,9 +29,13 @@ type crawlStub struct {
 	bodies    map[string]usenet.BodySample
 	bodyErr   error
 	bodyCalls []string
+	bodyDelay time.Duration
 }
 
 func (c *crawlStub) BodyHead(_ context.Context, msgID string, maxBytes int) (usenet.BodySample, error) {
+	if c.bodyDelay > 0 {
+		time.Sleep(c.bodyDelay)
+	}
 	c.bodyCalls = append(c.bodyCalls, msgID)
 	if c.bodyErr != nil {
 		return usenet.BodySample{}, c.bodyErr

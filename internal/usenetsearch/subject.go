@@ -137,6 +137,16 @@ func parseSubjectWith(subj string, extra []compiledExtra) ParsedSubject {
 		}
 		return out
 	}
+	// Claude 2026-10-19: hash stems with no dot/space are not titles.
+	// Reason: xxx backfill admitted `V-DtfXhDFjheDo7…` (hyphen → ParseSubject.OK)
+	//   as named at 0%; tokenLooksObfuscated only ran on lead [k/N] tokens.
+	// Troubleshooting: display_name is a 40+ char token with digits and no
+	//   space/dot → this check missing. Review if: a real title has neither
+	//   `.` nor space (PAR2 namefix can still recover if staged).
+	if !strings.ContainsAny(name, ". ") && tokenLooksObfuscated(name) {
+		out.Obfuscated = true
+		return out
+	}
 	out.Name = name
 	out.OK = !out.Obfuscated && (out.PartM > 0 || out.Filename != "" || strings.Contains(name, ".") || strings.Contains(name, "-"))
 	return out

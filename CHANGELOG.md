@@ -11586,3 +11586,21 @@ status stays active.
 | File | Change |
 |---|---|
 | `internal/usenetsearch/namefix.go` | 20s pass deadline; leftover log |
+
+## 2026-10-19 — yield cores stage new obfuscated sets (skip_obf_cap / skip_unparsed)
+
+**Problem:** After the identification climb, teevee/x264/erotica sat in `skip_obf_cap` and moovee/hdtv.x264 in `skip_unparsed` (`staged_obf=0`), so new hash sets never entered namefix.
+**Root cause:** `StagedBytes` summed yEnc `payload_bytes` (one 20 GiB movie) against `index_max_gb` occupancy (COUNT×200 B). `stageObfuscated` required a plausible yEnc `(n/m)`, so `[k/N] "hash.rar"` collections with no trailing parts were dropped as unparsed. Unique-ID floods `(730696/967646)` stayed dropped on purpose.
+**Fix:** Unnamed cap is pending header occupancy. `[k/N]` collections stage without yEnc parts; FileM is not copied into PartM.
+**Outcome:** Staging cores can admit new `obf:` keys under the 25% index budget. Unique-ID yEnc floods remain `skip_unparsed`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix_index.go` | StagedBytes = pending headers × 200 B |
+| `internal/usenetsearch/ingest.go` | FileM stages; unnamedCapBytes helper |
+| `internal/usenetsearch/crawler.go` | cap comment: occupancy not payload |
+| `internal/usenetsearch/namefix_test.go` | occupancy cap tests; padPendingOverCap |
+| `internal/usenetsearch/subject_test.go` | teevee/moovee/hdtv HIGH shapes |
+| `docs/usenet-nntp-native.md` | occupancy cap |

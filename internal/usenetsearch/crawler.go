@@ -85,8 +85,8 @@ type Crawler struct {
 
 	// NameFixEnabled stages obfuscated binary sets (release_name "obf:<key>")
 	// instead of dropping them (usenet_nntp_namefix_enabled). false = today's
-	// behavior. UnnamedMaxPct caps staged bytes as a share of the index budget
-	// (0 = DefaultUnnamedMaxPct).
+	// behavior. UnnamedMaxPct caps staged header occupancy as a share of the
+	// index budget (0 = DefaultUnnamedMaxPct).
 	NameFixEnabled bool
 	UnnamedMaxPct  int
 

@@ -168,8 +168,13 @@ collection-key rewrite (once) → forward crawl → repair → name recovery →
   Sets under 100 MiB without PAR2 are never BODY-fetched; after 3 attempts or
   `unnamed_ttl_days` a set is finalized and deleted, except ≥80% yield-group
   sets which stay for PreDB-only retries so a later IRC line or dump
-  import can still name them. Staged bytes are capped at `unnamed_max_pct` of
-  `index_max_gb` and BODY volume at `namefix_body_mb_per_hour`.
+  import can still name them.
+  Claude 2026-10-19: staged **header occupancy** (pending_name rows × ~200 B,
+  same units as `index_max_gb`) is capped at `unnamed_max_pct` of
+  `index_max_gb`; yEnc `payload_bytes` is not the cap (that mismatch was
+  skip_obf_cap on every yield core). BODY volume is
+  `namefix_body_mb_per_hour`.
+  Review if: ApproxBytes stops using ~200 B/row.
   Historical names come from an operator-supplied nZEDb TSV dump
   (`usenet_nntp_predb_dump_path`, local file or dump-file URL); sakms does not
   scrape `api.predb.net` to build that table.
@@ -192,7 +197,7 @@ are dropped again and completeness is still recorded.
 |---|---|---|
 | `namefix_enabled` | true | Stage + recover obfuscated sets (off = drop them) |
 | `namefix_body_mb_per_hour` | 512 | Hourly BODY budget |
-| `unnamed_ttl_days` / `unnamed_max_pct` | 7 / 25 | Staging TTL / cap |
+| `unnamed_ttl_days` / `unnamed_max_pct` | 7 / 25 | Staging TTL / header-occupancy cap |
 | `predb_http_enabled` / `predb_http_url` | true / `https://api.predb.net/` | HTTP lookup |
 | `predb_irc_enabled` | true | All IRC feeds (primary + extras) |
 | `predb_irc_server`, `_port`, `_tls`, `_nick`, `_channels` | `irc.synirc.net`, 6697, true, generated, `#PreNNTmux` | Primary IRC connection (channels comma-separated; empty nick is generated) |

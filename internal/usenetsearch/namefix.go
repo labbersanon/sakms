@@ -15,14 +15,14 @@ import (
 	"github.com/labbersanon/sakms/internal/usenet"
 )
 
-// Claude 2026-10-15: obfuscated-set name recovery (plan D2/D3).
+// Claude 2026-10-18: obfuscated-set name recovery (plan D2/D3 + PreDB reverse).
 // Reason: obfuscated posts carry no release name; a staged set is renamed from
-//   a PreDB hash/name hit or from first-segment PAR2/RAR/yEnc/NFO sampling,
-//   then runs the same admission gate + STAT as a crawl-time release.
+//   a local PreDB hash (md5/md5md5/sha1 in subject or filename), PreDB
+//   filename / IRC [FN:], a scene-shaped header filename, or first-segment
+//   PAR2/RAR/yEnc/NFO sampling, then the same admission gate + STAT as crawl.
 // Troubleshooting: sets never renamed → o2cli grep "namefix pass"; check
-//   body_fetches (0 = nothing due: sets under the completeness gate or inside
-//   next_name_at), unresolved, and the hourly body budget (namefix_body_mb_per_hour).
-//   Undo a rename: see docs/usenet-nntp-native.md.
+//   body_fetches (0 = nothing due, or PreDB-only exhausted yield), hash_hits,
+//   unresolved, and namefix_body_mb_per_hour. Undo: docs/usenet-nntp-native.md.
 // Review if: BODY traffic needs download-activity-aware (bytes) throttling.
 
 // PreDBHit is one scene-release record resolved from the local PreDB.
@@ -39,6 +39,8 @@ type PreDBLookup interface {
 	ByHash(ctx context.Context, hash string) (PreDBHit, bool)
 	// ByName confirms a recovered release name exists.
 	ByName(ctx context.Context, name string) (PreDBHit, bool)
+	// ByFilename resolves a PreDB inner/archive filename.
+	ByFilename(ctx context.Context, filename string) (PreDBHit, bool)
 }
 
 const (
@@ -56,6 +58,7 @@ const (
 	DefaultNameFixBodyMBPerHour = 512
 	namefixSizeTolerance        = 0.15
 	namefixMaxCandidates        = 6
+	exhaustedPreDBRetry         = time.Hour
 )
 
 // Name sources / confidences (usenet_nntp_releases.name_source/name_confidence).
@@ -142,12 +145,16 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 		return res, err
 	}
 	res.Finalized += swept
+	statBudget := statReleasesPerChunk
+	exhausted, err := n.Index.DueExhaustedYield(ctx, n.Groups, namefixSetsPerPass)
+	if err != nil {
+		return res, err
+	}
 	sets, err := n.Index.DuePendingNames(ctx, n.Groups, namefixSetsPerPass)
 	if err != nil {
 		return res, err
 	}
-	statBudget := statReleasesPerChunk
-	for _, set := range sets {
+	for _, set := range append(exhausted, sets...) {
 		if err := ctx.Err(); err != nil {
 			return res, err
 		}
@@ -192,13 +199,18 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 	}
 	res.Sets++
 
-	if n.PreDB != nil {
-		if core := hashCore(obfSkeleton(rows[0].Subject)); core != "" {
-			if hit, ok := n.PreDB.ByHash(ctx, core); ok && hit.Title != "" && sizeWithin(hit.SizeBytes, set.PayloadBytes) {
-				res.HashHits++
-				return n.promote(ctx, set, rows, hit.Title, sourcePreDB, confPreDB, "hit", res, statBudget)
-			}
+	if hit, ok := n.lookupPreDB(ctx, set, rows); ok {
+		res.HashHits++
+		return n.promote(ctx, set, rows, hit.Title, sourcePreDB, confPreDB, "hit", res, statBudget)
+	}
+	for _, cand := range headerNameCandidates(rows) {
+		name, source, conf, predb, ok := n.accept(ctx, cand.name, cand.source, set.PayloadBytes)
+		if ok {
+			return n.promote(ctx, set, rows, name, source, conf, predb, res, statBudget)
 		}
+	}
+	if set.PreDBOnly {
+		return false, n.Index.ScheduleNameRetry(ctx, set.Group, set.Key, exhaustedPreDBRetry)
 	}
 
 	if set.PayloadBytes < namefixMinPayload {
@@ -332,6 +344,88 @@ func (n *NameFixer) promote(ctx context.Context, set PendingSet, rows []HeaderRo
 		res.Busy = true
 	}
 	return busy, nil
+}
+
+// lookupPreDB tries nZEDb-style reverse lookups: md5/sha1/md5md5 tokens from
+// every header's subject and filename, then PreDB.filename / IRC [FN:].
+func (n *NameFixer) lookupPreDB(ctx context.Context, set PendingSet, rows []HeaderRow) (PreDBHit, bool) {
+	if n.PreDB == nil {
+		return PreDBHit{}, false
+	}
+	okHit := func(hit PreDBHit, ok bool) bool {
+		return ok && hit.Title != "" && sizeWithin(hit.SizeBytes, set.PayloadBytes)
+	}
+	for _, h := range hashCandidates(rows) {
+		if hit, ok := n.PreDB.ByHash(ctx, h); okHit(hit, ok) {
+			return hit, true
+		}
+	}
+	for _, fn := range filenameCandidates(rows) {
+		if hit, ok := n.PreDB.ByFilename(ctx, fn); okHit(hit, ok) {
+			return hit, true
+		}
+	}
+	return PreDBHit{}, false
+}
+
+func hashCandidates(rows []HeaderRow) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(s string) {
+		for _, t := range hashTokens(s) {
+			if seen[t] {
+				continue
+			}
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	for _, r := range rows {
+		add(obfSkeleton(r.Subject))
+		add(r.Subject)
+		add(r.Filename)
+	}
+	if len(out) > 8 {
+		out = out[:8]
+	}
+	return out
+}
+
+func filenameCandidates(rows []HeaderRow) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		key := strings.ToLower(s)
+		if seen[key] || hashCore(key) != "" {
+			return
+		}
+		seen[key] = true
+		out = append(out, s)
+	}
+	for _, r := range rows {
+		add(r.Filename)
+		add(normalizeRecovered(r.Filename))
+	}
+	return out
+}
+
+func headerNameCandidates(rows []HeaderRow) []nameCand {
+	seen := map[string]bool{}
+	var out []nameCand
+	for _, r := range rows {
+		raw := r.Filename
+		key := strings.ToLower(normalizeRecovered(raw))
+		if key == "" || hashCore(key) != "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, nameCand{raw, sourceYenc})
+	}
+	return out
 }
 
 // sizeWithin reports whether payload is within ±15% of a PreDB-reported size

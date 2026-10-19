@@ -62,6 +62,7 @@ type usenetNNTPGapFill struct {
 	PreDBHTTPURL           string `json:"predbHttpUrl"`
 	PreDBIRCEnabled        bool   `json:"predbIrcEnabled"`
 	IRCPasswordSet         bool   `json:"predbIrcPasswordSet"`
+	PreDBDumpPath          string `json:"predbDumpPath"`
 	MinCompletenessPct     int    `json:"minCompletenessPct"`
 	IncompleteTTLDays      int    `json:"incompleteTtlDays"`
 	RepairEnabled          bool   `json:"repairEnabled"`
@@ -697,6 +698,10 @@ func loadNNTPGapFill(ctx context.Context, st *settings.Store) (usenetNNTPGapFill
 		return g, err
 	}
 	g.IRCPasswordSet = enc != ""
+	if g.PreDBDumpPath, err = st.Get(ctx, usenetsearch.KeyPreDBDumpPath); err != nil && !isSettingsNotFound(err) {
+		return g, err
+	}
+	g.PreDBDumpPath = strings.TrimSpace(g.PreDBDumpPath)
 	return g, nil
 }
 

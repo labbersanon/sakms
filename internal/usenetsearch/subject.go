@@ -45,6 +45,8 @@ var (
 	reYencSz    = regexp.MustCompile(`(?i)yEnc\s*(?:\(.*?\)\s*)?(?:\[?\s*)?(\d+)\s*(?:bytes?)?`)
 	reFileTok   = regexp.MustCompile(`(?i)([\w.\-]+\.(?:rar|r\d{2}|part\d+\.rar|par2|nfo|sfv|mkv|mp4|avi|zip|7z))`)
 	reHexBlob   = regexp.MustCompile(`(?i)^[a-f0-9]{16,}$`)
+	// 40 before 32 so a sha1 is not truncated to its md5-length prefix.
+	reHashToken = regexp.MustCompile(`(?i)(?:^|[^a-f0-9])([a-f0-9]{40}|[a-f0-9]{32})(?:[^a-f0-9]|$)`)
 	// Claude 2026-10-16: small NNTmux collection-regex subset (not the 4.8k table).
 	// Reason: [#a.b.teevee] / [Group] wrappers and leading hash tokens are how
 	//   NNTmux clusters files whose quoted names differ; generic stem alone
@@ -309,6 +311,22 @@ func hashCore(skeleton string) string {
 		return strings.ToLower(skeleton)
 	}
 	return ""
+}
+
+// hashTokens returns isolated 32/40-hex strings in s (filename `hash.7z.001`,
+// quoted subject, lead-token posts). Cap keeps one set's lookup cheap.
+func hashTokens(s string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range reHashToken.FindAllStringSubmatch(s, 8) {
+		h := strings.ToLower(m[1])
+		if seen[h] {
+			continue
+		}
+		seen[h] = true
+		out = append(out, h)
+	}
+	return out
 }
 
 // looksObfuscated flags a separator-free, long, case/digit-churning skeleton

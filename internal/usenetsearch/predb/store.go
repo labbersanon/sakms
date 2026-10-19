@@ -19,6 +19,7 @@ import (
 const (
 	SourceHTTP = "http"
 	SourceIRC  = "irc"
+	SourceDump = "dump"
 	// SourceMiss marks a cached negative HTTP lookup (never returned as a hit).
 	SourceMiss = "miss"
 )
@@ -46,10 +47,32 @@ func NewStore(db *sql.DB) *Store { return &Store{db: db} }
 // HashesOf returns the lowercase hex md5 and sha1 of title — the forms
 // hash-obfuscating posters use as subjects.
 func HashesOf(title string) (md5hex, sha1hex string) {
-	m := md5.Sum([]byte(title))
-	s := sha1.Sum([]byte(title))
-	return hex.EncodeToString(m[:]), hex.EncodeToString(s[:])
+	m, _, s := hashTriple(title)
+	return m, s
 }
+
+// hashTriple is MD5(title), MD5(MD5(title)) as hex-of-hex (nZEDb/PHP
+// md5(md5($title))), and SHA1(title).
+func hashTriple(title string) (md5hex, md5md5hex, sha1hex string) {
+	m := md5.Sum([]byte(title))
+	md5hex = hex.EncodeToString(m[:])
+	inner := md5.Sum([]byte(md5hex))
+	md5md5hex = hex.EncodeToString(inner[:])
+	s := sha1.Sum([]byte(title))
+	sha1hex = hex.EncodeToString(s[:])
+	return
+}
+
+const upsertSQL = `
+INSERT INTO usenet_nntp_predb (title, title_md5, title_md5_md5, title_sha1, size_bytes, files, filename, category, pre_at, nuked, source, fetched_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT (title) DO UPDATE SET title_md5=EXCLUDED.title_md5, title_md5_md5=EXCLUDED.title_md5_md5, title_sha1=EXCLUDED.title_sha1,
+  size_bytes=CASE WHEN EXCLUDED.size_bytes>0 THEN EXCLUDED.size_bytes ELSE usenet_nntp_predb.size_bytes END,
+  files=CASE WHEN EXCLUDED.files>0 THEN EXCLUDED.files ELSE usenet_nntp_predb.files END,
+  filename=CASE WHEN EXCLUDED.filename<>'' THEN EXCLUDED.filename ELSE usenet_nntp_predb.filename END,
+  category=CASE WHEN EXCLUDED.category<>'' THEN EXCLUDED.category ELSE usenet_nntp_predb.category END,
+  pre_at=CASE WHEN EXCLUDED.pre_at>0 THEN EXCLUDED.pre_at ELSE usenet_nntp_predb.pre_at END,
+  nuked=EXCLUDED.nuked, source=EXCLUDED.source, fetched_at=EXCLUDED.fetched_at`
 
 // Upsert stores (or refreshes) a record, replacing any cached miss for it.
 func (s *Store) Upsert(ctx context.Context, e Entry, source string) error {
@@ -60,18 +83,9 @@ func (s *Store) Upsert(ctx context.Context, e Entry, source string) error {
 	if title == "" {
 		return errors.New("predb: empty title")
 	}
-	m, sh := HashesOf(title)
-	_, err := s.db.ExecContext(ctx, `
-INSERT INTO usenet_nntp_predb (title, title_md5, title_sha1, size_bytes, files, filename, category, pre_at, nuked, source, fetched_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?)
-ON CONFLICT (title) DO UPDATE SET title_md5=EXCLUDED.title_md5, title_sha1=EXCLUDED.title_sha1,
-  size_bytes=CASE WHEN EXCLUDED.size_bytes>0 THEN EXCLUDED.size_bytes ELSE usenet_nntp_predb.size_bytes END,
-  files=CASE WHEN EXCLUDED.files>0 THEN EXCLUDED.files ELSE usenet_nntp_predb.files END,
-  filename=CASE WHEN EXCLUDED.filename<>'' THEN EXCLUDED.filename ELSE usenet_nntp_predb.filename END,
-  category=CASE WHEN EXCLUDED.category<>'' THEN EXCLUDED.category ELSE usenet_nntp_predb.category END,
-  pre_at=CASE WHEN EXCLUDED.pre_at>0 THEN EXCLUDED.pre_at ELSE usenet_nntp_predb.pre_at END,
-  nuked=EXCLUDED.nuked, source=EXCLUDED.source, fetched_at=EXCLUDED.fetched_at`,
-		title, m, sh, e.SizeBytes, e.Files, e.Filename, e.Category, e.PreAt, e.Nuked, source, time.Now().Unix())
+	m, mm, sh := hashTriple(title)
+	_, err := s.db.ExecContext(ctx, upsertSQL,
+		title, m, mm, sh, e.SizeBytes, e.Files, e.Filename, e.Category, e.PreAt, e.Nuked, source, time.Now().Unix())
 	return err
 }
 
@@ -101,19 +115,29 @@ func (s *Store) ByTitle(ctx context.Context, title string) (Entry, bool, error) 
 	return scanEntry(s.db.QueryRowContext(ctx, selectEntry+` WHERE title=? AND source<>?`, title, SourceMiss))
 }
 
-// ByHash resolves a 32-char md5 or 40-char sha1 hex string to a record.
+// ByHash resolves a 32-char md5 / md5(md5(title)) or 40-char sha1 hex string.
 func (s *Store) ByHash(ctx context.Context, h string) (Entry, bool, error) {
 	h = strings.ToLower(strings.TrimSpace(h))
-	col := ""
 	switch len(h) {
 	case 32:
-		col = "title_md5"
+		return scanEntry(s.db.QueryRowContext(ctx,
+			selectEntry+` WHERE (title_md5=? OR title_md5_md5=?) AND source<>? LIMIT 1`, h, h, SourceMiss))
 	case 40:
-		col = "title_sha1"
+		return scanEntry(s.db.QueryRowContext(ctx,
+			selectEntry+` WHERE title_sha1=? AND source<>? LIMIT 1`, h, SourceMiss))
 	default:
 		return Entry{}, false, nil
 	}
-	return scanEntry(s.db.QueryRowContext(ctx, selectEntry+` WHERE `+col+`=? AND source<>? LIMIT 1`, h, SourceMiss))
+}
+
+// ByFilename resolves a PreDB inner/archive filename (exact, case-insensitive).
+func (s *Store) ByFilename(ctx context.Context, filename string) (Entry, bool, error) {
+	fn := strings.ToLower(strings.TrimSpace(filename))
+	if fn == "" {
+		return Entry{}, false, nil
+	}
+	return scanEntry(s.db.QueryRowContext(ctx,
+		selectEntry+` WHERE lower(filename)=? AND source<>? LIMIT 1`, fn, SourceMiss))
 }
 
 // RecentMiss reports whether title has a cached negative lookup newer than ttl.

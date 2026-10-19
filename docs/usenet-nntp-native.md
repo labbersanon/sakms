@@ -93,13 +93,14 @@ IRC announce feed (default on: synIRC `#PreNNTmux`).
   inert and logs once); name recovery then relies on PAR2/RAR/yEnc names that
   pass the title + (year|episode) + (resolution|source) check.
 
-The IRC feed (`usenet_nntp_predb_irc_enabled`) is the only way to reverse
-md5/sha1(title) subjects, because a name-lookup API cannot reverse a hash. It is
-forward-only (no history). Default is on: synIRC `#PreNNTmux`, TLS 6697, a
-random unregistered nick, client PING heartbeat. NickServ is optional and unused
-by default (synIRC confirm mail does not arrive). The NickServ password, if set,
-is stored encrypted (`secrets.Store`) and is never logged. `#nZEDbPRE` is dead;
-do not point the scraper there.
+A name-lookup HTTP API cannot reverse a hash. Reverse lookups use the local
+table: IRC announces (forward-only, including `[FN:]` filenames) plus an
+operator-supplied nZEDb dump (`usenet_nntp_predb_dump_path`). Do not scrape
+`api.predb.net` to populate that table. Default IRC is on: synIRC `#PreNNTmux`,
+TLS 6697, a random unregistered nick, client PING heartbeat. NickServ is
+optional and unused by default (synIRC confirm mail does not arrive). The
+NickServ password, if set, is stored encrypted (`secrets.Store`) and is never
+logged. `#nZEDbPRE` is dead; do not point the scraper there.
 
 ## Gap fill (completeness, repair, name recovery, backfill)
 
@@ -135,14 +136,21 @@ collection-key rewrite (once) → forward crawl → repair → name recovery →
   on a gap.
 - **Name recovery.** Obfuscated binary sets are staged under
   `release_name='obf:<key>'` instead of dropped. Recovery order: local PreDB by
-  md5/sha1 → at most 3 first-segment BODY fetches per set (PAR2 `FileDesc` →
-  RAR/ZIP member names → yEnc `=ybegin` name → NFO scene name). Accepted: a
-  PreDB-confirmed name (size within ±15% when the PreDB reports one), or a
-  PAR2/RAR/yEnc name that parses as title + (year|episode) + (resolution|source)
-  even on a PreDB miss. NFO-only names need a PreDB hit. Sets under 100 MiB are
-  never BODY-fetched; after 3 attempts or `unnamed_ttl_days` a set is finalized
-  and deleted. Staged bytes are capped at `unnamed_max_pct` of `index_max_gb`
-  and BODY volume at `namefix_body_mb_per_hour`.
+  md5 / md5(md5(title)) / sha1 tokens taken from every header subject and
+  filename (suffix-stripped), then PreDB `filename` / IRC `[FN:]`, then a
+  scene-shaped header filename, then at most 3 first-segment BODY fetches per
+  set (PAR2 `FileDesc` → RAR/ZIP member names → yEnc `=ybegin` name → NFO scene
+  name). Accepted: a PreDB-confirmed name (size within ±15% when the PreDB
+  reports one), or a PAR2/RAR/yEnc name that parses as title + (year|episode) +
+  (resolution|source) even on a PreDB miss. NFO-only names need a PreDB hit.
+  Sets under 100 MiB are never BODY-fetched; after 3 attempts or
+  `unnamed_ttl_days` a set is finalized and deleted, except complete yield-group
+  sets which stay for PreDB-only retries (no BODY) so a later IRC line or dump
+  import can still name them. Staged bytes are capped at `unnamed_max_pct` of
+  `index_max_gb` and BODY volume at `namefix_body_mb_per_hour`.
+  Historical names come from an operator-supplied nZEDb TSV dump
+  (`usenet_nntp_predb_dump_path`); sakms does not scrape `api.predb.net` to
+  build that table.
 - **Retention backfill.** A per-group `low` cursor (`usenet_nntp_watermarks.low`)
   walks from the oldest indexed article down to provider retention in 2000-article
   chunks, through the same parse → admission → upsert path. It pauses at
@@ -167,6 +175,7 @@ are dropped again and completeness is still recorded.
 | `predb_irc_enabled` | true | synIRC PRE feed (random nick, no NickServ) |
 | `predb_irc_server`, `_port`, `_tls`, `_nick`, `_channels` | `irc.synirc.net`, 6697, true, generated, `#PreNNTmux` | IRC connection (channels comma-separated; empty nick is generated) |
 | `predb_irc_password_enc` | — | NickServ password, `secrets.Store` ciphertext; set via `PUT /api/settings/usenet-nntp-native/predb-irc-password` `{"password":"…"}` (empty clears) |
+| `predb_dump_path` | empty | Local nZEDb PreDB dump file or directory (`\t\t` TSV, optional `.gz`). Imported on boot and every 15 minutes when mtime/size changes. Never a URL. |
 | `min_completeness_pct` / `incomplete_ttl_days` | 95 / 3 | Completeness gate / reap |
 | `repair_enabled` | true | Gap capture + repair |
 | `backfill_enabled` / `backfill_days` / `backfill_budget_pct` | true / 0 (retention) / 90 | Backfill |

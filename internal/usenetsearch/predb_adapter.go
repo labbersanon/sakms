@@ -29,17 +29,28 @@ type PreDBService struct {
 	warnedOff bool
 }
 
+func asHit(e predb.Entry, ok bool, err error) (PreDBHit, bool) {
+	if err != nil || !ok {
+		return PreDBHit{}, false
+	}
+	return PreDBHit{Title: e.Title, SizeBytes: e.SizeBytes}, true
+}
+
 // ByHash resolves a bare md5/sha1 subject against the local corpus only (an
 // HTTP name API cannot reverse a hash).
 func (p *PreDBService) ByHash(ctx context.Context, hash string) (PreDBHit, bool) {
 	if p == nil || p.Store == nil {
 		return PreDBHit{}, false
 	}
-	e, ok, err := p.Store.ByHash(ctx, hash)
-	if err != nil || !ok {
+	return asHit(p.Store.ByHash(ctx, hash))
+}
+
+// ByFilename resolves a PreDB inner/archive filename against the local table.
+func (p *PreDBService) ByFilename(ctx context.Context, filename string) (PreDBHit, bool) {
+	if p == nil || p.Store == nil {
 		return PreDBHit{}, false
 	}
-	return PreDBHit{Title: e.Title, SizeBytes: e.SizeBytes}, true
+	return asHit(p.Store.ByFilename(ctx, filename))
 }
 
 // ByName confirms name locally, then via HTTP (rate limited, cached).
@@ -47,8 +58,8 @@ func (p *PreDBService) ByName(ctx context.Context, name string) (PreDBHit, bool)
 	if p == nil || p.Store == nil {
 		return PreDBHit{}, false
 	}
-	if e, ok, err := p.Store.ByTitle(ctx, name); err == nil && ok {
-		return PreDBHit{Title: e.Title, SizeBytes: e.SizeBytes}, true
+	if hit, ok := asHit(p.Store.ByTitle(ctx, name)); ok {
+		return hit, true
 	}
 	if p.HTTP == nil {
 		return PreDBHit{}, false

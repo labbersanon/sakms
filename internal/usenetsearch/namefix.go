@@ -188,6 +188,10 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 	add(sets)
 	add(ident)
 	add(predbSets)
+	if len(all) > 0 {
+		log.Printf("usenetsearch: namefix starting body=%d ident=%d predb=%d skip_body=%t",
+			len(sets), len(ident), len(predbSets), n.SkipBody)
+	}
 	for _, set := range all {
 		if err := ctx.Err(); err != nil {
 			return res, err

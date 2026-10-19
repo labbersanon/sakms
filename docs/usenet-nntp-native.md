@@ -139,12 +139,14 @@ collection-key rewrite (once) → forward crawl → repair → name recovery →
   `min_completeness_pct` of payload segments (default 95, clamped 80–100).
   Computed per release into `usenet_nntp_releases` (`searchable`,
   `completeness_bp`, `gate_reason`). Identification is separate: a PreDB,
-  PAR2/RAR/yEnc/NFO, or scene-shaped (year or SxxExx + resolution) name is
-  searchable at ≥80%; `Query.GrabReady` and `ToNZB` still refuse it until the
-  set meets the gate. Picture-date buckets and hash tokens stay off search.
-  Dashboard **Identified** is binary-group (non-`pictures.*`) headers on those
-  names. Below-80% named releases are reaped after HIGH has passed
-  (`SweepIncomplete`); `incomplete_ttl_days` is unused on that path.
+  PAR2/RAR/yEnc/NFO, or a title with resolution plus year, season, or a
+  multi-word name is searchable at ≥80%; `Query.GrabReady` and `ToNZB` still
+  refuse it until the set meets the gate. Picture-date buckets and hash
+  tokens stay off search. Dashboard **Identified** is binary-group
+  (non-`pictures.*`) headers on those names, excluding `(????)` /
+  single-token poster IDs from the denominator. Below-80% named
+  releases are reaped after HIGH has passed (`SweepIncomplete`);
+  `incomplete_ttl_days` is unused on that path.
 - **Gap repair.** OVER chunks record missing article numbers in
   `usenet_nntp_missed_ranges`; a bounded repair pass re-OVERs them (3 attempts
   with backoff, then the range is dropped). The forward watermark never waits

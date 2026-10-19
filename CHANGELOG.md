@@ -11557,3 +11557,19 @@ status stays active.
 | `internal/api/nntp_crawler_status.go` | Identified fields on dashboard JSON |
 | `frontend/src/screens/Dashboard.tsx` | Identified NNTPStat |
 | `docs/usenet-nntp-native.md` | identification vs grab gate |
+
+## 2026-10-19 — IdentifiedPct drops junk mega-buckets; broader scene names
+
+**Problem:** After identifying 80%+ scene titles, Identified was 46% of binary headers. The remaining bulk is `(????)` / `(Els1212)` / single-token poster IDs (not indexer titles) plus anime batches (`720p` without a year, `1920x1080`).
+**Root cause:** Identified denominator counted every non-pictures header. identNameSQL required year or SxxExx plus `1080p`, so SubsPlease batches and BD `1920x1080` names were "weak".
+**Fix:** identNameSQL accepts resolution (`1080p` / `1920x1080`) with year, season, or a multi-word title. HeadersBinary excludes named subject junk (`(????)`, Description dumps, single tokens). Namefix logs `starting` before BODY so a hung fetch is visible.
+**Outcome:** IdentifiedPct matches indexer inventory. Autograb still 95%.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/completeness.go` | broader identNameSQL; junkNameSQL |
+| `internal/usenetsearch/status.go` | IdentifiedPct excludes junk from binary |
+| `internal/usenetsearch/namefix.go` | namefix starting log |
+| `internal/usenetsearch/status_test.go` | junk excluded; batch name identified |

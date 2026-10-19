@@ -195,9 +195,12 @@ func (s *Service) CrawlerStatus(ctx context.Context) (CrawlerStatus, error) {
 func (idx *Index) identifiedStats(ctx context.Context) (identified, binary int64, err error) {
 	err = idx.db.QueryRowContext(ctx, `
 SELECT
-  (SELECT COUNT(*) FROM usenet_nntp_headers WHERE group_name NOT LIKE '%pictures%'),
-  (SELECT COUNT(*) FROM usenet_nntp_headers h
-   JOIN usenet_nntp_releases r ON r.group_name=h.group_name AND r.release_key=h.release_name
-   WHERE r.group_name NOT LIKE '%pictures%' AND r.state='named' AND (`+identNameSQL+`))`).Scan(&binary, &identified)
+  COUNT(*) FILTER (
+    WHERE h.group_name NOT LIKE '%pictures%'
+      AND (r.release_key IS NULL OR NOT (`+junkNameSQL+`))),
+  COUNT(*) FILTER (
+    WHERE h.group_name NOT LIKE '%pictures%' AND r.state='named' AND (`+identNameSQL+`))
+FROM usenet_nntp_headers h
+LEFT JOIN usenet_nntp_releases r ON r.group_name=h.group_name AND r.release_key=h.release_name`).Scan(&binary, &identified)
 	return identified, binary, err
 }

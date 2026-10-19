@@ -11573,3 +11573,16 @@ status stays active.
 | `internal/usenetsearch/status.go` | IdentifiedPct excludes junk from binary |
 | `internal/usenetsearch/namefix.go` | namefix starting log |
 | `internal/usenetsearch/status_test.go` | junk excluded; batch name identified |
+
+## 2026-10-19 — namefix pass deadline so BODY cannot freeze crawl
+
+**Problem:** After #204 the crawl loop logged nothing for 14 minutes. Namefix had queued 37 BODY + 200 PreDB sets; the pass log only fires at the end. Each BODY can block 60s (`articleIOTimeout`).
+**Root cause:** No wall-clock cap on the namefix pass (recompute already has 20s).
+**Fix:** `namefixMaxDuration` 20s; leftover sets stay due for the next loop. Starting log already shipped in #205.
+**Outcome:** Crawl continues within ~20s + at most one in-flight BODY.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix.go` | 20s pass deadline; leftover log |

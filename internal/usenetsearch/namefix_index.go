@@ -188,8 +188,10 @@ func scanPendingSets(rows *sql.Rows, preDBOnly bool) ([]PendingSet, error) {
 // Claude 2026-10-19: all groups, 200/pass, no payload floor.
 // Reason: yield-only PreDB left 1883 complete boneless pending unnamed;
 //
-//	namefix ran twice in 2h with hash_hits=1. Review if: firehose PreDB
-//	starves yield BODY slots (BODY still uses DuePendingNames).
+//	namefix ran twice in 2h with hash_hits=1. Run() processes these
+//	before BODY so a 20s BODY deadline cannot skip them.
+//
+// Review if: firehose PreDB is moved back behind yield BODY.
 func (idx *Index) DuePendingPreDB(ctx context.Context, limit int) ([]PendingSet, error) {
 	if limit <= 0 {
 		return nil, nil
@@ -269,6 +271,27 @@ UPDATE usenet_nntp_releases SET display_name=?, name_source=?, name_confidence=?
 		return err
 	}
 	_, _, _, err = idx.recomputeOne(ctx, releaseKey{group, key}, idx.MinCompletenessPct())
+	return err
+}
+
+// ShelveBodyAttempts stops further BODY on a complete yield set whose PAR2/RAR
+// FileDesc is the same hash. DuePendingNames filters name_attempts>=max;
+// DuePendingPreDB does not, so dump/IRC can still rename.
+//
+// Claude 2026-10-19: one hash BODY, not three.
+// Reason: live namefix spent 2×~750KB/pass on FileDesc that accept() already
+//
+//	rejects, then retried until maxNameAttempts while PreDB never ran.
+//
+// Troubleshooting: body_fetches=2 unresolved=1 on the same hash key every
+//
+//	loop → this was not called. Review if: ident BODY at 80% still needs
+//	a second non-hash sample (NFO).
+func (idx *Index) ShelveBodyAttempts(ctx context.Context, group, key string) error {
+	now := time.Now().Unix()
+	_, err := idx.db.ExecContext(ctx, `
+UPDATE usenet_nntp_releases SET name_attempts=?, next_name_at=?, updated_at=?
+WHERE group_name=? AND release_key=?`, maxNameAttempts, now, now, group, key)
 	return err
 }
 

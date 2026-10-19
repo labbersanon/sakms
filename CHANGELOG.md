@@ -11634,3 +11634,21 @@ status stays active.
 | `internal/usenetsearch/status.go` | Headers/IndexBytes from cache |
 | `internal/usenetsearch/service.go` | headerN on snapshot |
 | `internal/usenetsearch/status_test.go` | cached header count |
+
+## 2026-10-19 — Searchable stall: PreDB starved by BODY deadline
+
+**Problem:** Dashboard Searchable sat at 5,200 while Headers and Identified kept moving. Namefix logged `leftover=220` / `hash_hits=0` every ~3 minutes.
+**Root cause:** Each pass queued body=40, ident=20, predb=200, then walked BODY first. One ~750KB BODY burned the 20s deadline, so the 200 PreDB lookups (including 2,589 already-complete unnamed sets) never ran. A second path admitted xxx hash stems (`V-DtfXhDFjheDo7…`) as `named` because a hyphen made `ParseSubject.OK`. Unique-ID yEnc floods (`skip_unparsed=2000`) and `staged_obf` with `admitted=0` are working as designed.
+**Fix:** Run PreDB-only keys first, then ident BODY, then 95% BODY. Stop further BODY when FileDesc is the same hash (`ShelveBodyAttempts`). Treat collection-stem hashes with no `.` or space as obfuscated unnamed.
+**Outcome:** PreDB can name complete pending sets inside the 20s window; xxx hash subjects are no longer searchable-junk `named` rows.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix.go` | PreDB-only first; hash FileDesc shelves BODY |
+| `internal/usenetsearch/namefix_index.go` | `ShelveBodyAttempts` |
+| `internal/usenetsearch/subject.go` | hash stem without `. `/space is obfuscated |
+| `internal/usenetsearch/namefix_test.go` | PreDB-before-slow-BODY; hash FileDesc once |
+| `internal/usenetsearch/subject_test.go` | live xxx hash stem |
+| `docs/usenet-nntp-native.md` | pass order |

@@ -191,11 +191,10 @@ func (s *Service) CrawlerStatus(ctx context.Context) (CrawlerStatus, error) {
 	return out, nil
 }
 
-// identRefreshTimeout bounds the background 13M-header occupancy rollup so a
-// stuck query cannot block the crawl loop.
+// identRefreshTimeout bounds identifiedStats so a stuck query cannot block the crawl loop.
 const identRefreshTimeout = 20 * time.Second
 
-// refreshIdentified rolls Identified/binary header counts into memory.
+// refreshIdentified caches Identified/binary header counts.
 //
 // Claude 2026-10-19: dashboard GET /api/admin/nntp-crawler must not JOIN
 //   usenet_nntp_headers (13.6M rows, ~14s, regex per header). The card poll
@@ -221,13 +220,14 @@ func (s *Service) refreshIdentified(ctx context.Context) {
 	s.mu.Unlock()
 }
 
-func (idx *Index) identifiedStats(ctx context.Context) (identified, binary int64, err error) {
+func (idx *Index) identifiedStats(ctx context.Context) (int64, int64, error) {
 	// Claude 2026-10-19: GROUP BY release then regex, not regex per header.
 	// Reason: the LEFT JOIN applied identNameSQL/junkNameSQL on 13.6M rows
 	//   (~14s). Aggregation first is ~3s and only the crawl loop runs it.
 	// Troubleshooting: identifiedStats still ~14s → this GROUP BY not used.
 	// Review if: header_count on usenet_nntp_releases replaces the scan.
-	err = idx.db.QueryRowContext(ctx, `
+	var identified, binary int64
+	err := idx.db.QueryRowContext(ctx, `
 SELECT
   COALESCE(SUM(h.n) FILTER (WHERE r.release_key IS NULL OR NOT (`+junkNameSQL+`)), 0),
   COALESCE(SUM(h.n) FILTER (WHERE r.state='named' AND (`+identNameSQL+`)), 0)
@@ -235,7 +235,7 @@ FROM (
   SELECT group_name, release_name, COUNT(*) AS n
   FROM usenet_nntp_headers
   WHERE group_name NOT LIKE '%pictures%'
-  GROUP BY 1, 2
+  GROUP BY group_name, release_name
 ) h
 LEFT JOIN usenet_nntp_releases r
   ON r.group_name=h.group_name AND r.release_key=h.release_name`).Scan(&binary, &identified)

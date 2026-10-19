@@ -11699,3 +11699,19 @@ status stays active.
 | `internal/usenetsearch/namefix_index.go` | `DuePendingHeaderNames` |
 | `internal/usenetsearch/namefix_test.go` | stub filename + hash BODY-due still renames quoted |
 | `docs/usenet-nntp-native.md` | pass order |
+
+## 2026-10-19 — yield groups stage hashes after an empty index
+
+**Problem:** After truncating NNTP crawl tables, Searchable stayed at 0. Namefix was `renamed=0`. Live chunks on `anime.highspeed` / `uhd` / `bluray` were `skip_obf_cap=2000` with `staged_obf=0`.
+**Root cause:** `obfStageAllowed` only staged new hashes on packages.json step ≤2 or groups with a searchable recovered name. Yield groups (step 3–4) can never get that first name if every quoted hash is dropped. Staging cores filled with incomplete hashes that miss PreDB.
+**Fix:** New obfuscated headers stage on `IsNameFixYieldGroup` (step ≤4 + anime), still bounded by the per-group unnamed cap. Step-5 firehose still needs `GroupHasNamedRelease`.
+**Outcome:** A wiped index can store quoted yield-group hashes so header namefix can make them searchable.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/ingest.go` | `obfStageAllowed` uses yield groups |
+| `internal/usenetsearch/seeds.go` | staging-core comment no longer claims unnamed budget |
+| `internal/usenetsearch/namefix_test.go` | empty highspeed index stages one set |
+| `docs/usenet-nntp-native.md` | yield groups stage without a recovered name |

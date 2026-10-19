@@ -755,6 +755,22 @@ func TestStaging_FirehoseWithoutNamedDropsNewSets(t *testing.T) {
 	}
 }
 
+func TestStaging_YieldGroupEmptyIndexStages(t *testing.T) {
+	rows := obfuscatedSet("a", nfHash, 1, 5)
+	f := newNFFixture(t, rows, nil)
+	const g = "alt.binaries.multimedia.anime.highspeed"
+	f.crawl.Groups = []string{g}
+	f.nf.Groups = []string{g}
+	f.crawlAndRecompute(t)
+	var n int
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases WHERE group_name=?`, g).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("highspeed sets=%d, want 1 (yield group must stage with no named release)", n)
+	}
+}
+
 // With namefix off the crawl keeps today's behavior: nothing is staged (no
 // obf-keyed headers, no pending_name release rows); rows are parsed exactly as
 // ParseSubject always did.

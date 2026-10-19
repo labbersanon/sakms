@@ -165,14 +165,15 @@ func (c *Crawler) capStaged(ctx context.Context, group string, staged []HeaderRo
 			return nil, nil
 		}
 	}
-	// Claude 2026-10-16: only stage *new* obfuscated sets on staging cores
-	// (packages.json step ≤2 or pinned) or groups that already have a named
-	// release (NNTmux backfill=1 analog). Cap is per-group.
-	// Reason: IsPackageCore included step-5 noise (boneless/dvd); those filled
-	//   a global unnamed_max_pct so moovee/teevee could not stage. Existing
-	//   keys still flow in.
-	// Troubleshooting: skip_obf_cap high on boneless with staged_obf=0 is expected.
-	// Review if: an operator opt-in "stage hashes on this LIST group" is added.
+	// Claude 2026-10-19: stage new obfuscated sets on namefix yield groups
+	// (step ≤4 + anime) and on any group that already has a recovered name.
+	// Cap stays per-group. Step-5 firehose still needs GroupHasNamedRelease.
+	// Reason: after an NNTP wipe, GroupHasNamedRelease is false everywhere.
+	//   anime.highspeed/uhd/bluray (step 3–4) then skip_obf_cap every quoted
+	//   hash, so namefix never sees titles and Searchable stays 0.
+	// Troubleshooting: skip_obf_cap=2000 on highspeed with staged_obf=0 and
+	//   Searchable=0 after truncate → this still requiring a named release.
+	// Review if: an operator opt-in to stage hashes on step-5 LIST groups.
 	dropNew := !c.obfStageAllowed(ctx, group)
 	if !dropNew && c.MaxGB > 0 {
 		used, err := c.Index.StagedBytes(ctx, group)
@@ -208,7 +209,7 @@ func (c *Crawler) capStaged(ctx context.Context, group string, staged []HeaderRo
 }
 
 func (c *Crawler) obfStageAllowed(ctx context.Context, group string) bool {
-	if IsStagingCore(group) {
+	if IsNameFixYieldGroup(group) {
 		return true
 	}
 	if c.obfStageOK == nil {

@@ -177,10 +177,14 @@ collection-key rewrite (once) → forward crawl → repair → name recovery →
   `unnamed_ttl_days` a set is finalized and deleted, except ≥80% yield-group
   sets which stay for PreDB-only retries so a later IRC line or dump
   import can still name them. Staged header occupancy (pending_name rows × ~200 B,
-  same units as `index_max_gb`) is capped at `unnamed_max_pct` of `index_max_gb`;
-  BODY volume is `namefix_body_mb_per_hour`.
+  same units as `index_max_gb`) is capped at `unnamed_max_pct` of `index_max_gb`
+  **per group**; BODY volume is `namefix_body_mb_per_hour`.
+  New obfuscated headers stage on namefix yield groups (packages.json step ≤4
+  plus `alt.binaries.anime`) even when the group has no recovered name yet.
+  Step-5 firehose (boneless/dvd/bloaf) still needs a searchable recovered name.
   Claude 2026-10-19: occupancy, not yEnc payload_bytes — that mismatch was
-  skip_obf_cap on every yield core.
+  skip_obf_cap on every yield core. Yield groups must stage after a wipe or
+  `GroupHasNamedRelease` never becomes true (Searchable stays 0).
   Review if: ApproxBytes stops using ~200 B/row.
   Historical names come from an operator-supplied nZEDb TSV dump
   (`usenet_nntp_predb_dump_path`, local file or dump-file URL); sakms does not

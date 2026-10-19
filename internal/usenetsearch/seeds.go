@@ -154,9 +154,9 @@ var (
 	nameFixYieldGroups map[string]bool
 )
 
-// StagingCoreMaxStep is the packages.json step at/below which a seed may
-// occupy the unnamed staging budget and the 2/3 core OVER share. Pinned
-// seeds qualify at any step.
+// StagingCoreMaxStep is the packages.json step at/below which a seed is a
+// staging core (DuePendingNames fill / splitCoreRest). Pinned seeds qualify
+// at any step. New obfuscated headers stage on IsNameFixYieldGroup, not this cutoff.
 const StagingCoreMaxStep = 2
 
 // IsPackageCore reports whether name is a packages.json seed (any mode).
@@ -175,7 +175,7 @@ func IsPackageCore(name string) bool {
 // IsStagingCore reports whether name is a high-yield packages.json seed
 // (pinned or step ≤ StagingCoreMaxStep) in any mode.
 //
-// Claude 2026-10-16: crawl 2/3 budget and new-obf staging use this instead of
+// Claude 2026-10-16: DuePendingNames fill / splitCoreRest use this instead of
 // IsPackageCore (which includes step-5 noise like boneless/dvd).
 // Reason: those firehose seeds filled unnamed_max_pct and burned OVER on
 // 100% skip_obf_cap / skip_unparsed chunks.
@@ -183,6 +183,7 @@ func IsPackageCore(name string) bool {
 // IsStagingCore(moovee) must be true and the cap must be per-group.
 // Review if: the operator slider should also gate staging (today slider is
 // grade-tolerance only; crawl membership stays LIST ACTIVE).
+// Related files: ingest.go obfStageAllowed (yield groups stage hashes).
 func IsStagingCore(name string) bool {
 	stagingCoreOnce.Do(func() {
 		stagingCores = map[string]bool{}

@@ -32,9 +32,15 @@ type crawlStub struct {
 	bodyDelay time.Duration
 }
 
-func (c *crawlStub) BodyHead(_ context.Context, msgID string, maxBytes int) (usenet.BodySample, error) {
+func (c *crawlStub) BodyHead(ctx context.Context, msgID string, maxBytes int) (usenet.BodySample, error) {
 	if c.bodyDelay > 0 {
-		time.Sleep(c.bodyDelay)
+		timer := time.NewTimer(c.bodyDelay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return usenet.BodySample{}, ctx.Err()
+		case <-timer.C:
+		}
 	}
 	c.bodyCalls = append(c.bodyCalls, msgID)
 	if c.bodyErr != nil {

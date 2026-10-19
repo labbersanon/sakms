@@ -11715,3 +11715,19 @@ status stays active.
 | `internal/usenetsearch/seeds.go` | staging-core comment no longer claims unnamed budget |
 | `internal/usenetsearch/namefix_test.go` | empty highspeed index stages one set |
 | `docs/usenet-nntp-native.md` | yield groups stage without a recovered name |
+
+## 2026-10-19 — namefix BODY honors the 20s pass budget
+
+**Problem:** After yield groups could stage, namefix logged `starting header=0 body=2` then silence for ~3.5 minutes (`body_fetches=2 body_bytes=640000`). Highspeed quoted titles sat at 4% complete.
+**Root cause:** The 20s pass budget only ran between sets. Each BodyHead used a 60s NNTP socket deadline and ignored the pass context, so two hash PAR2/RAR fetches froze crawl.
+**Fix:** Each namefix phase uses a 20s context. BodyHead arms the socket to the sooner of 60s and that deadline. PAR2 can still rename hash-named sets when FileDesc is a scene title.
+**Outcome:** A slow BODY cannot hold the crawl loop past the pass budget; quoted yield sets keep filling.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix.go` | phase context into BodyHead |
+| `internal/usenet/headersource.go` | BodyHead honors ctx deadline |
+| `internal/usenet/pool.go` | `fetchSegmentUntil` |
+| `internal/usenet/nntpdeadline.go` | `armNNTPDeadlineUntil` |

@@ -90,10 +90,14 @@ func discardNNTP(c *nntp.Conn) {
 // armNNTPDeadline sets a now+articleIOTimeout deadline and returns a disarm
 // func that clears it. Safe to call the disarm more than once.
 func armNNTPDeadline(c *nntp.Conn) func() {
-	if articleIOTimeout <= 0 || c == nil {
+	return armNNTPDeadlineUntil(c, time.Now().Add(articleIOTimeout))
+}
+
+func armNNTPDeadlineUntil(c *nntp.Conn, until time.Time) func() {
+	if articleIOTimeout <= 0 || c == nil || until.IsZero() {
 		return func() {}
 	}
-	if err := setNNTPDeadline(c, time.Now().Add(articleIOTimeout)); err != nil {
+	if err := setNNTPDeadline(c, until); err != nil {
 		nntpDeadlineWarn.Do(func() {
 			log.Printf("usenet: NNTP socket deadline unavailable: %v — hung BODY reads will not time out", err)
 		})

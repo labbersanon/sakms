@@ -220,22 +220,30 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 		budget = namefixMaxDuration
 	}
 	done := map[string]bool{}
+	// Claude 2026-10-19: each phase's 20s context is passed into BodyHead.
+	// Reason: live namefix starting body=2 sat 3.5 min; the budget only
+	//   ran between sets while BodyHead used a 60s socket timeout.
+	// Troubleshooting: namefix starting with no pass for >90s → BodyHead
+	//   still ignoring ctx (fetchSegmentUntil / armNNTPDeadlineUntil).
+	// Review if: articleIOTimeout becomes a settings knob.
 	run := func(in []PendingSet, phase string) error {
-		deadline := time.Now().Add(budget)
+		phaseCtx, cancel := context.WithTimeout(ctx, budget)
+		defer cancel()
 		for i, set := range in {
-			if err := ctx.Err(); err != nil {
-				return err
+			if err := phaseCtx.Err(); err != nil {
+				log.Printf("usenetsearch: namefix deadline phase=%s leftover=%d", phase, len(in)-i)
+				return nil
 			}
 			if done[keyOf(set)] {
 				continue
 			}
-			if time.Now().After(deadline) {
-				log.Printf("usenetsearch: namefix deadline phase=%s leftover=%d", phase, len(in)-i)
-				return nil
-			}
 			renamed := res.Renamed
-			stop, err := n.fixSet(ctx, set, &res, &statBudget)
+			stop, err := n.fixSet(phaseCtx, set, &res, &statBudget)
 			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+					log.Printf("usenetsearch: namefix deadline phase=%s leftover=%d", phase, len(in)-i)
+					return nil
+				}
 				return err
 			}
 			if res.Renamed > renamed {

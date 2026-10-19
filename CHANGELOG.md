@@ -11604,3 +11604,18 @@ status stays active.
 | `internal/usenetsearch/namefix_test.go` | occupancy cap tests; padPendingOverCap |
 | `internal/usenetsearch/subject_test.go` | teevee/moovee/hdtv HIGH shapes |
 | `docs/usenet-nntp-native.md` | occupancy cap |
+
+## 2026-10-19 — dashboard NNTP crawler card loads (identified stats cached)
+
+**Problem:** After deploy the Dashboard card stayed on "Loading NNTP crawler…".
+**Root cause:** GET `/api/admin/nntp-crawler` ran `identifiedStats` — a 13.6M-header JOIN with regex per row (~14s). The card polls every 10s, so requests overlapped and never returned.
+**Fix:** Status GET reads a memory snapshot. The crawl loop (and Apply) refresh it with a GROUP BY-then-regex query (~3s, 20s timeout).
+**Outcome:** The crawler card returns without scanning headers.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/status.go` | cache Identified; GROUP BY identifiedStats |
+| `internal/usenetsearch/service.go` | refreshIdentified after Apply and recompute |
+| `internal/usenetsearch/status_test.go` | GET must not inline-scan |

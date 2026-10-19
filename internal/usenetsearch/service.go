@@ -324,6 +324,10 @@ type Service struct {
 	// lastChunk / lastPass feed the Dashboard crawler card.
 	lastChunk CrawlChunkStat
 	lastPass  CrawlResult
+	// identID / identBin are the last identifiedStats snapshot. The
+	// dashboard GET must not run that query (13M-header JOIN).
+	identID  int64
+	identBin int64
 
 	driftAIFn        DriftAIFunc
 	driftFetch       DriftFetchFunc
@@ -434,6 +438,7 @@ func (s *Service) Apply(cfg Config) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
 	go s.loop(ctx)
+	go s.refreshIdentified(ctx)
 	return nil
 }
 
@@ -488,6 +493,7 @@ func (s *Service) loop(ctx context.Context) {
 		//   → dirty complete sets are not at the front of RecomputeDirty.
 		// Review if: crawl should pause while dirty pending_name exceeds a knob.
 		s.runRecompute(ctx)
+		s.refreshIdentified(ctx)
 		// Claude 2026-10-19: namefix even when the OVER pass was busy.
 		// Reason: PreDB lookups are local DB; skipping the whole pass while
 		//   crawl is busy left 2k due pending unnamed (hash_hits≈1 / 2h).

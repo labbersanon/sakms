@@ -34,26 +34,41 @@ type PendingSet struct {
 	PreDBOnly bool
 }
 
-// StagedBytes is the payload size of unresolved staged sets in group (as of
-// their last recompute; sets staged this very chunk count 0 until then).
+// StagedBytes is the header-index occupancy of unresolved staged sets in
+// group (COUNT of stored headers × approxHeaderRowBytes). Sets staged in
+// this chunk are not counted until upsert.
 //
 // Claude 2026-10-16: cap is per-group, not a global SUM.
 // Reason: boneless/teevee pending (~1 TiB real header bytes) filled a global
 // unnamed_max_pct so moovee (0 pending) skip_obf_cap'd every new set.
 // Troubleshooting: skip_obf_cap on a core with staged_obf=0 → that group's
-// own pending_name payload is over unnamed_max_pct of MaxGB.
+// own pending_name occupancy is over unnamed_max_pct of MaxGB.
 // Review if: a shared unnamed pool for step-1 cores is added as a Settings knob.
 func (idx *Index) StagedBytes(ctx context.Context, group string) (int64, error) {
 	var n int64
 	// Claude 2026-10-16: exhausted kept yield sets do not fill the unnamed cap.
 	// Reason: hash-named PAR2/RAR sets sit at name_attempts>=3 (keepCompleteYield
-	// skipped the sweep) and SUM(payload_bytes) kept every group in skip_obf_cap.
+	// skipped the sweep) and used to keep every group in skip_obf_cap.
 	// Troubleshooting: skip_obf_cap with only shelved complete pending → this
 	// filter not applied. Review if: PreDB starts naming those hashes (retry).
-	err := idx.db.QueryRowContext(ctx,
-		`SELECT COALESCE(SUM(payload_bytes),0) FROM usenet_nntp_releases WHERE state='pending_name' AND group_name=? AND name_attempts < ?`,
+	//
+	// Claude 2026-10-19: unnamed cap uses header occupancy, not yEnc payload.
+	// Reason: SUM(payload_bytes) is media size (one 20 GiB x264 set) while
+	//   IndexMaxGB/unnamed_max_pct is COUNT(*)×200 B. Cores sat in skip_obf_cap
+	//   with only tens of thousands of pending headers.
+	// Troubleshooting: skip_obf_cap with pending payload ≫ occupancy → this
+	//   JOIN not used. Review if: ApproxBytes stops using approxHeaderRowBytes.
+	// Related files: ingest.go capStaged, index.go ApproxBytes
+	err := idx.db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM usenet_nntp_headers h
+JOIN usenet_nntp_releases r ON r.group_name=h.group_name AND r.release_key=h.release_name
+WHERE r.state='pending_name' AND r.group_name=? AND r.name_attempts < ?`,
 		group, maxNameAttempts).Scan(&n)
-	return n, err
+	if err != nil {
+		return 0, err
+	}
+	return n * approxHeaderRowBytes, nil
 }
 
 // DuePendingNames returns up to limit staged sets in groups whose retry time

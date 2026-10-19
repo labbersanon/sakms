@@ -83,12 +83,21 @@ func parseHeader(group, subj, from, msgid string, num int, postedAt, bytes int64
 	return h
 }
 
-// stageObfuscated rewrites an obfuscated/unparsed BINARY row (segment counter
-// present) to its staged-set key so it can be name-recovered later. Non-binary
-// junk and readable names are left untouched (plan D3 step 1).
+// stageObfuscated rewrites an obfuscated/unparsed BINARY row (yEnc segment
+// counter or [k/N] file counter present) to its staged-set key so it can be
+// name-recovered later. Non-binary junk and readable names are left untouched
+// (plan D3 step 1). Unique-ID yEnc floods (partM > maxYencPartM, no FileM)
+// stay skip_unparsed.
 func stageObfuscated(h *HeaderRow, ps ParsedSubject) {
-	partN, partM := yencParts(h.Subject)
-	if partM <= 0 {
+	// Claude 2026-10-19: [k/N] collections stage even without yEnc (n/m).
+	// Reason: moovee/teevee HIGH posts `TOKEN [10/15] "hash.rar"` with no
+	//   trailing (n/m); yencParts was 0 so admitChunk counted skip_unparsed
+	//   and the watermark ran past them. Unique-ID `"hash" yEnc (730696/967646)`
+	//   still has FileM=0 and stays dropped.
+	// Troubleshooting: skip_unparsed=chunk on a yield core with [k/N] in the
+	//   subject → this FileM gate not applied.
+	// Review if: a poster uses neither [k/N] nor a plausible (n/m).
+	if ps.PartM <= 0 && ps.FileM <= 0 {
 		return
 	}
 	skel := obfSkeleton(h.Subject)
@@ -103,7 +112,6 @@ func stageObfuscated(h *HeaderRow, ps ParsedSubject) {
 	}
 	h.ReleaseName = ObfKey(h.Group, h.From, h.Subject)
 	h.Obfuscated = true
-	h.PartN, h.PartM = partN, partM
 	if h.Filename == "" {
 		if m := reFileTok.FindStringSubmatch(h.Subject); len(m) == 2 {
 			h.Filename = m[1]
@@ -125,10 +133,18 @@ func splitStaged(headers []HeaderRow) (rest, staged []HeaderRow) {
 }
 
 // DefaultUnnamedMaxPct is the default share of the index budget staged
-// (unnamed) sets may occupy.
+// (unnamed) sets may occupy. The budget is header occupancy (ApproxBytes
+// units), not yEnc payload_bytes.
 const DefaultUnnamedMaxPct = 25
 
-// capStaged enforces the unnamed-bytes cap (plan D3 step 2): above it, rows of
+func unnamedCapBytes(maxGB, pct int) int64 {
+	if pct <= 0 {
+		pct = DefaultUnnamedMaxPct
+	}
+	return int64(maxGB) * 1024 * 1024 * 1024 * int64(pct) / 100
+}
+
+// capStaged enforces the unnamed occupancy cap (plan D3 step 2): above it, rows of
 // NEW staged sets are dropped (skip_obf_cap) while rows of already-staged or
 // renamed sets still flow in. Sets whose true name was already rejected
 // (verdict cached by namefix) never re-stage.
@@ -145,13 +161,9 @@ func (c *Crawler) capStaged(ctx context.Context, group string, staged []HeaderRo
 			kept = append(kept, h)
 		}
 		staged = kept
-	}
-	pct := c.UnnamedMaxPct
-	if pct <= 0 {
-		pct = DefaultUnnamedMaxPct
-	}
-	if len(staged) == 0 {
-		return nil, nil
+		if len(staged) == 0 {
+			return nil, nil
+		}
 	}
 	// Claude 2026-10-16: only stage *new* obfuscated sets on staging cores
 	// (packages.json step ≤2 or pinned) or groups that already have a named
@@ -167,7 +179,7 @@ func (c *Crawler) capStaged(ctx context.Context, group string, staged []HeaderRo
 		if err != nil {
 			return nil, err
 		}
-		if used >= int64(c.MaxGB)*1024*1024*1024*int64(pct)/100 {
+		if used >= unnamedCapBytes(c.MaxGB, c.UnnamedMaxPct) {
 			dropNew = true
 		}
 	}

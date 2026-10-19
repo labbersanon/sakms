@@ -209,6 +209,39 @@ func TestParseSubject_ImplausibleYencPartsIgnored(t *testing.T) {
 	}
 }
 
+func TestStageObfuscated_FileCounterWithoutYenc(t *testing.T) {
+	const g = "alt.binaries.teevee"
+	const tok = "Njabzsard2xrgxGUQIT"
+	a := parseHeader(g, tok+` [10/15] "zzzzzzzzzzzzzzzzzzzz.part01.rar"`, "p@t", "a@t", 1, 1, 1000, true)
+	b := parseHeader(g, tok+` [11/15] "zzzzzzzzzzzzzzzzzzzz.part02.rar"`, "p@t", "b@t", 2, 1, 1000, true)
+	if !isObfKey(a.ReleaseName) || a.ReleaseName != b.ReleaseName {
+		t.Fatalf("want one staged key, got a=%q b=%q", a.ReleaseName, b.ReleaseName)
+	}
+	if a.FileM != 15 || a.PartM != 0 {
+		t.Fatalf("FileM=%d PartM=%d (do not copy [k/N] into yEnc parts)", a.FileM, a.PartM)
+	}
+}
+
+func TestStageObfuscated_MooveeYencLessTrailingParts(t *testing.T) {
+	h := parseHeader("alt.binaries.moovee",
+		`[38/38] - "H3tSMujaxxxxxxxx.vol03+04.par2" (53/166)`,
+		"p@t", "m@t", 1, 1, 1000, true)
+	if !isObfKey(h.ReleaseName) {
+		t.Fatalf("want staged, got name=%q partM=%d fileM=%d", h.ReleaseName, h.PartM, h.FileM)
+	}
+	if h.PartM != 166 {
+		t.Fatalf("partM=%d, want 166 from trailing (n/m)", h.PartM)
+	}
+}
+
+func TestStageObfuscated_HdtvQuotedHashMkv(t *testing.T) {
+	h := parseHeader("alt.binaries.hdtv.x264", `"htgdyhl2tbpvyqihkd.mkv" yEnc (3837/3928) 2750952218`,
+		"p@x", "m@x", 1, 1, 1000, true)
+	if !isObfKey(h.ReleaseName) {
+		t.Fatalf("want staged, got %q", h.ReleaseName)
+	}
+}
+
 func TestParseSubject_Latin1BeforeYencDoesNotPanic(t *testing.T) {
 	// Live panic: ToLower expanded latin1 0xe4 → U+FFFD (+2 bytes) so
 	// core[:i] was [:80] on a 78-byte subject.

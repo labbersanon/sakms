@@ -590,15 +590,62 @@ func TestNameFix_TTLFinalizesOldSets(t *testing.T) {
 	}
 }
 
+// padPendingOverCap inserts dummy headers on group's pending sets so
+// StagedBytes exceeds unnamedCapBytes(maxGB, pct).
+func padPendingOverCap(t *testing.T, idx *Index, group string, maxGB, pct int) {
+	t.Helper()
+	ctx := context.Background()
+	used, err := idx.StagedBytes(ctx, group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cap := unnamedCapBytes(maxGB, pct)
+	if used >= cap {
+		return
+	}
+	need := (cap-used)/approxHeaderRowBytes + 1
+	_, err = idx.db.Exec(`
+INSERT INTO usenet_nntp_headers (group_name, msg_num, msgid, subject, from_addr, posted_at, bytes,
+  release_name, part_n, part_m, filename, yenc_size, obfuscated, is_meta, ingested_at, file_n, file_m)
+SELECT r.group_name, 2000000000 + g, 'pad-' || g || '@t', 'pad', 'poster@obf', 1700000000, 1,
+  r.release_key, 1, 1, 'pad.rar', 0, TRUE, FALSE, 1700000000, 1, 1
+FROM usenet_nntp_releases r
+CROSS JOIN generate_series(1, ?) AS g
+WHERE r.group_name=? AND r.state='pending_name' AND r.name_attempts < ?`,
+		need, group, maxNameAttempts)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStagedBytes_HeaderOccupancyNotPayload(t *testing.T) {
+	f := newNFFixture(t, obfuscatedSet("a", nfHash, 1, 45), nil)
+	f.crawlAndRecompute(t)
+	ctx := context.Background()
+	var headers int64
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_headers`).Scan(&headers); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET payload_bytes=?`, int64(20)<<30); err != nil {
+		t.Fatal(err)
+	}
+	used, err := f.idx.StagedBytes(ctx, nfGroup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := headers * approxHeaderRowBytes
+	if used != want {
+		t.Fatalf("StagedBytes=%d, want %d (headers×%d); payload must not fill the unnamed cap", used, want, approxHeaderRowBytes)
+	}
+}
+
 func TestStaging_CapDropsNewSetsButKeepsExisting(t *testing.T) {
 	rowsA := obfuscatedSet("a", nfHash, 1, 45)
 	f := newNFFixture(t, rowsA, nil)
 	f.crawl.MaxGB = 1
+	f.crawl.UnnamedMaxPct = 1
 	f.crawlAndRecompute(t)
-	// Pretend the staging area is full (cap = 25% of 1 GiB).
-	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET payload_bytes=?`, int64(300)<<20); err != nil {
-		t.Fatal(err)
-	}
+	padPendingOverCap(t, f.idx, nfGroup, 1, 1)
 	const h2 = "fedcba9876543210fedcba9876543210"
 	rowsB := obfuscatedSet("c", h2, len(rowsA)+1, 45)
 	// New rows for the already-staged set A plus a brand-new set B.
@@ -634,10 +681,9 @@ func TestStaging_CapIsPerGroup(t *testing.T) {
 	rowsA := obfuscatedSet("a", nfHash, 1, 45)
 	f := newNFFixture(t, rowsA, nil)
 	f.crawl.MaxGB = 1
+	f.crawl.UnnamedMaxPct = 1
 	f.crawlAndRecompute(t)
-	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET payload_bytes=? WHERE group_name=?`, int64(300)<<20, nfGroup); err != nil {
-		t.Fatal(err)
-	}
+	padPendingOverCap(t, f.idx, nfGroup, 1, 1)
 	const other = "alt.binaries.moovee"
 	const h2 = "fedcba9876543210fedcba9876543210"
 	rowsB := obfuscatedSet("c", h2, 1, 5)

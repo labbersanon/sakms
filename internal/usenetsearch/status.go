@@ -2,6 +2,8 @@ package usenetsearch
 
 import (
 	"context"
+	"log"
+	"time"
 
 	"github.com/labbersanon/sakms/internal/usenet"
 )
@@ -139,6 +141,7 @@ func (s *Service) CrawlerStatus(ctx context.Context) (CrawlerStatus, error) {
 	idx := s.idx
 	probe := s.probe
 	lastPass := s.lastPass
+	identID, identBin := s.identID, s.identBin
 	var lastChunk *CrawlChunkStat
 	if s.lastChunk.Group != "" {
 		cp := s.lastChunk
@@ -147,17 +150,22 @@ func (s *Service) CrawlerStatus(ctx context.Context) (CrawlerStatus, error) {
 	s.mu.Unlock()
 
 	out := CrawlerStatus{
-		Enabled:          cfg.Enabled,
-		ProbeState:       probe.State,
-		ProbeDetail:      probe.Detail,
-		Groups:           len(cfg.AllGroups()),
-		IndexMaxGB:       cfg.IndexMaxGB,
-		LastPassBusy:     lastPass.Busy,
-		LastPassAdvanced: lastPass.Advanced,
-		LastChunk:        lastChunk,
+		Enabled:           cfg.Enabled,
+		ProbeState:        probe.State,
+		ProbeDetail:       probe.Detail,
+		Groups:            len(cfg.AllGroups()),
+		IndexMaxGB:        cfg.IndexMaxGB,
+		LastPassBusy:      lastPass.Busy,
+		LastPassAdvanced:  lastPass.Advanced,
+		LastChunk:         lastChunk,
+		HeadersIdentified: identID,
+		HeadersBinary:     identBin,
 	}
 	if out.IndexMaxGB <= 0 {
 		out.IndexMaxGB = DefaultIndexMaxGB
+	}
+	if identBin > 0 {
+		out.IdentifiedPct = int(identID * 100 / identBin)
 	}
 	if !cfg.Enabled || idx == nil {
 		return out, nil
@@ -180,27 +188,56 @@ func (s *Service) CrawlerStatus(ctx context.Context) (CrawlerStatus, error) {
 	out.ReleasesBelowGate = gf.ReleasesBelowGate
 	out.PendingName = gf.PendingName
 	out.MissedRanges = gf.MissedRanges
-	id, bin, err := idx.identifiedStats(ctx)
-	if err != nil {
-		return out, err
-	}
-	out.HeadersIdentified = id
-	out.HeadersBinary = bin
-	if bin > 0 {
-		out.IdentifiedPct = int(id * 100 / bin)
-	}
 	return out, nil
 }
 
-func (idx *Index) identifiedStats(ctx context.Context) (identified, binary int64, err error) {
-	err = idx.db.QueryRowContext(ctx, `
+// identRefreshTimeout bounds identifiedStats so a stuck query cannot block the crawl loop.
+const identRefreshTimeout = 20 * time.Second
+
+// refreshIdentified caches Identified/binary header counts.
+//
+// Claude 2026-10-19: dashboard GET /api/admin/nntp-crawler must not JOIN
+//   usenet_nntp_headers (13.6M rows, ~14s, regex per header). The card poll
+//   is 10s, so overlapping queries left "Loading NNTP crawler…" forever.
+// Troubleshooting: Identified stuck at 0/0 after enable → this refresh not
+//   running (Apply/loop). Review if: header_count is denormalized on releases.
+func (s *Service) refreshIdentified(ctx context.Context) {
+	s.mu.Lock()
+	idx := s.idx
+	s.mu.Unlock()
+	if idx == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, identRefreshTimeout)
+	defer cancel()
+	id, bin, err := idx.identifiedStats(ctx)
+	if err != nil {
+		log.Printf("usenetsearch: identified stats: %v", err)
+		return
+	}
+	s.mu.Lock()
+	s.identID, s.identBin = id, bin
+	s.mu.Unlock()
+}
+
+func (idx *Index) identifiedStats(ctx context.Context) (int64, int64, error) {
+	// Claude 2026-10-19: GROUP BY release then regex, not regex per header.
+	// Reason: the LEFT JOIN applied identNameSQL/junkNameSQL on 13.6M rows
+	//   (~14s). Aggregation first is ~3s and only the crawl loop runs it.
+	// Troubleshooting: identifiedStats still ~14s → this GROUP BY not used.
+	// Review if: header_count on usenet_nntp_releases replaces the scan.
+	var identified, binary int64
+	err := idx.db.QueryRowContext(ctx, `
 SELECT
-  COUNT(*) FILTER (
-    WHERE h.group_name NOT LIKE '%pictures%'
-      AND (r.release_key IS NULL OR NOT (`+junkNameSQL+`))),
-  COUNT(*) FILTER (
-    WHERE h.group_name NOT LIKE '%pictures%' AND r.state='named' AND (`+identNameSQL+`))
-FROM usenet_nntp_headers h
-LEFT JOIN usenet_nntp_releases r ON r.group_name=h.group_name AND r.release_key=h.release_name`).Scan(&binary, &identified)
+  COALESCE(SUM(h.n) FILTER (WHERE r.release_key IS NULL OR NOT (`+junkNameSQL+`)), 0),
+  COALESCE(SUM(h.n) FILTER (WHERE r.state='named' AND (`+identNameSQL+`)), 0)
+FROM (
+  SELECT group_name, release_name, COUNT(*) AS n
+  FROM usenet_nntp_headers
+  WHERE group_name NOT LIKE '%pictures%'
+  GROUP BY group_name, release_name
+) h
+LEFT JOIN usenet_nntp_releases r
+  ON r.group_name=h.group_name AND r.release_key=h.release_name`).Scan(&binary, &identified)
 	return identified, binary, err
 }

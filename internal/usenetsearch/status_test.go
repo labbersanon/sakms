@@ -106,3 +106,39 @@ func TestCrawlerStatus_LastChunk(t *testing.T) {
 		t.Fatalf("lastChunk=%+v", st.LastChunk)
 	}
 }
+
+func TestCrawlerStatus_IdentifiedFromCacheNotInlineScan(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	const g = "alt.binaries.movies"
+	rows := fileRows(g, "Full.Movie.2020.1080p", "full.mkv", "full", 0, 10, 10, 0)
+	if err := idx.Upsert(ctx, rows); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.RecomputeDirty(ctx, 100); err != nil {
+		t.Fatal(err)
+	}
+	s := NewService(nil, nil)
+	s.cfg.Enabled = true
+	s.idx = idx
+	st, err := s.CrawlerStatus(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.HeadersIdentified != 0 || st.HeadersBinary != 0 || st.IdentifiedPct != 0 {
+		t.Fatalf("status GET must use cache, not scan: %+v", st)
+	}
+	s.refreshIdentified(ctx)
+	st, err = s.CrawlerStatus(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.HeadersIdentified != 10 || st.HeadersBinary != 10 || st.IdentifiedPct != 100 {
+		t.Fatalf("after refresh identified=%d binary=%d pct=%d", st.HeadersIdentified, st.HeadersBinary, st.IdentifiedPct)
+	}
+}

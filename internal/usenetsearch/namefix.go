@@ -56,7 +56,9 @@ const (
 	namefixSetsPerPass      = 40
 	namefixIdentBodyPerPass = 20
 	namefixPreDBPerPass     = 200
-	namefixBodiesPerSet     = 3
+	// Header-ident quoted titles (no BODY/PreDB HTTP). Run before PreDB.
+	namefixHeaderPerPass = 40
+	namefixBodiesPerSet  = 3
 	// namefixMaxDuration: stop mid-pass so a hung BODY cannot freeze crawl.
 	// Claude 2026-10-19: 20s wall clock like recompute.
 	// Reason: after #204 the loop went silent 14 min in namefix BODY
@@ -167,6 +169,10 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 	}
 	res.Finalized += swept
 	statBudget := statReleasesPerChunk
+	headerSets, err := n.Index.DuePendingHeaderNames(ctx, namefixHeaderPerPass)
+	if err != nil {
+		return res, err
+	}
 	predbSets, err := n.Index.DuePendingPreDB(ctx, namefixPreDBPerPass)
 	if err != nil {
 		return res, err
@@ -188,41 +194,52 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 	//   still stays BODY-capable (not in preOnly) so a PreDB miss can PAR2.
 	// Troubleshooting: namefix deadline leftover≈predb with hash_hits=0 →
 	//   add(sets) ran before preOnly. Review if: 20s is raised, not removed.
-	bodyKeys := map[string]bool{}
+	skipPre := map[string]bool{}
 	keyOf := func(set PendingSet) string { return set.Group + "\x00" + set.Key }
 	for _, set := range sets {
-		bodyKeys[keyOf(set)] = true
+		skipPre[keyOf(set)] = true
 	}
 	for _, set := range ident {
-		bodyKeys[keyOf(set)] = true
+		skipPre[keyOf(set)] = true
+	}
+	for _, set := range headerSets {
+		skipPre[keyOf(set)] = true
 	}
 	var preOnly []PendingSet
 	for _, set := range predbSets {
-		if !bodyKeys[keyOf(set)] {
+		if !skipPre[keyOf(set)] {
 			preOnly = append(preOnly, set)
 		}
 	}
-	if len(sets)+len(ident)+len(predbSets) > 0 {
-		log.Printf("usenetsearch: namefix starting body=%d ident=%d predb=%d skip_body=%t",
-			len(sets), len(ident), len(predbSets), n.SkipBody)
+	if len(sets)+len(ident)+len(predbSets)+len(headerSets) > 0 {
+		log.Printf("usenetsearch: namefix starting header=%d body=%d ident=%d predb=%d skip_body=%t",
+			len(headerSets), len(sets), len(ident), len(predbSets), n.SkipBody)
 	}
 	budget := n.PassBudget
 	if budget <= 0 {
 		budget = namefixMaxDuration
 	}
+	done := map[string]bool{}
 	run := func(in []PendingSet, phase string) error {
 		deadline := time.Now().Add(budget)
 		for i, set := range in {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
+			if done[keyOf(set)] {
+				continue
+			}
 			if time.Now().After(deadline) {
 				log.Printf("usenetsearch: namefix deadline phase=%s leftover=%d", phase, len(in)-i)
 				return nil
 			}
+			renamed := res.Renamed
 			stop, err := n.fixSet(ctx, set, &res, &statBudget)
 			if err != nil {
 				return err
+			}
+			if res.Renamed > renamed {
+				done[keyOf(set)] = true
 			}
 			if stop {
 				return nil
@@ -235,6 +252,15 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 	//   burned the shared deadline (hash_hits=1 leftover=222 body_fetches=0).
 	// Troubleshooting: leftover=predb with body_fetches=0 after a hit →
 	//   BODY phase missing. Review if: PreDB sample 64 misses a hash token.
+	// Claude 2026-10-19: quoted ident titles before PreDB HTTP / BODY.
+	// Reason: live 95% Black Clover/Yameii were in the BODY queue, stripped
+	//   from preOnly; one hash SetRows+ByHash burned PreDB (leftover=162,
+	//   i=0) and BODY leftover=59, renamed=0. Header quotes need no BODY.
+	// Troubleshooting: header=0 while pending95 subjects quote 1080p titles
+	//   → DuePendingHeaderNames regex/next_name_at. Review if: 4K-without-p.
+	if err := run(headerSets, "header"); err != nil {
+		return res, err
+	}
 	if err := run(preOnly, "predb"); err != nil {
 		return res, err
 	}
@@ -281,15 +307,15 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 	}
 	res.Sets++
 
-	if hit, ok := n.lookupPreDB(ctx, set, rows); ok {
-		res.HashHits++
-		return n.promote(ctx, set, rows, hit.Title, sourcePreDB, confPreDB, "hit", res, statBudget)
-	}
 	for _, cand := range headerNameCandidates(rows) {
 		name, source, conf, predb, ok := n.accept(ctx, cand.name, cand.source, set.PayloadBytes)
 		if ok {
 			return n.promote(ctx, set, rows, name, source, conf, predb, res, statBudget)
 		}
+	}
+	if hit, ok := n.lookupPreDB(ctx, set, rows); ok {
+		res.HashHits++
+		return n.promote(ctx, set, rows, hit.Title, sourcePreDB, confPreDB, "hit", res, statBudget)
 	}
 	if set.PreDBOnly {
 		return false, n.Index.ScheduleNameRetry(ctx, set.Group, set.Key, exhaustedPreDBRetry)
@@ -408,9 +434,12 @@ func (n *NameFixer) accept(ctx context.Context, raw, source string, payload int6
 // season, or multi-word title.
 // Claude 2026-10-19: fansub `Ep170` / spaces, not only SxxEyy.
 // Reason: hasTitleAndMarker only counts SxxEyy/year, so Black Clover
-//   1080p quoted names failed accept() after recoveredUnusable was fixed.
+//
+//	1080p quoted names failed accept() after recoveredUnusable was fixed.
+//
 // Troubleshooting: 1080p spacey title still unnamed → Resolution parse
-//   missed (need 720/1080/2160/480p). Review if: 576p / 4K-without-p.
+//
+//	missed (need 720/1080/2160/480p). Review if: 576p / 4K-without-p.
 func identShapedName(name string) bool {
 	if release.Parse(name).Resolution == 0 {
 		return false

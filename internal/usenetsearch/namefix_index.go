@@ -181,6 +181,45 @@ func scanPendingSets(rows *sql.Rows, preDBOnly bool) ([]PendingSet, error) {
 	return out, rows.Err()
 }
 
+// quotedIdentSubjectSQL matches an NNTP quoted filename that already carries
+// a resolution plus a space or dot (fansub `[UQW] Title 1080p` / scene dots).
+const quotedIdentSubjectSQL = `h.subject ~ '"[^"]*[ .][^"]*(1080|720|2160|480)p'`
+
+// DuePendingHeaderNames returns ≥80% pending sets whose headers already quote
+// an ident-shaped filename. Namefix recovers those without PreDB HTTP or BODY.
+//
+// Claude 2026-10-19: own queue, ahead of PreDB/BODY.
+// Reason: 95% yield quoted titles were DuePendingNames (BODY) and stripped
+//
+//	from preOnly; hash ByHash HTTP then burned both 20s windows (renamed=0).
+//
+// Troubleshooting: header=0 with Black Clover still pending95 → regex missed
+//
+//	the quote shape or next_name_at is in the future (ScheduleNameRetry).
+//
+// Review if: 576p / 4K-without-p quoted titles appear in HIGH.
+func (idx *Index) DuePendingHeaderNames(ctx context.Context, limit int) ([]PendingSet, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := idx.db.QueryContext(ctx, `
+SELECT r.group_name, r.release_key, r.payload_bytes, r.name_attempts, r.completeness_bp, r.has_par2
+FROM usenet_nntp_releases r
+WHERE r.state='pending_name' AND r.dirty=FALSE AND r.declared_segs>0 AND r.completeness_bp>=?
+  AND r.next_name_at<=?
+  AND EXISTS (
+    SELECT 1 FROM usenet_nntp_headers h
+    WHERE h.group_name=r.group_name AND h.release_name=r.release_key
+      AND `+quotedIdentSubjectSQL+`
+  )
+ORDER BY r.completeness_bp DESC, r.ingested_at DESC
+LIMIT ?`, spanRepairFloorBP, time.Now().Unix(), limit)
+	if err != nil {
+		return nil, err
+	}
+	return scanPendingSets(rows, true)
+}
+
 // DuePendingPreDB returns ≥80% pending_name sets in any group for a local
 // PreDB lookup (no BODY). Boneless and other firehose groups are included:
 // a hash hit is free and is what NZB indexers do at ingest.

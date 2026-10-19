@@ -1406,6 +1406,49 @@ func TestNameFix_QuotedHashFilenameDoesNotRename(t *testing.T) {
 	}
 }
 
+func TestNameFix_QuotedTitleFromStubFilenameBeatsBodyQueue(t *testing.T) {
+	const title = "[UQW] Black Clover - Ep170 [BDRip 1080p HEVC-YUV420P10 FLAC]"
+	quoted := []usenet.MessageOverview{
+		{Number: 1, Subject: `[01/2] - "` + title + `.mkv" yEnc (1/2)`, From: "poster@obf", MessageID: "qs1@t", Bytes: 80_000_000, DateUnix: 1700000000},
+		{Number: 2, Subject: `[01/2] - "` + title + `.mkv" yEnc (2/2)`, From: "poster@obf", MessageID: "qs2@t", Bytes: 80_000_000, DateUnix: 1700000000},
+		{Number: 3, Subject: `[02/2] - "` + title + `.par2" yEnc (1/1)`, From: "poster@obf", MessageID: "qspar2", Bytes: 40_000, DateUnix: 1700000000},
+	}
+	hash := obfuscatedSet("qb", "uzmv2D5wxtEsPRJRjBN30g", 10, 5)
+	f := newNFFixture(t, append(quoted, hash...), nil)
+	f.src.bodies["qbpar2"] = par2Body("uzmv2D5wxtEsPRJRjBN30g.part01.rar")
+	f.crawlAndRecompute(t)
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_headers SET filename='' WHERE subject LIKE '%Black Clover%.mkv%'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_headers SET filename='001.par2' WHERE subject LIKE '%Black Clover%.par2%'`); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	due, err := f.idx.DuePendingHeaderNames(ctx, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(due) != 1 {
+		t.Fatalf("DuePendingHeaderNames=%d, want only the quoted ident set", len(due))
+	}
+	res, err := f.nf.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Renamed != 1 {
+		t.Fatalf("quoted stub filename must rename from subject: %+v", res)
+	}
+	var display string
+	var searchable bool
+	err = f.idx.db.QueryRow(`SELECT display_name, searchable FROM usenet_nntp_releases WHERE display_name<>'' LIMIT 1`).Scan(&display, &searchable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if display != title || !searchable {
+		t.Fatalf("display=%q searchable=%v", display, searchable)
+	}
+}
+
 func TestNameFix_HashFileDescShelvesBody(t *testing.T) {
 	f := newNFFixture(t, obfuscatedSet("hf", nfHash, 1, 45), nil)
 	f.src.bodies["hfpar2"] = par2Body(nfHash + ".part01.rar")

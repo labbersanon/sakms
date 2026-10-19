@@ -89,7 +89,6 @@ func parseHeader(group, subj, from, msgid string, num int, postedAt, bytes int64
 // (plan D3 step 1). Unique-ID yEnc floods (partM > maxYencPartM, no FileM)
 // stay skip_unparsed.
 func stageObfuscated(h *HeaderRow, ps ParsedSubject) {
-	partN, partM := yencParts(h.Subject)
 	// Claude 2026-10-19: [k/N] collections stage even without yEnc (n/m).
 	// Reason: moovee/teevee HIGH posts `TOKEN [10/15] "hash.rar"` with no
 	//   trailing (n/m); yencParts was 0 so admitChunk counted skip_unparsed
@@ -98,7 +97,7 @@ func stageObfuscated(h *HeaderRow, ps ParsedSubject) {
 	// Troubleshooting: skip_unparsed=chunk on a yield core with [k/N] in the
 	//   subject → this FileM gate not applied.
 	// Review if: a poster uses neither [k/N] nor a plausible (n/m).
-	if partM <= 0 && ps.FileM <= 0 {
+	if ps.PartM <= 0 && ps.FileM <= 0 {
 		return
 	}
 	skel := obfSkeleton(h.Subject)
@@ -113,9 +112,6 @@ func stageObfuscated(h *HeaderRow, ps ParsedSubject) {
 	}
 	h.ReleaseName = ObfKey(h.Group, h.From, h.Subject)
 	h.Obfuscated = true
-	if partM > 0 {
-		h.PartN, h.PartM = partN, partM
-	}
 	if h.Filename == "" {
 		if m := reFileTok.FindStringSubmatch(h.Subject); len(m) == 2 {
 			h.Filename = m[1]
@@ -148,7 +144,7 @@ func unnamedCapBytes(maxGB, pct int) int64 {
 	return int64(maxGB) * 1024 * 1024 * 1024 * int64(pct) / 100
 }
 
-// capStaged enforces the unnamed-bytes cap (plan D3 step 2): above it, rows of
+// capStaged enforces the unnamed occupancy cap (plan D3 step 2): above it, rows of
 // NEW staged sets are dropped (skip_obf_cap) while rows of already-staged or
 // renamed sets still flow in. Sets whose true name was already rejected
 // (verdict cached by namefix) never re-stage.
@@ -165,13 +161,9 @@ func (c *Crawler) capStaged(ctx context.Context, group string, staged []HeaderRo
 			kept = append(kept, h)
 		}
 		staged = kept
-	}
-	pct := c.UnnamedMaxPct
-	if pct <= 0 {
-		pct = DefaultUnnamedMaxPct
-	}
-	if len(staged) == 0 {
-		return nil, nil
+		if len(staged) == 0 {
+			return nil, nil
+		}
 	}
 	// Claude 2026-10-16: only stage *new* obfuscated sets on staging cores
 	// (packages.json step ≤2 or pinned) or groups that already have a named
@@ -187,7 +179,7 @@ func (c *Crawler) capStaged(ctx context.Context, group string, staged []HeaderRo
 		if err != nil {
 			return nil, err
 		}
-		if used >= unnamedCapBytes(c.MaxGB, pct) {
+		if used >= unnamedCapBytes(c.MaxGB, c.UnnamedMaxPct) {
 			dropNew = true
 		}
 	}

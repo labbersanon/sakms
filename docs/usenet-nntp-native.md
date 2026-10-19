@@ -67,7 +67,6 @@ NNTmux-inspired ingest (membership still full LIST ACTIVE):
   hashes cannot fill `unnamed_max_pct`. Already-staged keys still receive
   continuation rows.
 
-
 ## PreDB provider (name recovery)
 
 Claude 2026-10-15: obfuscated sets are renamed from a local PreDB table
@@ -168,12 +167,11 @@ collection-key rewrite (once) → forward crawl → repair → name recovery →
   Sets under 100 MiB without PAR2 are never BODY-fetched; after 3 attempts or
   `unnamed_ttl_days` a set is finalized and deleted, except ≥80% yield-group
   sets which stay for PreDB-only retries so a later IRC line or dump
-  import can still name them.
-  Claude 2026-10-19: staged **header occupancy** (pending_name rows × ~200 B,
-  same units as `index_max_gb`) is capped at `unnamed_max_pct` of
-  `index_max_gb`; yEnc `payload_bytes` is not the cap (that mismatch was
-  skip_obf_cap on every yield core). BODY volume is
-  `namefix_body_mb_per_hour`.
+  import can still name them. Staged header occupancy (pending_name rows × ~200 B,
+  same units as `index_max_gb`) is capped at `unnamed_max_pct` of `index_max_gb`;
+  BODY volume is `namefix_body_mb_per_hour`.
+  Claude 2026-10-19: occupancy, not yEnc payload_bytes — that mismatch was
+  skip_obf_cap on every yield core.
   Review if: ApproxBytes stops using ~200 B/row.
   Historical names come from an operator-supplied nZEDb TSV dump
   (`usenet_nntp_predb_dump_path`, local file or dump-file URL); sakms does not

@@ -60,7 +60,7 @@ func (idx *Index) StagedBytes(ctx context.Context, group string) (int64, error) 
 	//   JOIN not used. Review if: ApproxBytes stops using approxHeaderRowBytes.
 	// Related files: ingest.go capStaged, index.go ApproxBytes
 	err := idx.db.QueryRowContext(ctx, `
-SELECT COALESCE(COUNT(*),0)
+SELECT COUNT(*)
 FROM usenet_nntp_headers h
 JOIN usenet_nntp_releases r ON r.group_name=h.group_name AND r.release_key=h.release_name
 WHERE r.state='pending_name' AND r.group_name=? AND r.name_attempts < ?`,

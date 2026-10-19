@@ -234,9 +234,19 @@ UPDATE usenet_nntp_releases SET next_name_at=?, updated_at=? WHERE group_name=? 
 
 // SetRows loads every header row of one release/staged-set key.
 func (idx *Index) SetRows(ctx context.Context, group, key string) ([]HeaderRow, error) {
-	rows, err := idx.db.QueryContext(ctx, `
+	return idx.setRows(ctx, group, key, 0)
+}
+
+func (idx *Index) setRows(ctx context.Context, group, key string, limit int) ([]HeaderRow, error) {
+	q := `
 SELECT msg_num, msgid, subject, from_addr, posted_at, bytes, part_n, part_m, filename, yenc_size, is_meta, file_n, file_m
-FROM usenet_nntp_headers WHERE group_name=? AND release_name=? ORDER BY filename, part_n, msg_num`, group, key)
+FROM usenet_nntp_headers WHERE group_name=? AND release_name=? ORDER BY filename, part_n, msg_num`
+	args := []any{group, key}
+	if limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := idx.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

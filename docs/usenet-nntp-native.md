@@ -138,10 +138,12 @@ collection-key rewrite (once) → forward crawl → repair → name recovery →
 - **Strict completeness gate.** Autograb and `ToNZB` require at least
   `min_completeness_pct` of payload segments (default 95, clamped 80–100).
   Computed per release into `usenet_nntp_releases` (`searchable`,
-  `completeness_bp`, `gate_reason`). A PreDB-exact name is searchable below
-  that gate (NewsLeecher-style title at ingest); `Query.GrabReady` and `ToNZB`
-  still refuse it until the set meets the gate. Subject/PAR2/RAR names stay
-  gated. Below-80% named releases are reaped after HIGH has passed
+  `completeness_bp`, `gate_reason`). Identification is separate: a PreDB,
+  PAR2/RAR/yEnc/NFO, or scene-shaped (year or SxxExx + resolution) name is
+  searchable at ≥80%; `Query.GrabReady` and `ToNZB` still refuse it until the
+  set meets the gate. Picture-date buckets and hash tokens stay off search.
+  Dashboard **Identified** is binary-group (non-`pictures.*`) headers on those
+  names. Below-80% named releases are reaped after HIGH has passed
   (`SweepIncomplete`); `incomplete_ttl_days` is unused on that path.
 - **Gap repair.** OVER chunks record missing article numbers in
   `usenet_nntp_missed_ranges`; a bounded repair pass re-OVERs them (3 attempts
@@ -154,13 +156,16 @@ collection-key rewrite (once) → forward crawl → repair → name recovery →
   request id (EFNet/Bin-Req wrappers), then a
   scene-shaped header filename, then at most 3 first-segment BODY fetches per
   set (PAR2 `FileDesc` → RAR/ZIP member names → yEnc `=ybegin` name → NFO scene
-  name). PreDB (no BODY) also runs on ≥80% yield sets still below the 95%
-  completeness gate. Accepted: a PreDB-confirmed name (size within ±15% when the PreDB
-  reports one), or a PAR2/RAR/yEnc name that parses as title + (year|episode) +
+  name). PreDB (no BODY) also runs on ≥80% pending sets in **any** group
+  (including boneless), 200 per pass, even when OVER is busy (BODY waits).
+  Yield-group BODY is 40/pass at 95% plus 20/pass at ≥80% when PAR2 is present.
+  Sets with PAR2 are BODY-sampled even under 100 MiB. Accepted: a
+  PreDB-confirmed name (size within ±15% when PreDB reports one), or a
+  PAR2/RAR/yEnc name that parses as title + (year|episode) +
   (resolution|source) even on a PreDB miss. NFO-only names need a PreDB hit.
-  Sets under 100 MiB are never BODY-fetched; after 3 attempts or
+  Sets under 100 MiB without PAR2 are never BODY-fetched; after 3 attempts or
   `unnamed_ttl_days` a set is finalized and deleted, except ≥80% yield-group
-  sets which stay for PreDB-only retries (no BODY) so a later IRC line or dump
+  sets which stay for PreDB-only retries so a later IRC line or dump
   import can still name them. Staged bytes are capped at `unnamed_max_pct` of
   `index_max_gb` and BODY volume at `namefix_body_mb_per_hour`.
   Historical names come from an operator-supplied nZEDb TSV dump

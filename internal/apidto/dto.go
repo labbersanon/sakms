@@ -1941,6 +1941,9 @@ type NNTPCrawlerStatus struct {
 	ReleasesBelowGate  int64             `json:"releasesBelowGate"`
 	PendingName        int64             `json:"pendingName"`
 	MissedRanges       int64             `json:"missedRanges"`
+	HeadersBinary      int64             `json:"headersBinary"`
+	HeadersIdentified  int64             `json:"headersIdentified"`
+	IdentifiedPct      int               `json:"identifiedPct"`
 	LastPassBusy       bool              `json:"lastPassBusy"`
 	LastPassAdvanced   bool              `json:"lastPassAdvanced"`
 	LastChunk          *NNTPCrawlerChunk `json:"lastChunk,omitempty"`

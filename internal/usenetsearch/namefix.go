@@ -53,9 +53,11 @@ const (
 	// Reason: 25 due anime/highspeed/tv were split across loops while boneless ate slots.
 	// Troubleshooting: namefix pass sets=20 with yield due leftover → bump this.
 	// Review if: BODY budget (namefix_body_mb_per_hour) starts hitting BudgetStop.
-	namefixSetsPerPass  = 40
-	namefixBodiesPerSet = 3
-	// namefixMinPayload: smaller sets are finalized without any BODY fetch.
+	namefixSetsPerPass      = 40
+	namefixIdentBodyPerPass = 20
+	namefixPreDBPerPass     = 200
+	namefixBodiesPerSet     = 3
+	// namefixMinPayload: smaller sets without PAR2 are finalized (no BODY).
 	namefixMinPayload = 100 << 20
 	// namefixHeadBytes caps the decoded bytes kept from one BODY.
 	namefixHeadBytes = 256 << 10
@@ -133,6 +135,8 @@ type NameFixer struct {
 	PreDB   PreDBLookup
 	Groups  []string
 	Budget  *bodyBudget
+	// SkipBody runs PreDB-only (OVER/download busy). PAR2 BODY waits.
+	SkipBody bool
 
 	UnnamedTTL time.Duration
 }
@@ -151,15 +155,40 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 	}
 	res.Finalized += swept
 	statBudget := statReleasesPerChunk
-	exhausted, err := n.Index.DueExhaustedYield(ctx, n.Groups, namefixSetsPerPass)
+	predbSets, err := n.Index.DuePendingPreDB(ctx, namefixPreDBPerPass)
 	if err != nil {
 		return res, err
 	}
-	sets, err := n.Index.DuePendingNames(ctx, n.Groups, namefixSetsPerPass)
-	if err != nil {
-		return res, err
+	var sets, ident []PendingSet
+	if !n.SkipBody {
+		sets, err = n.Index.DuePendingNames(ctx, n.Groups, namefixSetsPerPass)
+		if err != nil {
+			return res, err
+		}
+		ident, err = n.Index.DuePendingIdentBody(ctx, n.Groups, namefixIdentBodyPerPass)
+		if err != nil {
+			return res, err
+		}
 	}
-	for _, set := range append(exhausted, sets...) {
+	// BODY-capable yield first (95% grab, then 80%+ PAR2 ident). PreDB-only
+	// fills remaining keys so boneless/below-gate are not skipped, and a
+	// 95% yield set is not processed twice as PreDBOnly.
+	seen := map[string]bool{}
+	var all []PendingSet
+	add := func(in []PendingSet) {
+		for _, set := range in {
+			k := set.Group + "\x00" + set.Key
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			all = append(all, set)
+		}
+	}
+	add(sets)
+	add(ident)
+	add(predbSets)
+	for _, set := range all {
 		if err := ctx.Err(); err != nil {
 			return res, err
 		}
@@ -218,7 +247,7 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		return false, n.Index.ScheduleNameRetry(ctx, set.Group, set.Key, exhaustedPreDBRetry)
 	}
 
-	if set.PayloadBytes < namefixMinPayload {
+	if set.PayloadBytes < namefixMinPayload && !set.HasPar2 {
 		res.Finalized++
 		return false, n.finalize(ctx, set)
 	}

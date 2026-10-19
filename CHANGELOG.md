@@ -11536,3 +11536,24 @@ status stays active.
 | `internal/api/usenetsearch_helpers.go` | autograb GrabReady |
 | `internal/api/usenetsearch_adapter.go` | skip !Complete |
 | `docs/usenet-nntp-native.md` | searchable vs autograb |
+
+## 2026-10-19 — identify 80%+ scene names; BODY pending PAR2; identified dashboard
+
+**Problem:** Dashboard "searchable" (4989 releases) was compared to 13M headers. Most headers already sit on named rows; the gap is hash-obfuscated pending plus scene titles below the 95% grab gate. NZB indexers show those titles; sakms hid them.
+**Root cause:** `searchable` required 95% completeness. Namefix BODY required the same 95% yield gate and was skipped whenever OVER was busy. TV episode names without a year did not match the ident predicate. Small PAR2 sets were dropped under 100 MiB without a BODY sample.
+**Fix:** Identification (dashboard **Identified**, search) is recovered name or scene-shaped year/SxxExx + resolution at ≥80% completeness. Autograb / `ToNZB` stay at 95%. PreDB lookups run on all groups even when crawl is busy; BODY waits. Extra 20 BODY slots/pass for ≥80% yield PAR2 still below 95%. PAR2 sets under 100 MiB are sampled, not finalized.
+**Outcome:** Scene-named below-gate and PAR2-named pending appear in search. Identified is binary-group headers (non-`pictures.*`). Grab still waits for 95%.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/completeness.go` | identNameSQL year or SxxExx + resolution |
+| `internal/usenetsearch/releases.go` | searchable at ≥80% ident; has_par2 from meta subjects |
+| `internal/usenetsearch/namefix.go` | SkipBody; 80% PAR2 ident BODY; small PAR2 not finalized |
+| `internal/usenetsearch/namefix_index.go` | DuePendingPreDB all groups; DuePendingIdentBody |
+| `internal/usenetsearch/service.go` | namefix while OVER busy; PreDB-only when busy |
+| `internal/usenetsearch/status.go` | HeadersBinary / HeadersIdentified / IdentifiedPct |
+| `internal/api/nntp_crawler_status.go` | Identified fields on dashboard JSON |
+| `frontend/src/screens/Dashboard.tsx` | Identified NNTPStat |
+| `docs/usenet-nntp-native.md` | identification vs grab gate |

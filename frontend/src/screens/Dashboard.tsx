@@ -426,6 +426,10 @@ const NNTPCrawlerCard: Component<{ st: NNTPCrawlerStatus }> = (props) => {
         <Bar percent={indexPct()} />
         <div class="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <NNTPStat
+            label="Identified"
+            value={`${formatCount(props.st.headersIdentified)} / ${formatCount(props.st.headersBinary)} (${props.st.identifiedPct}%)`}
+          />
+          <NNTPStat
             label="Searchable"
             value={formatCount(props.st.releasesSearchable)}
           />

@@ -536,6 +536,7 @@ func TestSweepUnnamed_StillDropsFirehoseAfterAttempts(t *testing.T) {
 
 func TestNameFix_SmallSetFinalizedWithoutBody(t *testing.T) {
 	rows := obfuscatedSet("z", nfHash, 1, 45)
+	rows = rows[:len(rows)-1] // no PAR2: junk under 100 MiB is dropped
 	for i := range rows {
 		rows[i].Bytes = 1000 // ~60 kB payload, far under 100 MiB
 	}
@@ -547,6 +548,22 @@ func TestNameFix_SmallSetFinalizedWithoutBody(t *testing.T) {
 	}
 	if res.Finalized != 1 || len(f.src.bodyCalls) != 0 {
 		t.Fatalf("result = %+v bodyCalls=%v", res, f.src.bodyCalls)
+	}
+}
+
+func TestNameFix_SmallPar2SetTriesBody(t *testing.T) {
+	rows := obfuscatedSet("z", nfHash, 1, 45)
+	for i := range rows {
+		rows[i].Bytes = 1000
+	}
+	f := newNFFixture(t, rows, nil)
+	f.crawlAndRecompute(t)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Finalized != 0 || len(f.src.bodyCalls) == 0 {
+		t.Fatalf("small PAR2 set must BODY, not finalize: %+v bodyCalls=%v", res, f.src.bodyCalls)
 	}
 }
 
@@ -1023,7 +1040,7 @@ WHERE msgid IN (
 	}
 }
 
-func TestDueExhaustedYield_IncludesBelowGatePending(t *testing.T) {
+func TestDuePendingPreDB_IncludesBelowGatePending(t *testing.T) {
 	f := newNFFixture(t, obfuscatedSet("bg", nfHash, 1, 45), nil)
 	f.crawlAndRecompute(t)
 	dropPayloadParts(t, f.idx, 9) // 81/90 = 90%
@@ -1035,12 +1052,12 @@ func TestDueExhaustedYield_IncludesBelowGatePending(t *testing.T) {
 	if len(due) != 0 {
 		t.Fatalf("DuePendingNames=%d, want 0 (BODY stays at 95%%)", len(due))
 	}
-	sets, err := f.idx.DueExhaustedYield(ctx, []string{nfGroup}, 40)
+	sets, err := f.idx.DuePendingPreDB(ctx, 40)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(sets) != 1 || !sets[0].PreDBOnly {
-		t.Fatalf("DueExhaustedYield=%+v, want one PreDB-only 90%% set", sets)
+		t.Fatalf("DuePendingPreDB=%+v, want one PreDB-only 90%% set", sets)
 	}
 }
 
@@ -1082,7 +1099,7 @@ func TestNameFix_PreDBBelowGateSearchableNotGrabReady(t *testing.T) {
 	}
 }
 
-func TestRenameRelease_Par2BelowGateNotSearchable(t *testing.T) {
+func TestRenameRelease_Par2BelowGateIsIdentified(t *testing.T) {
 	f := newNFFixture(t, obfuscatedSet("p2", nfHash, 1, 45), nil)
 	f.crawlAndRecompute(t)
 	dropPayloadParts(t, f.idx, 9)
@@ -1095,12 +1112,43 @@ func TestRenameRelease_Par2BelowGateNotSearchable(t *testing.T) {
 	if err := f.idx.db.QueryRow(`SELECT searchable FROM usenet_nntp_releases`).Scan(&searchable); err != nil {
 		t.Fatal(err)
 	}
-	if searchable {
-		t.Fatal("PAR2-named below-gate set must not be searchable")
+	if !searchable {
+		t.Fatal("PAR2-named below-gate set must be identifiable")
 	}
 	cs, err := f.idx.SearchReleases(ctx, Query{Terms: []string{"Guessed.Movie"}})
-	if err != nil || len(cs) != 0 {
-		t.Fatalf("search=%+v err=%v, want empty", cs, err)
+	if err != nil || len(cs) != 1 || cs[0].Complete {
+		t.Fatalf("search=%+v err=%v, want identified not grab-complete", cs, err)
+	}
+	grab, err := f.idx.SearchReleases(ctx, Query{Terms: []string{"Guessed.Movie"}, GrabReady: true})
+	if err != nil || len(grab) != 0 {
+		t.Fatalf("GrabReady=%+v err=%v", grab, err)
+	}
+}
+
+func TestDuePendingPreDB_IncludesBoneless(t *testing.T) {
+	f := newNFFixture(t, obfuscatedSet("bo", nfHash, 1, 45), nil)
+	f.crawlAndRecompute(t)
+	ctx := context.Background()
+	const fire = "alt.binaries.boneless"
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET group_name=?`, fire); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_headers SET group_name=?`, fire); err != nil {
+		t.Fatal(err)
+	}
+	due, err := f.idx.DuePendingNames(ctx, []string{fire, nfGroup}, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(due) != 0 {
+		t.Fatalf("DuePendingNames boneless=%d, want 0 (BODY stays yield-only)", len(due))
+	}
+	sets, err := f.idx.DuePendingPreDB(ctx, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sets) != 1 || sets[0].Group != fire || !sets[0].PreDBOnly {
+		t.Fatalf("DuePendingPreDB=%+v, want boneless PreDB-only", sets)
 	}
 }
 
@@ -1137,5 +1185,79 @@ func TestNameFix_ExhaustedYieldPreDBRetryNoBody(t *testing.T) {
 	}
 	if _, _, display, _ := f.release(t); display != title {
 		t.Fatalf("display = %q", display)
+	}
+}
+
+func TestDuePendingIdentBody_IncludesBelowGatePar2(t *testing.T) {
+	f := newNFFixture(t, obfuscatedSet("ib", nfHash, 1, 45), nil)
+	f.crawlAndRecompute(t)
+	dropPayloadParts(t, f.idx, 9)
+	ctx := context.Background()
+	due, err := f.idx.DuePendingNames(ctx, []string{nfGroup}, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(due) != 0 {
+		t.Fatalf("DuePendingNames=%d, want 0 (95%% BODY gate unchanged)", len(due))
+	}
+	ident, err := f.idx.DuePendingIdentBody(ctx, []string{nfGroup}, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ident) != 1 || ident[0].PreDBOnly || !ident[0].HasPar2 {
+		t.Fatalf("DuePendingIdentBody=%+v, want one BODY-capable 90%% PAR2 set", ident)
+	}
+}
+
+func TestNameFix_Par2BelowGateBODYSearchable(t *testing.T) {
+	const title = "Guessed.Movie.2021.1080p.BluRay.x264-GRP"
+	f := newNFFixture(t, obfuscatedSet("p2b", nfHash, 1, 45), nil)
+	f.crawlAndRecompute(t)
+	dropPayloadParts(t, f.idx, 9)
+	f.src.bodies["p2bpar2"] = par2Body(title + ".part01.rar")
+	ctx := context.Background()
+	res, err := f.nf.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Renamed != 1 || res.BySource[sourcePar2] != 1 || res.BodyFetches == 0 {
+		t.Fatalf("result=%+v bodyCalls=%v", res, f.src.bodyCalls)
+	}
+	var searchable bool
+	var bp int
+	if err := f.idx.db.QueryRow(`SELECT searchable, completeness_bp FROM usenet_nntp_releases`).Scan(&searchable, &bp); err != nil {
+		t.Fatal(err)
+	}
+	if !searchable || bp < spanRepairFloorBP || bp >= f.idx.MinCompletenessPct()*100 {
+		t.Fatalf("searchable=%v bp=%d", searchable, bp)
+	}
+	cs, err := f.idx.SearchReleases(ctx, Query{Terms: []string{"Guessed.Movie"}})
+	if err != nil || len(cs) != 1 || cs[0].Complete || cs[0].Name != title {
+		t.Fatalf("search=%+v err=%v", cs, err)
+	}
+	grab, err := f.idx.SearchReleases(ctx, Query{Terms: []string{"Guessed.Movie"}, GrabReady: true})
+	if err != nil || len(grab) != 0 {
+		t.Fatalf("GrabReady=%+v err=%v", grab, err)
+	}
+}
+
+func TestNameFix_SkipBodyStillHitsPreDB(t *testing.T) {
+	const title = "Quiet.Movie.2022.1080p.WEB-DL.x264-GRP"
+	sum := md5.Sum([]byte(title))
+	h := hex.EncodeToString(sum[:])
+	f := newNFFixture(t, obfuscatedSet("qb", h, 1, 45), nil)
+	f.nf.PreDB = &fakePreDB{hashes: map[string]PreDBHit{h: {Title: title}}}
+	f.nf.SkipBody = true
+	f.src.bodies["qbpar2"] = par2Body("Would.Body.2021.1080p.BluRay.x264-GRP.part01.rar")
+	f.crawlAndRecompute(t)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.HashHits != 1 || res.Renamed != 1 || len(f.src.bodyCalls) != 0 {
+		t.Fatalf("SkipBody must PreDB without BODY: %+v bodyCalls=%v", res, f.src.bodyCalls)
+	}
+	if _, _, display, _ := f.release(t); display != title {
+		t.Fatalf("display=%q", display)
 	}
 }

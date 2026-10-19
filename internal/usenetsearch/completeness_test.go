@@ -129,6 +129,7 @@ func TestSearch_StrictGateVisibility(t *testing.T) {
 	rows = append(rows, fileRows(g, "Edge.Movie.2020.1080p", "edge.mkv", "edge", 1000, 100, 95, 0)...)
 	rows = append(rows, fileRows(g, "Short.Movie.2020.1080p", "short.mkv", "short", 2000, 100, 94, 0)...)
 	rows = append(rows, fileRows(g, "Undecl.Movie.2020.1080p", "undecl.mkv", "undecl", 3000, 0, 5, 0)...)
+	rows = append(rows, fileRows(g, "Show.Name.S01E02.720p.HDTV", "show.mkv", "show", 4000, 100, 90, 0)...)
 	if err := idx.Upsert(ctx, rows); err != nil {
 		t.Fatal(err)
 	}
@@ -141,8 +142,8 @@ func TestSearch_StrictGateVisibility(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Releases != 4 || st.Searchable != 2 || st.Undeclared != 1 || st.Backlog != 0 {
-		t.Fatalf("stats=%+v", st)
+	if st.Releases != 5 || st.Searchable != 4 || st.Undeclared != 1 || st.Backlog != 0 {
+		t.Fatalf("stats=%+v (94%% Short + 90%% SxxExx identified; undeclared stays off)", st)
 	}
 	cs, err = idx.SearchReleases(ctx, Query{Groups: []string{g}, Terms: []string{"Movie"}, Limit: 10})
 	if err != nil {
@@ -152,11 +153,18 @@ func TestSearch_StrictGateVisibility(t *testing.T) {
 	for _, c := range cs {
 		got[c.Name] = c
 	}
-	if len(got) != 2 || got["Full.Movie.2020.1080p"].Name == "" || got["Edge.Movie.2020.1080p"].Name == "" {
-		t.Fatalf("searchable=%v want Full+Edge", got)
+	if len(got) != 3 || got["Full.Movie.2020.1080p"].Name == "" || got["Edge.Movie.2020.1080p"].Name == "" || got["Short.Movie.2020.1080p"].Name == "" {
+		t.Fatalf("searchable=%v want Full+Edge+Short", got)
+	}
+	if got["Short.Movie.2020.1080p"].Complete {
+		t.Fatal("94% scene title is identifiable but not grab-complete")
 	}
 	if !got["Edge.Movie.2020.1080p"].Complete || got["Edge.Movie.2020.1080p"].CompletenessPct != 95 {
 		t.Fatalf("edge=%+v", got["Edge.Movie.2020.1080p"])
+	}
+	ep, err := idx.SearchReleases(ctx, Query{Groups: []string{g}, Terms: []string{"Show.Name"}, Limit: 10})
+	if err != nil || len(ep) != 1 || ep[0].Complete {
+		t.Fatalf("90%% episode should be identified not grab-complete: %+v err=%v", ep, err)
 	}
 
 	// The strict gate follows min_completeness_pct: 94% is searchable at 90.

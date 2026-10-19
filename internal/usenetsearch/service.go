@@ -488,8 +488,14 @@ func (s *Service) loop(ctx context.Context) {
 		//   → dirty complete sets are not at the front of RecomputeDirty.
 		// Review if: crawl should pause while dirty pending_name exceeds a knob.
 		s.runRecompute(ctx)
-		if crawler != nil && !busy && crawler.NameFixEnabled {
-			nr := s.runNameFix(ctx, crawler, budget)
+		// Claude 2026-10-19: namefix even when the OVER pass was busy.
+		// Reason: PreDB lookups are local DB; skipping the whole pass while
+		//   crawl is busy left 2k due pending unnamed (hash_hits≈1 / 2h).
+		//   BODY still waits (SkipBody) so namefix does not fight downloads.
+		// Troubleshooting: namefix pass absent in o2cli → NameFixEnabled off.
+		// Review if: BODY during download-busy is safe on a dedicated conn.
+		if crawler != nil && crawler.NameFixEnabled {
+			nr := s.runNameFix(ctx, crawler, budget, busy)
 			busy = busy || nr.Busy
 			advanced = advanced || nr.Advanced()
 		}
@@ -918,7 +924,7 @@ func (s *Service) SearchGroupsForMode(ctx context.Context, mode string) []string
 }
 
 // runNameFix runs one name-recovery pass over staged obfuscated sets.
-func (s *Service) runNameFix(ctx context.Context, c *Crawler, budget *bodyBudget) NameFixResult {
+func (s *Service) runNameFix(ctx context.Context, c *Crawler, budget *bodyBudget, skipBody bool) NameFixResult {
 	s.mu.Lock()
 	cfg := s.cfg
 	predb := s.predb
@@ -926,7 +932,7 @@ func (s *Service) runNameFix(ctx context.Context, c *Crawler, budget *bodyBudget
 	budget.setCapMB(cfg.NameFixBodyMBPerHour)
 	nf := &NameFixer{
 		Src: c.Src, Index: c.Index, Crawler: c, PreDB: predb,
-		Groups: c.Groups, Budget: budget,
+		Groups: c.Groups, Budget: budget, SkipBody: skipBody,
 		UnnamedTTL: time.Duration(cfg.UnnamedTTLDays) * 24 * time.Hour,
 	}
 	res, err := nf.Run(ctx)
@@ -959,6 +965,7 @@ func (s *Service) runRecompute(ctx context.Context) {
 	if idx == nil {
 		return
 	}
+	idx.dirtyIdentifiableNamed(ctx)
 	deadline := time.Now().Add(recomputeMaxDuration)
 	st, err := idx.recomputeDirtyBounded(ctx, recomputeBatch, deadline)
 	if err != nil {

@@ -1921,6 +1921,9 @@ export interface NNTPCrawlerStatus {
   releasesBelowGate: number /* int64 */;
   pendingName: number /* int64 */;
   missedRanges: number /* int64 */;
+  headersBinary: number /* int64 */;
+  headersIdentified: number /* int64 */;
+  identifiedPct: number /* int */;
   lastPassBusy: boolean;
   lastPassAdvanced: boolean;
   lastChunk?: NNTPCrawlerChunk;

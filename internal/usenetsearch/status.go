@@ -24,6 +24,7 @@ type CrawlChunkStat struct {
 }
 
 // CrawlerStatus is the Dashboard snapshot of native NNTP crawl progress.
+// HeadersBinary / Identified are non-pictures.* headers vs recovered/scene names.
 type CrawlerStatus struct {
 	Enabled            bool            `json:"enabled"`
 	ProbeState         string          `json:"probeState"`
@@ -36,6 +37,9 @@ type CrawlerStatus struct {
 	ReleasesBelowGate  int64           `json:"releasesBelowGate"`
 	PendingName        int64           `json:"pendingName"`
 	MissedRanges       int64           `json:"missedRanges"`
+	HeadersBinary      int64           `json:"headersBinary"`
+	HeadersIdentified  int64           `json:"headersIdentified"`
+	IdentifiedPct      int             `json:"identifiedPct"`
 	LastPassBusy       bool            `json:"lastPassBusy"`
 	LastPassAdvanced   bool            `json:"lastPassAdvanced"`
 	LastChunk          *CrawlChunkStat `json:"lastChunk,omitempty"`
@@ -176,5 +180,24 @@ func (s *Service) CrawlerStatus(ctx context.Context) (CrawlerStatus, error) {
 	out.ReleasesBelowGate = gf.ReleasesBelowGate
 	out.PendingName = gf.PendingName
 	out.MissedRanges = gf.MissedRanges
+	id, bin, err := idx.identifiedStats(ctx)
+	if err != nil {
+		return out, err
+	}
+	out.HeadersIdentified = id
+	out.HeadersBinary = bin
+	if bin > 0 {
+		out.IdentifiedPct = int(id * 100 / bin)
+	}
 	return out, nil
+}
+
+func (idx *Index) identifiedStats(ctx context.Context) (identified, binary int64, err error) {
+	err = idx.db.QueryRowContext(ctx, `
+SELECT
+  (SELECT COUNT(*) FROM usenet_nntp_headers WHERE group_name NOT LIKE '%pictures%'),
+  (SELECT COUNT(*) FROM usenet_nntp_headers h
+   JOIN usenet_nntp_releases r ON r.group_name=h.group_name AND r.release_key=h.release_name
+   WHERE r.group_name NOT LIKE '%pictures%' AND r.state='named' AND (`+identNameSQL+`))`).Scan(&binary, &identified)
+	return identified, binary, err
 }

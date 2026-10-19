@@ -110,8 +110,18 @@ func parseSubjectWith(subj string, extra []compiledExtra) ParsedSubject {
 	if m := reYencSz.FindStringSubmatch(s); len(m) == 2 {
 		out.YencSize, _ = strconv.ParseInt(m[1], 10, 64)
 	}
-	if m := reFileTok.FindStringSubmatch(s); len(m) == 2 {
+	// Claude 2026-10-19: prefer the quoted `"file.ext"` over reFileTok.
+	// Reason: reFileTok is `[\w.\-]+` so `[UQW] Black Clover….vol00+01.par2`
+	//   stored Filename=`01.par2` and namefix had no title token.
+	// Troubleshooting: pending95 filename is `01.par2`/`""` while the subject
+	//   quotes a spacey title → this branch missing. Review if: a poster
+	//   puts the hash in quotes and the title outside them.
+	if q := quotedFilename(s); q != "" {
+		out.Filename = q
+	} else if m := reFileTok.FindStringSubmatch(s); len(m) == 2 {
 		out.Filename = m[1]
+	}
+	if out.Filename != "" {
 		ext := strings.ToLower(filepath.Ext(out.Filename))
 		base := strings.ToLower(out.Filename)
 		if ext == ".par2" || ext == ".nfo" || ext == ".sfv" || strings.Contains(base, ".par2") {
@@ -244,6 +254,27 @@ func requestIDFromSubject(s string) int64 {
 		}
 	}
 	return 0
+}
+
+// quotedFilename is the NNTP `"file.ext"` payload name.
+// Claude 2026-10-19: first quote pair, spaces/`+`/`[]` kept.
+// Reason: reFileTok cannot match fansub filenames; namefix header
+//   candidates used only Filename, so live anime.highspeed 95% sets
+//   stayed unnamed with the title sitting in the subject.
+// Troubleshooting: Filename=`01.par2` on a quoted title subject → parser
+//   fell through to reFileTok. Review if: nested quotes appear in HIGH.
+// Related files: namefix.go headerNameCandidates
+func quotedFilename(s string) string {
+	i := strings.Index(s, `"`)
+	if i < 0 {
+		return ""
+	}
+	rest := s[i+1:]
+	j := strings.Index(rest, `"`)
+	if j <= 0 {
+		return ""
+	}
+	return strings.TrimSpace(rest[:j])
 }
 
 func looksLikeRequestID(name string) bool {

@@ -11666,3 +11666,20 @@ status stays active.
 |---|---|
 | `internal/usenetsearch/namefix.go` | PreDB sample 64; split deadline |
 | `internal/usenetsearch/namefix_index.go` | `setRows` LIMIT |
+
+## 2026-10-19 — quoted fansub filenames become searchable titles
+
+**Problem:** Searchable stayed at 5,200 after PreDB-first (#210/#211). Namefix ran (`sets=25–33`) but `hash_hits=0 renamed=0`. Live pending95 anime subjects already carried titles in quotes (`[UQW] Black Clover - Ep170 [BDRip 1080p…]`, Dandivine S01E02).
+**Root cause:** `reFileTok` is alnum/dot/hyphen only, so quoted `"…vol00+01.par2"` stored Filename=`01.par2`. `headerNameCandidates` only used Filename. `tokenLooksObfuscated` rejected digit-containing titles (`1080p`, `Ep170`). `hasTitleAndMarker` only counts SxxEyy/year. A 2160p movies gate would then skipAndDelete recovered 1080p fansubs.
+**Fix:** Parse and namefix prefer the quoted filename. Ident-shaped names (resolution + year/season or a multi-word title) are accepted without BODY. Spaced ident-shaped names skip the quality gate so complete quoted sets are named, not deleted. Hash FileDesc (`uzmv2….par2`) still stays unnamed.
+**Outcome:** 95% fansub/scene sets whose title is already in the subject become `named`/`searchable` without PreDB or BODY. Hash-only quoted files still need IRC/PAR2.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/subject.go` | `quotedFilename` preferred over `reFileTok` |
+| `internal/usenetsearch/namefix.go` | ident-shaped accept; quoted header candidates; skip gate on spaced titles |
+| `internal/usenetsearch/subject_test.go` | Black Clover / Dandivine quoted filenames |
+| `internal/usenetsearch/namefix_test.go` | rename without BODY; survive 2160 gate; hash quote stays unnamed |
+| `docs/usenet-nntp-native.md` | quoted ident-shaped header names |

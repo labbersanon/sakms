@@ -155,7 +155,9 @@ collection-key rewrite (once) → forward crawl → repair → name recovery →
   md5 / md5(md5(title)) / sha1 tokens taken from every header subject and
   filename (suffix-stripped), then PreDB `filename` / IRC `[FN:]`, then dump/IRC
   request id (EFNet/Bin-Req wrappers), then a
-  scene-shaped header filename, then at most 3 first-segment BODY fetches per
+  quoted or scene-shaped header filename (fansub `" [UQW] Title…1080p.par2 "`
+  included; `reFileTok` cannot match spaces/`+`/`[]`), then at most 3
+  first-segment BODY fetches per
   set (PAR2 `FileDesc` → RAR/ZIP member names → yEnc `=ybegin` name → NFO scene
   name). PreDB (no BODY) also runs on ≥80% pending sets in **any** group
   (including boneless), 200 per pass, even when OVER is busy (BODY waits).
@@ -166,7 +168,10 @@ collection-key rewrite (once) → forward crawl → repair → name recovery →
   Sets with PAR2 are BODY-sampled even under 100 MiB. Accepted: a
   PreDB-confirmed name (size within ±15% when PreDB reports one), or a
   PAR2/RAR/yEnc name that parses as title + (year|episode) +
-  (resolution|source) even on a PreDB miss. NFO-only names need a PreDB hit.
+  (resolution|source), or an ident-shaped name (resolution plus year, season,
+  or a multi-word title such as fansub `Ep170` / spaces), even on a PreDB miss.
+  Spaced ident-shaped header names skip the quality gate so a 2160p movies
+  floor cannot delete a complete 1080p quoted set. NFO-only names need a PreDB hit.
   Sets under 100 MiB without PAR2 are never BODY-fetched; after 3 attempts or
   `unnamed_ttl_days` a set is finalized and deleted, except ≥80% yield-group
   sets which stay for PreDB-only retries so a later IRC line or dump

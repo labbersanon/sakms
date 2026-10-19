@@ -363,7 +363,18 @@ func (n *NameFixer) markRejected(set PendingSet) {
 
 func recoveredUnusable(raw string) bool {
 	norm := normalizeRecovered(raw)
-	return norm == "" || hashCore(norm) != "" || looksObfuscated(norm) || tokenLooksObfuscated(norm)
+	if norm == "" || hashCore(norm) != "" {
+		return true
+	}
+	// Claude 2026-10-19: skip tokenLooksObfuscated when the name has `. `/space.
+	// Reason: that helper's last `digits>0` check false-positives
+	//   `[UQW] Black Clover - Ep170 [BDRip 1080p…]` (1080 / Ep170).
+	// Troubleshooting: accept() returns false on a quoted ident title →
+	//   this early return missing. Review if: a hash token includes a space.
+	if strings.ContainsAny(norm, ". ") {
+		return false
+	}
+	return looksObfuscated(norm) || tokenLooksObfuscated(norm)
 }
 
 // accept normalizes a recovered name and applies the D2 acceptance rules:
@@ -387,10 +398,39 @@ func (n *NameFixer) accept(ctx context.Context, raw, source string, payload int6
 		}
 		predb = "miss"
 	}
-	if source != sourceNFO && parsesAsRelease(norm) {
+	if source != sourceNFO && (parsesAsRelease(norm) || identShapedName(norm)) {
 		return norm, source, confMedium, predb, true
 	}
 	return "", "", "", "", false
+}
+
+// identShapedName is the Go form of identNameSQL: a resolution plus a year,
+// season, or multi-word title.
+// Claude 2026-10-19: fansub `Ep170` / spaces, not only SxxEyy.
+// Reason: hasTitleAndMarker only counts SxxEyy/year, so Black Clover
+//   1080p quoted names failed accept() after recoveredUnusable was fixed.
+// Troubleshooting: 1080p spacey title still unnamed → Resolution parse
+//   missed (need 720/1080/2160/480p). Review if: 576p / 4K-without-p.
+func identShapedName(name string) bool {
+	if release.Parse(name).Resolution == 0 {
+		return false
+	}
+	if hasTitleAndMarker(name) {
+		return true
+	}
+	if !strings.ContainsAny(name, ". ") {
+		return false
+	}
+	n := 0
+	for _, r := range name {
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+			n++
+			if n >= 3 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // promote runs an accepted name through the admission gate and STAT (when
@@ -410,24 +450,33 @@ func (n *NameFixer) promote(ctx context.Context, set PendingSet, rows []HeaderRo
 			return false, err
 		}
 		if snap != nil {
-			var modes []string
-			if c.GroupModesFn != nil {
-				modes = c.GroupModesFn(set.Group)
-			}
-			stds, _ := snap.Resolve(set.Group, modes, name)
-			info := release.Parse(name)
-			passed := false
-			for _, std := range stds {
-				if ok, _ := gate(name, info, std); ok {
-					passed = true
-					break
+			// Claude 2026-10-19: spaced ident-shaped names skip the quality gate.
+			// Reason: live pending95 quoted fansubs (`[UQW] Black Clover… 1080p`)
+			//   would hit reject_gate+delete when movies MinRes=2160 / High.
+			//   Scene PAR2 names stay dotted and still go through gate.
+			// Troubleshooting: reject_gate on a spacey 1080p title → this skip
+			//   missing. Review if: a dotted scene title is rewritten with spaces.
+			skipGate := identShapedName(name) && strings.Contains(name, " ")
+			if !skipGate {
+				var modes []string
+				if c.GroupModesFn != nil {
+					modes = c.GroupModesFn(set.Group)
 				}
-			}
-			if !passed {
-				res.RejectGate++
-				n.markRejected(set)
-				_, err := n.Index.skipAndDelete(ctx, []releaseKey{{set.Group, set.Key}}, skipReasonRejected)
-				return false, err
+				stds, _ := snap.Resolve(set.Group, modes, name)
+				info := release.Parse(name)
+				passed := false
+				for _, std := range stds {
+					if ok, _ := gate(name, info, std); ok {
+						passed = true
+						break
+					}
+				}
+				if !passed {
+					res.RejectGate++
+					n.markRejected(set)
+					_, err := n.Index.skipAndDelete(ctx, []releaseKey{{set.Group, set.Key}}, skipReasonRejected)
+					return false, err
+				}
 			}
 			var st chunkStats
 			keep, _, _ := c.statVerdict(ctx, set.Group, name, rows, false, statBudget, &busy, &st)
@@ -545,14 +594,23 @@ func filenameCandidates(rows []HeaderRow) []string {
 func headerNameCandidates(rows []HeaderRow) []nameCand {
 	seen := map[string]bool{}
 	var out []nameCand
-	for _, r := range rows {
-		raw := r.Filename
+	add := func(raw string) {
 		key := strings.ToLower(normalizeRecovered(raw))
 		if key == "" || hashCore(key) != "" || seen[key] {
-			continue
+			return
 		}
 		seen[key] = true
 		out = append(out, nameCand{raw, sourceYenc})
+	}
+	for _, r := range rows {
+		add(r.Filename)
+		// Claude 2026-10-19: quoted subject even when Filename is `01.par2`.
+		// Reason: rows ingested before quotedFilename keep the reFileTok
+		//   stub; live pending95 still has the title in Subject quotes.
+		// Troubleshooting: header namefix misses Black Clover while
+		//   ParseSubject on a fresh crawl would store it. Review if:
+		//   headers are rewritten on re-OVER (then Filename is enough).
+		add(quotedFilename(r.Subject))
 	}
 	return out
 }

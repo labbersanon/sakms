@@ -65,7 +65,7 @@ const (
 	KeyPreDBIRCNick         = "usenet_nntp_predb_irc_nick"
 	KeyPreDBIRCChannels     = "usenet_nntp_predb_irc_channels"
 	KeyPreDBIRCPasswordEnc  = "usenet_nntp_predb_irc_password_enc" // secrets.Store ciphertext, never plaintext
-	KeyPreDBDumpPath        = "usenet_nntp_predb_dump_path"        // local nZEDb TSV; empty = off
+	KeyPreDBDumpPath        = "usenet_nntp_predb_dump_path"        // local nZEDb TSV or http(s) dump file URL; empty = off
 	KeyPreDBDumpImported    = "usenet_nntp_predb_dump_imported"    // path|mtime|size stamp, not a knob
 	KeyMinCompletenessPct   = "usenet_nntp_min_completeness_pct"
 	KeyIncompleteTTLDays    = "usenet_nntp_incomplete_ttl_days"

@@ -36,6 +36,8 @@ type Entry struct {
 	Category  string
 	PreAt     int64
 	Nuked     bool
+	RequestID int64
+	GroupName string
 }
 
 // Store reads and writes usenet_nntp_predb.
@@ -64,15 +66,17 @@ func hashTriple(title string) (md5hex, md5md5hex, sha1hex string) {
 }
 
 const upsertSQL = `
-INSERT INTO usenet_nntp_predb (title, title_md5, title_md5_md5, title_sha1, size_bytes, files, filename, category, pre_at, nuked, source, fetched_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+INSERT INTO usenet_nntp_predb (title, title_md5, title_md5_md5, title_sha1, size_bytes, files, filename, category, pre_at, nuked, source, fetched_at, request_id, group_name)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT (title) DO UPDATE SET title_md5=EXCLUDED.title_md5, title_md5_md5=EXCLUDED.title_md5_md5, title_sha1=EXCLUDED.title_sha1,
   size_bytes=CASE WHEN EXCLUDED.size_bytes>0 THEN EXCLUDED.size_bytes ELSE usenet_nntp_predb.size_bytes END,
   files=CASE WHEN EXCLUDED.files>0 THEN EXCLUDED.files ELSE usenet_nntp_predb.files END,
   filename=CASE WHEN EXCLUDED.filename<>'' THEN EXCLUDED.filename ELSE usenet_nntp_predb.filename END,
   category=CASE WHEN EXCLUDED.category<>'' THEN EXCLUDED.category ELSE usenet_nntp_predb.category END,
   pre_at=CASE WHEN EXCLUDED.pre_at>0 THEN EXCLUDED.pre_at ELSE usenet_nntp_predb.pre_at END,
-  nuked=EXCLUDED.nuked, source=EXCLUDED.source, fetched_at=EXCLUDED.fetched_at`
+  nuked=EXCLUDED.nuked, source=EXCLUDED.source, fetched_at=EXCLUDED.fetched_at,
+  request_id=CASE WHEN EXCLUDED.request_id>0 THEN EXCLUDED.request_id ELSE usenet_nntp_predb.request_id END,
+  group_name=CASE WHEN EXCLUDED.group_name<>'' THEN EXCLUDED.group_name ELSE usenet_nntp_predb.group_name END`
 
 // Upsert stores (or refreshes) a record, replacing any cached miss for it.
 func (s *Store) Upsert(ctx context.Context, e Entry, source string) error {
@@ -85,7 +89,8 @@ func (s *Store) Upsert(ctx context.Context, e Entry, source string) error {
 	}
 	m, mm, sh := hashTriple(title)
 	_, err := s.db.ExecContext(ctx, upsertSQL,
-		title, m, mm, sh, e.SizeBytes, e.Files, e.Filename, e.Category, e.PreAt, e.Nuked, source, time.Now().Unix())
+		title, m, mm, sh, e.SizeBytes, e.Files, e.Filename, e.Category, e.PreAt, e.Nuked, source, time.Now().Unix(),
+		e.RequestID, normalizePreDBGroup(e.GroupName))
 	return err
 }
 
@@ -96,11 +101,11 @@ func (s *Store) SetNuked(ctx context.Context, title string, nuked bool) error {
 	return err
 }
 
-const selectEntry = `SELECT title, size_bytes, files, filename, category, pre_at, nuked FROM usenet_nntp_predb`
+const selectEntry = `SELECT title, size_bytes, files, filename, category, pre_at, nuked, request_id, group_name FROM usenet_nntp_predb`
 
 func scanEntry(row *sql.Row) (Entry, bool, error) {
 	var e Entry
-	err := row.Scan(&e.Title, &e.SizeBytes, &e.Files, &e.Filename, &e.Category, &e.PreAt, &e.Nuked)
+	err := row.Scan(&e.Title, &e.SizeBytes, &e.Files, &e.Filename, &e.Category, &e.PreAt, &e.Nuked, &e.RequestID, &e.GroupName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Entry{}, false, nil
 	}
@@ -128,6 +133,18 @@ func (s *Store) ByHash(ctx context.Context, h string) (Entry, bool, error) {
 	default:
 		return Entry{}, false, nil
 	}
+}
+
+// ByRequestID resolves an nZEDb request id, preferring an exact group match.
+func (s *Store) ByRequestID(ctx context.Context, id int64, group string) (Entry, bool, error) {
+	if id <= 0 {
+		return Entry{}, false, nil
+	}
+	group = normalizePreDBGroup(group)
+	return scanEntry(s.db.QueryRowContext(ctx, selectEntry+`
+ WHERE request_id=? AND source<>?
+ ORDER BY CASE WHEN lower(group_name)=lower(?) THEN 0 WHEN group_name='' THEN 1 ELSE 2 END, pre_at DESC
+ LIMIT 1`, id, SourceMiss, group))
 }
 
 // ByFilename resolves a PreDB inner/archive filename (exact, case-insensitive).
@@ -161,4 +178,14 @@ INSERT INTO usenet_nntp_predb (title, source, fetched_at) VALUES (?,?,?)
 ON CONFLICT (title) DO UPDATE SET fetched_at=EXCLUDED.fetched_at WHERE usenet_nntp_predb.source=?`,
 		title, SourceMiss, time.Now().Unix(), SourceMiss)
 	return err
+}
+
+func normalizePreDBGroup(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "#")
+	low := strings.ToLower(s)
+	if strings.HasPrefix(low, "a.b.") {
+		return "alt.binaries." + s[4:]
+	}
+	return s
 }

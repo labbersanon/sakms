@@ -178,9 +178,10 @@ func TestParsesAsRelease(t *testing.T) {
 }
 
 type fakePreDB struct {
-	hashes    map[string]PreDBHit
-	names     map[string]PreDBHit
-	filenames map[string]PreDBHit
+	hashes     map[string]PreDBHit
+	names      map[string]PreDBHit
+	filenames  map[string]PreDBHit
+	requestIDs map[int64]PreDBHit
 }
 
 func (f *fakePreDB) ByHash(_ context.Context, h string) (PreDBHit, bool) {
@@ -193,6 +194,10 @@ func (f *fakePreDB) ByName(_ context.Context, n string) (PreDBHit, bool) {
 }
 func (f *fakePreDB) ByFilename(_ context.Context, n string) (PreDBHit, bool) {
 	v, ok := f.filenames[strings.ToLower(n)]
+	return v, ok
+}
+func (f *fakePreDB) ByRequestID(_ context.Context, id int64, _ string) (PreDBHit, bool) {
+	v, ok := f.requestIDs[id]
 	return v, ok
 }
 
@@ -931,6 +936,58 @@ func TestNameFix_PreDBFilenameResolvesRandomArchiveName(t *testing.T) {
 	if res.HashHits != 1 || res.Renamed != 1 || len(f.src.bodyCalls) != 0 {
 		t.Fatalf("result = %+v bodyCalls=%v", res, f.src.bodyCalls)
 	}
+}
+
+func TestNameFix_RequestIDResolvesFromPreDB(t *testing.T) {
+	const title = "Grey.S21E03.720p.HDTV.x264-GRP"
+	const id int64 = 23051509
+	rows := requestIDSet("rq", id, 1, 45)
+	f := newNFFixture(t, rows, nil)
+	f.nf.PreDB = &fakePreDB{requestIDs: map[int64]PreDBHit{id: {Title: title}}}
+	f.crawlAndRecompute(t)
+	key, state, display, _ := f.release(t)
+	if !isObfKey(key) || state != statePendingName || display != "" {
+		t.Fatalf("staged = %q %q %q", key, state, display)
+	}
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.HashHits != 1 || res.Renamed != 1 || res.BodyFetches != 0 || len(f.src.bodyCalls) != 0 {
+		t.Fatalf("result = %+v bodyCalls=%v", res, f.src.bodyCalls)
+	}
+	if _, _, display, _ := f.release(t); display != title {
+		t.Fatalf("display = %q", display)
+	}
+}
+
+func requestIDSet(prefix string, id int64, startNum, files int) []usenet.MessageOverview {
+	var out []usenet.MessageOverview
+	n := startNum
+	for f := 1; f <= files; f++ {
+		for p := 1; p <= 2; p++ {
+			out = append(out, usenet.MessageOverview{
+				Number: n,
+				Subject: fmt.Sprintf(`[%d]-[FULL]-[#a.b.teevee@EFNet]-[ ]-[%02d/%d] - "%s.part%02d.rar" yEnc (%d/2)`,
+					id, f, files+1, prefix, f, p),
+				From:      "poster@req",
+				MessageID: fmt.Sprintf("%s%d_%d@t", prefix, f, p),
+				Bytes:     2_000_000,
+				DateUnix:  1700000000,
+			})
+			n++
+		}
+	}
+	out = append(out, usenet.MessageOverview{
+		Number: n,
+		Subject: fmt.Sprintf(`[%d]-[FULL]-[#a.b.teevee@EFNet]-[ ]-[%02d/%d] - "%s.par2" yEnc (1/1)`,
+			id, files+1, files+1, prefix),
+		From:      "poster@req",
+		MessageID: prefix + "par2",
+		Bytes:     40_000,
+		DateUnix:  1700000000,
+	})
+	return out
 }
 
 func TestNameFix_ExhaustedYieldPreDBRetryNoBody(t *testing.T) {

@@ -11450,3 +11450,22 @@ status stays active.
 | `internal/usenetsearch/ingest.go` | DropSkipped on every OVER chunk |
 | `internal/usenetsearch/{namefix,namefix_index,service,crawler}.go` | skip reasons, sweep catch-up, skip_stub log |
 | `internal/usenetsearch/{skip,releases,ingest}_test.go` | ingest drop, keep ≥80%/in-window/searchable |
+
+## 2026-10-19 — Dump-file URL import, EFNet/Bin-Req wrappers, request-id match
+
+**Problem:** Searchable barely moved overnight (+26). New named rows were subject-sourced: real titles still carried `[id]-[FULL]-[#a.b.teevee@EFNet]-` wrappers, and numeric leftovers like `23051509 ]` became searchable because yEnc/filename made `ParseSubject.OK`. Namefix `hash_hits` stayed 0 — the dump path rejected URLs, so filling PreDB meant SSHing a TSV onto the host.
+**Root cause:** `collectionStem` only stripped leading `[#a.b.…]` / `[Group]` tags. Request wrappers put the title in a later bracket (or left only the id). Dump import treated any `://` as a ToS scrape.
+**Fix:** Strip EFNet `[id]-[FULL]-[#a.b…@EFNet]-[ Title ]` and `www.Bin-Req.net Presents: #id - Title`. Request-id-only stems stage as `obf:` (`req:<id>` skeleton) instead of becoming named. Store dump `requestid`/`groupname` and IRC `[RQ:]`; namefix joins them. `usenet_nntp_predb_dump_path` may be a local TSV/gz or an http(s) dump *file* URL (HEAD stamp + GET). `api.predb.net` and `?type=pre` still no-op.
+**Outcome:** New ingest of wrapper posts is a clean title (searchable without a dump). Hash-obfuscated history still needs an operator dump URL/file. Not deployed.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/subject.go` | wrapper strip; request-id-only → obfuscated |
+| `internal/usenetsearch/predb/dump.go` | `ImportURL` / `IsFetchURL` / `HeadStamp` |
+| `internal/usenetsearch/predb/{store,parse}.go` | `request_id`, `group_name`, `[RQ:]` |
+| `internal/db/migrations/0048_usenet_nntp_predb_requestid.sql` | columns + index |
+| `internal/usenetsearch/namefix.go` | `ByRequestID` after hash/filename |
+| `internal/api/usenetnntp_predb.go` | dump loop accepts dump-file URLs |
+| `docs/usenet-nntp-native.md` | dump URL + wrapper notes |

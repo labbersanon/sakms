@@ -94,13 +94,15 @@ IRC announce feed (default on: synIRC `#PreNNTmux`).
   pass the title + (year|episode) + (resolution|source) check.
 
 A name-lookup HTTP API cannot reverse a hash. Reverse lookups use the local
-table: IRC announces (forward-only, including `[FN:]` filenames) plus an
-operator-supplied nZEDb dump (`usenet_nntp_predb_dump_path`). Do not scrape
-`api.predb.net` to populate that table. Default IRC is on: synIRC `#PreNNTmux`,
-TLS 6697, a random unregistered nick, client PING heartbeat. NickServ is
-optional and unused by default (synIRC confirm mail does not arrive). The
-NickServ password, if set, is stored encrypted (`secrets.Store`) and is never
-logged. `#nZEDbPRE` is dead; do not point the scraper there.
+table: IRC announces (forward-only, including `[FN:]` filenames and `[RQ:]`
+request ids) plus an operator-supplied nZEDb dump (`usenet_nntp_predb_dump_path`,
+local TSV/gz or an http(s) dump *file* URL). Do not scrape `api.predb.net` to
+populate that table. nZEDbPre_Dumps is discontinued; there is no default dump
+URL. Default IRC is on: synIRC `#PreNNTmux`, TLS 6697, a random unregistered
+nick, client PING heartbeat. NickServ is optional and unused by default (synIRC
+confirm mail does not arrive). The NickServ password, if set, is stored
+encrypted (`secrets.Store`) and is never logged. `#nZEDbPRE` is dead; do not
+point the scraper there.
 
 ## Gap fill (completeness, repair, name recovery, backfill)
 
@@ -114,7 +116,10 @@ collection-key rewrite (once) → forward crawl → repair → name recovery →
   `ParseSubject` strips `[k/N]`, `(n/m)`, and `N of M` from the stem (NNTmux
   collection hash input) and stores the file counter on `file_n`/`file_m`.
   `[48/73] Show…` and `[01/73] Show…` share one key. Leading `[#a.b.teevee]` /
-  `[Group]` tags are stripped. Obfuscated sets hash `(group, poster, skeleton)`;
+  `[Group]` tags are stripped. EFNet `[id]-[FULL]-[#a.b…@EFNet]-[ Title ]` and
+  `www.Bin-Req.net Presents: #id - Title` wrappers are stripped to the title;
+  a request-id-only leftover (`23051509 ]`) is staged, not searchable, so dump
+  `requestid` / IRC `[RQ:]` can still name it. Obfuscated sets hash `(group, poster, skeleton)`;
   a 16+ character token before `[k/N]` is the skeleton (NNTmux hash-token
   capture) so per-file random quoted names still cluster. Skeletons shorter
   than 8 characters are not staged. Existing headers are rewritten in place
@@ -137,7 +142,8 @@ collection-key rewrite (once) → forward crawl → repair → name recovery →
 - **Name recovery.** Obfuscated binary sets are staged under
   `release_name='obf:<key>'` instead of dropped. Recovery order: local PreDB by
   md5 / md5(md5(title)) / sha1 tokens taken from every header subject and
-  filename (suffix-stripped), then PreDB `filename` / IRC `[FN:]`, then a
+  filename (suffix-stripped), then PreDB `filename` / IRC `[FN:]`, then dump/IRC
+  request id (EFNet/Bin-Req wrappers), then a
   scene-shaped header filename, then at most 3 first-segment BODY fetches per
   set (PAR2 `FileDesc` → RAR/ZIP member names → yEnc `=ybegin` name → NFO scene
   name). Accepted: a PreDB-confirmed name (size within ±15% when the PreDB
@@ -149,8 +155,8 @@ collection-key rewrite (once) → forward crawl → repair → name recovery →
   import can still name them. Staged bytes are capped at `unnamed_max_pct` of
   `index_max_gb` and BODY volume at `namefix_body_mb_per_hour`.
   Historical names come from an operator-supplied nZEDb TSV dump
-  (`usenet_nntp_predb_dump_path`); sakms does not scrape `api.predb.net` to
-  build that table.
+  (`usenet_nntp_predb_dump_path`, local file or dump-file URL); sakms does not
+  scrape `api.predb.net` to build that table.
 - **Retention backfill.** A per-group `low` cursor (`usenet_nntp_watermarks.low`)
   walks from the oldest indexed article down to provider retention in 2000-article
   chunks, through the same parse → admission → upsert path. It pauses at
@@ -175,7 +181,7 @@ are dropped again and completeness is still recorded.
 | `predb_irc_enabled` | true | synIRC PRE feed (random nick, no NickServ) |
 | `predb_irc_server`, `_port`, `_tls`, `_nick`, `_channels` | `irc.synirc.net`, 6697, true, generated, `#PreNNTmux` | IRC connection (channels comma-separated; empty nick is generated) |
 | `predb_irc_password_enc` | — | NickServ password, `secrets.Store` ciphertext; set via `PUT /api/settings/usenet-nntp-native/predb-irc-password` `{"password":"…"}` (empty clears) |
-| `predb_dump_path` | empty | Local nZEDb PreDB dump file or directory (`\t\t` TSV, optional `.gz`). Imported on boot and every 15 minutes when mtime/size changes. Never a URL. |
+| `predb_dump_path` | empty | nZEDb PreDB dump file, directory, or http(s) dump *file* URL (`\t\t` TSV, optional `.gz`). Imported on boot and every 15 minutes when mtime/size (or URL ETag) changes. Search APIs (`api.predb.net`, `?type=pre`) are not fetched. |
 | `min_completeness_pct` / `incomplete_ttl_days` | 95 / 3 | Completeness gate / reap |
 | `repair_enabled` | true | Gap capture + repair |
 | `backfill_enabled` / `backfill_days` / `backfill_budget_pct` | true / 0 (retention) / 90 | Backfill |

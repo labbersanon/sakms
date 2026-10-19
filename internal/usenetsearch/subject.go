@@ -64,6 +64,24 @@ var (
 	// leading _ not in this regex. Review if: 13-char tokens become common.
 	reLeadHashSpace = regexp.MustCompile(`^[_-]*([A-Za-z0-9][A-Za-z0-9_\-]{12,}[A-Za-z0-9])\s+[\[(]\d{1,5}/\d{1,5}[\])]`)
 	reEpOrYearLoose = regexp.MustCompile(`(?i)s\d{1,2}e\d{1,3}|(?:19|20)\d{2}`)
+	// Claude 2026-10-19: EFNet/Bin-Req/FULL request wrappers and numeric reqids.
+	// Reason: overnight searchable climbed on subject names like
+	//   `[23051509]-[FULL]-[#a.b.teevee@EFNet]-[ Greys.Anatomy… ]` (wrapper
+	//   left in display_name) and `23051509 ]` (request id admitted because
+	//   yEnc/filename made ParseSubject.OK). Dump requestid / IRC [RQ:] cannot
+	//   join those rows while the stem is the wrapper.
+	// Troubleshooting: display_name still starts with digits]-[FULL] → this
+	//   strip missed a new wrapper; searchable junk that is only digits →
+	//   looksLikeRequestID.
+	// Review if: a poster uses 4-digit request ids or omits [FULL].
+	// Related files: namefix.go, predb/parse.go, predb/dump.go
+	reReqTitleBrackets = regexp.MustCompile(`(?i)^(?:\[\s*)?(\d{5,10})\s*\]?\s*-\s*\[(?:FULL|PART)\]\s*-\s*\[[^\]]+\]\s*-\s*\[\s*([^\[\]]*?)(?:\s*\])`)
+	reReqPrefix        = regexp.MustCompile(`(?i)^(?:\[\s*)?(\d{5,10})\s*\]?\s*-\s*\[(?:FULL|PART)\]\s*-\s*\[[^\]]+\]\s*-?\s*`)
+	reBinReqPrefix     = regexp.MustCompile(`(?i)^(?:https?://)?(?:www\.)?bin-?req(?:uest)?\.net\s+presents:\s*#?(\d{5,10})\s*[-:]\s*`)
+	reInnerNetTag      = regexp.MustCompile(`(?i)\[#?a\.b\.[a-z0-9.+\-]+(?:@[^\]]+)?\]`)
+	reInnerFULL        = regexp.MustCompile(`(?i)\[(?:FULL|PART)\]`)
+	reLeadReqBracket   = regexp.MustCompile(`^\[?\s*(\d{5,10})\s*\]`)
+	reTaggedRQSubj     = regexp.MustCompile(`(?i)\[RQ:\s*(\d{5,10})\s*\]`)
 )
 
 // nntpUTF8 replaces invalid UTF-8 (latin1/CP1252 NNTP headers) with U+FFFD.
@@ -109,7 +127,14 @@ func parseSubjectWith(subj string, extra []compiledExtra) ParsedSubject {
 		out.Obfuscated = true
 		return out
 	}
+	if looksLikeRequestID(name) {
+		out.Obfuscated = true
+		return out
+	}
 	if name == "" || len(name) < 4 {
+		if requestIDFromSubject(s) != 0 {
+			out.Obfuscated = true
+		}
 		return out
 	}
 	out.Name = name
@@ -128,6 +153,7 @@ func collectionStemWith(subj, filename string, extra []compiledExtra) string {
 	if i := strings.Index(strings.ToLower(s), "yenc"); i > 0 {
 		s = strings.TrimSpace(s[:i])
 	}
+	s = stripRequestWrappers(s)
 	s = reGroupTag.ReplaceAllString(s, "")
 	s = applyStripPrefix(s, extra)
 	if i := strings.Index(s, `"`); i >= 0 {
@@ -184,6 +210,43 @@ func applyStripPrefix(s string, extra []compiledExtra) string {
 		}
 	}
 	return strings.TrimSpace(s)
+}
+
+func stripRequestWrappers(s string) string {
+	if m := reReqTitleBrackets.FindStringSubmatch(s); len(m) == 3 {
+		s = strings.TrimSpace(m[2] + " " + s[len(m[0]):])
+	} else {
+		s = strings.TrimSpace(reReqPrefix.ReplaceAllString(s, ""))
+	}
+	s = strings.TrimSpace(reBinReqPrefix.ReplaceAllString(s, ""))
+	s = reInnerNetTag.ReplaceAllString(s, " ")
+	s = reInnerFULL.ReplaceAllString(s, " ")
+	return collapseWS(s)
+}
+
+func requestIDFromSubject(s string) int64 {
+	s = strings.TrimSpace(s)
+	for _, re := range []*regexp.Regexp{reReqTitleBrackets, reReqPrefix, reBinReqPrefix, reTaggedRQSubj, reLeadReqBracket} {
+		if m := re.FindStringSubmatch(s); len(m) >= 2 && m[1] != "" {
+			if n, err := strconv.ParseInt(m[1], 10, 64); err == nil && n >= 10000 {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+func looksLikeRequestID(name string) bool {
+	n := strings.Trim(name, "[]() \t-_.")
+	if len(n) < 5 || len(n) > 12 {
+		return false
+	}
+	for _, r := range n {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func tokenLooksObfuscated(tok string) bool {
@@ -289,6 +352,9 @@ func obfSkeleton(subj string) string {
 func obfSkeletonWith(subj string, extra []compiledExtra) string {
 	if tok := leadCollectionTokenWith(subj, extra); tok != "" {
 		return tok
+	}
+	if id := requestIDFromSubject(subj); id != 0 {
+		return "req:" + strconv.FormatInt(id, 10)
 	}
 	s := subj
 	if i := strings.Index(strings.ToLower(s), "yenc"); i > 0 {

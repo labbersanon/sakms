@@ -32,6 +32,7 @@ var (
 	reTaggedSZ   = regexp.MustCompile(`(?i)\[SZ:\s*([^\]]+)\]`)
 	reTaggedFL   = regexp.MustCompile(`(?i)\[FL:\s*([^\]]+)\]`)
 	reTaggedFN   = regexp.MustCompile(`(?i)\[FN:\s*([^\]]+)\]`)
+	reTaggedRQ   = regexp.MustCompile(`(?i)\[RQ:\s*([^\]]+)\]`)
 	reTaggedNuke = regexp.MustCompile(`(?i)\[((?:UN|MOD|RE|OLD)?NUKE(?:D)?):\s*([^\]]*)\]`)
 )
 
@@ -132,6 +133,11 @@ func parseTaggedAnnounce(line string) (Announce, bool) {
 	}
 	if fn := taggedNA(line, reTaggedFN); fn != "" {
 		a.Entry.Filename = fn
+	}
+	if rq := taggedNA(line, reTaggedRQ); rq != "" {
+		if n, err := strconv.ParseInt(rq, 10, 64); err == nil && n > 0 {
+			a.Entry.RequestID = n
+		}
 	}
 	if nk := reTaggedNuke.FindStringSubmatch(line); nk != nil {
 		tag := strings.ToUpper(strings.TrimSpace(nk[1]))

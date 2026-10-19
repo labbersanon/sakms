@@ -11683,3 +11683,19 @@ status stays active.
 | `internal/usenetsearch/subject_test.go` | Black Clover / Dandivine quoted filenames |
 | `internal/usenetsearch/namefix_test.go` | rename without BODY; survive 2160 gate; hash quote stays unnamed |
 | `docs/usenet-nntp-native.md` | quoted ident-shaped header names |
+
+## 2026-10-19 — quoted titles run before BODY so they actually rename
+
+**Problem:** After #212, the first live pass was still `renamed=0`. Black Clover / Yameii 100% sets had `next_name_at=0` but were never touched.
+**Root cause:** 95% yield quoted sets are `DuePendingNames` (BODY). Run() stripped those keys from preOnly so they would PAR2 on a PreDB miss. BODY leftover=59 processed one hash set; PreDB leftover=162 processed none of the quotes. Header titles need no BODY.
+**Fix:** `DuePendingHeaderNames` (quoted ident-shaped subjects) runs first. Header candidates run before PreDB HTTP. Renamed keys are skipped in later phases. Stub Filename=`001.par2` still recovers from Subject quotes.
+**Outcome:** Complete quoted fansub sets rename in the header phase even when the BODY queue is full of hash.par2.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix.go` | header phase first; candidates before PreDB |
+| `internal/usenetsearch/namefix_index.go` | `DuePendingHeaderNames` |
+| `internal/usenetsearch/namefix_test.go` | stub filename + hash BODY-due still renames quoted |
+| `docs/usenet-nntp-native.md` | pass order |

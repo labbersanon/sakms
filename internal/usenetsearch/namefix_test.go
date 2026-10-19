@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -988,6 +989,119 @@ func requestIDSet(prefix string, id int64, startNum, files int) []usenet.Message
 		DateUnix:  1700000000,
 	})
 	return out
+}
+
+func dropPayloadParts(t *testing.T, idx *Index, n int) {
+	t.Helper()
+	if n <= 0 {
+		return
+	}
+	res, err := idx.db.Exec(`
+DELETE FROM usenet_nntp_headers
+WHERE msgid IN (
+  SELECT msgid FROM usenet_nntp_headers
+  WHERE is_meta=FALSE AND part_n=2
+  ORDER BY msg_num
+  LIMIT ?
+)`, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted, _ := res.RowsAffected()
+	if deleted != int64(n) {
+		t.Fatalf("deleted payload parts=%d, want %d", deleted, n)
+	}
+	var key string
+	if err := idx.db.QueryRow(`SELECT release_key FROM usenet_nntp_releases LIMIT 1`).Scan(&key); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.markDirty(context.Background(), []releaseKey{{nfGroup, key}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.RecomputeDirty(context.Background(), 10); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDueExhaustedYield_IncludesBelowGatePending(t *testing.T) {
+	f := newNFFixture(t, obfuscatedSet("bg", nfHash, 1, 45), nil)
+	f.crawlAndRecompute(t)
+	dropPayloadParts(t, f.idx, 9) // 81/90 = 90%
+	ctx := context.Background()
+	due, err := f.idx.DuePendingNames(ctx, []string{nfGroup}, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(due) != 0 {
+		t.Fatalf("DuePendingNames=%d, want 0 (BODY stays at 95%%)", len(due))
+	}
+	sets, err := f.idx.DueExhaustedYield(ctx, []string{nfGroup}, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sets) != 1 || !sets[0].PreDBOnly {
+		t.Fatalf("DueExhaustedYield=%+v, want one PreDB-only 90%% set", sets)
+	}
+}
+
+func TestNameFix_PreDBBelowGateSearchableNotGrabReady(t *testing.T) {
+	const title = "Below.Gate.2021.1080p.WEB-DL.x264-GRP"
+	sum := md5.Sum([]byte(title))
+	h := hex.EncodeToString(sum[:])
+	f := newNFFixture(t, obfuscatedSet("bg", h, 1, 45), nil)
+	f.nf.PreDB = &fakePreDB{hashes: map[string]PreDBHit{h: {Title: title}}}
+	f.crawlAndRecompute(t)
+	dropPayloadParts(t, f.idx, 9)
+	ctx := context.Background()
+	res, err := f.nf.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.HashHits != 1 || res.Renamed != 1 || res.BodyFetches != 0 || len(f.src.bodyCalls) != 0 {
+		t.Fatalf("result=%+v bodyCalls=%v", res, f.src.bodyCalls)
+	}
+	var searchable bool
+	var source string
+	var bp int
+	if err := f.idx.db.QueryRow(`SELECT searchable, name_source, completeness_bp FROM usenet_nntp_releases`).Scan(&searchable, &source, &bp); err != nil {
+		t.Fatal(err)
+	}
+	if !searchable || source != sourcePreDB || bp < spanRepairFloorBP || bp >= f.idx.MinCompletenessPct()*100 {
+		t.Fatalf("searchable=%v source=%s bp=%d", searchable, source, bp)
+	}
+	cs, err := f.idx.SearchReleases(ctx, Query{Terms: []string{"Below.Gate"}})
+	if err != nil || len(cs) != 1 || cs[0].Complete || cs[0].Name != title {
+		t.Fatalf("search=%+v err=%v", cs, err)
+	}
+	if _, err := ToNZB(cs[0]); !errors.Is(err, ErrIncomplete) {
+		t.Fatalf("ToNZB err=%v, want ErrIncomplete", err)
+	}
+	grab, err := f.idx.SearchReleases(ctx, Query{Terms: []string{"Below.Gate"}, GrabReady: true})
+	if err != nil || len(grab) != 0 {
+		t.Fatalf("GrabReady search=%+v err=%v, want empty", grab, err)
+	}
+}
+
+func TestRenameRelease_Par2BelowGateNotSearchable(t *testing.T) {
+	f := newNFFixture(t, obfuscatedSet("p2", nfHash, 1, 45), nil)
+	f.crawlAndRecompute(t)
+	dropPayloadParts(t, f.idx, 9)
+	ctx := context.Background()
+	key, _, _, _ := f.release(t)
+	if err := f.idx.RenameRelease(ctx, nfGroup, key, "Guessed.Movie.2021.1080p.BluRay.x264-GRP", sourcePar2, confMedium); err != nil {
+		t.Fatal(err)
+	}
+	var searchable bool
+	if err := f.idx.db.QueryRow(`SELECT searchable FROM usenet_nntp_releases`).Scan(&searchable); err != nil {
+		t.Fatal(err)
+	}
+	if searchable {
+		t.Fatal("PAR2-named below-gate set must not be searchable")
+	}
+	cs, err := f.idx.SearchReleases(ctx, Query{Terms: []string{"Guessed.Movie"}})
+	if err != nil || len(cs) != 0 {
+		t.Fatalf("search=%+v err=%v, want empty", cs, err)
+	}
 }
 
 func TestNameFix_ExhaustedYieldPreDBRetryNoBody(t *testing.T) {

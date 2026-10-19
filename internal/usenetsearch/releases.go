@@ -444,10 +444,15 @@ FROM usenet_nntp_headers WHERE group_name=? AND release_name=?`, k.group, k.key)
 	}
 	comp := computeCompleteness(files, fileM)
 	meets := comp.Meets(gate)
+	// Claude 2026-10-19: PreDB-exact names are searchable below the 95% gate.
+	// Reason: NewsLeecher SuperSearch shows the real title before the set is
+	//   grab-complete; autograb/ToNZB still require Candidate.Complete.
+	// Troubleshooting: named predb row with searchable=false at 80–94% → this
+	//   OR name_source='predb' missing. Review if: guessed par2/rar names join it.
 	err = idx.db.QueryRowContext(ctx, `
 UPDATE usenet_nntp_releases SET
   declared_segs=?, seen_segs=?, completeness_bp=?, gate_reason=?,
-  searchable=(state='named' AND display_name<>'' AND ?::boolean),
+  searchable=(state='named' AND display_name<>'' AND (?::boolean OR name_source='predb')),
   first_msg=?, last_msg=?, posted_at=?, payload_bytes=?, has_par2=?, dirty=FALSE
 WHERE group_name=? AND release_key=?
 RETURNING searchable`,

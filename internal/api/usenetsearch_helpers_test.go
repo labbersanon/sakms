@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/prowlarr"
+	"github.com/labbersanon/sakms/internal/usenetsearch"
 )
 
 func TestPrependStripNativePhase(t *testing.T) {
@@ -21,5 +22,15 @@ func TestPrependStripNativePhase(t *testing.T) {
 	}
 	if len(stripNativePhase(rest)) != 2 {
 		t.Fatal("strip")
+	}
+}
+
+func TestAdaptNativeCandidates_SkipsIncomplete(t *testing.T) {
+	out := adaptNativeCandidates([]usenetsearch.Candidate{
+		{Name: "Holey.PreDB.2021.1080p", Group: "alt.binaries.movies", Complete: false, SeedMsgID: "a@x"},
+		{Name: "Full.PreDB.2021.1080p", Group: "alt.binaries.movies", Complete: true, SeedMsgID: "b@x", PayloadBytes: 100},
+	})
+	if len(out) != 1 || out[0].Title != "Full.PreDB.2021.1080p" {
+		t.Fatalf("adapted=%+v", out)
 	}
 }

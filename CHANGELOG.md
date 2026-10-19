@@ -11516,3 +11516,23 @@ status stays active.
 | `internal/api/usenetnntp_predb.go` | Reload starts extra clients |
 | `internal/api/usenetnntp.go` | GET `predbIrcExtra` |
 | `docs/usenet-nntp-native.md` | second feed |
+
+## 2026-10-19 — PreDB names searchable before the 95% autograb gate
+
+**Problem:** Hash-obfuscated yield at 80–94% never entered namefix (`DuePendingNames` required 95%), so PreDB could not name them. Even a PreDB hit stayed off Search until completeness met the gate. NewsLeecher SuperSearch shows the real title at ingest.
+**Root cause:** Searchable was `named AND meets min_completeness_pct`. BODY-capable namefix used the same 95% threshold, so below-gate complete-enough sets sat unnamed forever.
+**Fix:** PreDB-only namefix (`DueExhaustedYield`) includes ≥80% pending still below the gate (no BODY). `recomputeOne` sets `searchable` for `name_source=predb` even when completeness is below 95%. Search lists those titles; `Query.GrabReady` and `ToNZB` still refuse them. Autograb sets `GrabReady`. PAR2/RAR/subject names stay gated.
+**Outcome:** PreDB-named 80–94% sets appear on the dashboard/search; autograb waits until 95%. Tests cover PreDB visible/not grab-ready, PAR2 still hidden, ToNZB `ErrIncomplete`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix_index.go` | DueExhaustedYield includes below-gate ≥80% |
+| `internal/usenetsearch/releases.go` | searchable OR name_source=predb |
+| `internal/usenetsearch/index.go` | SearchReleases GrabReady filter |
+| `internal/usenetsearch/nzbsynth.go` | ToNZB refuses !Complete |
+| `internal/usenetsearch/candidate.go` | Query.GrabReady |
+| `internal/api/usenetsearch_helpers.go` | autograb GrabReady |
+| `internal/api/usenetsearch_adapter.go` | skip !Complete |
+| `docs/usenet-nntp-native.md` | searchable vs autograb |

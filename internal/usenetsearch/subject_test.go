@@ -2,6 +2,7 @@ package usenetsearch
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -237,8 +238,9 @@ func TestLocatorRoundTrip(t *testing.T) {
 
 func TestToNZB(t *testing.T) {
 	c := Candidate{
-		Name:  "Rel",
-		Group: "alt.binaries.movies",
+		Name:     "Rel",
+		Group:    "alt.binaries.movies",
+		Complete: true,
 		Files: []CandidateFile{{
 			Subject:  "Rel.part01.rar",
 			Filename: "Rel.part01.rar",
@@ -248,6 +250,10 @@ func TestToNZB(t *testing.T) {
 	nzb, err := ToNZB(c)
 	if err != nil || len(nzb.Files) != 1 || len(nzb.Files[0].Segs) != 2 {
 		t.Fatalf("nzb=%+v err=%v", nzb, err)
+	}
+	c.Complete = false
+	if _, err := ToNZB(c); !errors.Is(err, ErrIncomplete) {
+		t.Fatalf("incomplete ToNZB err=%v, want ErrIncomplete", err)
 	}
 }
 

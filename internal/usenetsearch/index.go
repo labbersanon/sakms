@@ -355,12 +355,15 @@ func (idx *Index) SearchReleases(ctx context.Context, q Query) ([]Candidate, err
 	}
 	groups := q.Groups
 	var args []any
-	// Claude 2026-10-15: search reads the release table (plan D1), not
-	// DISTINCT over headers. searchable already encodes named AND strict
-	// completeness; assembleFromRows re-checks the gate below (defense in depth).
+	// Claude 2026-10-19: searchable is named+display, plus either the strict
+	// completeness gate or a PreDB-exact name (NewsLeecher-style title at ingest).
+	// Reason: 80–94% obfuscated yield sat unnamed forever (DuePendingNames
+	// required 95%) and SearchReleases dropped !Complete even after a PreDB hit.
+	// Troubleshooting: PreDB-named title missing from search → searchable bit
+	// or GrabReady filtering autograb. Undo: docs/usenet-nntp-native.md.
+	// Review if: PAR2/RAR names should also be visible below the gate.
 	// Old: SELECT DISTINCT group_name, release_name FROM usenet_nntp_headers WHERE obfuscated=FALSE ...
-	var where []string
-	where = append(where, `searchable=TRUE`, `display_name<>''`)
+	where := []string{`searchable=TRUE`, `display_name<>''`}
 	if len(groups) > 0 {
 		ph := make([]string, len(groups))
 		for i, g := range groups {
@@ -420,7 +423,7 @@ func (idx *Index) SearchReleases(ctx context.Context, q Query) ([]Candidate, err
 		if q.MaxBytes > 0 && c.PayloadBytes > q.MaxBytes {
 			continue
 		}
-		if !c.Complete {
+		if q.GrabReady && !c.Complete {
 			continue
 		}
 		out = append(out, c)

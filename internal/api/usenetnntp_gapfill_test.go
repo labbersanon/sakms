@@ -87,6 +87,53 @@ func TestNNTPGapFill_PutPreservesKnobs(t *testing.T) {
 	}
 }
 
+func TestNNTPGapFill_PutDumpPathSetsKVAndPreservesWhenOmitted(t *testing.T) {
+	store := newSettingsStore(t)
+	ctx := context.Background()
+	h := putUsenetNNTPNativeHandler(store, nil)
+	const dump = "/data/predb/predb.tsv.gz"
+
+	put := func(body string) usenetNNTPNativeResponse {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPut, "/api/settings/usenet-nntp-native", strings.NewReader(body))
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		var resp usenetNNTPNativeResponse
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return resp
+	}
+
+	resp := put(`{"predbDumpPath":"` + dump + `"}`)
+	if resp.GapFill.PreDBDumpPath != dump {
+		t.Fatalf("dump path = %q", resp.GapFill.PreDBDumpPath)
+	}
+	got, err := store.Get(ctx, usenetsearch.KeyPreDBDumpPath)
+	if err != nil || got != dump {
+		t.Fatalf("kv = %q err=%v", got, err)
+	}
+
+	resp = put(`{"crawlIntervalSeconds":30}`)
+	if resp.GapFill.PreDBDumpPath != dump {
+		t.Fatalf("omitted dump path clobbered: %q", resp.GapFill.PreDBDumpPath)
+	}
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/settings/usenet-nntp-native", strings.NewReader(`{"predbDumpPath":"https://api.predb.net/?type=pre&q=x"}`)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("search API dump path status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	resp = put(`{"predbDumpPath":""}`)
+	if resp.GapFill.PreDBDumpPath != "" {
+		t.Fatalf("empty dump path = %q", resp.GapFill.PreDBDumpPath)
+	}
+}
+
 func TestNNTPGapFill_StatusEmptyWithoutIndex(t *testing.T) {
 	store := newSettingsStore(t)
 	svc := usenetsearch.NewService(nil, nil)

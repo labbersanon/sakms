@@ -42,10 +42,14 @@ type usenetNNTPNativeResponse struct {
 	//   field exists to set it; see usenetsearch.KeyAdmissionEnabled.
 	// Review if: a Settings UI toggle for this ships.
 	AdmissionEnabled bool `json:"admissionEnabled"`
-	// Claude 2026-10-15: gap-fill knobs (read-only here — KV keys
-	// usenetsearch.Key*, see loadNNTPGapFill) and index counters (GET only).
-	// Reason: a PUT save must never clobber them; no request field exists.
-	// Review if: a Settings UI for gap-fill ships.
+	// Claude 2026-10-19: dump path is the one writable gap-fill knob on PUT
+	//   (`predbDumpPath` on the request). Other gap-fill keys stay GET-only so
+	//   a Settings save cannot clobber them.
+	// Reason: dumpLoop starts in NNTPPreDB.Reload (boot / this PUT / IRC-password
+	//   PUT). SQL-only KV left the importer inert until a container restart.
+	// Troubleshooting: dump path set but no "predb dump" log → Reload did not
+	//   run (nntpPreDB nil) or the URL failed IsFetchURL.
+	// Review if: a Settings UI for the rest of gap-fill ships.
 	GapFill       usenetNNTPGapFill           `json:"gapFill"`
 	GapFillStatus *usenetsearch.GapFillStatus `json:"gapFillStatus,omitempty"`
 }
@@ -87,6 +91,8 @@ type usenetNNTPNativeRequest struct {
 	IndexMaxGB    *int    `json:"indexMaxGb"`
 	WindowDays    *int    `json:"windowDays"`
 	CrawlInterval *int    `json:"crawlIntervalSeconds"`
+	// Claude 2026-10-19: optional; omitted leaves the dump KV unchanged.
+	PredbDumpPath *string `json:"predbDumpPath"`
 }
 
 type usenetNNTPGroupsResponse struct {
@@ -352,6 +358,13 @@ func putUsenetNNTPNativeHandler(settingsStore *settings.Store, svc *usenetsearch
 		if req.CrawlInterval != nil {
 			cur.CrawlInterval = *req.CrawlInterval
 		}
+		if req.PredbDumpPath != nil {
+			cur.GapFill.PreDBDumpPath = strings.TrimSpace(*req.PredbDumpPath)
+			if strings.Contains(cur.GapFill.PreDBDumpPath, "://") && !predb.IsFetchURL(cur.GapFill.PreDBDumpPath) {
+				http.Error(w, "predbDumpPath must be a local TSV/gz path or an http(s) dump file URL, not a search API", http.StatusBadRequest)
+				return
+			}
+		}
 		if cur.IndexMaxGB <= 0 {
 			cur.IndexMaxGB = usenetsearch.DefaultIndexMaxGB
 		}
@@ -397,6 +410,9 @@ func putUsenetNNTPNativeHandler(settingsStore *settings.Store, svc *usenetsearch
 			{usenetsearch.KeyWindowDays, strconv.Itoa(cur.WindowDays)},
 			{usenetsearch.KeyCrawlInterval, strconv.Itoa(cur.CrawlInterval)},
 		}
+		if req.PredbDumpPath != nil {
+			sets = append(sets, struct{ k, v string }{usenetsearch.KeyPreDBDumpPath, cur.GapFill.PreDBDumpPath})
+		}
 		for _, kv := range sets {
 			if err := settingsStore.Set(ctx, kv.k, kv.v); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -412,6 +428,11 @@ func putUsenetNNTPNativeHandler(settingsStore *settings.Store, svc *usenetsearch
 			_ = settingsStore.Set(ctx, usenetsearch.KeyProbeDetail, probe.Detail)
 			cur.ProbeState = probe.State
 			cur.ProbeDetail = probe.Detail
+		}
+		if req.PredbDumpPath != nil {
+			if rt := getNNTPPreDB(); rt != nil {
+				rt.Reload(ctx)
+			}
 		}
 		writeJSON(w, cur)
 	}

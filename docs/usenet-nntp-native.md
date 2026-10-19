@@ -181,7 +181,7 @@ are dropped again and completeness is still recorded.
 | `predb_irc_enabled` | true | synIRC PRE feed (random nick, no NickServ) |
 | `predb_irc_server`, `_port`, `_tls`, `_nick`, `_channels` | `irc.synirc.net`, 6697, true, generated, `#PreNNTmux` | IRC connection (channels comma-separated; empty nick is generated) |
 | `predb_irc_password_enc` | — | NickServ password, `secrets.Store` ciphertext; set via `PUT /api/settings/usenet-nntp-native/predb-irc-password` `{"password":"…"}` (empty clears) |
-| `predb_dump_path` | empty | nZEDb PreDB dump file, directory, or http(s) dump *file* URL (`\t\t` TSV, optional `.gz`). Imported on boot and every 15 minutes when mtime/size (or URL ETag) changes. Search APIs (`api.predb.net`, `?type=pre`) are not fetched. |
+| `predb_dump_path` | empty | nZEDb PreDB dump file, directory, or http(s) dump *file* URL (`\t\t` TSV, optional `.gz`). PUT `predbDumpPath` reloads the importer; SQL still needs a restart. Imported on boot/reload and every 15 minutes when mtime/size (or URL ETag) changes. Search APIs (`api.predb.net`, `?type=pre`) are rejected. |
 | `min_completeness_pct` / `incomplete_ttl_days` | 95 / 3 | Completeness gate / reap |
 | `repair_enabled` | true | Gap capture + repair |
 | `backfill_enabled` / `backfill_days` / `backfill_budget_pct` | true / 0 (retention) / 90 | Backfill |

@@ -11469,3 +11469,18 @@ status stays active.
 | `internal/usenetsearch/namefix.go` | `ByRequestID` after hash/filename |
 | `internal/api/usenetnntp_predb.go` | dump loop accepts dump-file URLs |
 | `docs/usenet-nntp-native.md` | dump URL + wrapper notes |
+
+## 2026-10-19 — PUT predbDumpPath reloads the PreDB dump importer
+
+**Problem:** After #197, `usenet_nntp_predb_dump_path` was GET-only. SQL could write the KV, but dumpLoop only starts in `NNTPPreDB.Reload` (boot / IRC-password PUT), so the importer stayed off until a container restart.
+**Root cause:** Native Settings PUT intentionally did not take gap-fill fields so a save could not clobber them.
+**Fix:** Optional request field `predbDumpPath`. Omitted = unchanged. Empty = off. Search-API URLs 400. On set, Reload starts or stops the dump loop.
+**Outcome:** An operator can point the importer at a TSV/gz file URL or a container path without restarting sakms.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/usenetnntp.go` | writable `predbDumpPath`; Reload on set |
+| `internal/api/usenetnntp_gapfill_test.go` | set / omit / reject / clear |
+| `docs/usenet-nntp-native.md` | PUT + SQL/restart notes |

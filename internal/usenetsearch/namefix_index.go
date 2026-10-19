@@ -99,7 +99,7 @@ ORDER BY ingested_at DESC LIMIT ?`, args...)
 
 // DueExhaustedYield returns yield-group pending_name sets that namefix may
 // resolve from PreDB without a BODY fetch: already-exhausted complete sets,
-// and ≥80% sets still below the searchable completeness gate (those never
+// and ≥80% sets still below the BODY/autograb completeness gate (those never
 // entered DuePendingNames, so they never spent BODY attempts).
 //
 // Claude 2026-10-19: include 80–94% pending, not only name_attempts>=3.
@@ -207,8 +207,8 @@ FROM usenet_nntp_headers WHERE group_name=? AND release_name=? ORDER BY filename
 
 // RenameRelease sets the recovered display name on a staged set and recomputes
 // completeness. A 95%+ set, or a PreDB-exact name at ≥80%, becomes searchable
-// in this pass. Headers are
-// untouched, so the rename is reversible (undo SQL in docs/usenet-nntp-native.md).
+// in this pass. Headers are untouched, so the rename is reversible (undo SQL
+// in docs/usenet-nntp-native.md).
 //
 // Claude 2026-10-16: recompute here, do not wait for RecomputeDirty.
 // Reason: namefix ran after recompute, so renamed 100% sets sat dirty behind 95k pending and searchable stayed at 12.

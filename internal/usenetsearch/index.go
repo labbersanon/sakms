@@ -363,8 +363,7 @@ func (idx *Index) SearchReleases(ctx context.Context, q Query) ([]Candidate, err
 	// or GrabReady filtering autograb. Undo: docs/usenet-nntp-native.md.
 	// Review if: PAR2/RAR names should also be visible below the gate.
 	// Old: SELECT DISTINCT group_name, release_name FROM usenet_nntp_headers WHERE obfuscated=FALSE ...
-	var where []string
-	where = append(where, `searchable=TRUE`, `display_name<>''`)
+	where := []string{`searchable=TRUE`, `display_name<>''`}
 	if len(groups) > 0 {
 		ph := make([]string, len(groups))
 		for i, g := range groups {

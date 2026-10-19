@@ -394,15 +394,14 @@ type segmentResult struct {
 }
 
 // fetchSegment downloads one NNTP article by message-ID and yEnc-decodes it.
-//
-// NOTE: nntp.Conn's io.Reader is only valid until the next call to any Conn
-// method — dec.Next() must fully buffer the decoded data before this function
-// returns the connection to the caller (who then calls pool.put). That
-// invariant is satisfied here: dec.Next() reads to completion before we return.
 func fetchSegment(c *nntp.Conn, msgID string) (segmentResult, error) {
 	return fetchSegmentUntil(c, msgID, time.Now().Add(articleIOTimeout))
 }
 
+// NOTE: nntp.Conn's io.Reader is only valid until the next call to any Conn
+// method — dec.Next() must fully buffer the decoded data before this function
+// returns the connection to the caller (who then calls pool.put). That
+// invariant is satisfied here: dec.Next() reads to completion before we return.
 func fetchSegmentUntil(c *nntp.Conn, msgID string, until time.Time) (segmentResult, error) {
 	// Reject message-IDs containing CRLF or any other control character to
 	// prevent NNTP command injection via NZB segment chardata.

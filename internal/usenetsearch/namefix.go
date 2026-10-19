@@ -239,11 +239,11 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 			}
 			renamed := res.Renamed
 			stop, err := n.fixSet(phaseCtx, set, &res, &statBudget)
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				log.Printf("usenetsearch: namefix deadline phase=%s leftover=%d", phase, len(in)-i)
+				return nil
+			}
 			if err != nil {
-				if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-					log.Printf("usenetsearch: namefix deadline phase=%s leftover=%d", phase, len(in)-i)
-					return nil
-				}
 				return err
 			}
 			if res.Renamed > renamed {
@@ -441,13 +441,11 @@ func (n *NameFixer) accept(ctx context.Context, raw, source string, payload int6
 // identShapedName is the Go form of identNameSQL: a resolution plus a year,
 // season, or multi-word title.
 // Claude 2026-10-19: fansub `Ep170` / spaces, not only SxxEyy.
-// Reason: hasTitleAndMarker only counts SxxEyy/year, so Black Clover
-//
-//	1080p quoted names failed accept() after recoveredUnusable was fixed.
-//
-// Troubleshooting: 1080p spacey title still unnamed → Resolution parse
-//
-//	missed (need 720/1080/2160/480p). Review if: 576p / 4K-without-p.
+// Reason: hasTitleAndMarker only counts SxxEyy/year, so a Black Clover 1080p
+// quoted name failed accept() after recoveredUnusable was fixed.
+// Troubleshooting: unnamed 1080p spacey title means Resolution parse missed
+// (need 720/1080/2160/480p).
+// Review if: 576p / 4K-without-p.
 func identShapedName(name string) bool {
 	if release.Parse(name).Resolution == 0 {
 		return false

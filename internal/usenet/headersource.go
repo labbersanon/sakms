@@ -237,14 +237,16 @@ func (h *managerHeaderSource) BodyHead(ctx context.Context, msgID string, maxByt
 	// Troubleshooting: namefix starting with no pass for >90s → until is
 	//   still articleIOTimeout because ctx has no deadline.
 	// Review if: downloads should also pass a job ctx into fetchSegment.
-	until := time.Now().Add(articleIOTimeout)
+	now := time.Now()
+	until := now.Add(articleIOTimeout)
 	if d, ok := ctx.Deadline(); ok && d.Before(until) {
-		if !d.After(time.Now()) {
+		if !d.After(now) {
 			p.put(c, true)
-			if err := ctx.Err(); err != nil {
-				return BodySample{}, err
+			err := ctx.Err()
+			if err == nil {
+				err = context.DeadlineExceeded
 			}
-			return BodySample{}, context.DeadlineExceeded
+			return BodySample{}, err
 		}
 		until = d
 	}

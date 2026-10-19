@@ -141,7 +141,7 @@ func (s *Service) CrawlerStatus(ctx context.Context) (CrawlerStatus, error) {
 	idx := s.idx
 	probe := s.probe
 	lastPass := s.lastPass
-	identID, identBin := s.identID, s.identBin
+	identID, identBin, headerN := s.identID, s.identBin, s.headerN
 	var lastChunk *CrawlChunkStat
 	if s.lastChunk.Group != "" {
 		cp := s.lastChunk
@@ -154,6 +154,8 @@ func (s *Service) CrawlerStatus(ctx context.Context) (CrawlerStatus, error) {
 		ProbeState:        probe.State,
 		ProbeDetail:       probe.Detail,
 		Groups:            len(cfg.AllGroups()),
+		Headers:           headerN,
+		IndexBytes:        headerN * approxHeaderRowBytes,
 		IndexMaxGB:        cfg.IndexMaxGB,
 		LastPassBusy:      lastPass.Busy,
 		LastPassAdvanced:  lastPass.Advanced,
@@ -170,16 +172,6 @@ func (s *Service) CrawlerStatus(ctx context.Context) (CrawlerStatus, error) {
 	if !cfg.Enabled || idx == nil {
 		return out, nil
 	}
-	n, err := idx.CountHeaders(ctx)
-	if err != nil {
-		return out, err
-	}
-	out.Headers = n
-	b, err := idx.ApproxBytes(ctx)
-	if err != nil {
-		return out, err
-	}
-	out.IndexBytes = b
 	gf, err := s.GapFillStatus(ctx)
 	if err != nil {
 		return out, err
@@ -210,13 +202,18 @@ func (s *Service) refreshIdentified(ctx context.Context) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, identRefreshTimeout)
 	defer cancel()
+	n, err := idx.CountHeaders(ctx)
+	if err != nil {
+		log.Printf("usenetsearch: identified stats: count headers: %v", err)
+		return
+	}
 	id, bin, err := idx.identifiedStats(ctx)
 	if err != nil {
 		log.Printf("usenetsearch: identified stats: %v", err)
 		return
 	}
 	s.mu.Lock()
-	s.identID, s.identBin = id, bin
+	s.identID, s.identBin, s.headerN = id, bin, n
 	s.mu.Unlock()
 }
 

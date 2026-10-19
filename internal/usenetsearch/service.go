@@ -324,10 +324,11 @@ type Service struct {
 	// lastChunk / lastPass feed the Dashboard crawler card.
 	lastChunk CrawlChunkStat
 	lastPass  CrawlResult
-	// identID / identBin are the last identifiedStats snapshot. The
-	// dashboard GET must not run that query (13M-header JOIN).
+	// identID / identBin / headerN are the last identifiedStats snapshot.
+	// The dashboard GET must not scan usenet_nntp_headers.
 	identID  int64
 	identBin int64
+	headerN  int64
 
 	driftAIFn        DriftAIFunc
 	driftFetch       DriftFetchFunc

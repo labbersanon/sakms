@@ -11881,3 +11881,22 @@ status stays active.
 |---|---|
 | `internal/usenetsearch/namefix.go` | `lookupPreDBNames` on BODY samples |
 | `internal/usenetsearch/namefix_test.go` | FileDesc md5 renames with zero header hash |
+
+## 2026-10-20 — PAR2 hash_16K donor matching (NNTmux)
+
+**Problem:** Overnight namefix recovered 65 scene FileDesc titles; ~225 complete hash.par2 sets stayed pending. FileDesc names were also hashes, `hash_hits=0`, IRC `[FN:]` empty. Quoted ingest is not this win.
+**Root cause:** sakms discarded the FileDesc `hash_16K` field (MD5 of the first 16 KiB). NNTmux `fixNamesWithParHash` copies a named donor's title onto unnamed releases that share that content hash and are within ±5% size. Fuzzy `match:prefiles` cannot invent a title from a pure hex FileDesc.
+**Fix:** Parse and store `hash_16K` in `usenet_nntp_par_hashes`. After a PAR2 BODY, look up a named donor (±5%) as `name_source=parhash`, then copy that title onto pending siblings. A seed pass re-BODYs already-named and already-shelved PAR2 sets once so live 65 titles can donate.
+**Outcome:** A hash.par2 set whose inner files match an already-named PAR2 release is renamed without PreDB or IRC FN. Unique obfuscated posts with no named sibling still need FN/dump.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/db/migrations/0049_usenet_nntp_par_hashes.sql` | `usenet_nntp_par_hashes` + `parhash_sampled` |
+| `internal/usenetsearch/par2names.go` | `par2FileDescs` keeps hash_16K |
+| `internal/usenetsearch/parhash.go` | store / donor lookup / seed queue |
+| `internal/usenetsearch/namefix.go` | parhash promote + named seed |
+| `internal/usenetsearch/namefix_test.go` | donor rename; size ±5%; seed |
+| `internal/usenetsearch/skip.go` / `index.go` | delete hashes with the release |
+| `docs/usenet-nntp-native.md` | hash_16K donor matching |

@@ -57,6 +57,13 @@ ON CONFLICT (group_name, release_key) DO NOTHING`)
 		}
 		n, _ := res.RowsAffected()
 		total += n
+		// Claude 2026-10-20: drop hash_16K rows with the release.
+		// Reason: skip stubs must not leave donor hashes pointing at deleted keys.
+		// Troubleshooting: parhash lookup returns a missing release → this DELETE skipped.
+		// Review if: releases gain an ON DELETE CASCADE FK.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM usenet_nntp_par_hashes WHERE group_name=? AND release_key=?`, k.group, k.key); err != nil {
+			return 0, err
+		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM usenet_nntp_releases WHERE group_name=? AND release_key=?`, k.group, k.key); err != nil {
 			return 0, err
 		}

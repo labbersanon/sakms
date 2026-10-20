@@ -175,8 +175,13 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   Each BODY article is capped at 8s (dial included) and does not inherit leftover
   phase crumbs, so setRows eating the 20s still fetches one PAR2. A hung fetch
   logs `namefix body msgid=` and continues to the next PAR2/NFO pick unless the
-  phase is already gone. PAR2 FileDesc / yEnc names that are md5/sha1 tokens
+  phase is already gone.   PAR2 FileDesc / yEnc names that are md5/sha1 tokens
   are reverse-looked up in the local PreDB (they are not in the header rows).
+  FileDesc `hash_16K` (MD5 of the first 16 KiB) is stored in
+  `usenet_nntp_par_hashes` and matched to already-named releases within ±5%
+  size (NNTmux `fixNamesWithParHash`). A named PAR2 set can copy its title onto
+  a hash.par2 sibling whose FileDesc names are also hashes. Named and already-
+  shelved PAR2 sets are BODY-sampled once after deploy to fill that table.
   Yield-group BODY is 40/pass at 95% plus 20/pass at ≥80% when PAR2 is present.
   A BODY whose FileDesc is the same hash is not retried (PreDB-only from then on).
   Sets with PAR2 are BODY-sampled even under 100 MiB. Accepted: a

@@ -28,13 +28,26 @@ func par2Packet(typ string, body []byte) []byte {
 }
 
 func par2FileDescPacket(name string) []byte {
-	body := make([]byte, 48)
-	body = binary.LittleEndian.AppendUint64(body, 1234)
+	return par2FileDescPacketHash(name, [16]byte{}, 1234)
+}
+
+func par2FileDescPacketHash(name string, hash16k [16]byte, length uint64) []byte {
+	body := make([]byte, 56)
+	copy(body[32:48], hash16k[:])
+	binary.LittleEndian.PutUint64(body[48:56], length)
 	nb := []byte(name)
 	for len(nb)%4 != 0 {
 		nb = append(nb, 0)
 	}
 	return par2Packet("PAR 2.0\x00FileDesc", append(body, nb...))
+}
+
+func par2BodyHash(hash16k [16]byte, names ...string) usenet.BodySample {
+	var data []byte
+	for _, n := range names {
+		data = append(data, par2FileDescPacketHash(n, hash16k, 1234)...)
+	}
+	return usenet.BodySample{Data: data, YencName: nfHash + ".par2", WireBytes: int64(len(data))}
 }
 
 func TestPar2FileNames(t *testing.T) {
@@ -53,6 +66,25 @@ func TestPar2FileNames(t *testing.T) {
 	}
 	for _, bad := range [][]byte{nil, []byte("PAR2\x00PKT"), append([]byte("PAR2\x00PKT"), make([]byte, 60)...), []byte("garbage")} {
 		_ = par2FileNames(bad)
+	}
+}
+
+func TestPar2FileDescsHash16K(t *testing.T) {
+	var h [16]byte
+	for i := range h {
+		h[i] = byte(i + 1)
+	}
+	data := par2FileDescPacketHash("Some.Movie.2021.1080p.BluRay.x264-GRP.part01.rar", h, 99)
+	got := par2FileDescs(data)
+	if len(got) != 1 || got[0].Name != "Some.Movie.2021.1080p.BluRay.x264-GRP.part01.rar" || got[0].Length != 99 {
+		t.Fatalf("descs = %+v", got)
+	}
+	if got[0].Hash16K != hex.EncodeToString(h[:]) {
+		t.Fatalf("hash16k = %q", got[0].Hash16K)
+	}
+	zero := par2FileDescs(par2FileDescPacket("x.rar"))
+	if len(zero) != 1 || zero[0].Hash16K != "" {
+		t.Fatalf("zero hash must be empty, got %+v", zero)
 	}
 }
 
@@ -1591,5 +1623,114 @@ func TestNameFix_HashFileDescShelvesBody(t *testing.T) {
 	}
 	if attempts != maxNameAttempts {
 		t.Fatalf("attempts=%d, want shelved at %d", attempts, maxNameAttempts)
+	}
+}
+
+func TestNameFix_ParHash16KDonorRenamesHashFileDesc(t *testing.T) {
+	const (
+		donorTok  = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		victimTok = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		title     = "ParHash.Movie.2021.1080p.BluRay.x264-GRP"
+	)
+	var h16 [16]byte
+	copy(h16[:], []byte("hash16k-donor!!"))
+	donor := obfuscatedSet("d", donorTok, 1, 1)
+	victim := obfuscatedSet("v", victimTok, 100, 1)
+	f := newNFFixture(t, append(donor, victim...), nil)
+	f.src.bodies["dpar2"] = par2BodyHash(h16, title+".part01.rar")
+	f.src.bodies["vpar2"] = par2BodyHash(h16, victimTok+".part01.rar")
+	f.crawlAndRecompute(t)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var named, parhash int
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases WHERE display_name=?`, title).Scan(&named); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases WHERE name_source=?`, sourceParHash).Scan(&parhash); err != nil {
+		t.Fatal(err)
+	}
+	if named != 2 || parhash != 1 || res.Renamed != 2 {
+		t.Fatalf("named=%d parhash=%d res=%+v, want 2 named + 1 parhash donor copy", named, parhash, res)
+	}
+}
+
+func TestNameFix_ParHash16KSizeMismatchDoesNotRename(t *testing.T) {
+	const (
+		donorTok  = "cccccccccccccccccccccccccccccccc"
+		victimTok = "dddddddddddddddddddddddddddddddd"
+		title     = "ParHash.Size.2021.1080p.BluRay.x264-GRP"
+	)
+	var h16 [16]byte
+	copy(h16[:], []byte("hash16k-size!!x"))
+	donor := obfuscatedSet("ds", donorTok, 1, 1)
+	victim := obfuscatedSet("vs", victimTok, 100, 1)
+	f := newNFFixture(t, append(donor, victim...), nil)
+	f.src.bodies["dspar2"] = par2BodyHash(h16, title+".part01.rar")
+	f.src.bodies["vspar2"] = par2BodyHash(h16, victimTok+".part01.rar")
+	f.crawlAndRecompute(t)
+	if _, err := f.idx.db.Exec(`
+UPDATE usenet_nntp_releases r SET payload_bytes=payload_bytes*20
+FROM usenet_nntp_headers h
+WHERE h.group_name=r.group_name AND h.release_name=r.release_key AND h.msgid='vspar2'`); err != nil {
+		t.Fatal(err)
+	}
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var named, pending int
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases WHERE display_name=?`, title).Scan(&named); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases WHERE state='pending_name'`).Scan(&pending); err != nil {
+		t.Fatal(err)
+	}
+	if named != 1 || pending != 1 || res.BySource[sourceParHash] != 0 {
+		t.Fatalf("named=%d pending=%d res=%+v, want donor only (size ±5%)", named, pending, res)
+	}
+}
+
+func TestNameFix_ParHash16KSeedNamedRenamesShelved(t *testing.T) {
+	const (
+		donorTok  = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+		victimTok = "ffffffffffffffffffffffffffffffff"
+		title     = "ParHash.Seed.2021.1080p.BluRay.x264-GRP"
+	)
+	var h16 [16]byte
+	copy(h16[:], []byte("hash16k-seed!!y"))
+	donor := obfuscatedSet("dn", donorTok, 1, 1)
+	victim := obfuscatedSet("vn", victimTok, 100, 1)
+	f := newNFFixture(t, append(donor, victim...), nil)
+	f.src.bodies["dnpar2"] = par2BodyHash(h16, title+".part01.rar")
+	f.src.bodies["vnpar2"] = par2BodyHash(h16, victimTok+".part01.rar")
+	f.crawlAndRecompute(t)
+	if _, err := f.nf.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.idx.db.Exec(`
+UPDATE usenet_nntp_releases SET state='pending_name', display_name='', name_source='',
+  searchable=FALSE, name_attempts=?, parhash_sampled=FALSE, dirty=FALSE, next_name_at=0
+WHERE name_source=?`, maxNameAttempts, sourceParHash); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.idx.db.Exec(`DELETE FROM usenet_nntp_par_hashes`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET parhash_sampled=FALSE`); err != nil {
+		t.Fatal(err)
+	}
+	f.src.bodyCalls = nil
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var named int
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases WHERE display_name=?`, title).Scan(&named); err != nil {
+		t.Fatal(err)
+	}
+	if named != 2 || res.BySource[sourceParHash] < 1 {
+		t.Fatalf("seed named=%d res=%+v, want shelved victim renamed from stored donor hash_16K", named, res)
 	}
 }

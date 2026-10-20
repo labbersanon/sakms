@@ -656,6 +656,24 @@ func TestPickBodyTargets_BareRarIsFirstVolume(t *testing.T) {
 	}
 }
 
+func TestPickBodyTargets_SingleSegmentFirst7zIsHeadOnly(t *testing.T) {
+	rows := []HeaderRow{
+		{MsgID: "first@t", Filename: "hash.7z.001", Bytes: 740000, PartN: 1, PartM: 1},
+		{MsgID: "last-seg@t", Filename: "hash.7z.120", Bytes: 230000, PartN: 1, PartM: 1, FileN: 120},
+		{MsgID: "par2@t", Filename: "hash.par2", Bytes: 20000, IsMeta: true},
+	}
+	picks := pickBodyTargets(rows)
+	var first bodyPick
+	for _, p := range picks {
+		if p.MsgID == "first@t" {
+			first = p
+		}
+	}
+	if first.MsgID == "" || !first.HeadOnly || first.Tail {
+		t.Fatalf("single-segment .7z.001 must be HeadOnly not Tail: %+v picks=%+v", first, picks)
+	}
+}
+
 func TestPickBodyTargets_LastSevenZUsesLastSegment(t *testing.T) {
 	rows := []HeaderRow{
 		{MsgID: "first-seg@t", Filename: "hash.7z.001", Bytes: 2_000_000, PartN: 1, PartM: 2},

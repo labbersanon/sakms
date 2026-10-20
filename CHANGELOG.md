@@ -12040,3 +12040,19 @@ status stays active.
 | File | Change |
 |---|---|
 | `internal/usenet/sevenz.go` | encoded mini archive when offset >32MiB |
+
+## 2026-10-20 — ngPost layout: HeadOnly first 7z, skip AES CRC retries, ObfKey without group
+
+**Problem:** Namefix BODYed ngPost `hash.7z.001` at ~740KB and retried last-volume CRC on `payload=7z-aes`. GROUP_POLICY ALL split one post per group.
+**Root cause:** ngPost (source) uses compress+gen_name+gen_pass+7z. First volume is often one 716800-byte yEnc part so last==first msgid marked Tail and skipped HeadOnly. Password is NZB-only; empty-password 7zAES already missed. ObfKey hashed group.
+**Fix:** Fingerprint `@ngPost`. Split `.7z.001` is always HeadOnly (64 bytes). After the first namefix attempt, skip 7z HeadOnly/Tail BODY (PAR2 stays). ObfKey omits group for `N@ngPost.com`. `-x` UUID subjects stay skip_unparsed (no filename in OVERVIEW).
+**Outcome:** Less BODY waste on encrypted ngPost 7z. Title still needs IRC `[FN:]` / dump / SFV / parhash. Do not scrape NZBs.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/ngpost.go` | From/msgid fingerprint; ObfKey group skip |
+| `internal/usenetsearch/subject.go` | ObfKey omits group for `@ngPost.com` From |
+| `internal/usenetsearch/namefix.go` | HeadOnly on split .7z.001; skip_7z after first miss |
+| `docs/usenet-nntp-native.md` | ngPost operating note |

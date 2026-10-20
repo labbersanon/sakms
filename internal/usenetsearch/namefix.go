@@ -372,6 +372,7 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 
 	hashOnly := false
 	sampled := false
+	triedBody := false
 	for _, pick := range pickBodyTargets(rows) {
 		if !n.Budget.fits(pick.Bytes) {
 			res.BudgetStop = true
@@ -391,6 +392,7 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 			return true, nil
 		}
 		res.BodyFetches++
+		triedBody = true
 		if berr != nil {
 			log.Printf("usenetsearch: namefix body msgid=%s bytes=%d remain_ms=%d wire=0 yenc=0 cands=0 par2=false err=%v",
 				pick.MsgID, pick.Bytes, namefixBodyArticleTimeout.Milliseconds(), berr)
@@ -443,6 +445,15 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 
 	res.Unresolved++
 	dbCtx := context.WithoutCancel(ctx)
+	// Claude 2026-10-20: one hash_16K BODY, even when the article is not PAR2.
+	// Reason: DueParHashSeed would re-fetch shelved sets every pass (backoff
+	//   tests and PreDB-only retries). Live 225 still seed because the
+	//   column defaults false until this runs once after 0049.
+	// Troubleshooting: parhash=N on every pass for the same keys → sampled
+	//   not set after BodyHead. Review if: 430 should retry after dump import.
+	if triedBody {
+		_ = n.Index.MarkParHashSampled(dbCtx, set.Group, set.Key)
+	}
 	if sampled && hashOnly && keepCompleteYield(set.Group, set.CompletenessBP, set.PayloadBytes) {
 		return false, n.Index.ShelveBodyAttempts(dbCtx, set.Group, set.Key)
 	}

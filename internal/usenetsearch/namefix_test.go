@@ -1307,7 +1307,7 @@ func TestNameFix_ExhaustedYieldPreDBRetryNoBody(t *testing.T) {
 	f := newNFFixture(t, obfuscatedSet("ex", h, 1, 45), nil)
 	f.crawlAndRecompute(t)
 	ctx := context.Background()
-	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET name_attempts=?, next_name_at=0, dirty=FALSE`, maxNameAttempts); err != nil {
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET name_attempts=?, next_name_at=0, dirty=FALSE, parhash_sampled=TRUE`, maxNameAttempts); err != nil {
 		t.Fatal(err)
 	}
 	res, err := f.nf.Run(ctx)

@@ -1368,23 +1368,13 @@ func TestNameFix_QuotedFansubTitleFromSubject(t *testing.T) {
 	}
 	f := newNFFixture(t, rows, nil)
 	f.crawlAndRecompute(t)
-	res, err := f.nf.Run(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Renamed != 1 || len(f.src.bodyCalls) != 0 {
-		t.Fatalf("quoted title must rename without BODY: %+v bodyCalls=%v", res, f.src.bodyCalls)
-	}
-	_, _, display, _ := f.release(t)
-	if display != title {
-		t.Fatalf("display=%q", display)
-	}
+	var display string
 	var searchable bool
-	if err := f.idx.db.QueryRow(`SELECT searchable FROM usenet_nntp_releases`).Scan(&searchable); err != nil {
+	if err := f.idx.db.QueryRow(`SELECT display_name, searchable FROM usenet_nntp_releases WHERE display_name<>'' LIMIT 1`).Scan(&display, &searchable); err != nil {
 		t.Fatal(err)
 	}
-	if !searchable {
-		t.Fatal("ident-shaped quoted title at 100% must be searchable")
+	if display != title || !searchable {
+		t.Fatalf("quoted ident must be searchable at ingest: display=%q searchable=%v", display, searchable)
 	}
 }
 
@@ -1398,15 +1388,12 @@ func TestNameFix_QuotedFansubTitleSurvivesStrictAdmission(t *testing.T) {
 	snap := &PolicySnapshot{Modes: map[string]Standard{"movies": movieModeStd([]quality.Tier{quality.High}, 2160, 0)}}
 	f := newNFFixture(t, rows, snap)
 	f.crawlAndRecompute(t)
-	res, err := f.nf.Run(context.Background())
-	if err != nil {
+	var n int
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases WHERE display_name=? AND searchable`, title).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if res.RejectGate != 0 || res.Renamed != 1 {
-		t.Fatalf("quoted ident title must not gate-delete: %+v", res)
-	}
-	if _, _, display, _ := f.release(t); display != title {
-		t.Fatalf("display=%q", display)
+	if n != 1 {
+		t.Fatalf("spaced ident quoted title must ingest under a 2160p gate, got %d", n)
 	}
 }
 
@@ -1433,35 +1420,15 @@ func TestNameFix_QuotedTitleFromStubFilenameBeatsBodyQueue(t *testing.T) {
 	f := newNFFixture(t, append(quoted, hash...), nil)
 	f.src.bodies["qbpar2"] = par2Body("uzmv2D5wxtEsPRJRjBN30g.part01.rar")
 	f.crawlAndRecompute(t)
-	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_headers SET filename='' WHERE subject LIKE '%Black Clover%.mkv%'`); err != nil {
+	var named, pending int
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases WHERE display_name=? AND searchable`, title).Scan(&named); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_headers SET filename='001.par2' WHERE subject LIKE '%Black Clover%.par2%'`); err != nil {
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases WHERE state='pending_name'`).Scan(&pending); err != nil {
 		t.Fatal(err)
 	}
-	ctx := context.Background()
-	due, err := f.idx.DuePendingHeaderNames(ctx, 40)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(due) != 1 {
-		t.Fatalf("DuePendingHeaderNames=%d, want only the quoted ident set", len(due))
-	}
-	res, err := f.nf.Run(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Renamed != 1 {
-		t.Fatalf("quoted stub filename must rename from subject: %+v", res)
-	}
-	var display string
-	var searchable bool
-	err = f.idx.db.QueryRow(`SELECT display_name, searchable FROM usenet_nntp_releases WHERE display_name<>'' LIMIT 1`).Scan(&display, &searchable)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if display != title || !searchable {
-		t.Fatalf("display=%q searchable=%v", display, searchable)
+	if named != 1 || pending != 1 {
+		t.Fatalf("quoted ident searchable=%d hash pending=%d, want 1/1 (no BODY wait)", named, pending)
 	}
 }
 

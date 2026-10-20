@@ -78,9 +78,34 @@ func parseHeader(group, subj, from, msgid string, num int, postedAt, bytes int64
 		FileM:       ps.FileM,
 	}
 	if nameFix {
-		stageObfuscated(&h, ps)
+		// Claude 2026-10-19: ident-shaped quoted filenames are the release
+		// key (one episode), not the season-pack stem and not obf:.
+		// Reason: live highspeed `STEM [9/12] - "STEM S01E09 1080p.mkv"`
+		//   lumped 12 BD episodes into one named row (declared 12×3248) or
+		//   split them into obf: keys at 4% of 50k segs. Searchable stayed 0
+		//   while the title sat in the quote. Namefix header needs 80% of
+		//   that inflated pack.
+		// Troubleshooting: Chivalry/Black Clover quoted in HIGH but
+		//   completeness_bp≈450 / Searchable=0 → this still using stem/obf.
+		// Review if: a pack NZB (all 12 files, one key) is an operator mode.
+		if title := identQuotedTitle(ps.Filename); title != "" {
+			h.ReleaseName = title
+			h.Obfuscated = false
+		} else {
+			stageObfuscated(&h, ps)
+		}
 	}
 	return h
+}
+
+// identQuotedTitle is the destemmed quoted filename when it already carries
+// a resolution plus year, season, or a multi-word title.
+func identQuotedTitle(filename string) string {
+	n := normalizeRecovered(filename)
+	if n == "" || !identShapedName(n) {
+		return ""
+	}
+	return n
 }
 
 // stageObfuscated rewrites an obfuscated/unparsed BINARY row (yEnc segment
@@ -310,7 +335,7 @@ func (c *Crawler) ingestRange(ctx context.Context, opts ingestOpts, group string
 	if err := c.Index.Upsert(ctx, kept); err != nil {
 		return 0, err
 	}
-	c.recomputeIngested(ctx, group, staged)
+	c.recomputeIngested(ctx, group, kept)
 	if len(gaps) > 0 {
 		if err := c.Index.AddMissedRanges(ctx, group, gaps, "gap"); err != nil {
 			return 0, err
@@ -321,8 +346,8 @@ func (c *Crawler) ingestRange(ctx context.Context, opts ingestOpts, group string
 
 const ingestRecomputeMaxKeys = 32
 
-// recomputeIngested refreshes completeness for staged keys that gained the
-// most parts in this chunk so namefix can see them this loop.
+// recomputeIngested refreshes completeness for keys that gained the most
+// parts in this chunk so namefix/searchable can see them this loop.
 //
 // Claude 2026-10-16: do not wait on the 196k dirty FIFO.
 // Reason: x264 had 14k dirty empty pending (headers already stored) while
@@ -330,13 +355,17 @@ const ingestRecomputeMaxKeys = 32
 // complete yield sets never flipped dirty=FALSE in time for namefix.
 // Troubleshooting: staged_obf>0 but completeness_bp=0 dirty=t on that key
 // next pass → this hook not running. Review if: dirty backlog is tiny.
-func (c *Crawler) recomputeIngested(ctx context.Context, group string, staged []HeaderRow) {
-	if c.Index == nil || len(staged) == 0 {
+// Claude 2026-10-19: named ident keys too, not only obf:.
+// Reason: quoted episode titles ingest as named/subject and skipped this
+//
+//	hook, so RecomputeDirty (pending-first) left them dirty declared_segs=0.
+func (c *Crawler) recomputeIngested(ctx context.Context, group string, rows []HeaderRow) {
+	if c.Index == nil || len(rows) == 0 {
 		return
 	}
 	n := map[string]int{}
 	var keys []string
-	for _, h := range staged {
+	for _, h := range rows {
 		if h.ReleaseName == "" {
 			continue
 		}

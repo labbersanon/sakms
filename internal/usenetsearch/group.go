@@ -101,6 +101,9 @@ func assembleFromRows(group, release, display string, rows *sql.Rows, gatePct in
 	if len(c.Files) > 0 && len(c.Files[0].Segs) > 0 {
 		c.SeedMsgID = c.Files[0].Segs[0].MsgID
 	}
+	if identShapedName(release) || identShapedName(display) {
+		fileM = 0
+	}
 	comp := computeCompleteness(fileAggs, fileM)
 	c.MissingParts = comp.Missing()
 	c.CompletenessPct = comp.Pct()

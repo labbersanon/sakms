@@ -115,12 +115,15 @@ Claude 2026-10-15: four cooperating features make the index complete and
 searchable by true release name. All run on the single crawl goroutine, borrow
 connections `tryOnly`, yield on `ErrBusy`, and reuse `chunkPause` / `busyBackoff`
 / `catchUpPause`, so downloads are never starved. Loop order per iteration:
-collection-key rewrite (once) → forward crawl → repair → name recovery → recompute → backfill → sweeps → liveness → idle collection-drift.
+collection-key rewrite (once) → forward crawl → repair → recompute → name recovery → backfill → sweeps → liveness → idle collection-drift.
 
 - **Collection grouping.** `headers.release_name` is the upload, not the file.
   `ParseSubject` strips `[k/N]`, `(n/m)`, and `N of M` from the stem (NNTmux
   collection hash input) and stores the file counter on `file_n`/`file_m`.
-  `[48/73] Show…` and `[01/73] Show…` share one key. Leading `[#a.b.teevee]` /
+  `[48/73] Show…` and `[01/73] Show…` share one key. An ident-shaped quoted
+  filename (`SxxEyy` / year / multi-word + resolution) is the episode key
+  instead of the pack stem or `obf:`; completeness then ignores collection
+  `file_m` so one mkv is not scored as 12 missing files. Leading `[#a.b.teevee]` /
   `[Group]` tags are stripped. EFNet `[id]-[FULL]-[#a.b…@EFNet]-[ Title ]` and
   `www.Bin-Req.net Presents: #id - Title` wrappers are stripped to the title;
   a request-id-only leftover (`23051509 ]`) is staged, not searchable, so dump

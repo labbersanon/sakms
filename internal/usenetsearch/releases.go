@@ -208,23 +208,26 @@ func (idx *Index) recomputeDirtyBounded(ctx context.Context, limit int, deadline
 	if limit <= 0 {
 		limit = recomputeBatch
 	}
-	// Claude 2026-10-16: complete named before complete pending before the rest.
+	// Claude 2026-10-16: named before complete pending before the rest.
 	// Reason: pending-first (#183) left 16 namefix-renamed 100% sets dirty so
 	//   searchable stayed at 12 while 95k incomplete pending ate every batch.
 	// Troubleshooting: namefix "renamed=N" but dashboard searchable flat → this
 	//   ORDER BY not applied, or RenameRelease skipped recomputeOne.
 	// Review if: named-complete dirty exceeds a few hundred (crawl re-dirtying).
+	// Claude 2026-10-19: all named, including completeness_bp=0.
+	// Reason: quoted ident ingest is named/subject at 0% declared; ELSE 3
+	//   put those 68 rows behind 13k pending so they never got a BP.
 	gateBP := idx.MinCompletenessPct() * 100
 	rows, err := idx.db.QueryContext(ctx, `
 SELECT group_name, release_key FROM usenet_nntp_releases
 WHERE dirty
 ORDER BY CASE
-  WHEN state='named' AND completeness_bp>=? THEN 0
+  WHEN state='named' THEN 0
   WHEN state='pending_name' AND completeness_bp>=? THEN 1
   WHEN state='pending_name' THEN 2
   ELSE 3
 END, updated_at
-LIMIT ?`, gateBP, gateBP, limit)
+LIMIT ?`, gateBP, limit)
 	if err != nil {
 		return st, err
 	}
@@ -448,6 +451,16 @@ FROM usenet_nntp_headers WHERE group_name=? AND release_name=?`, k.group, k.key)
 	files := make([]fileAgg, 0, len(order))
 	for _, fn := range order {
 		files = append(files, *aggs[fn])
+	}
+	// Claude 2026-10-19: ident-quoted episode keys must not inherit [k/N]
+	// collection fileM (12 episodes × 3248 parts).
+	// Reason: live Chivalry S01E09 is one mkv (n/3248) but file_m=12 made
+	//   declared≈50k and completeness 4.5%, so header namefix never ran.
+	// Troubleshooting: ident episode at ~70% of its own parts but BP≈450 →
+	//   fileM still filling missing collection files.
+	// Review if: pack-as-one-key mode is added.
+	if identShapedName(k.key) {
+		fileM = 0
 	}
 	comp := computeCompleteness(files, fileM)
 	meets := comp.Meets(gate)

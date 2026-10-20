@@ -344,6 +344,69 @@ func TestRecomputeDirty_NamedCompleteBeforePending(t *testing.T) {
 	}
 }
 
+func TestRecomputeDirty_NamedZeroBeforePending(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	const g = "alt.binaries.movies"
+	named := fileRows(g, "Named.Show.2020.1080p", "n.mkv", "nz", 0, 10, 10, 0)
+	pending := fileRows(g, "obf:bbbbbbbbbbbbbbbb", "b.rar", "b", 100, 10, 1, 0)
+	if err := idx.Upsert(ctx, append(named, pending...)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `UPDATE usenet_nntp_releases SET dirty=TRUE, completeness_bp=0, declared_segs=0, updated_at=99 WHERE release_key=?`, "Named.Show.2020.1080p"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `UPDATE usenet_nntp_releases SET dirty=TRUE, completeness_bp=0, updated_at=1 WHERE release_key=?`, "obf:bbbbbbbbbbbbbbbb"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.RecomputeDirty(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	var namedDirty, pendingDirty bool
+	if err := sqlDB.QueryRowContext(ctx, `SELECT dirty FROM usenet_nntp_releases WHERE release_key=?`, "Named.Show.2020.1080p").Scan(&namedDirty); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlDB.QueryRowContext(ctx, `SELECT dirty FROM usenet_nntp_releases WHERE release_key=?`, "obf:bbbbbbbbbbbbbbbb").Scan(&pendingDirty); err != nil {
+		t.Fatal(err)
+	}
+	if namedDirty || !pendingDirty {
+		t.Fatalf("named dirty=%v pending dirty=%v; want 0%% named recomputed first", namedDirty, pendingDirty)
+	}
+}
+
+func TestRecomputeDirty_IdentQuotedKeyIgnoresCollectionFileM(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	const g = "alt.binaries.multimedia.anime.highspeed"
+	const title = "WOR-HAZ Chivalry of a Failed Knight S01E09 BD HEVC 1080p FLAC"
+	// One episode at 90/100 parts. [9/12] fileM=12 would declare ~12×100
+	// and miss the 80% ident searchable gate (live completeness ≈4.5%).
+	if err := idx.Upsert(ctx, fileRows(g, title, title+".mkv", "ch", 0, 100, 90, 12)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.RecomputeDirty(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	var searchable bool
+	var bp, declared int
+	if err := sqlDB.QueryRowContext(ctx, `SELECT searchable, completeness_bp, declared_segs FROM usenet_nntp_releases WHERE release_key=?`, title).Scan(&searchable, &bp, &declared); err != nil {
+		t.Fatal(err)
+	}
+	if !searchable || declared != 100 || bp < 8000 {
+		t.Fatalf("searchable=%v declared=%d bp=%d; want ident episode 90/100 searchable, not 12×100 pack", searchable, declared, bp)
+	}
+}
+
 func TestRecomputeDirty_StopsAtDeadline(t *testing.T) {
 	sqlDB := dbtest.New(t)
 	idx, err := OpenIndex(sqlDB)

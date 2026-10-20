@@ -532,7 +532,7 @@ func (s *Service) loop(ctx context.Context) {
 		//   up so Ollama/cloud is not hit every 500ms. Rewrite must finish
 		//   first so samples are not pre-stem fragments.
 		// Troubleshooting: no "collection drift" logs → AI nil, kill switch
-		//   off, rewrite v2 still running, or crawler not idle.
+		//   off, rewrite v3 still running, or crawler not idle.
 		// Review if: extras should also rewrite stored headers.
 		if !busy && !advanced {
 			s.runCollectionDrift(ctx)

@@ -1470,7 +1470,7 @@ func TestNameFix_HeaderRecoversUnderscore1080pPending(t *testing.T) {
 	}
 	budget := &bodyBudget{}
 	budget.setCapMB(0)
-	nf := &NameFixer{Index: idx, Groups: []string{nfGroup}, Budget: budget}
+	nf := &NameFixer{Src: &crawlStub{bodies: map[string]usenet.BodySample{}}, Index: idx, Groups: []string{nfGroup}, Budget: budget}
 	res, err := nf.Run(ctx)
 	if err != nil {
 		t.Fatal(err)

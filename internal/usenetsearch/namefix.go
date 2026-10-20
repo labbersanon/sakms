@@ -400,12 +400,13 @@ func recoveredUnusable(raw string) bool {
 	if norm == "" || hashCore(norm) != "" {
 		return true
 	}
-	// Claude 2026-10-19: skip tokenLooksObfuscated when the name has `. `/space.
+	// Claude 2026-10-19: skip tokenLooksObfuscated when the name has `. `_/space.
 	// Reason: that helper's last `digits>0` check false-positives
-	//   `[UQW] Black Clover - Ep170 [BDRip 1080p…]` (1080 / Ep170).
+	//   `[UQW] Black Clover - Ep170 [BDRip 1080p…]` (1080 / Ep170) and
+	//   `[Fancutfags]_Puella_…1080p…` (underscore, no space).
 	// Troubleshooting: accept() returns false on a quoted ident title →
-	//   this early return missing. Review if: a hash token includes a space.
-	if strings.ContainsAny(norm, ". ") {
+	//   this early return missing. Review if: a hash token includes `_`.
+	if strings.ContainsAny(norm, ". _") {
 		return false
 	}
 	return looksObfuscated(norm) || tokenLooksObfuscated(norm)
@@ -482,7 +483,7 @@ func quotedReleaseName(name string) bool {
 	if strings.Contains(n, "[") && strings.Contains(n, "]") {
 		return true
 	}
-	return strings.ContainsAny(n, " ") || strings.Count(n, "_") >= 2
+	return strings.Contains(n, " ")
 }
 
 func letterCount(s string) int {

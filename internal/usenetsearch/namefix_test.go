@@ -1468,6 +1468,16 @@ func TestNameFix_HeaderRecoversUnderscore1080pPending(t *testing.T) {
 	if len(due) != 1 {
 		t.Fatalf("DuePendingHeaderNames=%d, want underscore 1080p pending", len(due))
 	}
+	if _, err := idx.db.Exec(`UPDATE usenet_nntp_releases SET next_name_at=?`, time.Now().Add(time.Hour).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	due, err = idx.DuePendingHeaderNames(ctx, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(due) != 1 {
+		t.Fatalf("DuePendingHeaderNames after PreDB backoff=%d, want 1", len(due))
+	}
 	budget := &bodyBudget{}
 	budget.setCapMB(0)
 	nf := &NameFixer{Src: &crawlStub{bodies: map[string]usenet.BodySample{}}, Index: idx, Groups: []string{nfGroup}, Budget: budget}

@@ -195,9 +195,20 @@ const quotedIdentSubjectSQL = `(h.subject ~ '"[^"]*(1080|720|2160|480)p[^"]*"' O
 //
 // Troubleshooting: header=0 with Black Clover still pending95 → regex missed
 //
-//	the quote shape or next_name_at is in the future (ScheduleNameRetry).
+//	the quote shape.
 //
 // Review if: 576p / 4K-without-p quoted titles appear in HIGH.
+//
+// Claude 2026-10-19: ignore next_name_at on this queue.
+// Reason: a PreDB miss calls ScheduleNameRetry(+1h). Live Madoka /
+//
+//	Suikoden quotes sat pending_name at 100% with next_name_at ~30m ahead
+//	while Searchable stalled after the first header=10 pass.
+//
+// Troubleshooting: header=0, quoted 1080p still pending, next_name_at in
+//
+//	the future → this still filtering on backoff. Review if: BODY/PreDB
+//	queues should share this exception.
 func (idx *Index) DuePendingHeaderNames(ctx context.Context, limit int) ([]PendingSet, error) {
 	if limit <= 0 {
 		return nil, nil
@@ -206,14 +217,13 @@ func (idx *Index) DuePendingHeaderNames(ctx context.Context, limit int) ([]Pendi
 SELECT r.group_name, r.release_key, r.payload_bytes, r.name_attempts, r.completeness_bp, r.has_par2
 FROM usenet_nntp_releases r
 WHERE r.state='pending_name' AND r.dirty=FALSE AND r.declared_segs>0 AND r.completeness_bp>=?
-  AND r.next_name_at<=?
   AND EXISTS (
     SELECT 1 FROM usenet_nntp_headers h
     WHERE h.group_name=r.group_name AND h.release_name=r.release_key
       AND `+quotedIdentSubjectSQL+`
   )
 ORDER BY r.completeness_bp DESC, r.ingested_at DESC
-LIMIT ?`, spanRepairFloorBP, time.Now().Unix(), limit)
+LIMIT ?`, spanRepairFloorBP, limit)
 	if err != nil {
 		return nil, err
 	}

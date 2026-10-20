@@ -11787,3 +11787,19 @@ status stays active.
 | `internal/usenetsearch/crawler.go` | skip gate on `_` / `[` titles |
 | `internal/usenetsearch/subject_test.go` | Madoka / London River / hash.par2 |
 | `internal/usenetsearch/namefix_test.go` | ingest no-res; header recovers underscore 1080p |
+
+## 2026-10-19 — header namefix ignores PreDB backoff
+
+**Problem:** After #218, Searchable climbed 115→129 from ingest and one `header=10` pass, then two complete quoted titles (`[Fancutfags]_Puella_…1080p…`, a second Suikoden `obf:` key) stayed pending_name. `next_name_at` was ~30 minutes ahead, `name_attempts=0`.
+**Root cause:** A PreDB miss calls `ScheduleNameRetry(+1h)` without incrementing attempts. `DuePendingHeaderNames` required `next_name_at<=now`, so free header recovery waited on dump/IRC backoff.
+**Fix:** Header-quote queue no longer filters `next_name_at`. BODY and PreDB queues still back off.
+**Outcome:** Quoted titles already in the subject become Searchable on the next namefix pass after a PreDB miss.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix_index.go` | `DuePendingHeaderNames` drops `next_name_at` |
+| `internal/usenetsearch/namefix.go` | troubleshooting no longer points at backoff |
+| `internal/usenetsearch/namefix_test.go` | Madoka still due after +1h `next_name_at` |
+| `docs/usenet-nntp-native.md` | header queue ignores PreDB backoff |

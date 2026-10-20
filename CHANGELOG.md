@@ -11769,3 +11769,21 @@ status stays active.
 | `internal/usenetsearch/rewrite_test.go` | pack splits to S01E09/E10; ybegin kept |
 | `internal/usenetsearch/releases_test.go` | `(Els1212)` 100% not searchable |
 | `docs/usenet-nntp-native.md` | v3 rewrite; junk off search |
+
+## 2026-10-19 — quoted readable titles (underscore 1080p, no-res names) are Searchable
+
+**Problem:** Searchable stuck at 115. Namefix `header=0 renamed=0` every pass. 75 complete pending_name sets were clean; 74 had a quoted filename that was already a title (`[Fancutfags]_Puella_…1080p…`, `MilfAF - London River`, `[A Barely Competent Fool] Gensou Suikoden EP2`, `Adobe Acrobat 2026`).
+**Root cause:** `identShapedName` and header SQL required a space/dot plus `1080p`. Underscore fansubs failed. Readable quotes without a resolution staged as `obf:`. Hash.par2 still miss PreDB (dump ends 2024-05); that path is unchanged.
+**Fix:** `_` is a word separator. Header SQL matches quoted `1080p`, a spacey name, or `[Group]`. Ingest/accept/gate-skip use `quotedReleaseName` (ident, scene parse, or multi-word/bracketed, not a hash token).
+**Outcome:** Complete quoted titles become Searchable without BODY. Hash.par2 still needs IRC/PAR2.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix.go` | `quotedReleaseName`; `_` in identShapedName |
+| `internal/usenetsearch/namefix_index.go` | wider `quotedIdentSubjectSQL` |
+| `internal/usenetsearch/ingest.go` | ingest keys quotedReleaseName |
+| `internal/usenetsearch/crawler.go` | skip gate on `_` / `[` titles |
+| `internal/usenetsearch/subject_test.go` | Madoka / London River / hash.par2 |
+| `internal/usenetsearch/namefix_test.go` | ingest no-res; header recovers underscore 1080p |

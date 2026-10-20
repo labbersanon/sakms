@@ -575,7 +575,7 @@ func (c *Crawler) admitChunk(ctx context.Context, group string, a, b int, header
 		//   2160p movies floor; those titles never reached the index.
 		// Troubleshooting: skip_res=chunk on ident 1080p subjects → this
 		//   still gating ingest. Review if: dotted scene names should skip too.
-		if passIdx < 0 && identShapedName(name) && strings.Contains(name, " ") && len(stds) > 0 {
+		if passIdx < 0 && quotedReleaseName(name) && strings.ContainsAny(name, " _[") && len(stds) > 0 {
 			passIdx = 0
 		}
 		if passIdx < 0 {

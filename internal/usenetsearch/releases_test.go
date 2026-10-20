@@ -272,8 +272,7 @@ func TestRecomputeDirty_PendingCompleteFirst(t *testing.T) {
 	defer idx.Close()
 	ctx := context.Background()
 	const g = "alt.binaries.movies"
-	// Named (even 0%) is first; among pending, complete still beats incomplete
-	// even when the complete row is newer.
+	// Among pending, complete still beats incomplete even when newer.
 	releases := []struct {
 		key            string
 		completenessBP int

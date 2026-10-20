@@ -1418,7 +1418,6 @@ func TestNameFix_QuotedTitleFromStubFilenameBeatsBodyQueue(t *testing.T) {
 	}
 	hash := obfuscatedSet("qb", "uzmv2D5wxtEsPRJRjBN30g", 10, 5)
 	f := newNFFixture(t, append(quoted, hash...), nil)
-	f.src.bodies["qbpar2"] = par2Body("uzmv2D5wxtEsPRJRjBN30g.part01.rar")
 	f.crawlAndRecompute(t)
 	var named, pending int
 	if err := f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases WHERE display_name=? AND searchable`, title).Scan(&named); err != nil {

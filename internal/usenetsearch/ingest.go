@@ -88,24 +88,14 @@ func parseHeader(group, subj, from, msgid string, num int, postedAt, bytes int64
 		// Troubleshooting: Chivalry/Black Clover quoted in HIGH but
 		//   completeness_bp≈450 / Searchable=0 → this still using stem/obf.
 		// Review if: a pack NZB (all 12 files, one key) is an operator mode.
-		if title := identQuotedTitle(ps.Filename); title != "" {
-			h.ReleaseName = title
+		if n := normalizeRecovered(ps.Filename); n != "" && identShapedName(n) {
+			h.ReleaseName = n
 			h.Obfuscated = false
 		} else {
 			stageObfuscated(&h, ps)
 		}
 	}
 	return h
-}
-
-// identQuotedTitle is the destemmed quoted filename when it already carries
-// a resolution plus year, season, or a multi-word title.
-func identQuotedTitle(filename string) string {
-	n := normalizeRecovered(filename)
-	if n == "" || !identShapedName(n) {
-		return ""
-	}
-	return n
 }
 
 // stageObfuscated rewrites an obfuscated/unparsed BINARY row (yEnc segment
@@ -356,9 +346,8 @@ const ingestRecomputeMaxKeys = 32
 // Troubleshooting: staged_obf>0 but completeness_bp=0 dirty=t on that key
 // next pass → this hook not running. Review if: dirty backlog is tiny.
 // Claude 2026-10-19: named ident keys too, not only obf:.
-// Reason: quoted episode titles ingest as named/subject and skipped this
-//
-//	hook, so RecomputeDirty (pending-first) left them dirty declared_segs=0.
+// Reason: quoted episode titles ingest as named/subject and skipped this hook,
+// so RecomputeDirty (pending-first) left them dirty declared_segs=0.
 func (c *Crawler) recomputeIngested(ctx context.Context, group string, rows []HeaderRow) {
 	if c.Index == nil || len(rows) == 0 {
 		return

@@ -554,15 +554,6 @@ func (c *Crawler) admitChunk(ctx context.Context, group string, a, b int, header
 		stds, _ := snap.Resolve(group, groupModes, name)
 
 		passIdx, rejectReason := -1, ""
-		// Claude 2026-10-19: spaced ident-shaped names skip the quality gate
-		// at ingest, same as namefix promote.
-		// Reason: multimedia skip_res dropped quoted 1080p fansubs under a
-		//   2160p movies floor; those titles never reached the index.
-		// Troubleshooting: skip_res=chunk on ident 1080p subjects → this
-		//   still gating ingest. Review if: dotted scene names should skip too.
-		if identShapedName(name) && strings.Contains(name, " ") && len(stds) > 0 {
-			passIdx = 0
-		}
 		for i, std := range stds {
 			if ok, reason := gate(name, info, std); ok {
 				passIdx = i
@@ -577,6 +568,15 @@ func (c *Crawler) admitChunk(ctx context.Context, group string, a, b int, header
 				// accurate for the common single-candidate-mode case.
 				rejectReason = reason
 			}
+		}
+		// Claude 2026-10-19: spaced ident-shaped names skip the quality gate
+		// at ingest, same as namefix promote.
+		// Reason: multimedia skip_res dropped quoted 1080p fansubs under a
+		//   2160p movies floor; those titles never reached the index.
+		// Troubleshooting: skip_res=chunk on ident 1080p subjects → this
+		//   still gating ingest. Review if: dotted scene names should skip too.
+		if passIdx < 0 && identShapedName(name) && strings.Contains(name, " ") && len(stds) > 0 {
+			passIdx = 0
 		}
 		if passIdx < 0 {
 			if rejectReason == reasonTierOutOfBand {

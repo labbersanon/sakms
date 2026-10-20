@@ -84,6 +84,13 @@ const (
 	namefixMinPayload = 100 << 20
 	// namefixHeadBytes caps the decoded bytes kept from one BODY.
 	namefixHeadBytes = 256 << 10
+	// Claude 2026-10-20: first .7z.NNN volume only needs the 32-byte start.
+	// Reason: hash-7z packed data has no CRC; NextHeaderOffset lives in 32
+	//   bytes. A 256KiB first-volume BODY wasted the 20s on packed streams.
+	// Troubleshooting: namefix pattern pack=7z-split still wire=700k on
+	//   .7z.001 → HeadOnly not set. Review if: a non-split .7z needs more
+	//   than the signature (then keep 256KiB for bare .7z).
+	namefix7zStartBytes = 64
 	// Claude 2026-10-20: last-segment 7z BODY keeps up to 2MiB (article tail).
 	// Reason: 7z NextHeader is at EOF of the last .7z.NNN volume. BodyHead
 	//   already reads the whole article then truncates the *prefix*; 256KiB
@@ -398,6 +405,9 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 	triedBody := false
 	crcTried := false
 	var zstart []byte
+	var zsize uint64
+	pat := detectNamePattern(rows)
+	log.Printf("usenetsearch: namefix pattern obf=%s pack=%s files=%s", pat.Obf, pat.Pack, pat.Ext)
 	for _, pick := range pickBodyTargets(rows) {
 		// Claude 2026-10-20: budget against the 256KiB head, not article bytes.
 		// Reason: part01 first segments are often 1–2MB; fits(pick.Bytes) would
@@ -409,6 +419,8 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		headCap := namefixHeadBytes
 		if pick.Tail {
 			headCap = namefixTailBytes
+		} else if pick.HeadOnly {
+			headCap = namefix7zStartBytes
 		}
 		est := pick.Bytes
 		if est > int64(headCap) {
@@ -445,6 +457,7 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		res.BodyBytes += sample.WireBytes
 		if st, ok := usenet.Parse7zStart(sample.Data); ok {
 			zstart = append([]byte(nil), sample.Data[:32]...)
+			zsize = st.Size
 			log.Printf("usenetsearch: namefix crc msgid=%s 7z off=%d sz=%d", pick.MsgID, st.Offset, st.Size)
 		}
 		cands := candidatesFromSample(sample, pick.NFO)
@@ -488,7 +501,8 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 			if len(inner) > 80 {
 				inner = inner[:80]
 			}
-			log.Printf("usenetsearch: namefix crc msgid=%s crcs=%d magic=%x name=%q", pick.MsgID, len(crcs), magic, inner)
+			log.Printf("usenetsearch: namefix crc msgid=%s crcs=%d magic=%x payload=%s name=%q",
+				pick.MsgID, len(crcs), magic, payloadKind(sample.Data, zstart, zsize), inner)
 		}
 		work := context.WithoutCancel(ctx)
 		if isPar2 {
@@ -1160,11 +1174,12 @@ func candidatesFromSample(s usenet.BodySample, nfo bool) []nameCand {
 }
 
 type bodyPick struct {
-	MsgID string
-	Bytes int64
-	NFO   bool
-	CRC   bool
-	Tail  bool // last yEnc segment (7z end header)
+	MsgID    string
+	Bytes    int64
+	NFO      bool
+	CRC      bool
+	Tail     bool // last yEnc segment (7z end header)
+	HeadOnly bool // 7z signature header only (first volume)
 }
 
 // pickBodyTargets chooses up to namefixBodiesPerSet articles:
@@ -1224,20 +1239,22 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 	}
 	var picks []bodyPick
 	seen := map[string]bool{}
-	addRow := func(row HeaderRow, nfo, crc, tail bool) {
+	addRow := func(row HeaderRow, nfo, crc, tail, headOnly bool) {
 		if row.MsgID == "" || seen[row.MsgID] || len(picks) >= namefixBodiesPerSet {
 			return
 		}
 		seen[row.MsgID] = true
-		picks = append(picks, bodyPick{MsgID: row.MsgID, Bytes: row.Bytes, NFO: nfo, CRC: crc, Tail: tail})
+		picks = append(picks, bodyPick{MsgID: row.MsgID, Bytes: row.Bytes, NFO: nfo, CRC: crc, Tail: tail, HeadOnly: headOnly})
 	}
 	addFirst := func(f *file) {
 		if f == nil {
 			return
 		}
 		crc := anyName(f, crcCapableName)
-		tail := anyName(f, is7zName) && f.last.MsgID == f.first.MsgID
-		addRow(f.first, f.nfo, crc || tail, tail)
+		is7z := anyName(f, is7zName)
+		tail := is7z && f.last.MsgID == f.first.MsgID
+		headOnly := is7z && anyName(f, isFirstArchiveVolume) && !tail
+		addRow(f.first, f.nfo, crc || tail, tail, headOnly)
 	}
 	for _, f := range sorted {
 		if anyName(f, isSFVName) {
@@ -1266,9 +1283,9 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 	}
 	if last != nil && lastN >= 1 {
 		if anyName(last, is7zName) {
-			addRow(last.last, last.nfo, true, true)
+			addRow(last.last, last.nfo, true, true, false)
 		} else if lastN > 1 {
-			addRow(last.first, last.nfo, true, false)
+			addRow(last.first, last.nfo, true, false, false)
 		}
 	}
 	for _, f := range sorted {

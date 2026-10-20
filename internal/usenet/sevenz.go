@@ -99,12 +99,12 @@ func ArchiveFileCRCsFrom7zParts(start, tail []byte) []ArchiveFileCRC {
 	}
 	files := sevenZFilesFromHeader(hdr, tail[:uint64(len(tail))-st.Size])
 	if len(files) == 0 {
-		sevenZMiss(st, tail, hdr, "parse")
+		sevenZMiss(st, tail, hdr)
 	}
 	return files
 }
 
-func sevenZMiss(st SevenZStart, tail, hdr []byte, reason string) {
+func sevenZMiss(st SevenZStart, tail, hdr []byte) {
 	n := 80
 	if len(hdr) < n {
 		n = len(hdr)
@@ -113,8 +113,8 @@ func sevenZMiss(st SevenZStart, tail, hdr []byte, reason string) {
 	if len(hdr) > 0 {
 		nid = hdr[0]
 	}
-	log.Printf("usenet: 7z header miss off=%d sz=%d tail=%d nid=0x%x %s hdr=%x",
-		st.Offset, st.Size, len(tail), nid, reason, hdr[:n])
+	log.Printf("usenet: 7z header miss off=%d sz=%d tail=%d nid=0x%x parse hdr=%x",
+		st.Offset, st.Size, len(tail), nid, hdr[:n])
 }
 
 func sevenZFilesFromHeader(hdr, packedBefore []byte) []ArchiveFileCRC {
@@ -430,13 +430,11 @@ func parse7zFolder(b []byte, i int) (sevenZFolder, int, bool) {
 		}
 		totalIn += nin
 		totalOut += nout
-		if bytes.HasPrefix(method, sevenZAES) || bytes.Equal(method, sevenZAES) {
+		if bytes.HasPrefix(method, sevenZAES) {
 			f.encrypted = true
 		}
-		if c == nc-1 || bytes.Equal(method, sevenZLZMA) || bytes.Equal(method, sevenZLZMA2) || bytes.Equal(method, sevenZCopy) {
-			f.method = method
-			f.props = props
-		}
+		f.method = method
+		f.props = props
 	}
 	if totalOut == 0 {
 		return f, i, false
@@ -778,24 +776,4 @@ func read7zUint64(b []byte, i int) (uint64, int, bool) {
 		mask >>= 1
 	}
 	return value, i, true
-}
-
-func append7zUint64(dst []byte, value uint64) []byte {
-	first := byte(0)
-	mask := byte(0x80)
-	var i int
-	for i = 0; i < 8; i++ {
-		if value < uint64(1)<<(7*(i+1)) {
-			first |= byte(value >> (8 * i))
-			break
-		}
-		first |= mask
-		mask >>= 1
-	}
-	dst = append(dst, first)
-	for n := 0; n < i; n++ {
-		dst = append(dst, byte(value))
-		value >>= 8
-	}
-	return dst
 }

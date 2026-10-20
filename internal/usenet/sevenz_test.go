@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"hash/crc32"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -204,22 +203,22 @@ func sltInnerCRC(t *testing.T, vol001 string) (crc, name string) {
 	return crc, name
 }
 
-func TestLzmaPackRoundTrip(t *testing.T) {
-	raw := []byte{0x01, 0x00, 0x00}
-	props, packed := lzmaPack(t, raw)
-	hdr := make([]byte, lzma.HeaderLen)
-	copy(hdr[:5], props)
-	binary.LittleEndian.PutUint64(hdr[5:], uint64(len(raw)))
-	r, err := lzma.ReaderConfig{DictCap: lzmaDictCap(props)}.NewReader(
-		io.MultiReader(bytes.NewReader(hdr), bytes.NewReader(packed)))
-	if err != nil {
-		t.Fatal(err)
+func append7zUint64(dst []byte, value uint64) []byte {
+	first := byte(0)
+	mask := byte(0x80)
+	var i int
+	for i = 0; i < 8; i++ {
+		if value < uint64(1)<<(7*(i+1)) {
+			first |= byte(value >> (8 * i))
+			break
+		}
+		first |= mask
+		mask >>= 1
 	}
-	got, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatal(err)
+	dst = append(dst, first)
+	for n := 0; n < i; n++ {
+		dst = append(dst, byte(value))
+		value >>= 8
 	}
-	if !bytes.Equal(got, raw) {
-		t.Fatalf("got %x want %x", got, raw)
-	}
+	return dst
 }

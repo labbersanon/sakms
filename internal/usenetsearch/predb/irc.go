@@ -125,6 +125,7 @@ type IRCClient struct {
 	Heartbeat time.Duration
 
 	parsed int
+	tagged int
 }
 
 // RandomNick returns a 16-character letter-prefixed alphanumeric nick.
@@ -316,12 +317,17 @@ func (c *IRCClient) session(ctx context.Context, conn net.Conn) (registered bool
 					return registered, err
 				}
 			}
-			for _, ch := range c.Cfg.Channels {
-				if ch = strings.TrimSpace(ch); ch != "" {
-					if err := send("JOIN %s", ch); err != nil {
-						return registered, err
-					}
-				}
+			if err := joinIRCChannels(send, c.Cfg.Channels); err != nil {
+				return registered, err
+			}
+		case "376", "422":
+			// Claude 2026-10-19: JOIN again after MOTD.
+			// Reason: some IRCds drop JOIN sent on 001; live synIRC stored 0
+			//   tagged [TT:]/[FN:] lines while #pre PRIVMSG titles kept arriving.
+			// Troubleshooting: no "predb irc names-end" after connected → JOIN
+			//   still not accepted. Review if: 005 JOIN is required instead.
+			if err := joinIRCChannels(send, c.Cfg.Channels); err != nil {
+				return registered, err
 			}
 		case "473", "475", "477", "479":
 			// Claude 2026-10-19: log JOIN denials.
@@ -330,6 +336,8 @@ func (c *IRCClient) session(ctx context.Context, conn net.Conn) (registered bool
 			// Troubleshooting: o2cli grep "predb irc join failed".
 			// Review if: the channel uses a key (JOIN #chan key).
 			log.Printf("usenetsearch: predb irc join failed cmd=%s %s", cmd, params)
+		case "366":
+			log.Printf("usenetsearch: predb irc names-end %s", params)
 		case "433": // nick in use — mint another unregistered identity
 			n, nerr := RandomNick()
 			if nerr != nil {
@@ -368,12 +376,30 @@ func splitIRC(line string) (prefix, cmd, params string) {
 	return prefix, strings.ToUpper(line), ""
 }
 
+func joinIRCChannels(send func(string, ...any) error, channels []string) error {
+	for _, ch := range channels {
+		if ch = strings.TrimSpace(ch); ch != "" {
+			if err := send("JOIN %s", ch); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (c *IRCClient) handlePrivmsg(ctx context.Context, params string) {
 	i := strings.Index(params, " :")
 	if i < 0 || !strings.Contains(params[:i], "#") {
 		return
 	}
-	a, ok := ParseAnnounce(params[i+2:])
+	body := params[i+2:]
+	a, ok := ParseAnnounce(body)
+	if strings.Contains(body, "[TT:") {
+		c.tagged++
+		if c.tagged <= 5 {
+			log.Printf("usenetsearch: predb irc tagged parsed=%t fn_set=%t", ok, ok && a.Entry.Filename != "")
+		}
+	}
 	if !ok {
 		return
 	}

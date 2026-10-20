@@ -11821,3 +11821,16 @@ status stays active.
 | `internal/usenetsearch/namefix.go` | quoted FN candidates; BODY errors |
 | `internal/usenetsearch/predb/predb_test.go` | NOTICE FN; DT; stem ByFilename |
 | `docs/usenet-nntp-native.md` | NOTICE hashed FN |
+
+## 2026-10-19 — PreDB IRC JOIN after MOTD; log tagged traffic
+
+**Problem:** After #220, IRC still stored 0 `[FN:]`/`[SZ:]`/`[DT:]` rows. `#pre` titles kept arriving. Namefix `hash_hits=0`.
+**Root cause:** JOIN only on 001 can be dropped before MOTD. No log proved we were in `#PreNNTmux` or that tagged `[TT:]` lines arrived.
+**Fix:** JOIN again on 376/422. Log 366 names-end and the first tagged `[TT:]` parses (`fn_set=`).
+**Outcome:** Logs show whether synIRC actually delivers TmuxPREBot lines so hash reverse-lookup can run.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/predb/irc.go` | JOIN on MOTD; 366; tagged sighting log |

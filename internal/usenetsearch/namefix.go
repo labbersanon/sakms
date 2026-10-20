@@ -433,7 +433,7 @@ func (n *NameFixer) accept(ctx context.Context, raw, source string, payload int6
 		}
 		predb = "miss"
 	}
-	if source != sourceNFO && (parsesAsRelease(norm) || quotedReleaseName(norm)) {
+	if source != sourceNFO && quotedReleaseName(norm) {
 		return norm, source, confMedium, predb, true
 	}
 	return "", "", "", "", false

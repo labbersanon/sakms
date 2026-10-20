@@ -181,14 +181,12 @@ func scanPendingSets(rows *sql.Rows, preDBOnly bool) ([]PendingSet, error) {
 	return out, rows.Err()
 }
 
-// quotedIdentSubjectSQL matches an NNTP quoted filename that already carries
-// a resolution plus a space or dot (fansub `[UQW] Title 1080p` / scene dots).
 // quotedIdentSubjectSQL matches a quoted payload name that is already a title:
 // resolution in the quotes, a spacey name, or a [Group] fansub — not hash.par2.
 const quotedIdentSubjectSQL = `(h.subject ~ '"[^"]*(1080|720|2160|480)p[^"]*"' OR h.subject ~ '"[^"]* [A-Za-z][^"]{6,}"' OR h.subject ~ '"\[[^"]{3,}\][^"]+"')`
 
 // DuePendingHeaderNames returns ≥80% pending sets whose headers already quote
-// an ident-shaped filename. Namefix recovers those without PreDB HTTP or BODY.
+// a readable title. Namefix recovers those without PreDB HTTP or BODY.
 //
 // Claude 2026-10-19: own queue, ahead of PreDB/BODY.
 // Reason: 95% yield quoted titles were DuePendingNames (BODY) and stripped

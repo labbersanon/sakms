@@ -1700,8 +1700,8 @@ func TestNameFix_ParHash16KSeedNamedRenamesShelved(t *testing.T) {
 	)
 	var h16 [16]byte
 	copy(h16[:], []byte("hash16k-seed!!y"))
-	donor := obfuscatedSet("dn", donorTok, 1, 1)
-	victim := obfuscatedSet("vn", victimTok, 1+len(donor), 1)
+	donor := obfuscatedSet("dn", donorTok, 1, 45)
+	victim := obfuscatedSet("vn", victimTok, 1+len(donor), 45)
 	f := newNFFixture(t, append(donor, victim...), nil)
 	f.src.bodies["dnpar2"] = par2BodyHash(h16, title+".part01.rar")
 	f.src.bodies["vnpar2"] = par2BodyHash(h16, victimTok+".part01.rar")

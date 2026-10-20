@@ -67,6 +67,8 @@ const (
 	//   → this deadline missing or BodyHead ignoring articleIOTimeout.
 	// Review if: 20s leaves 95% yield unnamed (raise, do not remove).
 	namefixMaxDuration = 20 * time.Second
+	// Skip BodyHead when the phase has less than this left (dial/BODY cannot finish).
+	namefixMinBodyRemain = 200 * time.Millisecond
 	// PreDB-only needs hash/filename tokens, not every header.
 	namefixPreDBHeaderSample = 64
 	// namefixMinPayload: smaller sets without PAR2 are finalized (no BODY).
@@ -79,6 +81,16 @@ const (
 	namefixMaxCandidates        = 6
 	exhaustedPreDBRetry         = time.Hour
 )
+
+// namefixBodyArticleTimeout caps one BodyHead (dial + BODY). Tests shrink it.
+//
+// Claude 2026-10-19: 8s per article, independent of the 20s phase.
+// Reason: live every pass was body leftover=40 fetches=1 bytes=0 unresolved=0.
+//   One hung BODY/dial returned DeadlineExceeded and aborted all 40 due sets.
+// Troubleshooting: o2cli grep "namefix body"; remain_ms=0 + leftover=body →
+//   article timeout not applied or parent ctx already dead before BodyHead.
+// Review if: 8s leaves 20KB par2 unnamed (raise, still continue to next pick).
+var namefixBodyArticleTimeout = 8 * time.Second
 
 // Name sources / confidences (usenet_nntp_releases.name_source/name_confidence).
 const (
@@ -341,23 +353,43 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 			res.BudgetStop = true
 			return true, nil
 		}
-		sample, berr := n.Src.BodyHead(ctx, pick.MsgID, namefixHeadBytes)
+		remain := namefixBodyArticleTimeout
+		if d, ok := ctx.Deadline(); ok {
+			left := time.Until(d)
+			if left < namefixMinBodyRemain {
+				log.Printf("usenetsearch: namefix body skip msgid=%s bytes=%d remain_ms=%d", pick.MsgID, pick.Bytes, left.Milliseconds())
+				break
+			}
+			if left < remain {
+				remain = left
+			}
+		}
+		bodyCtx, cancel := context.WithTimeout(ctx, remain)
+		sample, berr := n.Src.BodyHead(bodyCtx, pick.MsgID, namefixHeadBytes)
+		cancel()
 		if errors.Is(berr, usenet.ErrBusy) {
 			res.Busy = true
 			return true, nil
 		}
 		res.BodyFetches++
-		if errors.Is(berr, context.DeadlineExceeded) || errors.Is(berr, context.Canceled) {
-			return false, berr
-		}
+		// Claude 2026-10-19: per-article timeout continues; only parent ctx stops the phase.
+		// Reason: live leftover=40 after one hung BODY; 21–42KB par2s never ran.
+		// Troubleshooting: o2cli grep "namefix body"; leftover=body with one msgid
+		//   repeating → next pick not continuing. Review if: 8s is raised.
 		if berr != nil {
-			log.Printf("usenetsearch: namefix body msgid=%s: %v", pick.MsgID, berr)
+			log.Printf("usenetsearch: namefix body msgid=%s bytes=%d remain_ms=%d wire=0 yenc=0 cands=0 par2=false err=%v",
+				pick.MsgID, pick.Bytes, remain.Milliseconds(), berr)
+			if (errors.Is(berr, context.DeadlineExceeded) || errors.Is(berr, context.Canceled)) && ctx.Err() != nil {
+				return false, ctx.Err()
+			}
 			continue
 		}
 		sampled = true
 		n.Budget.add(sample.WireBytes)
 		res.BodyBytes += sample.WireBytes
 		cands := candidatesFromSample(sample, pick.NFO)
+		log.Printf("usenetsearch: namefix body msgid=%s bytes=%d remain_ms=%d wire=%d yenc=%d cands=%d par2=%t err=<nil>",
+			pick.MsgID, pick.Bytes, remain.Milliseconds(), sample.WireBytes, len(sample.YencName), len(cands), bytes.HasPrefix(sample.Data, par2Magic))
 		if len(cands) == 0 {
 			continue
 		}
@@ -781,8 +813,7 @@ type bodyPick struct {
 }
 
 // pickBodyTargets chooses up to namefixBodiesPerSet first-segment articles:
-// (a) the smallest file (likely PAR2 index or NFO), (b) the first payload file
-// by FileN/name (RAR/7z header and =ybegin name), (c) an NFO if identifiable.
+// smallest file, then remaining PAR2/NFO, then the first payload file by FileN.
 func pickBodyTargets(rows []HeaderRow) []bodyPick {
 	type file struct {
 		key   string
@@ -821,6 +852,9 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 		}
 		return sorted[i].key < sorted[j].key
 	})
+	if len(sorted) == 0 {
+		return nil
+	}
 	var picks []bodyPick
 	seen := map[string]bool{}
 	add := func(f *file) {
@@ -831,6 +865,11 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 		picks = append(picks, bodyPick{MsgID: f.first.MsgID, Bytes: f.first.Bytes, NFO: f.nfo})
 	}
 	add(sorted[0])
+	for _, f := range sorted {
+		if f.meta || f.nfo {
+			add(f)
+		}
+	}
 
 	var payload []*file
 	for _, f := range sorted {
@@ -846,12 +885,6 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 	})
 	if len(payload) > 0 {
 		add(payload[0])
-	}
-	for _, f := range sorted {
-		if f.nfo {
-			add(f)
-			break
-		}
 	}
 	return picks
 }

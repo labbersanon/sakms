@@ -126,6 +126,9 @@ type IRCClient struct {
 
 	parsed int
 	tagged int
+	// lastTitle is the last NEW [TT:]/PRE title on this connection, used
+	// when a hashed [FN:] arrives on a follow-up line without [TT:].
+	lastTitle string
 }
 
 // RandomNick returns a 16-character letter-prefixed alphanumeric nick.
@@ -394,17 +397,23 @@ func (c *IRCClient) handlePrivmsg(ctx context.Context, params string) {
 	}
 	body := params[i+2:]
 	a, ok := ParseAnnounce(body)
-	if strings.Contains(body, "[TT:") {
+	if strings.Contains(body, "[TT:") || strings.Contains(body, "[FN:") || strings.Contains(body, "[FILE:") {
 		c.tagged++
-		if c.tagged <= 5 {
-			log.Printf("usenetsearch: predb irc tagged parsed=%t fn_set=%t", ok, ok && a.Entry.Filename != "")
+		if c.tagged <= 20 {
+			log.Printf("usenetsearch: predb irc tags keys=%s parsed=%t fn_set=%t", taggedKeyList(body), ok, ok && a.Entry.Filename != "")
 		}
 	}
 	if !ok {
+		if title, fn, fok := filenameFollowUp(body, c.lastTitle); fok {
+			if err := c.Store.Upsert(ctx, Entry{Title: title, Filename: fn}, SourceIRC); err == nil {
+				c.parsed++
+			}
+		}
 		return
 	}
 	switch a.Kind {
 	case "NEW":
+		c.lastTitle = a.Entry.Title
 		if err := c.Store.Upsert(ctx, a.Entry, SourceIRC); err == nil {
 			c.parsed++
 		}

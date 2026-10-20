@@ -33,9 +33,16 @@ var (
 	reTaggedCT   = regexp.MustCompile(`(?i)\[CT:\s*([^\]]+)\]`)
 	reTaggedSZ   = regexp.MustCompile(`(?i)\[SZ:\s*([^\]]+)\]`)
 	reTaggedFL   = regexp.MustCompile(`(?i)\[FL:\s*([^\]]+)\]`)
-	reTaggedFN   = regexp.MustCompile(`(?i)\[FN:\s*([^\]]+)\]`)
+	reTaggedFN   = regexp.MustCompile(`(?i)\[(?:FN|FILE|FILENAME):\s*([^\]]+)\]`)
 	reTaggedRQ   = regexp.MustCompile(`(?i)\[RQ:\s*([^\]]+)\]`)
 	reTaggedNuke = regexp.MustCompile(`(?i)\[((?:UN|MOD|RE|OLD)?NUKE(?:D)?):\s*([^\]]*)\]`)
+	// Claude 2026-10-19: log tag letters only, never titles or filenames.
+	// Reason: live tagged [TT:] stored filename="" because FN was N/A; we
+	//   could not tell if the bot used FILE/FILENAME on a later line.
+	// Troubleshooting: o2cli grep "predb irc tags keys="; keys with no FN/FILE
+	//   means the announce has no hashed filename. Review if: TmuxPREBot
+	//   adds a new filename tag letter.
+	reTagKey = regexp.MustCompile(`\[([A-Za-z]{1,12}):`)
 )
 
 // ParseAnnounce parses an NNTmux-style PreDB announce line:
@@ -156,6 +163,42 @@ func parseTaggedAnnounce(line string) (Announce, bool) {
 		a.Entry.Nuked = a.Kind == "NUKE" || a.Kind == "MODNUKE"
 	}
 	return a, true
+}
+
+// taggedKeyList is the comma-separated tag letters in a line (no values).
+func taggedKeyList(line string) string {
+	ms := reTagKey.FindAllStringSubmatch(line, 16)
+	if len(ms) == 0 {
+		return ""
+	}
+	seen := map[string]bool{}
+	var keys []string
+	for _, m := range ms {
+		k := strings.ToUpper(m[1])
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		keys = append(keys, k)
+	}
+	return strings.Join(keys, ",")
+}
+
+// filenameFollowUp is a hashed [FN:]/[FILE:] line that omitted [TT:].
+// TmuxPREBot sometimes sends the filename after the title announce.
+func filenameFollowUp(line, lastTitle string) (title, filename string, ok bool) {
+	lastTitle = strings.TrimSpace(lastTitle)
+	if lastTitle == "" {
+		return "", "", false
+	}
+	if taggedNA(line, reTaggedTT) != "" {
+		return "", "", false
+	}
+	fn := taggedNA(line, reTaggedFN)
+	if fn == "" {
+		return "", "", false
+	}
+	return lastTitle, fn, true
 }
 
 func parsePreAt(raw string) int64 {

@@ -444,6 +444,40 @@ func TestNameFix_BodyBudgetStopsPassWithoutAttempts(t *testing.T) {
 	}
 }
 
+func TestNameFix_BodyArticleTimeoutContinuesToNextPick(t *testing.T) {
+	nfo := usenet.MessageOverview{
+		Number: 1, Subject: fmt.Sprintf(`[%02d/%d] - "%s.nfo" yEnc (1/1)`, 1, 2, nfHash),
+		From: "poster@obf", MessageID: "tnfo", Bytes: 10_000, DateUnix: 1700000000,
+	}
+	rows := append([]usenet.MessageOverview{nfo}, obfuscatedSet("t", nfHash, 2, 1)...)
+	f := newNFFixture(t, rows, nil)
+	f.crawlAndRecompute(t)
+	f.src.bodyFailFirst = 1
+	f.src.bodies["tnfo"] = usenet.BodySample{Data: []byte("Release info"), WireBytes: 1000}
+	f.src.bodies["tpar2"] = par2Body("Some.Movie.2021.1080p.BluRay.x264-GRP.part01.rar")
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Renamed != 1 || res.BySource[sourcePar2] != 1 || res.BodyFetches < 2 {
+		t.Fatalf("hung first BODY must not abort the phase: %+v calls=%v", res, f.src.bodyCalls)
+	}
+	if _, _, display, _ := f.release(t); display != "Some.Movie.2021.1080p.BluRay.x264-GRP" {
+		t.Fatalf("display = %q", display)
+	}
+}
+
+func TestPickBodyTargets_PrefersSmallPar2(t *testing.T) {
+	rows := []HeaderRow{
+		{MsgID: "huge@t", Filename: "hash.part01.rar", Bytes: 2_000_000, FileN: 1},
+		{MsgID: "par2@t", Filename: "hash.par2", Bytes: 20_000, IsMeta: true},
+	}
+	picks := pickBodyTargets(rows)
+	if len(picks) == 0 || picks[0].MsgID != "par2@t" {
+		t.Fatalf("picks = %+v, want small par2 first", picks)
+	}
+}
+
 func TestNameFix_BusyStopsWithoutAttempts(t *testing.T) {
 	f := newNFFixture(t, obfuscatedSet("y", nfHash, 1, 45), nil)
 	f.crawlAndRecompute(t)

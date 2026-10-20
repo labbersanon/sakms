@@ -12027,3 +12027,16 @@ status stays active.
 | File | Change |
 |---|---|
 | `internal/usenet/sevenz.go` | write full tail at EOF; log 7z l errors |
+
+## 2026-10-20 — 7z list uses a packPos=0 mini archive above 32MiB
+
+**Problem:** After #233, live `7z off=26635170624 sz=44 tail=9100` then `7z l` `exit status 255`. No CRC.
+**Root cause:** 7-Zip 255 is "user stopped". `7z l` on a 26GiB sparse file reads holes and hits the 8s kill. kEncodedHeader StreamsInfo is 44 bytes of plaintext; LZMA packed header is immediately before it.
+**Fix:** For offsets >32MiB, patch encoded `packPos` to 0 and `7z l` a few-KB mini archive (`start + packed header + StreamsInfo`). Small archives still use sparse reconstruct.
+**Outcome:** A 26GiB ngPost split 7z can list inner CRC from a 9KB last segment. Success remains `name_source=srrdb`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/sevenz.go` | encoded mini archive when offset >32MiB |

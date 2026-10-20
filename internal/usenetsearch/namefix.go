@@ -311,8 +311,13 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 		return res, err
 	}
 	var body []PendingSet
-	body = append(body, ident...)
+	// Claude 2026-10-20: 95% BODY before ident.
+	// Reason: live after #228, ident=1 was an 81% 231GB part001.rar (1/4761)
+	//   that ate the 20s; 96 complete rar pending never ran. crcs=0 on RAR5.
+	// Troubleshooting: namefix starting ident=1 then crc on 80% leftover=39
+	//   → this order reversed. Review if: ident FileDesc titles stall.
 	body = append(body, sets...)
+	body = append(body, ident...)
 	if err := run(body, "body"); err != nil {
 		return res, err
 	}
@@ -432,8 +437,15 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		log.Printf("usenetsearch: namefix body msgid=%s bytes=%d remain_ms=%d wire=%d yenc=%d cands=%d par2=%t err=<nil>",
 			pick.MsgID, pick.Bytes, namefixBodyArticleTimeout.Milliseconds(), sample.WireBytes, len(sample.YencName), len(cands), isPar2)
 		if pick.CRC {
-			crcTried = true
-			log.Printf("usenetsearch: namefix crc msgid=%s crcs=%d", pick.MsgID, len(sampleCRCs(sample)))
+			crcs := sampleCRCs(sample)
+			if len(crcs) > 0 {
+				crcTried = true
+			}
+			magic := sample.Data
+			if len(magic) > 8 {
+				magic = magic[:8]
+			}
+			log.Printf("usenetsearch: namefix crc msgid=%s crcs=%d magic=%x", pick.MsgID, len(crcs), magic)
 		}
 		work := context.WithoutCancel(ctx)
 		if isPar2 {
@@ -1084,9 +1096,8 @@ type bodyPick struct {
 }
 
 // pickBodyTargets chooses up to namefixBodiesPerSet first-segment articles:
-// SFV, first-volume RAR/ZIP/7z (part01 / bare .rar, never part099), main
-// non-vol PAR2, then NFO. Volume PAR2 never fills a slot — live #227 still
-// BODYed three .vol*.par2 and never reached FILE_CRC.
+// SFV, first-volume RAR/ZIP/7z (part01 / bare .rar), last volume when
+// partN>1, main non-vol PAR2, then NFO. Volume PAR2 never fills a slot.
 func pickBodyTargets(rows []HeaderRow) []bodyPick {
 	type file struct {
 		key   string
@@ -1160,6 +1171,22 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 			break
 		}
 	}
+	var last *file
+	lastN := 0
+	for _, f := range sorted {
+		n := 0
+		for _, name := range []string{f.key, f.first.Filename, f.first.Subject} {
+			if p := archivePartNum(name); p > n {
+				n = p
+			}
+		}
+		if n > lastN {
+			lastN, last = n, f
+		}
+	}
+	if lastN > 1 {
+		add(last)
+	}
 	for _, f := range sorted {
 		if anyName(f, isMainPar2Name) {
 			add(f)
@@ -1186,14 +1213,25 @@ func isSFVName(name string) bool {
 	return strings.Contains(strings.ToLower(name), ".sfv")
 }
 
+func archivePartNum(name string) int {
+	m := reArchivePart.FindStringSubmatch(strings.ToLower(name))
+	if len(m) < 2 {
+		return 0
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
 func isFirstArchiveVolume(name string) bool {
 	low := strings.ToLower(name)
 	if isSFVName(low) || strings.Contains(low, ".par2") || strings.Contains(low, ".nfo") {
 		return false
 	}
-	if m := reArchivePart.FindStringSubmatch(low); len(m) > 1 {
-		n, _ := strconv.Atoi(m[1])
-		return n == 1
+	if reArchivePart.MatchString(low) {
+		return archivePartNum(low) == 1
 	}
 	if m := reSplitVol.FindStringSubmatch(low); len(m) > 1 {
 		n, _ := strconv.Atoi(m[1])

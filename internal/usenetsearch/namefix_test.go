@@ -111,8 +111,8 @@ func TestRarMemberNameFixtures(t *testing.T) {
 	if len(got) != 1 || got[0] != "Some.Show.S01E02.720p.HDTV.x264-GRP.mkv" {
 		t.Fatalf("rar4 = %v", got)
 	}
-	rar5 := append([]byte("Rar!\x1a\x07\x01\x00"), []byte("\x00\x00Some.Show.S01E02.720p.HDTV.x264-GRP.mkv\x00")...)
-	got = usenet.ArchiveMemberNames(rar5)
+	rar5 := rar5BodyCRC("Some.Show.S01E02.720p.HDTV.x264-GRP.mkv", 0x0053CA13, false)
+	got = usenet.ArchiveMemberNames(rar5.Data)
 	if len(got) != 1 {
 		t.Fatalf("rar5 = %v", got)
 	}
@@ -249,6 +249,40 @@ func rar4BodyCRC(member string, crc uint32) usenet.BodySample {
 	return usenet.BodySample{Data: b, YencName: member, WireBytes: int64(len(b))}
 }
 
+func rar5BodyCRC(member string, crc uint32, splitAfter bool) usenet.BodySample {
+	appendV := func(b []byte, v uint64) []byte {
+		for {
+			x := byte(v & 0x7f)
+			v >>= 7
+			if v != 0 {
+				b = append(b, x|0x80)
+				continue
+			}
+			return append(b, x)
+		}
+	}
+	var body []byte
+	body = appendV(body, 2)
+	flags := uint64(0)
+	if splitAfter {
+		flags |= 0x0010
+	}
+	body = appendV(body, flags)
+	body = appendV(body, 0x0004)
+	body = appendV(body, 1)
+	body = appendV(body, 0)
+	var crcBuf [4]byte
+	binary.LittleEndian.PutUint32(crcBuf[:], crc)
+	body = append(body, crcBuf[:]...)
+	body = appendV(body, 0)
+	body = appendV(body, 0)
+	body = appendV(body, uint64(len(member)))
+	body = append(body, member...)
+	hdr := appendV([]byte{0, 0, 0, 0}, uint64(len(body)))
+	data := append([]byte("Rar!\x1a\x07\x01\x00"), append(hdr, body...)...)
+	return usenet.BodySample{Data: data, YencName: member, WireBytes: int64(len(data))}
+}
+
 func TestRar4BodyCRCExtracts(t *testing.T) {
 	s := rar4BodyCRC(nfHash+".mkv", 0x0053CA13)
 	got := usenet.ArchiveFileCRCs(s.Data)
@@ -257,6 +291,17 @@ func TestRar4BodyCRCExtracts(t *testing.T) {
 	}
 	if crcs := sampleCRCs(s); len(crcs) != 1 || crcs[0] != "0053CA13" {
 		t.Fatalf("sampleCRCs = %v", crcs)
+	}
+}
+
+func TestSampleCRCs_RAR5(t *testing.T) {
+	s := rar5BodyCRC(nfHash+".mkv", 0x0053CA13, false)
+	if crcs := sampleCRCs(s); len(crcs) != 1 || crcs[0] != "0053CA13" {
+		t.Fatalf("rar5 sampleCRCs = %v", crcs)
+	}
+	split := rar5BodyCRC(nfHash+".mkv", 0x0053CA13, true)
+	if crcs := sampleCRCs(split); len(crcs) != 0 {
+		t.Fatalf("split-after must not yield archive-crc, got %v", crcs)
 	}
 }
 
@@ -567,7 +612,7 @@ func pickIDs(picks []bodyPick) map[string]bool {
 	return ids
 }
 
-func TestPickBodyTargets_SkipsVolPar2AndLastRar(t *testing.T) {
+func TestPickBodyTargets_SkipsVolPar2IncludesLastRar(t *testing.T) {
 	rows := []HeaderRow{
 		{MsgID: "vol@t", Filename: "hash.vol000+01.par2", Bytes: 5_000, IsMeta: true},
 		{MsgID: "vol2@t", Filename: "hash.vol001+02.par2", Bytes: 8_000, IsMeta: true},
@@ -579,11 +624,11 @@ func TestPickBodyTargets_SkipsVolPar2AndLastRar(t *testing.T) {
 	}
 	picks := pickBodyTargets(rows)
 	ids := pickIDs(picks)
-	if !ids["sfv@t"] || !ids["first@t"] || !ids["par2@t"] {
-		t.Fatalf("picks=%+v, want sfv + part01 + main par2", picks)
+	if !ids["sfv@t"] || !ids["first@t"] || !ids["last@t"] {
+		t.Fatalf("picks=%+v, want sfv + part01 + last volume (RAR5 unpacked CRC)", picks)
 	}
-	if ids["vol@t"] || ids["vol2@t"] || ids["last@t"] {
-		t.Fatalf("picks=%+v, vol par2 / part099 must not fill BODY slots", picks)
+	if ids["vol@t"] || ids["vol2@t"] {
+		t.Fatalf("picks=%+v, vol par2 must not fill BODY slots", picks)
 	}
 	if len(picks) > namefixBodiesPerSet {
 		t.Fatalf("picks=%d, cap %d", len(picks), namefixBodiesPerSet)
@@ -1866,6 +1911,29 @@ func TestNameFix_SRRDBArchiveCRCRenamesHashRAR(t *testing.T) {
 	}
 }
 
+func TestNameFix_SRRDBArchiveCRCRenamesHashRAR5(t *testing.T) {
+	const title = "Srrdb.Rar5.2021.1080p.BluRay.x264-GRP"
+	f := newNFFixture(t, obfuscatedSet("s5", nfHash, 1, 45), nil)
+	f.src.bodies["s5par2"] = par2Body(nfHash + ".part01.rar")
+	f.src.bodies["s51_1@t"] = rar5BodyCRC(nfHash+".mkv", 0x0053CA13, false)
+	f.nf.SRRDB = &fakeSRRDB{crcs: map[string]PreDBHit{
+		"0053CA13": {Title: title},
+	}}
+	f.crawlAndRecompute(t)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var named int
+	var src string
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*), COALESCE(MAX(name_source),'') FROM usenet_nntp_releases WHERE display_name=?`, title).Scan(&named, &src); err != nil {
+		t.Fatal(err)
+	}
+	if named != 1 || src != sourceSRRDB || res.BySource[sourceSRRDB] != 1 {
+		t.Fatalf("named=%d src=%q res=%+v, want rar5 srrdb CRC hit", named, src, res)
+	}
+}
+
 func TestNameFix_SRRDBDespiteVolPar2AndLastRar(t *testing.T) {
 	const title = "Srrdb.Vol.2021.1080p.BluRay.x264-GRP"
 	rows := obfuscatedSet("sv", nfHash, 1, 45)
@@ -1906,8 +1974,8 @@ func TestNameFix_SRRDBDespiteVolPar2AndLastRar(t *testing.T) {
 		t.Fatalf("named=%d src=%q res=%+v calls=%v, want part01 FILE_CRC not vol par2/part99", named, src, res, f.src.bodyCalls)
 	}
 	for _, id := range f.src.bodyCalls {
-		if strings.HasPrefix(id, "svvol") || id == "sv99" {
-			t.Fatalf("BODY'd vol/last rar %q in %v", id, f.src.bodyCalls)
+		if strings.HasPrefix(id, "svvol") {
+			t.Fatalf("BODY'd vol par2 %q in %v", id, f.src.bodyCalls)
 		}
 	}
 }

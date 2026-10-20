@@ -466,10 +466,15 @@ FROM usenet_nntp_headers WHERE group_name=? AND release_name=?`, k.group, k.key)
 	meets := comp.Meets(gate)
 	near := comp.BP() >= spanRepairFloorBP
 	// Claude 2026-10-19: recovered/scene names are searchable at ≥80%, not 0%.
+	// Claude 2026-10-19: junk mega-buckets are never searchable, even at 100%.
+	// Reason: live `(Els1212)` / `F18cvededvdvfrf` hit the 95% grab gate and
+	//   counted as Searchable. IdentifiedPct already excluded junkNameSQL.
+	// Troubleshooting: Searchable includes `(????)` or a single hash token →
+	//   this NOT junk clause missing. Review if: name_source is not subject.
 	err = idx.db.QueryRowContext(ctx, `
 UPDATE usenet_nntp_releases SET
   declared_segs=?, seen_segs=?, completeness_bp=?, gate_reason=?,
-  searchable=(state='named' AND display_name<>'' AND (?::boolean OR ((`+identNameSQL+`) AND ?::boolean))),
+  searchable=(state='named' AND display_name<>'' AND NOT (`+junkNameSQL+`) AND (?::boolean OR ((`+identNameSQL+`) AND ?::boolean))),
   first_msg=?, last_msg=?, posted_at=?, payload_bytes=?, has_par2=?, dirty=FALSE
 WHERE group_name=? AND release_key=?
 RETURNING searchable`,

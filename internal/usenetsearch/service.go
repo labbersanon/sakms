@@ -79,15 +79,14 @@ const (
 	KeyBackfillEnabled    = "usenet_nntp_backfill_enabled"
 	KeyBackfillDays       = "usenet_nntp_backfill_days"
 	KeyBackfillBudgetPct  = "usenet_nntp_backfill_budget_pct"
-	// Claude 2026-10-16: one-shot in-place collection-key rewrite (plan D5).
-	// Reason: 315k per-file release keys stay wrong until subjects are re-parsed;
-	//   watermarks must not rewind. Value "true" when finished; cursor is
-	//   group\\nmsgid while in progress.
+	// Claude 2026-10-19: v3 rekeys ident-quoted episode filenames.
+	// Reason: v2 left season-pack stems / obf: on quoted SxxEyy 1080p names;
+	//   Searchable stayed a pack row at 4.5% of [k/N]×parts. Watermarks stay.
 	// Troubleshooting: o2cli grep "collection rewrite"; stuck cursor → delete
-	//   these two keys and let the next loop resume from the start.
-	// Review if: a v3 rewrite is needed after another ParseSubject change.
-	KeyCollectionRewriteDone   = "usenet_nntp_collection_rewrite_v2"
-	KeyCollectionRewriteCursor = "usenet_nntp_collection_rewrite_v2_cursor"
+	//   these two keys so the next loop resumes. v2 KV is leftover, unused.
+	// Review if: parseHeader grouping changes again (then v4, do not reuse v3).
+	KeyCollectionRewriteDone   = "usenet_nntp_collection_rewrite_v3"
+	KeyCollectionRewriteCursor = "usenet_nntp_collection_rewrite_v3_cursor"
 	// Claude 2026-10-16: extra RE2 collection patterns + drift kill switch.
 	// Reason: AI-proposed strip_prefix/lead_token live in KV; ingest reads the
 	//   published set. Kill switch default true, no-op without an AI client.

@@ -377,6 +377,31 @@ func TestRecomputeDirty_NamedZeroBeforePending(t *testing.T) {
 	}
 }
 
+func TestRecomputeDirty_JunkMegaBucketNotSearchable(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	const g = "alt.binaries.movies"
+	if err := idx.Upsert(ctx, fileRows(g, "(Els1212)", "e.jpg", "e", 0, 10, 10, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.RecomputeDirty(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	var searchable bool
+	var bp int
+	if err := sqlDB.QueryRowContext(ctx, `SELECT searchable, completeness_bp FROM usenet_nntp_releases WHERE release_key=?`, "(Els1212)").Scan(&searchable, &bp); err != nil {
+		t.Fatal(err)
+	}
+	if searchable || bp < 9500 {
+		t.Fatalf("searchable=%v bp=%d; 100%% junk mega-bucket must not be Searchable", searchable, bp)
+	}
+}
+
 func TestRecomputeDirty_IdentQuotedKeyIgnoresCollectionFileM(t *testing.T) {
 	sqlDB := dbtest.New(t)
 	idx, err := OpenIndex(sqlDB)

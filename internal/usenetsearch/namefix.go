@@ -265,7 +265,7 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 	//   from preOnly; one hash SetRows+ByHash burned PreDB (leftover=162,
 	//   i=0) and BODY leftover=59, renamed=0. Header quotes need no BODY.
 	// Troubleshooting: header=0 while pending95 subjects quote 1080p titles
-	//   → DuePendingHeaderNames regex/next_name_at. Review if: 4K-without-p.
+	//   → DuePendingHeaderNames regex. Review if: 4K-without-p.
 	if err := run(headerSets, "header"); err != nil {
 		return res, err
 	}

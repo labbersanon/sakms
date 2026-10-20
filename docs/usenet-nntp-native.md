@@ -168,10 +168,10 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   set (PAR2 `FileDesc` → RAR/ZIP member names → yEnc `=ybegin` name → NFO scene
   name). PreDB (no BODY) also runs on ≥80% pending sets in **any** group
   (including boneless), 200 per pass, even when OVER is busy (BODY waits).
-  Each pass runs quoted ident-shaped header names first (no BODY), then
-  PreDB-only keys, then ident BODY, then 95% BODY,
-  so a 20s BODY deadline cannot skip titles already sitting in the subject. Yield-group BODY is 40/pass
-  at 95% plus 20/pass at ≥80% when PAR2 is present. A BODY whose FileDesc is
+  Each pass runs quoted ident-shaped header names first (no BODY; ignores
+  `next_name_at`), then PreDB-only keys, then ident BODY, then 95% BODY,
+  so a 20s BODY deadline cannot skip titles already sitting in the subject.
+  Yield-group BODY is 40/pass at 95% plus 20/pass at ≥80% when PAR2 is present. A BODY whose FileDesc is
   the same hash is not retried (PreDB-only from then on).
   Sets with PAR2 are BODY-sampled even under 100 MiB. Accepted: a
   PreDB-confirmed name (size within ±15% when PreDB reports one), or a

@@ -32,6 +32,8 @@ type PendingSet struct {
 	HasPar2 bool
 	// PreDBOnly skips BODY: exhausted keepCompleteYield waiting on dump/IRC.
 	PreDBOnly bool
+	// AlreadyNamed is a hash_16K seed of a titled set (extract donors only).
+	AlreadyNamed bool
 }
 
 // StagedBytes is the header-index occupancy of unresolved staged sets in

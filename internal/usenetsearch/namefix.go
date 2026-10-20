@@ -58,7 +58,13 @@ const (
 	namefixPreDBPerPass     = 200
 	// Header-ident quoted titles (no BODY/PreDB HTTP). Run before PreDB.
 	namefixHeaderPerPass = 40
-	namefixBodiesPerSet  = 3
+	// Claude 2026-10-20: re-BODY named/shelved PAR2 once for hash_16K.
+	// Reason: 65 live par2 titles and 225 shelved hash.par2 had FileDesc
+	//   packets discarded; donors cannot match until hashes are stored.
+	// Troubleshooting: parhash=0 in "namefix starting" with named par2 →
+	//   DueParHashSeed / parhash_sampled. Review if: seed starves BODY.
+	namefixParHashSeedPerPass = 20
+	namefixBodiesPerSet       = 3
 	// namefixMaxDuration: stop mid-pass so a hung BODY cannot freeze crawl.
 	// Claude 2026-10-19: 20s wall clock like recompute.
 	// Reason: after #204 the loop went silent 14 min in namefix BODY
@@ -100,14 +106,15 @@ var namefixBodyArticleTimeout = 8 * time.Second
 
 // Name sources / confidences (usenet_nntp_releases.name_source/name_confidence).
 const (
-	sourcePreDB  = "predb"
-	sourcePar2   = "par2"
-	sourceRar    = "rar"
-	sourceYenc   = "ybegin"
-	sourceNFO    = "nfo"
-	confPreDB    = "predb_exact"
-	confMedium   = "medium"
-	verdictNamed = "namefix"
+	sourcePreDB   = "predb"
+	sourcePar2    = "par2"
+	sourceParHash = "parhash"
+	sourceRar     = "rar"
+	sourceYenc    = "ybegin"
+	sourceNFO     = "nfo"
+	confPreDB     = "predb_exact"
+	confMedium    = "medium"
+	verdictNamed  = "namefix"
 )
 
 // bodyBudget is a rolling one-hour BODY byte budget. It lives in the service
@@ -195,13 +202,17 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 	if err != nil {
 		return res, err
 	}
-	var sets, ident []PendingSet
+	var sets, ident, parSeed []PendingSet
 	if !n.SkipBody {
 		sets, err = n.Index.DuePendingNames(ctx, n.Groups, namefixSetsPerPass)
 		if err != nil {
 			return res, err
 		}
 		ident, err = n.Index.DuePendingIdentBody(ctx, n.Groups, namefixIdentBodyPerPass)
+		if err != nil {
+			return res, err
+		}
+		parSeed, err = n.Index.DueParHashSeed(ctx, n.Groups, namefixParHashSeedPerPass)
 		if err != nil {
 			return res, err
 		}
@@ -229,9 +240,9 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 			preOnly = append(preOnly, set)
 		}
 	}
-	if len(sets)+len(ident)+len(predbSets)+len(headerSets) > 0 {
-		log.Printf("usenetsearch: namefix starting header=%d body=%d ident=%d predb=%d skip_body=%t",
-			len(headerSets), len(sets), len(ident), len(predbSets), n.SkipBody)
+	if len(sets)+len(ident)+len(predbSets)+len(headerSets)+len(parSeed) > 0 {
+		log.Printf("usenetsearch: namefix starting header=%d body=%d ident=%d predb=%d parhash=%d skip_body=%t",
+			len(headerSets), len(sets), len(ident), len(predbSets), len(parSeed), n.SkipBody)
 	}
 	budget := n.PassBudget
 	if budget <= 0 {
@@ -290,13 +301,17 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 	if err := run(preOnly, "predb"); err != nil {
 		return res, err
 	}
+	// Named PAR2 donors before pending BODY so hash_16K matches this pass.
+	if err := run(parSeed, "parhash"); err != nil {
+		return res, err
+	}
 	var body []PendingSet
 	body = append(body, ident...)
 	body = append(body, sets...)
 	if err := run(body, "body"); err != nil {
 		return res, err
 	}
-	if res.Sets > 0 || res.Finalized > 0 {
+	if res.Sets > 0 || res.Finalized > 0 || res.BodyFetches > 0 || res.Renamed > 0 {
 		log.Printf("usenetsearch: namefix pass sets=%d hash_hits=%d body_fetches=%d body_bytes=%d renamed=%d by_source=%s reject_gate=%d reject_stat=%d unresolved=%d finalized=%d busy=%t",
 			res.Sets, res.HashHits, res.BodyFetches, res.BodyBytes, res.Renamed, formatBySource(res.BySource),
 			res.RejectGate, res.RejectStat, res.Unresolved, res.Finalized, res.Busy)
@@ -319,6 +334,9 @@ func formatBySource(m map[string]int) string {
 
 // fixSet attempts one staged set. stop=true ends the pass (busy / budget).
 func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResult, statBudget *int) (stop bool, err error) {
+	if set.AlreadyNamed {
+		return n.seedParHashes(ctx, set, res, statBudget)
+	}
 	limit := 0
 	if set.PreDBOnly {
 		limit = namefixPreDBHeaderSample
@@ -354,6 +372,7 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 
 	hashOnly := false
 	sampled := false
+	triedBody := false
 	for _, pick := range pickBodyTargets(rows) {
 		if !n.Budget.fits(pick.Bytes) {
 			res.BudgetStop = true
@@ -373,6 +392,7 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 			return true, nil
 		}
 		res.BodyFetches++
+		triedBody = true
 		if berr != nil {
 			log.Printf("usenetsearch: namefix body msgid=%s bytes=%d remain_ms=%d wire=0 yenc=0 cands=0 par2=false err=%v",
 				pick.MsgID, pick.Bytes, namefixBodyArticleTimeout.Milliseconds(), berr)
@@ -381,10 +401,20 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 			n.Budget.add(sample.WireBytes)
 			res.BodyBytes += sample.WireBytes
 			cands := candidatesFromSample(sample, pick.NFO)
+			isPar2 := bytes.HasPrefix(sample.Data, par2Magic)
 			log.Printf("usenetsearch: namefix body msgid=%s bytes=%d remain_ms=%d wire=%d yenc=%d cands=%d par2=%t err=<nil>",
-				pick.MsgID, pick.Bytes, namefixBodyArticleTimeout.Milliseconds(), sample.WireBytes, len(sample.YencName), len(cands), bytes.HasPrefix(sample.Data, par2Magic))
+				pick.MsgID, pick.Bytes, namefixBodyArticleTimeout.Milliseconds(), sample.WireBytes, len(sample.YencName), len(cands), isPar2)
+			work := context.WithoutCancel(ctx)
+			if isPar2 {
+				n.rememberParHashes(work, set, sample.Data)
+				name, ok, err := n.Index.LookupParHashDonor(work, set.Group, set.Key, set.PayloadBytes)
+				if err != nil {
+					log.Printf("usenetsearch: parhash lookup group=%s err=%v", set.Group, err)
+				} else if ok {
+					return n.promote(work, set, rows, name, sourceParHash, confMedium, "parhash", res, statBudget)
+				}
+			}
 			if len(cands) > 0 {
-				work := context.WithoutCancel(ctx)
 				// Claude 2026-10-19: FileDesc/yEnc hashes are not in header rows.
 				// Reason: live BODY now returns par2=true cands=1–2 renamed=0;
 				//   subjects are random tokens, PAR2 FileDesc is often md5(title).
@@ -419,10 +449,114 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 
 	res.Unresolved++
 	dbCtx := context.WithoutCancel(ctx)
+	// Claude 2026-10-20: one hash_16K BODY, even when the article is not PAR2.
+	// Reason: DueParHashSeed would re-fetch shelved sets every pass (backoff
+	//   tests and PreDB-only retries). Live 225 still seed because the
+	//   column defaults false until this runs once after 0049.
+	// Troubleshooting: parhash=N on every pass for the same keys → sampled
+	//   not set after BodyHead. Review if: 430 should retry after dump import.
+	if triedBody {
+		_ = n.Index.MarkParHashSampled(dbCtx, set.Group, set.Key)
+	}
 	if sampled && hashOnly && keepCompleteYield(set.Group, set.CompletenessBP, set.PayloadBytes) {
 		return false, n.Index.ShelveBodyAttempts(dbCtx, set.Group, set.Key)
 	}
 	return false, n.Index.BumpNameAttempt(dbCtx, set.Group, set.Key, set.Attempts)
+}
+
+// seedParHashes BODY-reads a named PAR2 set once to index hash_16K donors.
+func (n *NameFixer) seedParHashes(ctx context.Context, set PendingSet, res *NameFixResult, statBudget *int) (bool, error) {
+	if n.Src == nil || n.Index == nil {
+		return false, nil
+	}
+	rows, err := n.Index.setRows(ctx, set.Group, set.Key, 0)
+	if err != nil {
+		return false, err
+	}
+	if len(rows) == 0 {
+		return false, n.Index.MarkParHashSampled(ctx, set.Group, set.Key)
+	}
+	work := context.WithoutCancel(ctx)
+	tried := false
+	for _, pick := range pickBodyTargets(rows) {
+		if !n.Budget.fits(pick.Bytes) {
+			res.BudgetStop = true
+			return true, nil
+		}
+		bodyCtx, cancel := context.WithTimeout(work, namefixBodyArticleTimeout)
+		sample, berr := n.Src.BodyHead(bodyCtx, pick.MsgID, namefixHeadBytes)
+		cancel()
+		if errors.Is(berr, usenet.ErrBusy) {
+			res.Busy = true
+			return true, nil
+		}
+		res.BodyFetches++
+		tried = true
+		if berr != nil {
+			log.Printf("usenetsearch: namefix body msgid=%s bytes=%d remain_ms=%d wire=0 yenc=0 cands=0 par2=false err=%v",
+				pick.MsgID, pick.Bytes, namefixBodyArticleTimeout.Milliseconds(), berr)
+			continue
+		}
+		n.Budget.add(sample.WireBytes)
+		res.BodyBytes += sample.WireBytes
+		isPar2 := bytes.HasPrefix(sample.Data, par2Magic)
+		log.Printf("usenetsearch: namefix body msgid=%s bytes=%d remain_ms=%d wire=%d yenc=%d cands=0 par2=%t err=<nil>",
+			pick.MsgID, pick.Bytes, namefixBodyArticleTimeout.Milliseconds(), sample.WireBytes, len(sample.YencName), isPar2)
+		if isPar2 {
+			n.rememberParHashes(work, set, sample.Data)
+			break
+		}
+	}
+	if tried {
+		if err := n.Index.MarkParHashSampled(work, set.Group, set.Key); err != nil {
+			return false, err
+		}
+	}
+	var display string
+	if err := n.Index.db.QueryRowContext(work, `
+SELECT display_name FROM usenet_nntp_releases WHERE group_name=? AND release_key=?`,
+		set.Group, set.Key).Scan(&display); err != nil || display == "" {
+		return false, nil
+	}
+	n.promoteParHashSiblings(work, set, display, res, statBudget)
+	return false, nil
+}
+
+func (n *NameFixer) rememberParHashes(ctx context.Context, set PendingSet, data []byte) {
+	if n == nil || n.Index == nil {
+		return
+	}
+	if err := n.Index.StoreParHashes(ctx, set.Group, set.Key, par2FileDescs(data)); err != nil {
+		log.Printf("usenetsearch: parhash store group=%s err=%v", set.Group, err)
+	}
+	if err := n.Index.MarkParHashSampled(ctx, set.Group, set.Key); err != nil {
+		log.Printf("usenetsearch: parhash sampled group=%s err=%v", set.Group, err)
+	}
+}
+
+func (n *NameFixer) promoteParHashSiblings(ctx context.Context, set PendingSet, name string, res *NameFixResult, statBudget *int) {
+	if n == nil || n.Index == nil || name == "" {
+		return
+	}
+	hashes, err := n.Index.ParHashesFor(ctx, set.Group, set.Key)
+	if err != nil || len(hashes) == 0 {
+		return
+	}
+	sibs, err := n.Index.PendingSharingParHashes(ctx, hashes, set.PayloadBytes, set.Group, set.Key)
+	if err != nil {
+		log.Printf("usenetsearch: parhash siblings group=%s err=%v", set.Group, err)
+		return
+	}
+	for i, sib := range sibs {
+		if i >= 8 {
+			break
+		}
+		rows, err := n.Index.setRows(ctx, sib.Group, sib.Key, 0)
+		if err != nil || len(rows) == 0 {
+			continue
+		}
+		_, _ = n.promote(ctx, sib, rows, name, sourceParHash, confMedium, "parhash", res, statBudget)
+	}
 }
 
 func (n *NameFixer) finalize(ctx context.Context, set PendingSet) error {
@@ -602,6 +736,7 @@ func (n *NameFixer) promote(ctx context.Context, set PendingSet, rows []HeaderRo
 	res.BySource[source]++
 	log.Printf("usenetsearch: renamed group=%s key=%s name=%s source=%s confidence=%s predb=%s pct=%.1f",
 		set.Group, set.Key, name, source, conf, predb, float64(set.CompletenessBP)/100)
+	n.promoteParHashSiblings(ctx, set, name, res, statBudget)
 	if busy {
 		res.Busy = true
 	}
@@ -754,11 +889,19 @@ func sizeWithin(preSize, payload int64) bool {
 	if preSize <= 0 || payload <= 0 {
 		return true
 	}
-	diff := float64(payload - preSize)
+	return sizeWithinKnown(preSize, payload, namefixSizeTolerance)
+}
+
+// sizeWithinKnown is NNTmux donor matching: both sizes known, delta/ref ≤ pct.
+func sizeWithinKnown(ref, payload int64, pct float64) bool {
+	if ref <= 0 || payload <= 0 {
+		return false
+	}
+	diff := ref - payload
 	if diff < 0 {
 		diff = -diff
 	}
-	return diff/float64(preSize) <= namefixSizeTolerance
+	return float64(diff)/float64(ref) <= pct
 }
 
 var reRecoveredSuffix = regexp.MustCompile(`(?i)(?:\.vol\d+\+\d+)?(?:\.part\d+)?\.(?:par2|rar|r\d{2,3}|zip|7z(?:\.\d{3})?|mkv|mp4|avi|m4v|wmv|mpg|mpeg|ts|iso|nfo|sfv|nzb)$`)

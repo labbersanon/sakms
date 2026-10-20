@@ -555,6 +555,10 @@ DELETE FROM usenet_nntp_headers WHERE group_name=? AND release_name IN (`+string
 		return 0, err
 	}
 	if _, err := idx.db.ExecContext(ctx, `
+DELETE FROM usenet_nntp_par_hashes WHERE group_name=? AND release_key IN (`+strings.Join(ph, ",")+`)`, args...); err != nil {
+		return 0, err
+	}
+	if _, err := idx.db.ExecContext(ctx, `
 DELETE FROM usenet_nntp_releases WHERE group_name=? AND release_key IN (`+strings.Join(ph, ",")+`)`, args...); err != nil {
 		return 0, err
 	}

@@ -184,7 +184,8 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   size (NNTmux `fixNamesWithParHash`). A named PAR2 set can copy its title onto
   a hash.par2 sibling whose FileDesc names are also hashes. Seed BODYs only the
   main (non-vol) `.par2` and reserves half of each seed pass for shelved
-  pending so named donors cannot starve hash.par2. BODY picks SFV, then the
+  pending so named donors cannot starve hash.par2. The due queue ranks SFV,
+  then split 7z (not `.7z.enc`), then RAR/ZIP. BODY picks SFV, then the
   first-volume RAR/7z (`part01` / `.7z.001` / bare `.rar`), then the last
   volume (RAR5 first segment; 7z last segment of `.7z.NNN` for the end
   header — never `.vol*.par2` or `.7z.enc`), then the main `.par2`. 95% complete

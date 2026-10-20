@@ -759,6 +759,20 @@ func TestDuePendingNames_SkipsExhaustedKeptSets(t *testing.T) {
 	}
 }
 
+func assertPendingHeaderHas(t *testing.T, idx *Index, set PendingSet, needle, label string) {
+	t.Helper()
+	hdrs, err := idx.SetRows(context.Background(), set.Group, set.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range hdrs {
+		if strings.Contains(strings.ToLower(h.Filename+" "+h.Subject), needle) {
+			return
+		}
+	}
+	t.Fatalf("first due set key=%s must be %s, headers=%d", set.Key, label, len(hdrs))
+}
+
 func TestDuePendingNames_PrefersRarOverMkv(t *testing.T) {
 	mkvHash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	rows := []usenet.MessageOverview{
@@ -769,7 +783,6 @@ func TestDuePendingNames_PrefersRarOverMkv(t *testing.T) {
 	}
 	rows = append(rows, obfuscatedSet("r", nfHash, 3, 45)...)
 	f := newNFFixture(t, rows, nil)
-	f.src.gr.High = len(rows)
 	f.crawlAndRecompute(t)
 	sets, err := f.idx.DuePendingNames(context.Background(), []string{nfGroup}, 40)
 	if err != nil {
@@ -778,20 +791,7 @@ func TestDuePendingNames_PrefersRarOverMkv(t *testing.T) {
 	if len(sets) < 2 {
 		t.Fatalf("due=%d, want mkv + rar pending", len(sets))
 	}
-	hdrs, err := f.idx.SetRows(context.Background(), sets[0].Group, sets[0].Key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	hasRar := false
-	for _, h := range hdrs {
-		if strings.Contains(strings.ToLower(h.Filename+" "+h.Subject), ".rar") {
-			hasRar = true
-			break
-		}
-	}
-	if !hasRar {
-		t.Fatalf("first due set key=%s must be rar/sfv, headers=%d", sets[0].Key, len(hdrs))
-	}
+	assertPendingHeaderHas(t, f.idx, sets[0], ".rar", "rar")
 }
 
 func TestDuePendingNames_PrefersSfvOverRar(t *testing.T) {
@@ -812,7 +812,6 @@ func TestDuePendingNames_PrefersSfvOverRar(t *testing.T) {
 		From: "poster@obf", MessageID: "sfvpar2", Bytes: 40_000, DateUnix: 1700000000,
 	})
 	f := newNFFixture(t, rows, nil)
-	f.src.gr.High = n + 3
 	f.crawlAndRecompute(t)
 	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET completeness_bp=10000, declared_segs=10, seen_segs=10, dirty=FALSE, next_name_at=0`); err != nil {
 		t.Fatal(err)
@@ -828,20 +827,31 @@ func TestDuePendingNames_PrefersSfvOverRar(t *testing.T) {
 	if len(sets) != 1 {
 		t.Fatalf("due=%d, want 1", len(sets))
 	}
-	hdrs, err := f.idx.SetRows(context.Background(), sets[0].Group, sets[0].Key)
+	assertPendingHeaderHas(t, f.idx, sets[0], ".sfv", "sfv (ahead of newer rar)")
+}
+
+func TestDuePendingNames_PrefersSevenZOverRar(t *testing.T) {
+	rarHash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	zHash := "cccccccccccccccccccccccccccccccc"
+	rows := obfuscatedSet("r", rarHash, 1, 2)
+	rows = append(rows, obfuscated7zSet("z", zHash, rows[len(rows)-1].Number+1, 2)...)
+	f := newNFFixture(t, rows, nil)
+	f.crawlAndRecompute(t)
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET completeness_bp=10000, declared_segs=10, seen_segs=10, dirty=FALSE, next_name_at=0`); err != nil {
+		t.Fatal(err)
+	}
+	rarKey := ObfKey(nfGroup, "poster@obf", rows[0].Subject)
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET ingested_at=? WHERE release_key=?`, time.Now().Unix()+3600, rarKey); err != nil {
+		t.Fatal(err)
+	}
+	sets, err := f.idx.DuePendingNames(context.Background(), []string{nfGroup}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	hasSFV := false
-	for _, h := range hdrs {
-		if strings.Contains(strings.ToLower(h.Filename+" "+h.Subject), ".sfv") {
-			hasSFV = true
-			break
-		}
+	if len(sets) != 1 {
+		t.Fatalf("due=%d, want 1", len(sets))
 	}
-	if !hasSFV {
-		t.Fatalf("first due set key=%s must be sfv (ahead of newer rar), headers=%d", sets[0].Key, len(hdrs))
-	}
+	assertPendingHeaderHas(t, f.idx, sets[0], ".7z.", "7z (ahead of newer rar)")
 }
 
 func TestSweepUnnamed_StillDropsFirehoseAfterAttempts(t *testing.T) {
@@ -2138,7 +2148,6 @@ func TestNameFix_SRRDBDespiteVolPar2AndLastRar(t *testing.T) {
 		From: "poster@obf", MessageID: "sv99", Bytes: 3_000, DateUnix: 1700000000,
 	})
 	f := newNFFixture(t, rows, nil)
-	f.src.gr.High = len(rows)
 	f.src.bodies["svpar2"] = par2Body(nfHash + ".part01.rar")
 	for i := 1; i <= 3; i++ {
 		f.src.bodies[fmt.Sprintf("svvol%d", i)] = par2Body(nfHash + ".part01.rar")
@@ -2277,7 +2286,6 @@ func TestNameFix_SFVSceneNameRenames(t *testing.T) {
 		From: "poster@obf", MessageID: "sfsfv", Bytes: 200, DateUnix: 1700000000,
 	})
 	f := newNFFixture(t, hash, nil)
-	f.src.gr.High = len(hash)
 	f.src.bodies["sfsfv"] = usenet.BodySample{
 		Data: []byte("; comment\n" + title + ".mkv AABBCCDD\n"), YencName: nfHash + ".sfv", WireBytes: 80,
 	}

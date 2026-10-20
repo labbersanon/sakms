@@ -12000,3 +12000,17 @@ status stays active.
 | `internal/usenetsearch/subject.go` | `reFileTok` keeps `.7z.NNN` |
 | `.github/workflows/go-test.yml` | install p7zip-full |
 | `docs/usenet-nntp-native.md` | 7z last-segment footer CRC |
+
+## 2026-10-20 — due queue prefers split 7z over RAR
+
+**Problem:** After #231 deployed, namefix still BODYed RAR5 `part01` (`crcs=0`) while 32 complete `.7z.0xx` sets sat `due` with `name_attempts=0`.
+**Root cause:** `crcPreferOrderSQL` ranked SFV then all rar/zip/7z together, so `ingested_at DESC` picked newer RAR magazines first. The 20s body phase never reached last-segment 7z.
+**Fix:** Rank SFV, then non-encrypted 7z, then RAR/ZIP.
+**Outcome:** Complete hash.7z.NNN pending run before RAR5 first-volume. Success remains `name_source=srrdb` from the 7z footer, not Searchable.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix_index.go` | 7z CASE before rar/zip |
+| `internal/usenetsearch/namefix_test.go` | prefer 7z over newer rar |

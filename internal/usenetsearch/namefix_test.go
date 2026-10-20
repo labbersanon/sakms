@@ -1784,6 +1784,38 @@ func TestNameFix_SRRDBArchiveCRCRenamesHashRAR(t *testing.T) {
 	}
 }
 
+func TestNameFix_ExpiredPhaseStillFetchesRarCRC(t *testing.T) {
+	const title = "Srrdb.Late.2021.1080p.BluRay.x264-GRP"
+	f := newNFFixture(t, obfuscatedSet("sl", nfHash, 1, 45), nil)
+	f.src.bodies["slpar2"] = par2Body(nfHash + ".part01.rar")
+	f.src.bodies["sl1_1@t"] = rar4BodyCRC(nfHash+".mkv", 0x0053CA13)
+	f.nf.SRRDB = &fakeSRRDB{crcs: map[string]PreDBHit{
+		"0053CA13": {Title: title},
+	}}
+	f.src.bodyDelay = 80 * time.Millisecond
+	f.crawlAndRecompute(t)
+	sets, err := f.idx.DuePendingNames(context.Background(), []string{nfGroup}, 1)
+	if err != nil || len(sets) != 1 {
+		t.Fatalf("due=%d err=%v", len(sets), err)
+	}
+	phase, cancel := context.WithTimeout(context.Background(), 15*time.Millisecond)
+	defer cancel()
+	res := NameFixResult{BySource: map[string]int{}}
+	stat := statReleasesPerChunk
+	if _, err := f.nf.fixSet(phase, sets[0], &res, &stat); err != nil {
+		t.Fatal(err)
+	}
+	var rar bool
+	for _, id := range f.src.bodyCalls {
+		if id == "sl1_1@t" {
+			rar = true
+		}
+	}
+	if !rar || res.BySource[sourceSRRDB] != 1 {
+		t.Fatalf("expired phase must still BODY rar: calls=%v res=%+v", f.src.bodyCalls, res)
+	}
+}
+
 func TestNameFix_SRRDBSizeMismatchDoesNotRename(t *testing.T) {
 	const title = "Srrdb.Size.2021.1080p.BluRay.x264-GRP"
 	f := newNFFixture(t, obfuscatedSet("ss", nfHash, 1, 45), nil)

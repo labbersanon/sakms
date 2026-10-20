@@ -11919,3 +11919,17 @@ status stays active.
 | `internal/usenetsearch/namefix.go` | srrdb/sfv promote; par2-only seed |
 | `internal/api/usenetnntp.go` | `srrdbEnabled` kill switch |
 | `docs/usenet-nntp-native.md` | srrdb CRC lookup |
+
+## 2026-10-20 — namefix still BODY-fetches RAR/SFV after a hash PAR2
+
+**Problem:** Live #226 `namefix pass` fetched three par2 articles (`cands` were hashes) then `leftover=39`. `name_source=srrdb` stayed 0.
+**Root cause:** BodyHead uses WithoutCancel, but the pick loop still `break`s on the expired 20s phase ctx, so the first-segment RAR/SFV for FILE_CRC never runs. Generic payload pick also selected `.mkv` (no cheap CRC).
+**Fix:** After a hash-only PAR2, keep picking. Prefer `.sfv`/`.rar`/`.zip`/`.7z` over mkv payload.
+**Outcome:** A hash.rar set whose PAR2 FileDesc is also a hash still gets one RAR/SFV BODY for srrdb/SFV. MKV-only obfuscated posts still need IRC FN.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix.go` | skip phase-ctx break after hash PAR2; CRC-capable BODY pick |
+| `internal/usenetsearch/namefix_test.go` | expired ctx still fetches RAR CRC |

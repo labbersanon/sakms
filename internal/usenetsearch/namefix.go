@@ -8,6 +8,7 @@ import (
 	"log"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -345,7 +346,14 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 	if set.PreDBOnly {
 		limit = namefixPreDBHeaderSample
 	}
-	rows, err := n.Index.setRows(ctx, set.Group, set.Key, limit)
+	// Claude 2026-10-20: setRows must not inherit leftover phase crumbs.
+	// Reason: CI ExpiredPhase failed `setRows` with 15ms ctx (91 header rows)
+	//   before BodyHead's WithoutCancel could fetch part01. Live 20s phase
+	//   ending mid-query would skip FILE_CRC the same way.
+	// Troubleshooting: namefix deadline leftover with no crc log on a due
+	//   rar set → this WithoutCancel missing. Review if: setRows grows past
+	//   a few hundred ms (then cap it, still fetch part01).
+	rows, err := n.Index.setRows(context.WithoutCancel(ctx), set.Group, set.Key, limit)
 	if err != nil {
 		return false, err
 	}
@@ -377,8 +385,22 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 	hashOnly := false
 	sampled := false
 	triedBody := false
+	crcTried := false
 	for _, pick := range pickBodyTargets(rows) {
-		if !n.Budget.fits(pick.Bytes) {
+		// Claude 2026-10-20: budget against the 256KiB head, not article bytes.
+		// Reason: part01 first segments are often 1–2MB; fits(pick.Bytes) would
+		//   skip FILE_CRC when the hourly cap has <2MB left. BodyHead already
+		//   truncates at namefixHeadBytes.
+		// Troubleshooting: namefix crc=0 with BudgetStop and pending rar →
+		//   this min() missing. Review if: BodyHead starts streaming full
+		//   articles.
+		est := pick.Bytes
+		if est > namefixHeadBytes {
+			est = namefixHeadBytes
+		} else if est < 0 {
+			est = 0
+		}
+		if !n.Budget.fits(est) {
 			res.BudgetStop = true
 			return true, nil
 		}
@@ -400,65 +422,68 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		if berr != nil {
 			log.Printf("usenetsearch: namefix body msgid=%s bytes=%d remain_ms=%d wire=0 yenc=0 cands=0 par2=false err=%v",
 				pick.MsgID, pick.Bytes, namefixBodyArticleTimeout.Milliseconds(), berr)
-		} else {
-			sampled = true
-			n.Budget.add(sample.WireBytes)
-			res.BodyBytes += sample.WireBytes
-			cands := candidatesFromSample(sample, pick.NFO)
-			isPar2 := bytes.HasPrefix(sample.Data, par2Magic)
-			log.Printf("usenetsearch: namefix body msgid=%s bytes=%d remain_ms=%d wire=%d yenc=%d cands=%d par2=%t err=<nil>",
-				pick.MsgID, pick.Bytes, namefixBodyArticleTimeout.Milliseconds(), sample.WireBytes, len(sample.YencName), len(cands), isPar2)
-			work := context.WithoutCancel(ctx)
-			if isPar2 {
-				n.rememberParHashes(work, set, sample.Data)
-				name, ok, err := n.Index.LookupParHashDonor(work, set.Group, set.Key, set.PayloadBytes)
-				if err != nil {
-					log.Printf("usenetsearch: parhash lookup group=%s err=%v", set.Group, err)
-				} else if ok {
-					return n.promote(work, set, rows, name, sourceParHash, confMedium, "parhash", res, statBudget)
-				}
-			}
-			if len(cands) > 0 {
-				// Claude 2026-10-19: FileDesc/yEnc hashes are not in header rows.
-				// Reason: live BODY now returns par2=true cands=1–2 renamed=0;
-				//   subjects are random tokens, PAR2 FileDesc is often md5(title).
-				// Troubleshooting: body_bytes>0 par2=true hash_hits=0 → this
-				//   ByHash/ByFilename on sample names not called. Review if:
-				//   FileDesc is a non-hex random token (then IRC FN only).
-				if hit, ok := n.lookupPreDBNames(work, set, cands); ok {
-					res.HashHits++
-					return n.promote(work, set, rows, hit.Title, sourcePreDB, confPreDB, "hit", res, statBudget)
-				}
-				allHash := true
-				for _, cand := range cands {
-					if recoveredUnusable(cand.name) {
-						continue
-					}
-					allHash = false
-					name, source, conf, predb, ok := n.accept(work, cand.name, cand.source, set.PayloadBytes)
-					if ok {
-						return n.promote(work, set, rows, name, source, conf, predb, res, statBudget)
-					}
-				}
-				if allHash {
-					hashOnly = true
-				}
-			}
-			if hit, ok := n.lookupArchiveCRC(work, set, sample); ok {
-				return n.promote(work, set, rows, hit.Title, sourceSRRDB, confMedium, "srrdb", res, statBudget)
-			}
-			if hashOnly && !isPar2 {
-				break
+			continue
+		}
+		sampled = true
+		n.Budget.add(sample.WireBytes)
+		res.BodyBytes += sample.WireBytes
+		cands := candidatesFromSample(sample, pick.NFO)
+		isPar2 := bytes.HasPrefix(sample.Data, par2Magic)
+		log.Printf("usenetsearch: namefix body msgid=%s bytes=%d remain_ms=%d wire=%d yenc=%d cands=%d par2=%t err=<nil>",
+			pick.MsgID, pick.Bytes, namefixBodyArticleTimeout.Milliseconds(), sample.WireBytes, len(sample.YencName), len(cands), isPar2)
+		if pick.CRC {
+			crcTried = true
+			log.Printf("usenetsearch: namefix crc msgid=%s crcs=%d", pick.MsgID, len(sampleCRCs(sample)))
+		}
+		work := context.WithoutCancel(ctx)
+		if isPar2 {
+			n.rememberParHashes(work, set, sample.Data)
+			name, ok, err := n.Index.LookupParHashDonor(work, set.Group, set.Key, set.PayloadBytes)
+			if err != nil {
+				log.Printf("usenetsearch: parhash lookup group=%s err=%v", set.Group, err)
+			} else if ok {
+				return n.promote(work, set, rows, name, sourceParHash, confMedium, "parhash", res, statBudget)
 			}
 		}
-		// Claude 2026-10-20: after a hash FileDesc PAR2, still BODY rar/sfv.
-		// Reason: live #226 pass fetched 3 par2 (cands=hash) then leftover=39;
-		//   phase ctx expired so FILE_CRC/SFV never ran. srrdb stayed 0.
-		// Troubleshooting: body par2=true then no rar msgid → !hashOnly
-		//   missing. Review if: overtime BODY + rar >30s/pass.
-		if ctx.Err() != nil && !hashOnly {
-			break
+		allHash := true
+		if len(cands) > 0 {
+			// Claude 2026-10-19: FileDesc/yEnc hashes are not in header rows.
+			// Reason: live BODY now returns par2=true cands=1–2 renamed=0;
+			//   subjects are random tokens, PAR2 FileDesc is often md5(title).
+			// Troubleshooting: body_bytes>0 par2=true hash_hits=0 → this
+			//   ByHash/ByFilename on sample names not called. Review if:
+			//   FileDesc is a non-hex random token (then IRC FN only).
+			if hit, ok := n.lookupPreDBNames(work, set, cands); ok {
+				res.HashHits++
+				return n.promote(work, set, rows, hit.Title, sourcePreDB, confPreDB, "hit", res, statBudget)
+			}
+			for _, cand := range cands {
+				if recoveredUnusable(cand.name) {
+					continue
+				}
+				allHash = false
+				name, source, conf, predb, ok := n.accept(work, cand.name, cand.source, set.PayloadBytes)
+				if ok {
+					return n.promote(work, set, rows, name, source, conf, predb, res, statBudget)
+				}
+			}
 		}
+		// Claude 2026-10-20: empty PAR2 FileDesc is still a hash-only sample.
+		// Reason: live remaining hash.par2 often return par2=true cands=0;
+		//   hashOnly stayed false so an expired phase ctx skipped part01.
+		// Troubleshooting: namefix crc never logs after par2=true cands=0
+		//   → this allHash path missing. Review if: FileDesc parser changes.
+		if isPar2 && allHash {
+			hashOnly = true
+		}
+		if hit, ok := n.lookupArchiveCRC(work, set, sample); ok {
+			return n.promote(work, set, rows, hit.Title, sourceSRRDB, confMedium, "srrdb", res, statBudget)
+		}
+		// Claude 2026-10-20: do not break the pick loop on leftover phase ctx.
+		// Reason: #227 still skipped rar when vol PAR2 filled 3 slots, or when
+		//   cands=0 left hashOnly false. BodyHead is already 8s WithoutCancel;
+		//   at most namefixBodiesPerSet articles. Review if: 3×8s overtime
+		//   delays crawl (lower per-article timeout, do not skip part01).
 	}
 
 	res.Unresolved++
@@ -473,7 +498,15 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		_ = n.Index.MarkParHashSampled(dbCtx, set.Group, set.Key)
 	}
 	if sampled && hashOnly && keepCompleteYield(set.Group, set.CompletenessBP, set.PayloadBytes) {
-		return false, n.Index.ShelveBodyAttempts(dbCtx, set.Group, set.Key)
+		// Claude 2026-10-20: do not shelf until a first-volume RAR/SFV ran.
+		// Reason: live #226/#227 shelved after 3 vol PAR2 BODYs; name_attempts
+		//   hit max so DuePendingNames never retried part01 for srrdb.
+		// Troubleshooting: pending95 rar still attempts>=max with no
+		//   namefix crc log → this crcTried gate missing. Review if:
+		//   crc_sampled column replaces the gate.
+		if crcTried || !hasCRCCapableTarget(rows) {
+			return false, n.Index.ShelveBodyAttempts(dbCtx, set.Group, set.Key)
+		}
 	}
 	return false, n.Index.BumpNameAttempt(dbCtx, set.Group, set.Key, set.Attempts)
 }
@@ -1047,16 +1080,18 @@ type bodyPick struct {
 	MsgID string
 	Bytes int64
 	NFO   bool
+	CRC   bool
 }
 
 // pickBodyTargets chooses up to namefixBodiesPerSet first-segment articles:
-// smallest file, then remaining PAR2/NFO, then the first CRC-capable RAR/SFV.
+// SFV, first-volume RAR/ZIP/7z (part01 / bare .rar, never part099), main
+// non-vol PAR2, then NFO. Volume PAR2 never fills a slot — live #227 still
+// BODYed three .vol*.par2 and never reached FILE_CRC.
 func pickBodyTargets(rows []HeaderRow) []bodyPick {
 	type file struct {
 		key   string
 		first HeaderRow
 		total int64
-		meta  bool
 		nfo   bool
 	}
 	files := map[string]*file{}
@@ -1069,7 +1104,7 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 		f := files[key]
 		if f == nil {
 			low := strings.ToLower(r.Subject + " " + r.Filename)
-			f = &file{key: key, first: r, meta: r.IsMeta || IsMetaSubject(r.Subject, r.Filename), nfo: strings.Contains(low, ".nfo")}
+			f = &file{key: key, first: r, nfo: strings.Contains(low, ".nfo")}
 			files[key] = f
 			order = append(order, key)
 		}
@@ -1091,6 +1126,14 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 	if len(sorted) == 0 {
 		return nil
 	}
+	anyName := func(f *file, pred func(string) bool) bool {
+		for _, n := range []string{f.key, f.first.Filename, f.first.Subject} {
+			if pred(n) {
+				return true
+			}
+		}
+		return false
+	}
 	var picks []bodyPick
 	seen := map[string]bool{}
 	add := func(f *file) {
@@ -1098,16 +1141,33 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 			return
 		}
 		seen[f.first.MsgID] = true
-		picks = append(picks, bodyPick{MsgID: f.first.MsgID, Bytes: f.first.Bytes, NFO: f.nfo})
+		picks = append(picks, bodyPick{
+			MsgID: f.first.MsgID,
+			Bytes: f.first.Bytes,
+			NFO:   f.nfo,
+			CRC:   anyName(f, crcCapableName),
+		})
 	}
-	add(sorted[0])
 	for _, f := range sorted {
-		if f.meta || f.nfo {
+		if anyName(f, isSFVName) {
 			add(f)
+			break
 		}
 	}
 	for _, f := range sorted {
-		if crcCapableName(f.key) || crcCapableName(f.first.Filename) || crcCapableName(f.first.Subject) {
+		if anyName(f, isFirstArchiveVolume) {
+			add(f)
+			break
+		}
+	}
+	for _, f := range sorted {
+		if anyName(f, isMainPar2Name) {
+			add(f)
+			break
+		}
+	}
+	for _, f := range sorted {
+		if f.nfo {
 			add(f)
 			break
 		}
@@ -1115,12 +1175,47 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 	return picks
 }
 
-func crcCapableName(name string) bool {
+var (
+	reArchivePart = regexp.MustCompile(`(?i)\.part(\d+)\.(?:rar|zip|7z)\b`)
+	reSplitVol    = regexp.MustCompile(`(?i)\.(?:7z|zip)\.(\d{3})\b`)
+	reRarFollow   = regexp.MustCompile(`(?i)\.r\d{2}\b`)
+	reBareArchive = regexp.MustCompile(`(?i)\.(?:rar|zip|7z)\b`)
+)
+
+func isSFVName(name string) bool {
+	return strings.Contains(strings.ToLower(name), ".sfv")
+}
+
+func isFirstArchiveVolume(name string) bool {
 	low := strings.ToLower(name)
-	return strings.Contains(low, ".sfv") ||
-		strings.Contains(low, ".rar") ||
-		strings.Contains(low, ".zip") ||
-		strings.Contains(low, ".7z")
+	if isSFVName(low) || strings.Contains(low, ".par2") || strings.Contains(low, ".nfo") {
+		return false
+	}
+	if m := reArchivePart.FindStringSubmatch(low); len(m) > 1 {
+		n, _ := strconv.Atoi(m[1])
+		return n == 1
+	}
+	if m := reSplitVol.FindStringSubmatch(low); len(m) > 1 {
+		n, _ := strconv.Atoi(m[1])
+		return n == 1
+	}
+	if reRarFollow.MatchString(low) {
+		return false
+	}
+	return reBareArchive.MatchString(low)
+}
+
+func crcCapableName(name string) bool {
+	return isSFVName(name) || isFirstArchiveVolume(name)
+}
+
+func hasCRCCapableTarget(rows []HeaderRow) bool {
+	for _, r := range rows {
+		if crcCapableName(r.Filename) || crcCapableName(r.Subject) {
+			return true
+		}
+	}
+	return false
 }
 
 func isMainPar2Name(name string) bool {

@@ -11933,3 +11933,20 @@ status stays active.
 |---|---|
 | `internal/usenetsearch/namefix.go` | skip phase-ctx break after hash PAR2; CRC-capable BODY pick |
 | `internal/usenetsearch/namefix_test.go` | expired ctx still fetches RAR CRC |
+
+## 2026-10-20 — namefix BODY first-volume RAR, not vol PAR2
+
+**Problem:** After #226+#227, live `name_source=srrdb|sfv|parhash` stayed 0. Last 30m BODY was 31 par2 / 0 rar. Stopping after that deploy was the same false-done as `hash_hits=0` "working".
+**Root cause:** `pickBodyTargets` filled 3 slots with smallest + all meta (`.vol*.par2`). The first `crcCapableName` rar was often `part099` (last volume, 3–7KB). FILE_CRC lives in `part01`. Empty PAR2 `cands=0` left `hashOnly` false so leftover phase ctx still skipped the rar. `DuePendingNames` was newest-first (mkv). Shelve after vol PAR2 set `name_attempts=max`.
+**Fix:** Pick SFV, then first-volume RAR (`part01` / bare `.rar`, never vol PAR2 / `part099`), then main `.par2`. Empty FileDesc still counts as hash-only. Do not shelf until a CRC-capable BODY ran. Prefer rar/sfv in due queues. Unshelve existing rar/sfv pending (0050). Log `namefix crc msgid= crcs=N`.
+**Outcome:** A hash.rar set with vol PAR2 still BODYs `part01` for srrdb. Quoted ingest / `name_source=subject` is not this win. MKV-only posts still need IRC `[FN:]`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix.go` | first-volume BODY pick; empty PAR2 hashOnly; no shelf without CRC |
+| `internal/usenetsearch/namefix_index.go` | due queues prefer rar/sfv headers |
+| `internal/usenetsearch/namefix_test.go` | vol par2 + part099 skipped; empty FileDesc still CRC |
+| `internal/db/migrations/0050_unshelve_crc_pending.sql` | reset name_attempts on rar/sfv pending |
+| `docs/usenet-nntp-native.md` | first-volume RAR pick |

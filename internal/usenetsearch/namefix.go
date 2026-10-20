@@ -454,7 +454,7 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		// Claude 2026-10-20: after a hash FileDesc PAR2, still BODY rar/sfv.
 		// Reason: live #226 pass fetched 3 par2 (cands=hash) then leftover=39;
 		//   phase ctx expired so FILE_CRC/SFV never ran. srrdb stayed 0.
-		// Troubleshooting: body par2=true then no rar msgid → this continue
+		// Troubleshooting: body par2=true then no rar msgid → !hashOnly
 		//   missing. Review if: overtime BODY + rar >30s/pass.
 		if ctx.Err() != nil && !hashOnly {
 			break
@@ -1050,7 +1050,7 @@ type bodyPick struct {
 }
 
 // pickBodyTargets chooses up to namefixBodiesPerSet first-segment articles:
-// smallest file, then remaining PAR2/NFO, then the first payload file by FileN.
+// smallest file, then remaining PAR2/NFO, then the first CRC-capable RAR/SFV.
 func pickBodyTargets(rows []HeaderRow) []bodyPick {
 	type file struct {
 		key   string
@@ -1058,7 +1058,6 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 		total int64
 		meta  bool
 		nfo   bool
-		fileN int
 	}
 	files := map[string]*file{}
 	var order []string
@@ -1070,7 +1069,7 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 		f := files[key]
 		if f == nil {
 			low := strings.ToLower(r.Subject + " " + r.Filename)
-			f = &file{key: key, first: r, meta: r.IsMeta || IsMetaSubject(r.Subject, r.Filename), nfo: strings.Contains(low, ".nfo"), fileN: r.FileN}
+			f = &file{key: key, first: r, meta: r.IsMeta || IsMetaSubject(r.Subject, r.Filename), nfo: strings.Contains(low, ".nfo")}
 			files[key] = f
 			order = append(order, key)
 		}
@@ -1118,14 +1117,10 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 
 func crcCapableName(name string) bool {
 	low := strings.ToLower(name)
-	switch {
-	case strings.Contains(low, ".sfv"),
-		strings.Contains(low, ".rar"),
-		strings.Contains(low, ".zip"),
-		strings.Contains(low, ".7z"):
-		return true
-	}
-	return false
+	return strings.Contains(low, ".sfv") ||
+		strings.Contains(low, ".rar") ||
+		strings.Contains(low, ".zip") ||
+		strings.Contains(low, ".7z")
 }
 
 func isMainPar2Name(name string) bool {

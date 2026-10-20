@@ -105,11 +105,16 @@ func (idx *Index) duePendingNamesIn(ctx context.Context, groups []string, limit 
 	// Troubleshooting: namefix unresolved=N with the same keys every loop →
 	//   this filter missing. Review if: BODY is retried after a dump import.
 	in, args := groupLimitArgs([]any{idx.MinCompletenessPct() * 100, time.Now().Unix(), maxNameAttempts}, groups, limit)
+	// Claude 2026-10-20: RAR/SFV pending before mkv-only.
+	// Reason: live duePendingNames ORDER BY ingested_at DESC filled the 40
+	//   BODY slots with newest mkv-first posts; 77 rar_unsampled waited.
+	// Troubleshooting: namefix crc=0 while pending95_par2 has rar → this
+	//   CASE missing. Review if: crc_sampled column replaces the prefer.
 	rows, err := idx.db.QueryContext(ctx, `
 SELECT group_name, release_key, payload_bytes, name_attempts, completeness_bp, has_par2 FROM usenet_nntp_releases
 WHERE state='pending_name' AND dirty=FALSE AND declared_segs>0 AND completeness_bp>=?
   AND next_name_at<=? AND name_attempts < ? AND group_name IN (`+in+`)
-ORDER BY ingested_at DESC LIMIT ?`, args...)
+ORDER BY `+crcPreferOrderSQL+`, ingested_at DESC LIMIT ?`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -143,7 +148,7 @@ func (idx *Index) duePendingIdentBodyIn(ctx context.Context, groups []string, li
 SELECT group_name, release_key, payload_bytes, name_attempts, completeness_bp, has_par2 FROM usenet_nntp_releases
 WHERE state='pending_name' AND dirty=FALSE AND declared_segs>0 AND completeness_bp>=? AND completeness_bp<?
   AND has_par2 AND next_name_at<=? AND name_attempts < ? AND group_name IN (`+in+`)
-ORDER BY completeness_bp DESC, ingested_at DESC LIMIT ?`, args...)
+ORDER BY `+crcPreferOrderSQL+`, completeness_bp DESC, ingested_at DESC LIMIT ?`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -182,6 +187,16 @@ func scanPendingSets(rows *sql.Rows, preDBOnly bool) ([]PendingSet, error) {
 	}
 	return out, rows.Err()
 }
+
+// crcHeaderSQL prefers pending sets that still have a RAR/SFV/ZIP/7z header
+// so FILE_CRC / srrdb can run before mkv-only posts.
+const crcHeaderSQL = `(LOWER(h.filename) LIKE '%.rar%' OR LOWER(h.filename) LIKE '%.sfv%' OR LOWER(h.filename) LIKE '%.zip%' OR LOWER(h.filename) LIKE '%.7z%' OR LOWER(h.subject) LIKE '%.rar%' OR LOWER(h.subject) LIKE '%.sfv%' OR LOWER(h.subject) LIKE '%.zip%' OR LOWER(h.subject) LIKE '%.7z%')`
+
+const crcPreferOrderSQL = `CASE WHEN EXISTS (
+  SELECT 1 FROM usenet_nntp_headers h
+  WHERE h.group_name=usenet_nntp_releases.group_name AND h.release_name=usenet_nntp_releases.release_key
+    AND ` + crcHeaderSQL + `
+) THEN 0 ELSE 1 END`
 
 // quotedIdentSubjectSQL matches a quoted payload name that is already a title:
 // resolution in the quotes, a spacey name, or a [Group] fansub — not hash.par2.

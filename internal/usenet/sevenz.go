@@ -137,7 +137,7 @@ func sevenZFilesFromHeader(hdr, packedBefore []byte) []ArchiveFileCRC {
 
 func decode7zEncodedHeader(hdr, packedBefore []byte) []byte {
 	si, _, ok := parse7zStreams(hdr, 1)
-	if !ok || len(si.folders) != 1 || si.folders[0].encrypted {
+	if !ok || len(si.folders) != 1 {
 		return nil
 	}
 	var packLen uint64
@@ -159,6 +159,22 @@ func decode7zEncodedHeader(hdr, packedBefore []byte) []byte {
 }
 
 func unpack7zFolder(f sevenZFolder, packed []byte) ([]byte, error) {
+	if f.encrypted {
+		plain, err := decrypt7zAESEmpty(f.aesProps, packed)
+		if err != nil {
+			return nil, err
+		}
+		if len(f.unpackSizes) >= 2 && f.unpackSizes[0] > 0 && f.unpackSizes[0] <= uint64(len(plain)) {
+			plain = plain[:f.unpackSizes[0]]
+		}
+		packed = plain
+		if len(f.method) == 0 {
+			if f.unpackSize == 0 || f.unpackSize > uint64(len(packed)) {
+				return packed, nil
+			}
+			return packed[:f.unpackSize], nil
+		}
+	}
 	if f.unpackSize == 0 || f.unpackSize > max7zHeaderSize {
 		return nil, fmt.Errorf("unpack size %d", f.unpackSize)
 	}
@@ -224,12 +240,15 @@ func lzma2DictCap(p byte) int {
 }
 
 type sevenZFolder struct {
-	method     []byte
-	props      []byte
-	unpackSize uint64
-	crc        uint32
-	crcOK      bool
-	encrypted  bool
+	method      []byte
+	props       []byte
+	aesProps    []byte
+	unpackSizes []uint64
+	unpackSize  uint64
+	crc         uint32
+	crcOK       bool
+	encrypted   bool
+	outStreams  int
 }
 
 type sevenZStreams struct {
@@ -351,12 +370,19 @@ func parse7zUnpackInfo(b []byte, i int) ([]sevenZFolder, int, bool) {
 	}
 	i++
 	for f := range folders {
-		sz, ni, ok := read7zUint64(b, i)
-		if !ok {
-			return nil, i, false
+		nout := folders[f].outStreams
+		if nout < 1 {
+			nout = 1
 		}
-		folders[f].unpackSize = sz
-		i = ni
+		for s := 0; s < nout; s++ {
+			sz, ni, ok := read7zUint64(b, i)
+			if !ok {
+				return nil, i, false
+			}
+			folders[f].unpackSizes = append(folders[f].unpackSizes, sz)
+			i = ni
+		}
+		folders[f].unpackSize = folders[f].unpackSizes[len(folders[f].unpackSizes)-1]
 	}
 	for n := 0; n < max7zParseNIDs && i < len(b); n++ {
 		nid := b[i]
@@ -432,6 +458,8 @@ func parse7zFolder(b []byte, i int) (sevenZFolder, int, bool) {
 		totalOut += nout
 		if bytes.HasPrefix(method, sevenZAES) {
 			f.encrypted = true
+			f.aesProps = props
+			continue
 		}
 		f.method = method
 		f.props = props
@@ -439,6 +467,7 @@ func parse7zFolder(b []byte, i int) (sevenZFolder, int, bool) {
 	if totalOut == 0 {
 		return f, i, false
 	}
+	f.outStreams = int(totalOut)
 	nbind := totalOut - 1
 	for k := uint64(0); k < nbind; k++ {
 		_, i, ok = read7zUint64(b, i)

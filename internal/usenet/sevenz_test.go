@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/binary"
+	"fmt"
 	"hash/crc32"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf16"
 
 	"github.com/ulikunitz/xz/lzma"
 )
@@ -201,6 +203,49 @@ func sltInnerCRC(t *testing.T, vol001 string) (crc, name string) {
 		}
 	}
 	return crc, name
+}
+
+func TestArchiveFileCRCs_7zHeaderAES(t *testing.T) {
+	if _, err := exec.LookPath("7z"); err != nil {
+		t.Skip("7z not on PATH")
+	}
+	dir := t.TempDir()
+	member := "Some.Movie.2021.1080p.BluRay.x264-GRP.mkv"
+	payload := make([]byte, 80_000)
+	if _, err := rand.Read(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, member), payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "enc.7z")
+	cmd := exec.Command("7z", "a", "-bd", "-mhe=on", "-ptest", path, filepath.Join(dir, member))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("7z a: %v (%s)", err, out)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crc := fmt.Sprintf("%08X", crc32.ChecksumIEEE(payload))
+	if got := ArchiveFileCRCsFrom7zParts(data[:32], data); len(got) != 0 {
+		t.Fatalf("empty password must miss encrypted header, got %+v", got)
+	}
+	sevenZAESPassword = utf16LE("test")
+	defer func() { sevenZAESPassword = nil }()
+	got := ArchiveFileCRCsFrom7zParts(data[:32], data)
+	if len(got) != 1 || got[0].CRC != crc || !strings.Contains(got[0].Name, member) {
+		t.Fatalf("aes crc = %+v, want %s %s", got, crc, member)
+	}
+}
+
+func utf16LE(s string) []byte {
+	u := utf16.Encode([]rune(s))
+	out := make([]byte, 2*len(u))
+	for i, w := range u {
+		binary.LittleEndian.PutUint16(out[i*2:], w)
+	}
+	return out
 }
 
 func append7zUint64(dst []byte, value uint64) []byte {

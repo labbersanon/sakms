@@ -54,9 +54,9 @@ jobs:
             libxinerama-dev libxi-dev libxxf86vm-dev libgl1-mesa-dev \
             libxkbcommon-dev libwayland-dev wayland-protocols \
             p7zip-full
-          # Claude 2026-10-20: p7zip-full for 7z end-header CRC tests.
-          # Reason: namefix lists split .7z.NNN footers with `7z l -slt`.
-          # Review if: a pure-Go LZMA header parser replaces the 7z spawn.
+          # Claude 2026-10-20: p7zip-full for 7z split-volume test fixtures.
+          # Reason: CRC listing is in-process; tests still run `7z a -v64k`.
+          # Review if: those fixtures are checked in and 7z is unused.
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod

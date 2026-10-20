@@ -272,6 +272,20 @@ func TestStageObfuscated_HdtvQuotedHashMkv(t *testing.T) {
 	}
 }
 
+func TestParseHeader_QuotedIdentEpisodeIsKey(t *testing.T) {
+	const title = "WOR-HAZ Chivalry of a Failed Knight S01E09 BD HEVC 1080p FLAC"
+	subj := `[9/12] - "` + title + `.mkv" yEnc (2269/3248)`
+	h := parseHeader("alt.binaries.multimedia.anime.highspeed", subj, "p@x", "m@x", 1, 1, 1000, true)
+	if isObfKey(h.ReleaseName) || h.ReleaseName != title {
+		t.Fatalf("release=%q, want quoted episode title", h.ReleaseName)
+	}
+	par2 := parseHeader("alt.binaries.multimedia.anime.highspeed",
+		`[9/12] - "`+title+`.par2" yEnc (1/1)`, "p@x", "m2@x", 2, 1, 1000, true)
+	if par2.ReleaseName != h.ReleaseName {
+		t.Fatalf("par2 key=%q mkv key=%q", par2.ReleaseName, h.ReleaseName)
+	}
+}
+
 func TestParseSubject_Latin1BeforeYencDoesNotPanic(t *testing.T) {
 	// Live panic: ToLower expanded latin1 0xe4 → U+FFFD (+2 bytes) so
 	// core[:i] was [:80] on a 78-byte subject.

@@ -11731,3 +11731,23 @@ status stays active.
 | `internal/usenet/headersource.go` | BodyHead honors ctx deadline |
 | `internal/usenet/pool.go` | `fetchSegmentUntil` |
 | `internal/usenet/nntpdeadline.go` | `armNNTPDeadlineUntil` |
+
+## 2026-10-19 — ident-quoted episode keys are searchable at ingest
+
+**Problem:** After a wipe and #214/#215, Searchable sat at 4 (`ybegin`). Live highspeed had ~30k quoted headers; Chivalry S01E09 was named from the subject but dirty with `declared_segs=0`. Per-episode `obf:` keys of the same pack were ~4.5% of ~50k (`[9/12]` × 3248). Namefix needed 80% of that inflated pack. Multimedia `skip_res` dropped spaced 1080p fansubs under a 2160p movies floor.
+**Root cause:** Ident-shaped quoted filenames still used the season-pack stem or `obf:`. Completeness inherited collection `file_m`. Named ident ingest skipped `recomputeIngested` (staged-only). `RecomputeDirty` put named-at-0% last behind 13k pending.
+**Fix:** `identQuotedTitle` is the release key. Completeness ignores `file_m` on ident-shaped keys. Ingest recomputes kept (named+staged). Dirty named rows run first. Spaced ident names skip the quality gate at ingest, same as namefix promote.
+**Outcome:** A 90% quoted episode is Searchable on ingest without BODY. Hash.par2 still needs IRC/PAR2. Pack-as-one-NZB is not this path.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/ingest.go` | `identQuotedTitle`; `recomputeIngested(kept)` |
+| `internal/usenetsearch/crawler.go` | skip ingest gate on spaced ident names |
+| `internal/usenetsearch/releases.go` | named-first dirty; ident `file_m=0` |
+| `internal/usenetsearch/group.go` | assemble ignores ident collection `file_m` |
+| `internal/usenetsearch/subject_test.go` | quoted episode is the key |
+| `internal/usenetsearch/releases_test.go` | named-zero first; ident 90/100 searchable |
+| `internal/usenetsearch/namefix_test.go` | quoted ident searchable at ingest |
+| `docs/usenet-nntp-native.md` | episode key; recompute before namefix |

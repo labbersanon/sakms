@@ -319,29 +319,21 @@ func looksSFVPayload(data []byte) bool {
 	if n > 4096 {
 		n = 4096
 	}
-	lines := 0
 	for _, line := range strings.Split(string(data[:n]), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, ";") {
 			continue
 		}
 		i := strings.LastIndexByte(line, ' ')
-		if i < 1 || i+1+8 > len(line) {
+		if i < 1 || len(line)-i-1 != 8 {
 			return false
 		}
-		crc := line[i+1:]
-		if len(crc) != 8 {
-			return false
-		}
-		for _, c := range crc {
+		for _, c := range line[i+1:] {
 			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
 				return false
 			}
 		}
-		lines++
-		if lines >= 1 {
-			return true
-		}
+		return true
 	}
 	return false
 }

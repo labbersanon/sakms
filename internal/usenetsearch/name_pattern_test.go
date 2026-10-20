@@ -45,8 +45,8 @@ func TestDetectNamePattern_Quoted(t *testing.T) {
 		{Subject: `[01/12] - "Some.Movie.2021.1080p.BluRay.x264-GRP.mkv" yEnc (1/1)`},
 	}
 	p := detectNamePattern(rows)
-	if p.Obf != "quoted" && p.Obf != "ident" {
-		t.Fatalf("pattern = %+v, want quoted or ident", p)
+	if p.Obf != "quoted" {
+		t.Fatalf("pattern = %+v, want quoted", p)
 	}
 }
 

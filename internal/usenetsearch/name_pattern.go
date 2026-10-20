@@ -23,7 +23,7 @@ type namePattern struct {
 }
 
 func detectNamePattern(rows []HeaderRow) namePattern {
-	var has7z, has7zSplit, has7zEnc, hasRar, hasRarSplit, hasZip, hasSFV, hasPar2 bool
+	var has7z, has7zEnc, hasRar, hasZip, hasSFV, hasPar2 bool
 	obf, ident, quoted := 0, 0, 0
 	seen := map[string]bool{}
 	var ext []string
@@ -41,22 +41,16 @@ func detectNamePattern(rows []HeaderRow) namePattern {
 		}
 		low := strings.ToLower(n)
 		switch {
-		case strings.Contains(low, ".7z.enc"):
+		case isEncrypted7zName(low):
 			has7zEnc = true
 			addExt("7z.enc")
-		case reSplitVol.MatchString(low) && strings.Contains(low, ".7z."):
-			has7z, has7zSplit = true, true
-			addExt("7z")
-		case strings.Contains(low, ".7z"):
+		case is7zName(low):
 			has7z = true
 			addExt("7z")
 		}
 		if strings.Contains(low, ".rar") || reRarFollow.MatchString(low) {
 			hasRar = true
 			addExt("rar")
-			if archivePartNum(low) > 0 || reRarFollow.MatchString(low) {
-				hasRarSplit = true
-			}
 		}
 		if strings.Contains(low, ".zip") {
 			hasZip = true
@@ -85,11 +79,11 @@ func detectNamePattern(rows []HeaderRow) namePattern {
 	}
 	p := namePattern{Ext: strings.Join(ext, ",")}
 	switch {
-	case has7zEnc && !has7zSplit && !has7z:
+	case has7zEnc && !has7z:
 		p.Pack = "7z-enc"
-	case has7zSplit || has7z:
+	case has7z:
 		p.Pack = "7z-split"
-	case hasRarSplit || hasRar:
+	case hasRar:
 		p.Pack = "rar-split"
 	case hasZip:
 		p.Pack = "zip-split"
@@ -100,18 +94,19 @@ func detectNamePattern(rows []HeaderRow) namePattern {
 	default:
 		p.Pack = "none"
 	}
+	hashOnly := obf > 0 && ident == 0 && quoted == 0
 	switch {
-	case obf > 0 && ident == 0 && quoted == 0 && p.Pack == "7z-split":
+	case hashOnly && p.Pack == "7z-split":
 		p.Obf = "hash-7z"
-	case obf > 0 && ident == 0 && quoted == 0 && (p.Pack == "rar-split" || p.Pack == "zip-split"):
+	case hashOnly && (p.Pack == "rar-split" || p.Pack == "zip-split"):
 		p.Obf = "hash-rar"
-	case obf > 0 && ident == 0 && quoted == 0 && p.Pack == "par2":
+	case hashOnly && p.Pack == "par2":
 		p.Obf = "hash-par2"
 	case quoted > 0 && obf == 0:
 		p.Obf = "quoted"
 	case ident > 0 && obf == 0:
 		p.Obf = "ident"
-	case obf > 0 && ident == 0 && quoted == 0:
+	case hashOnly:
 		p.Obf = "hash"
 	default:
 		p.Obf = "mixed"
@@ -121,10 +116,10 @@ func detectNamePattern(rows []HeaderRow) namePattern {
 
 func payloadKind(data, zstart []byte, zsize uint64) string {
 	kind := usenet.PayloadKind(data)
-	if zsize == 0 || uint64(len(data)) < zsize {
+	if zsize == 0 || zsize > uint64(len(data)) {
 		return kind
 	}
-	if k := usenet.SevenZHeaderKind(data[uint64(len(data))-zsize:]); k != "" && k != "7z-packed" {
+	if k := usenet.SevenZHeaderKind(data[len(data)-int(zsize):]); k != "7z-packed" {
 		return k
 	}
 	if kind == "unknown" && len(zstart) == 32 {

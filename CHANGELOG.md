@@ -11900,3 +11900,22 @@ status stays active.
 | `internal/usenetsearch/namefix_test.go` | donor rename; size ±5%; seed |
 | `internal/usenetsearch/skip.go` / `index.go` | delete hashes with the release |
 | `docs/usenet-nntp-native.md` | hash_16K donor matching |
+
+## 2026-10-20 — srrdb archive-crc + SFV + parhash seed split
+
+**Problem:** After #225, live `name_source=parhash` stayed 0. Named PAR2 filled all 20 seed slots (`named_unsampled=156`); pending hash.par2 never stored `hash_16K` (`dup_hashes=0`). Remaining FileDesc names are random tokens, not md5(title). nZEDb 2652: hashed rename needs PreDB/IRC; commercial indexers scrape renamed NZBs (forbidden).
+**Root cause:** sakms had no reverse lookup for RAR `FILE_CRC` / SFV CRC32. srrdb documents `GET /v1/search/archive-crc:XXXXXXXX` ("Use but don't scrape") and returns `{resultsCount:1, results:[{release,size}]}` for a unique inner-file CRC. Seed also BODY'd RAR volumes (4.5MB/pass).
+**Fix:** Extract RAR4 FILE_CRC (header+16) and ZIP local CRC. Parse SFV names/CRC. Unique srrdb CRC + size ±15% → `name_source=srrdb` (2s spacing, KV `usenet_nntp_srrdb_enabled`). Scene-shaped SFV filenames → `name_source=sfv`. Seed BODYs only non-vol `.par2` and reserves half the pass for pending.
+**Outcome:** A hash.rar/hash.sfv set whose inner CRC is unique on srrdb is renamed without PreDB. Do not call `hash_hits=0` a win. MKV-only posts with no RAR/SFV still need IRC `[FN:]` or a named hash_16K sibling.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/archive_names.go` | RAR4 FILE_CRC / ZIP CRC32 |
+| `internal/usenetsearch/srrdb.go` | archive-crc client |
+| `internal/usenetsearch/sfv.go` | SFV name + CRC parse |
+| `internal/usenetsearch/parhash.go` | seed half pending |
+| `internal/usenetsearch/namefix.go` | srrdb/sfv promote; par2-only seed |
+| `internal/api/usenetnntp.go` | `srrdbEnabled` kill switch |
+| `docs/usenet-nntp-native.md` | srrdb CRC lookup |

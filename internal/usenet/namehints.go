@@ -6,3 +6,10 @@ package usenet
 func ArchiveMemberNames(data []byte) []string {
 	return archiveMemberNames(data)
 }
+
+// ArchiveFileCRCs returns unpacked inner-file CRC32 values from a ZIP or RAR4
+// first-segment prefix. Empty when the blob is not those formats or the CRC
+// field is zero (data descriptor / not yet written).
+func ArchiveFileCRCs(data []byte) []ArchiveFileCRC {
+	return archiveFileCRCs(data)
+}

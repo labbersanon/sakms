@@ -70,9 +70,15 @@ const (
 	//   a second network keeps reverse-lookup fresh if synIRC drops.
 	// Troubleshooting: empty KV uses Corrupt-net #pre; "[]" or "none" disables extras.
 	// Review if: Corrupt-net #pre requires a key or goes invite-only.
-	KeyPreDBIRCExtra      = "usenet_nntp_predb_irc_extra"     // JSON []{server,port,tls,channels}; empty = default
-	KeyPreDBDumpPath      = "usenet_nntp_predb_dump_path"     // local nZEDb TSV or http(s) dump file URL; empty = off
-	KeyPreDBDumpImported  = "usenet_nntp_predb_dump_imported" // path|mtime|size stamp, not a knob
+	KeyPreDBIRCExtra     = "usenet_nntp_predb_irc_extra"     // JSON []{server,port,tls,channels}; empty = default
+	KeyPreDBDumpPath     = "usenet_nntp_predb_dump_path"     // local nZEDb TSV or http(s) dump file URL; empty = off
+	KeyPreDBDumpImported = "usenet_nntp_predb_dump_imported" // path|mtime|size stamp, not a knob
+	// Claude 2026-10-20: srrdb archive-crc kill switch (CRC lookup only).
+	// Reason: remaining hash.par2 FileDesc names miss PreDB; srrdb ToS is
+	//   "Use but don't scrape" — CRC queries, never catalog paging.
+	// Troubleshooting: name_source=srrdb stays 0 → this key false or SRRDB
+	//   client nil. Review if: provider rate-limits sakms-srrdb/1.
+	KeySRRDBEnabled       = "usenet_nntp_srrdb_enabled"
 	KeyMinCompletenessPct = "usenet_nntp_min_completeness_pct"
 	KeyIncompleteTTLDays  = "usenet_nntp_incomplete_ttl_days"
 	KeyRepairEnabled      = "usenet_nntp_repair_enabled"
@@ -316,6 +322,8 @@ type Service struct {
 	prunedOnce map[string]bool
 	// predb resolves recovered names/hashes during name-fix (nil = no PreDB).
 	predb PreDBLookup
+	// srrdb resolves RAR/ZIP/SFV inner-file CRC32 (nil disables it).
+	srrdb ArchiveCRCLookup
 	// ranges is the last crawl pass's per-group provider range (read-only once
 	// stored; each pass builds a fresh map) — GapFillStatus reports backfill
 	// targets from it.
@@ -339,6 +347,13 @@ type Service struct {
 func (s *Service) SetPreDB(p PreDBLookup) {
 	s.mu.Lock()
 	s.predb = p
+	s.mu.Unlock()
+}
+
+// SetSRRDB wires the srrdb CRC lookup used by name recovery (nil disables it).
+func (s *Service) SetSRRDB(c ArchiveCRCLookup) {
+	s.mu.Lock()
+	s.srrdb = c
 	s.mu.Unlock()
 }
 
@@ -934,10 +949,11 @@ func (s *Service) runNameFix(ctx context.Context, c *Crawler, budget *bodyBudget
 	s.mu.Lock()
 	cfg := s.cfg
 	predb := s.predb
+	srrdb := s.srrdb
 	s.mu.Unlock()
 	budget.setCapMB(cfg.NameFixBodyMBPerHour)
 	nf := &NameFixer{
-		Src: c.Src, Index: c.Index, Crawler: c, PreDB: predb,
+		Src: c.Src, Index: c.Index, Crawler: c, PreDB: predb, SRRDB: srrdb,
 		Groups: c.Groups, Budget: budget, SkipBody: skipBody,
 		UnnamedTTL: time.Duration(cfg.UnnamedTTLDays) * 24 * time.Hour,
 	}

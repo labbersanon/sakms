@@ -234,6 +234,32 @@ func (f *fakePreDB) ByRequestID(_ context.Context, id int64, _ string) (PreDBHit
 	return v, ok
 }
 
+type fakeSRRDB struct {
+	crcs map[string]PreDBHit
+}
+
+func (f *fakeSRRDB) ByCRC(_ context.Context, crc string) (PreDBHit, bool) {
+	v, ok := f.crcs[strings.ToUpper(crc)]
+	return v, ok
+}
+
+func rar4BodyCRC(member string, crc uint32) usenet.BodySample {
+	b := rar4Fixture(member)
+	binary.LittleEndian.PutUint32(b[7+13+16:], crc)
+	return usenet.BodySample{Data: b, YencName: member, WireBytes: int64(len(b))}
+}
+
+func TestRar4BodyCRCExtracts(t *testing.T) {
+	s := rar4BodyCRC(nfHash+".mkv", 0x0053CA13)
+	got := usenet.ArchiveFileCRCs(s.Data)
+	if len(got) != 1 || got[0].CRC != "0053CA13" {
+		t.Fatalf("crc = %+v", got)
+	}
+	if crcs := sampleCRCs(s); len(crcs) != 1 || crcs[0] != "0053CA13" {
+		t.Fatalf("sampleCRCs = %v", crcs)
+	}
+}
+
 const nfGroup = "alt.binaries.movies"
 
 // obfuscatedSet builds files x 2 OVER rows of one hash-obfuscated RAR set plus
@@ -1614,8 +1640,8 @@ func TestNameFix_HashFileDescShelvesBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Renamed != 0 || res.Unresolved != 1 || res.BodyFetches != 1 || len(f.src.bodyCalls) != 1 {
-		t.Fatalf("hash FileDesc must BODY once: %+v bodyCalls=%v", res, f.src.bodyCalls)
+	if res.Renamed != 0 || res.Unresolved != 1 || res.BodyFetches < 1 {
+		t.Fatalf("hash FileDesc must BODY: %+v bodyCalls=%v", res, f.src.bodyCalls)
 	}
 	var attempts int
 	if err := f.idx.db.QueryRow(`SELECT name_attempts FROM usenet_nntp_releases`).Scan(&attempts); err != nil {
@@ -1732,5 +1758,173 @@ WHERE name_source=?`, maxNameAttempts, sourceParHash); err != nil {
 	}
 	if named != 2 || res.BySource[sourceParHash] < 1 {
 		t.Fatalf("seed named=%d res=%+v, want shelved victim renamed from stored donor hash_16K", named, res)
+	}
+}
+
+func TestNameFix_SRRDBArchiveCRCRenamesHashRAR(t *testing.T) {
+	const title = "Srrdb.Movie.2021.1080p.BluRay.x264-GRP"
+	f := newNFFixture(t, obfuscatedSet("sr", nfHash, 1, 45), nil)
+	f.src.bodies["srpar2"] = par2Body(nfHash + ".part01.rar")
+	f.src.bodies["sr1_1@t"] = rar4BodyCRC(nfHash+".mkv", 0x0053CA13)
+	f.nf.SRRDB = &fakeSRRDB{crcs: map[string]PreDBHit{
+		"0053CA13": {Title: title},
+	}}
+	f.crawlAndRecompute(t)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var named int
+	var src string
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*), COALESCE(MAX(name_source),'') FROM usenet_nntp_releases WHERE display_name=?`, title).Scan(&named, &src); err != nil {
+		t.Fatal(err)
+	}
+	if named != 1 || src != sourceSRRDB || res.BySource[sourceSRRDB] != 1 {
+		t.Fatalf("named=%d src=%q res=%+v, want srrdb unique CRC hit", named, src, res)
+	}
+}
+
+func TestNameFix_SRRDBSizeMismatchDoesNotRename(t *testing.T) {
+	const title = "Srrdb.Size.2021.1080p.BluRay.x264-GRP"
+	f := newNFFixture(t, obfuscatedSet("ss", nfHash, 1, 45), nil)
+	f.src.bodies["sspar2"] = par2Body(nfHash + ".part01.rar")
+	f.src.bodies["ss1_1@t"] = rar4BodyCRC(nfHash+".mkv", 0x0053CA13)
+	f.nf.SRRDB = &fakeSRRDB{crcs: map[string]PreDBHit{
+		"0053CA13": {Title: title, SizeBytes: 20 << 30},
+	}}
+	f.crawlAndRecompute(t)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pending int
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases WHERE state='pending_name'`).Scan(&pending); err != nil {
+		t.Fatal(err)
+	}
+	if pending != 1 || res.BySource[sourceSRRDB] != 0 {
+		t.Fatalf("size mismatch must stay pending: pending=%d res=%+v", pending, res)
+	}
+}
+
+func TestNameFix_SRRDBAmbiguousDoesNotRename(t *testing.T) {
+	f := newNFFixture(t, obfuscatedSet("sa", nfHash, 1, 45), nil)
+	f.src.bodies["sapar2"] = par2Body(nfHash + ".part01.rar")
+	f.src.bodies["sa1_1@t"] = rar4BodyCRC(nfHash+".mkv", 0xAABBCCDD)
+	f.nf.SRRDB = &fakeSRRDB{crcs: map[string]PreDBHit{}}
+	f.crawlAndRecompute(t)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pending int
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases WHERE state='pending_name'`).Scan(&pending); err != nil {
+		t.Fatal(err)
+	}
+	if pending != 1 || res.BySource[sourceSRRDB] != 0 {
+		t.Fatalf("ambiguous/miss must stay pending: pending=%d res=%+v", pending, res)
+	}
+}
+
+func TestNameFix_SFVSceneNameRenames(t *testing.T) {
+	const title = "Sfv.Show.S01E02.720p.HDTV.x264-GRP"
+	hash := obfuscatedSet("sf", nfHash, 1, 45)
+	hash = append(hash, usenet.MessageOverview{
+		Number: 1 + len(hash), Subject: fmt.Sprintf(`[%02d/47] - "%s.sfv" yEnc (1/1)`, 47, nfHash),
+		From: "poster@obf", MessageID: "sfsfv", Bytes: 200, DateUnix: 1700000000,
+	})
+	f := newNFFixture(t, hash, nil)
+	f.src.gr.High = len(hash)
+	f.src.bodies["sfsfv"] = usenet.BodySample{
+		Data: []byte("; comment\n" + title + ".mkv AABBCCDD\n"), YencName: nfHash + ".sfv", WireBytes: 80,
+	}
+	f.crawlAndRecompute(t)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var named int
+	var src string
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*), COALESCE(MAX(name_source),'') FROM usenet_nntp_releases WHERE display_name=?`, title).Scan(&named, &src); err != nil {
+		t.Fatal(err)
+	}
+	if named != 1 || src != sourceSFV {
+		t.Fatalf("named=%d src=%q res=%+v, want sfv scene filename", named, src, res)
+	}
+}
+
+func TestNameFix_ParHashSeedFetchesPar2Only(t *testing.T) {
+	const title = "ParHash.Par2Only.2021.1080p.BluRay.x264-GRP"
+	var h16 [16]byte
+	copy(h16[:], []byte("hash16k-par2only"))
+	donor := obfuscatedSet("po", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1, 45)
+	f := newNFFixture(t, donor, nil)
+	f.src.bodies["popar2"] = par2BodyHash(h16, title+".part01.rar")
+	f.src.bodies["po1_1@t"] = rar4BodyCRC("ignored.mkv", 0x11111111)
+	f.crawlAndRecompute(t)
+	if _, err := f.nf.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET parhash_sampled=FALSE`); err != nil {
+		t.Fatal(err)
+	}
+	f.src.bodyCalls = nil
+	if _, err := f.nf.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range f.src.bodyCalls {
+		if id == "po1_1@t" {
+			t.Fatalf("seed BODY'd RAR %v", f.src.bodyCalls)
+		}
+		if !strings.Contains(id, "par2") {
+			t.Fatalf("seed BODY'd non-par2 %q in %v", id, f.src.bodyCalls)
+		}
+	}
+	if len(f.src.bodyCalls) == 0 {
+		t.Fatal("seed must BODY the main par2")
+	}
+}
+
+func TestDueParHashSeed_ReservesPendingSlots(t *testing.T) {
+	const (
+		a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		c = "cccccccccccccccccccccccccccccccc"
+		d = "dddddddddddddddddddddddddddddddd"
+	)
+	setA := obfuscatedSet("a", a, 1, 45)
+	setB := obfuscatedSet("b", b, 1+len(setA), 45)
+	setC := obfuscatedSet("c", c, 1+len(setA)+len(setB), 45)
+	setD := obfuscatedSet("d", d, 1+len(setA)+len(setB)+len(setC), 45)
+	rows := append(append(append(setA, setB...), setC...), setD...)
+	f := newNFFixture(t, rows, nil)
+	f.src.bodies["apar2"] = par2Body("Named.One.2021.1080p.BluRay.x264-GRP.part01.rar")
+	f.src.bodies["bpar2"] = par2Body("Named.Two.2021.1080p.BluRay.x264-GRP.part01.rar")
+	f.src.bodies["cpar2"] = par2Body("Named.Three.2021.1080p.BluRay.x264-GRP.part01.rar")
+	f.src.bodies["dpar2"] = par2Body(d + ".part01.rar")
+	f.crawlAndRecompute(t)
+	if _, err := f.nf.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.idx.db.Exec(`
+UPDATE usenet_nntp_releases SET state='pending_name', display_name='', name_source='',
+  searchable=FALSE, name_attempts=?, parhash_sampled=FALSE, dirty=FALSE, next_name_at=0
+WHERE display_name='' OR name_source=''`, maxNameAttempts); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET parhash_sampled=FALSE`); err != nil {
+		t.Fatal(err)
+	}
+	sets, err := f.idx.DueParHashSeed(context.Background(), []string{nfGroup}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := 0
+	for _, s := range sets {
+		if !s.AlreadyNamed {
+			pending++
+		}
+	}
+	if len(sets) != 2 || pending != 1 {
+		t.Fatalf("seed=%d pending=%d sets=%+v, want 1 named + 1 pending", len(sets), pending, sets)
 	}
 }

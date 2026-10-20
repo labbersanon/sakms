@@ -1635,7 +1635,7 @@ func TestNameFix_ParHash16KDonorRenamesHashFileDesc(t *testing.T) {
 	var h16 [16]byte
 	copy(h16[:], []byte("hash16k-donor!!"))
 	donor := obfuscatedSet("d", donorTok, 1, 1)
-	victim := obfuscatedSet("v", victimTok, 100, 1)
+	victim := obfuscatedSet("v", victimTok, 1+len(donor), 1)
 	f := newNFFixture(t, append(donor, victim...), nil)
 	f.src.bodies["dpar2"] = par2BodyHash(h16, title+".part01.rar")
 	f.src.bodies["vpar2"] = par2BodyHash(h16, victimTok+".part01.rar")
@@ -1665,7 +1665,7 @@ func TestNameFix_ParHash16KSizeMismatchDoesNotRename(t *testing.T) {
 	var h16 [16]byte
 	copy(h16[:], []byte("hash16k-size!!x"))
 	donor := obfuscatedSet("ds", donorTok, 1, 1)
-	victim := obfuscatedSet("vs", victimTok, 100, 1)
+	victim := obfuscatedSet("vs", victimTok, 1+len(donor), 1)
 	f := newNFFixture(t, append(donor, victim...), nil)
 	f.src.bodies["dspar2"] = par2BodyHash(h16, title+".part01.rar")
 	f.src.bodies["vspar2"] = par2BodyHash(h16, victimTok+".part01.rar")
@@ -1701,7 +1701,7 @@ func TestNameFix_ParHash16KSeedNamedRenamesShelved(t *testing.T) {
 	var h16 [16]byte
 	copy(h16[:], []byte("hash16k-seed!!y"))
 	donor := obfuscatedSet("dn", donorTok, 1, 1)
-	victim := obfuscatedSet("vn", victimTok, 100, 1)
+	victim := obfuscatedSet("vn", victimTok, 1+len(donor), 1)
 	f := newNFFixture(t, append(donor, victim...), nil)
 	f.src.bodies["dnpar2"] = par2BodyHash(h16, title+".part01.rar")
 	f.src.bodies["vnpar2"] = par2BodyHash(h16, victimTok+".part01.rar")

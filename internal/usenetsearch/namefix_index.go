@@ -193,10 +193,7 @@ const quotedIdentSubjectSQL = `(h.subject ~ '"[^"]*(1080|720|2160|480)p[^"]*"' O
 //
 //	from preOnly; hash ByHash HTTP then burned both 20s windows (renamed=0).
 //
-// Troubleshooting: header=0 with Black Clover still pending95 → regex missed
-//
-//	the quote shape.
-//
+// Troubleshooting: header=0 with Black Clover still pending95 → regex missed the quote shape.
 // Review if: 576p / 4K-without-p quoted titles appear in HIGH.
 //
 // Claude 2026-10-19: ignore next_name_at on this queue.
@@ -207,8 +204,9 @@ const quotedIdentSubjectSQL = `(h.subject ~ '"[^"]*(1080|720|2160|480)p[^"]*"' O
 //
 // Troubleshooting: header=0, quoted 1080p still pending, next_name_at in
 //
-//	the future → this still filtering on backoff. Review if: BODY/PreDB
-//	queues should share this exception.
+//	the future → this still filtering on backoff.
+//
+// Review if: BODY/PreDB queues should share this exception.
 func (idx *Index) DuePendingHeaderNames(ctx context.Context, limit int) ([]PendingSet, error) {
 	if limit <= 0 {
 		return nil, nil

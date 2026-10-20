@@ -10,14 +10,15 @@ import (
 	"github.com/labbersanon/sakms/internal/settings"
 )
 
-// Claude 2026-10-16: rewrite existing headers onto collection stems (plan D5).
-// Reason: ParseSubject used to leave [k/N] in ReleaseName; 3M already-stored
-//   rows keep those keys until re-parsed. Watermarks stay put (no re-OVER).
-// Troubleshooting: log "collection rewrite rows=N keys_changed=M"; done flag
-//   usenet_nntp_collection_rewrite_v2. Mega-buckets: obf keys with >20k headers
-//   are deleted before releases are rebuilt.
-// Review if: a v3 rewrite is needed after another stem change.
-// Related files: .omc/plans/nntp-collection-grouping.md, subject.go, ingest.go
+// Claude 2026-10-19: rewrite stored headers through current parseHeader (v3).
+// Reason: ident-quoted episode filenames were ingested as pack stems / obf:
+//   before #216. Re-OVER would recrawl 150k quotes; parseHeader already
+//   knows the episode key. Watermarks stay put.
+// Troubleshooting: log "collection rewrite done"; KV
+//   usenet_nntp_collection_rewrite_v3. Recovered display_name is kept on
+//   keys that did not move; orphan pack/obf rows are deleted.
+// Review if: parseHeader grouping changes again (v4).
+// Related files: ingest.go, subject.go
 
 const (
 	rewriteBatchSize    = 5000
@@ -99,19 +100,11 @@ LIMIT ?`, lastGroup, lastGroup, lastMsgid, limit)
 	}
 	defer rows.Close()
 
-	type stored struct {
-		group, msgid, subject, from, release string
-		num                                  int
-		posted, bytes                        int64
-		partN, partM, fileN, fileM           int
-		filename                             string
-		obf, meta                            bool
-	}
-	var page []stored
+	var page []HeaderRow
 	for rows.Next() {
-		var r stored
-		if err := rows.Scan(&r.group, &r.num, &r.msgid, &r.subject, &r.from, &r.posted, &r.bytes,
-			&r.release, &r.partN, &r.partM, &r.filename, &r.obf, &r.meta, &r.fileN, &r.fileM); err != nil {
+		var r HeaderRow
+		if err := rows.Scan(&r.Group, &r.MsgNum, &r.MsgID, &r.Subject, &r.From, &r.PostedAt, &r.Bytes,
+			&r.ReleaseName, &r.PartN, &r.PartM, &r.Filename, &r.Obfuscated, &r.IsMeta, &r.FileN, &r.FileM); err != nil {
 			return 0, 0, lastGroup, lastMsgid, err
 		}
 		page = append(page, r)
@@ -138,13 +131,13 @@ WHERE group_name=? AND msgid=?`)
 	defer stmt.Close()
 
 	for _, r := range page {
-		h := parseHeader(r.group, r.subject, r.from, r.msgid, r.num, r.posted, r.bytes, nameFix)
-		if h.ReleaseName == r.release && h.PartN == r.partN && h.PartM == r.partM &&
-			h.Filename == r.filename && h.Obfuscated == r.obf && h.IsMeta == r.meta &&
-			h.FileN == r.fileN && h.FileM == r.fileM {
+		h := parseHeader(r.Group, r.Subject, r.From, r.MsgID, r.MsgNum, r.PostedAt, r.Bytes, nameFix)
+		if h.ReleaseName == r.ReleaseName && h.PartN == r.PartN && h.PartM == r.PartM &&
+			h.Filename == r.Filename && h.Obfuscated == r.Obfuscated && h.IsMeta == r.IsMeta &&
+			h.FileN == r.FileN && h.FileM == r.FileM {
 			continue
 		}
-		if _, err := stmt.ExecContext(ctx, h.ReleaseName, h.PartN, h.PartM, h.Filename, h.Obfuscated, h.IsMeta, h.FileN, h.FileM, r.group, r.msgid); err != nil {
+		if _, err := stmt.ExecContext(ctx, h.ReleaseName, h.PartN, h.PartM, h.Filename, h.Obfuscated, h.IsMeta, h.FileN, h.FileM, r.Group, r.MsgID); err != nil {
 			return 0, 0, lastGroup, lastMsgid, err
 		}
 		changed++
@@ -153,7 +146,7 @@ WHERE group_name=? AND msgid=?`)
 		return 0, 0, lastGroup, lastMsgid, err
 	}
 	last := page[len(page)-1]
-	return len(page), changed, last.group, last.msgid, nil
+	return len(page), changed, last.Group, last.MsgID, nil
 }
 
 func (idx *Index) deleteObfMegaBuckets(ctx context.Context, cap int) (int, error) {
@@ -179,7 +172,14 @@ func (idx *Index) rebuildReleasesFromHeaders(ctx context.Context) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM usenet_nntp_releases`); err != nil {
+	// Claude 2026-10-19: do not wipe recovered names on keys that stayed.
+	// Reason: v2 DELETE+INSERT reset ybegin/predb display_name to subject.
+	//   v3 only drops orphan pack/obf keys and inserts missing episode keys.
+	if _, err := tx.ExecContext(ctx, `
+DELETE FROM usenet_nntp_releases r
+WHERE NOT EXISTS (
+  SELECT 1 FROM usenet_nntp_headers h
+  WHERE h.group_name=r.group_name AND h.release_name=r.release_key)`); err != nil {
 		return err
 	}
 	now := time.Now().Unix()
@@ -195,7 +195,8 @@ SELECT h.group_name, h.release_name,
   MIN(h.ingested_at), ?, TRUE
 FROM usenet_nntp_headers h
 WHERE h.release_name <> ''
-GROUP BY h.group_name, h.release_name`, now); err != nil {
+GROUP BY h.group_name, h.release_name
+ON CONFLICT (group_name, release_key) DO UPDATE SET dirty=TRUE, updated_at=EXCLUDED.updated_at`, now); err != nil {
 		return err
 	}
 	return tx.Commit()

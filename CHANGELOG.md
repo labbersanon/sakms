@@ -11751,3 +11751,21 @@ status stays active.
 | `internal/usenetsearch/releases_test.go` | named-zero first; ident 90/100 searchable |
 | `internal/usenetsearch/namefix_test.go` | quoted ident searchable at ingest |
 | `docs/usenet-nntp-native.md` | episode key; recompute before namefix |
+
+## 2026-10-19 — rewrite v3 rekeys quoted episodes; junk is not Searchable
+
+**Problem:** After #216, Searchable climbed 4→14 on new ingest, but 77k quoted headers stayed on `obf:` and Chivalry's 39k parts stayed one S01 pack key. `(Els1212)` and `F18cvededvdvfrf` were Searchable at 100%.
+**Root cause:** v2 rewrite already ran; stored subjects were not re-parsed after ident-quoted keys. `searchable` used the 95% grab gate without `junkNameSQL` (IdentifiedPct already excluded junk).
+**Fix:** Collection rewrite KV is v3. `rebuildReleasesFromHeaders` deletes orphan keys and upserts missing ones; recovered `display_name` stays. `recomputeOne` requires `NOT junkNameSQL`.
+**Outcome:** Existing quoted episodes become per-file Searchable without re-OVER. Junk mega-buckets drop off the dashboard count.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/service.go` | rewrite KV v3 |
+| `internal/usenetsearch/rewrite.go` | keep recovered names; orphan pack keys |
+| `internal/usenetsearch/releases.go` | junk never searchable |
+| `internal/usenetsearch/rewrite_test.go` | pack splits to S01E09/E10; ybegin kept |
+| `internal/usenetsearch/releases_test.go` | `(Els1212)` 100% not searchable |
+| `docs/usenet-nntp-native.md` | v3 rewrite; junk off search |

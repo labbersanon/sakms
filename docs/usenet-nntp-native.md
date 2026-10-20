@@ -131,7 +131,8 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   a 16+ character token before `[k/N]` is the skeleton (NNTmux hash-token
   capture) so per-file random quoted names still cluster. Skeletons shorter
   than 8 characters are not staged. Existing headers are rewritten in place
-  (`usenet_nntp_collection_rewrite_v2`); watermarks are not rewound.
+  (`usenet_nntp_collection_rewrite_v3`); watermarks are not rewound. v3
+  rekeys ident-quoted episode filenames without wiping recovered names.
   Extra RE2 `strip_prefix` / `lead_token` patterns (KV
   `usenet_nntp_collection_extra_patterns`) are applied at parse time. An idle
   crawl-loop pass samples live split clusters and unseen NNTmux seeder regexes,
@@ -144,8 +145,9 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   `completeness_bp`, `gate_reason`). Identification is separate: a PreDB,
   PAR2/RAR/yEnc/NFO, or a title with resolution plus year, season, or a
   multi-word name is searchable at ≥80%; `Query.GrabReady` and `ToNZB` still
-  refuse it until the set meets the gate. Picture-date buckets and hash
-  tokens stay off search. Dashboard **Identified** is binary-group
+  refuse it until the set meets the gate. Picture-date buckets, hash
+  tokens, and junk mega-buckets (`(Els1212)`, description-GB, single tokens)
+  stay off search even at 100%. Dashboard **Identified** is binary-group
   (non-`pictures.*`) headers on those names, excluding `(????)` /
   single-token poster IDs from the denominator. Below-80% named
   releases are reaped after HIGH has passed (`SweepIncomplete`);

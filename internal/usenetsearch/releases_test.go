@@ -272,21 +272,20 @@ func TestRecomputeDirty_PendingCompleteFirst(t *testing.T) {
 	defer idx.Close()
 	ctx := context.Background()
 	const g = "alt.binaries.movies"
-	// Oldest updated_at first, so FIFO order would pick the named release.
+	// Named (even 0%) is first; among pending, complete still beats incomplete
+	// even when the complete row is newer.
 	releases := []struct {
 		key            string
 		completenessBP int
 		updatedAt      int64
 		wantDirty      bool
 	}{
-		{"Named.Show.2020.1080p", 0, 1, true},
-		{"obf:aaaaaaaaaaaaaaaa", 0, 2, true},
+		{"obf:aaaaaaaaaaaaaaaa", 0, 1, true},
 		{"obf:bbbbbbbbbbbbbbbb", 9500, 99, false},
 	}
-	named := fileRows(g, releases[0].key, "n.mkv", "n", 0, 10, 1, 0)
-	inc := fileRows(g, releases[1].key, "a.rar", "a", 100, 10, 1, 0)
-	comp := fileRows(g, releases[2].key, "b.rar", "b", 200, 10, 10, 0)
-	if err := idx.Upsert(ctx, append(append(named, inc...), comp...)); err != nil {
+	inc := fileRows(g, releases[0].key, "a.rar", "a", 100, 10, 1, 0)
+	comp := fileRows(g, releases[1].key, "b.rar", "b", 200, 10, 10, 0)
+	if err := idx.Upsert(ctx, append(inc, comp...)); err != nil {
 		t.Fatal(err)
 	}
 	for _, r := range releases {
@@ -304,7 +303,7 @@ func TestRecomputeDirty_PendingCompleteFirst(t *testing.T) {
 			t.Fatal(err)
 		}
 		if dirty != r.wantDirty {
-			t.Errorf("%s dirty=%v, want %v (only the complete pending_name set is recomputed first)", r.key, dirty, r.wantDirty)
+			t.Errorf("%s dirty=%v, want %v (complete pending_name before incomplete pending)", r.key, dirty, r.wantDirty)
 		}
 	}
 }

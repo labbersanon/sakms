@@ -346,7 +346,14 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 	if set.PreDBOnly {
 		limit = namefixPreDBHeaderSample
 	}
-	rows, err := n.Index.setRows(ctx, set.Group, set.Key, limit)
+	// Claude 2026-10-20: setRows must not inherit leftover phase crumbs.
+	// Reason: CI ExpiredPhase failed `setRows` with 15ms ctx (91 header rows)
+	//   before BodyHead's WithoutCancel could fetch part01. Live 20s phase
+	//   ending mid-query would skip FILE_CRC the same way.
+	// Troubleshooting: namefix deadline leftover with no crc log on a due
+	//   rar set → this WithoutCancel missing. Review if: setRows grows past
+	//   a few hundred ms (then cap it, still fetch part01).
+	rows, err := n.Index.setRows(context.WithoutCancel(ctx), set.Group, set.Key, limit)
 	if err != nil {
 		return false, err
 	}

@@ -1930,7 +1930,7 @@ func TestNameFix_ExpiredPhaseStillFetchesRarCRC(t *testing.T) {
 	defer cancel()
 	res := NameFixResult{BySource: map[string]int{}}
 	stat := statReleasesPerChunk
-	if _, err := f.nf.fixSet(phase, sets[0], &res, &stat); err != nil {
+	if _, err := f.nf.fixSet(phase, sets[0], &res, &stat); err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
 	var rar bool
@@ -1964,7 +1964,7 @@ func TestNameFix_EmptyPar2CandsStillFetchesRarCRC(t *testing.T) {
 	defer cancel()
 	res := NameFixResult{BySource: map[string]int{}}
 	stat := statReleasesPerChunk
-	if _, err := f.nf.fixSet(phase, sets[0], &res, &stat); err != nil {
+	if _, err := f.nf.fixSet(phase, sets[0], &res, &stat); err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
 	if res.BySource[sourceSRRDB] != 1 {

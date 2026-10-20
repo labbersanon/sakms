@@ -188,14 +188,15 @@ func scanPendingSets(rows *sql.Rows, preDBOnly bool) ([]PendingSet, error) {
 	return out, rows.Err()
 }
 
-// crcHeaderSQL is the RAR/ZIP/7z arm of crcPreferOrderSQL (SFV ranks first).
-const crcHeaderSQL = `(LOWER(h.filename) LIKE '%.rar%' OR LOWER(h.filename) LIKE '%.zip%' OR LOWER(h.filename) LIKE '%.7z%' OR LOWER(h.subject) LIKE '%.rar%' OR LOWER(h.subject) LIKE '%.zip%' OR LOWER(h.subject) LIKE '%.7z%')`
-
-// Claude 2026-10-20: SFV before RAR in the due queue.
-// Reason: live pending95_sfv=2 sat behind 119 rar; 20s body phase named 3
-//   RAR5 magazines (crcs=0, not in srrdb) and never BODYed the 4KB SFV
-//   whose inner names/CRC are the obfuscated rename path. Review if:
-//   crc_sampled column replaces this CASE.
+// Claude 2026-10-20: SFV, then split 7z, then RAR/ZIP in the due queue.
+// Reason: live pending95_sfv=2 sat behind 119 rar; 20s body named RAR5
+//
+//	magazines (crcs=0). After #231, 32 due `.7z.0xx` were CASE 1 with rar
+//	and lost to ingested_at DESC, so last-segment footer CRC never ran.
+//
+// Troubleshooting: namefix crc magic=52617221 with 32 pending95_7z → this
+//
+//	CASE. Review if: crc_sampled column replaces this CASE.
 const crcPreferOrderSQL = `CASE WHEN EXISTS (
   SELECT 1 FROM usenet_nntp_headers h
   WHERE h.group_name=usenet_nntp_releases.group_name AND h.release_name=usenet_nntp_releases.release_key
@@ -203,15 +204,22 @@ const crcPreferOrderSQL = `CASE WHEN EXISTS (
 ) THEN 0 WHEN EXISTS (
   SELECT 1 FROM usenet_nntp_headers h
   WHERE h.group_name=usenet_nntp_releases.group_name AND h.release_name=usenet_nntp_releases.release_key
-    AND ` + crcHeaderSQL + `
-) THEN 1 ELSE 2 END`
+    AND (LOWER(h.filename) LIKE '%.7z%' OR LOWER(h.subject) LIKE '%.7z%')
+    AND LOWER(COALESCE(h.filename,'')) NOT LIKE '%.7z.enc%'
+    AND LOWER(COALESCE(h.subject,'')) NOT LIKE '%.7z.enc%'
+) THEN 1 WHEN EXISTS (
+  SELECT 1 FROM usenet_nntp_headers h
+  WHERE h.group_name=usenet_nntp_releases.group_name AND h.release_name=usenet_nntp_releases.release_key
+    AND (LOWER(h.filename) LIKE '%.rar%' OR LOWER(h.filename) LIKE '%.zip%' OR LOWER(h.subject) LIKE '%.rar%' OR LOWER(h.subject) LIKE '%.zip%')
+) THEN 2 ELSE 3 END`
 
 // quotedIdentSubjectSQL matches a quoted payload name that is already a title:
 // resolution in the quotes, a spacey or underscore-separated name, or a
 // [Group] fansub — not hash.par2.
 // Claude 2026-10-20: underscore titles without 1080p (Metropolis_Magazine_-_September_2026).
 // Reason: DuePendingHeaderNames required a space or 1080p; those sets went
-//   to BODY, burned RAR5 CRC slots, leftover=39. Review if: 576p / 4K-without-p.
+//
+//	to BODY, burned RAR5 CRC slots, leftover=39. Review if: 576p / 4K-without-p.
 const quotedIdentSubjectSQL = `(h.subject ~ '"[^"]*(1080|720|2160|480)p[^"]*"' OR h.subject ~ '"[^"]* [A-Za-z][^"]{6,}"' OR h.subject ~ '"[^"]*_[^"]*(19|20)[0-9]{2}[^"]*"' OR h.subject ~ '"\[[^"]{3,}\][^"]+"')`
 
 // DuePendingHeaderNames returns ≥80% pending sets whose headers already quote

@@ -11965,3 +11965,20 @@ status stays active.
 | `internal/usenet/archive_names.go` | RAR5 vint file-header Data CRC32 |
 | `internal/usenetsearch/namefix.go` | last-volume pick; 95% before ident |
 | `internal/usenetsearch/namefix_test.go` | RAR5 CRC rename; last volume in picks |
+
+## 2026-10-20 — header-name underscore titles + SFV-first due queue
+
+**Problem:** After #229, live `name_source=srrdb|sfv|parhash` stayed 0. A 20s body pass BODYed `Metropolis_Magazine_-_September_2026.part1.rar` (RAR5 `crcs=0`, srrdb miss) while 2 complete `.sfv` pending never ran. User asked why work stopped before obfuscated titles resolve.
+**Root cause:** `quotedReleaseName` required a space or 1080p; underscore magazine titles failed, so namefix spent BODY slots on readable headers. `DuePendingHeaderNames` SQL had the same gap. SFV ranked equal with RAR (`ingested_at DESC` picked newest rar). Last-volume picks were not flagged CRC.
+**Fix:** Treat `_` as a word separator (hash tokens like `GsyXkGhhHtz7OQL` still unnamed). Header due SQL matches underscore quotes. Prefer SFV over RAR in the body queue. Last volume is CRC-capable. identNameSQL includes parhash/sfv/srrdb. Log first BODY/CRC candidate name.
+**Outcome:** Readable `Title_Name_2026.part1.rar` headers rename without BODY, freeing CRC slots for hash.sfv / hash.rar. Success remains `name_source=srrdb|sfv|parhash` (or ybegin on those header titles), not Searchable. Unique hash-all-the-way-down posts still need SFV inner names, srrdb unique CRC, IRC `[FN:]`, or a parhash donor.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix.go` | underscore quotedReleaseName; last-volume CRC; cand logs |
+| `internal/usenetsearch/namefix_index.go` | underscore header SQL; SFV before RAR |
+| `internal/usenetsearch/completeness.go` | identNameSQL +parhash/sfv/srrdb |
+| `internal/usenetsearch/namefix_test.go` | magazine ingest/header; SFV prefer; hash still unnamed |
+| `docs/usenet-nntp-native.md` | underscore-separated quoted titles |

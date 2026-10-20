@@ -434,8 +434,15 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		res.BodyBytes += sample.WireBytes
 		cands := candidatesFromSample(sample, pick.NFO)
 		isPar2 := bytes.HasPrefix(sample.Data, par2Magic)
-		log.Printf("usenetsearch: namefix body msgid=%s bytes=%d remain_ms=%d wire=%d yenc=%d cands=%d par2=%t err=<nil>",
-			pick.MsgID, pick.Bytes, namefixBodyArticleTimeout.Milliseconds(), sample.WireBytes, len(sample.YencName), len(cands), isPar2)
+		cand0 := ""
+		if len(cands) > 0 {
+			cand0 = cands[0].name
+			if len(cand0) > 80 {
+				cand0 = cand0[:80]
+			}
+		}
+		log.Printf("usenetsearch: namefix body msgid=%s bytes=%d remain_ms=%d wire=%d yenc=%d cands=%d par2=%t cand=%q err=<nil>",
+			pick.MsgID, pick.Bytes, namefixBodyArticleTimeout.Milliseconds(), sample.WireBytes, len(sample.YencName), len(cands), isPar2, cand0)
 		if pick.CRC {
 			crcs := sampleCRCs(sample)
 			if len(crcs) > 0 {
@@ -445,7 +452,14 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 			if len(magic) > 8 {
 				magic = magic[:8]
 			}
-			log.Printf("usenetsearch: namefix crc msgid=%s crcs=%d magic=%x", pick.MsgID, len(crcs), magic)
+			inner := ""
+			if names := usenet.ArchiveMemberNames(sample.Data); len(names) > 0 {
+				inner = names[0]
+				if len(inner) > 80 {
+					inner = inner[:80]
+				}
+			}
+			log.Printf("usenetsearch: namefix crc msgid=%s crcs=%d magic=%x name=%q", pick.MsgID, len(crcs), magic, inner)
 		}
 		work := context.WithoutCancel(ctx)
 		if isPar2 {
@@ -720,7 +734,35 @@ func quotedReleaseName(name string) bool {
 	if strings.Contains(n, "[") && strings.Contains(n, "]") {
 		return true
 	}
-	return strings.Contains(n, " ")
+	if strings.Contains(n, " ") {
+		return true
+	}
+	// Claude 2026-10-20: underscore titles with a year or 3+ real words.
+	// Reason: live pending95 `Metropolis_Magazine_-_September_2026.part1.rar`
+	//   failed quotedReleaseName (no 1080p; yearRe `\b` does not cut `_2026`
+	//   because `_` is a word char) so namefix BODYed RAR5. A bare `_`
+	//   check would also accept live hash `0G6IJMEdZG_f-Evmq`.
+	// Troubleshooting: namefix crc on `Title_Name_2026.part1.rar` → year/word
+	//   helper missed. Review if: hash tokens glue `_20xx`.
+	return underscoreSeparatedTitle(n)
+}
+
+var reSepYear = regexp.MustCompile(`(?:[._-])(?:19|20)\d{2}(?:[._-]|$)`)
+
+func underscoreSeparatedTitle(n string) bool {
+	if !strings.Contains(n, "_") {
+		return false
+	}
+	words := 0
+	for _, tok := range strings.FieldsFunc(n, func(r rune) bool {
+		return r == '_' || r == '-' || r == '.'
+	}) {
+		if letterCount(tok) < 4 || obfuscatedChurn(tok) {
+			continue
+		}
+		words++
+	}
+	return words >= 3 || (words >= 1 && reSepYear.MatchString(n))
 }
 
 func letterCount(s string) int {
@@ -1244,7 +1286,12 @@ func isFirstArchiveVolume(name string) bool {
 }
 
 func crcCapableName(name string) bool {
-	return isSFVName(name) || isFirstArchiveVolume(name)
+	// Claude 2026-10-20: last volume is CRC-capable (RAR5 unpacked CRC).
+	// Reason: live last-volume BODY (part1of9, 640KB, cands=2) extracted
+	//   CRC 322CD4F6 but pick.CRC was false so `namefix crc` never logged
+	//   and crcTried stayed 0 on first-volume split-after. Review if:
+	//   .r99 follow volumes need a last-volume detector besides partN.
+	return isSFVName(name) || isFirstArchiveVolume(name) || archivePartNum(name) > 1
 }
 
 func hasCRCCapableTarget(rows []HeaderRow) bool {

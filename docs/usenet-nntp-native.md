@@ -122,7 +122,8 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   `ParseSubject` strips `[k/N]`, `(n/m)`, and `N of M` from the stem (NNTmux
   collection hash input) and stores the file counter on `file_n`/`file_m`.
   `[48/73] Show…` and `[01/73] Show…` share one key. A quoted filename that is
-  already a title (resolution, including underscore `1080p`; a spacey name;
+  already a title (resolution, including underscore `1080p`; a spacey or
+  underscore-separated name such as `Metropolis_Magazine_-_September_2026`;
   or `[Group] fansub`) is the release key instead of the pack stem or `obf:`.
   Completeness then ignores collection `file_m` on ident-shaped keys so one
   mkv is not scored as 12 missing files. Hash.par2 quotes stay staged. Leading `[#a.b.teevee]` /

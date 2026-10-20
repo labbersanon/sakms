@@ -11950,3 +11950,18 @@ status stays active.
 | `internal/usenetsearch/namefix_test.go` | vol par2 + part099 skipped; empty FileDesc still CRC |
 | `internal/db/migrations/0050_unshelve_crc_pending.sql` | reset name_attempts on rar/sfv pending |
 | `docs/usenet-nntp-native.md` | first-volume RAR pick |
+
+## 2026-10-20 — RAR5 Data CRC32 + 95% BODY before ident
+
+**Problem:** After #228, namefix finally BODYed `part001.rar` (`par2=false`) but `namefix crc … crcs=0`. The one ident set was 81% / 231GB (1/4761) and shelved; 96 complete rar pending never ran.
+**Root cause:** Live archives are RAR5 (`Rar!\x1a\x07\x01\x00`). sakms only parsed RAR4 FILE_CRC. RAR5 split-after (flag 0x0010) CRC is packed-this-volume, not srrdb archive-crc (unpacked, last volume). Ident BODY ran before 95%.
+**Fix:** Parse RAR5 Data CRC32; skip split-after. Pick last volume after part01. Run 95% BODY before ident. Log `magic=`. Only treat a real extracted CRC as crcTried.
+**Outcome:** A complete hash.rar RAR5 (or RAR4 part01) can srrdb-rename. Split RAR5 uses last volume. MKV-only still needs IRC FN.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/archive_names.go` | RAR5 vint file-header Data CRC32 |
+| `internal/usenetsearch/namefix.go` | last-volume pick; 95% before ident |
+| `internal/usenetsearch/namefix_test.go` | RAR5 CRC rename; last volume in picks |

@@ -171,7 +171,7 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   (including boneless), 200 per pass, even when OVER is busy (BODY waits).
   Each pass runs quoted ident-shaped header names first (no BODY; ignores
   `next_name_at`), then PreDB-only keys, then a one-shot hash_16K seed of
-  named/shelved PAR2, then ident BODY, then 95% BODY, so a 20s BODY
+  named/shelved PAR2, then 95% BODY, then ident BODY, so a 20s BODY
   deadline cannot skip titles already sitting in the subject.
   Each BODY article is capped at 8s (dial included) and does not inherit leftover
   phase crumbs, so setRows eating the 20s still fetches one PAR2. A hung fetch
@@ -184,8 +184,9 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   a hash.par2 sibling whose FileDesc names are also hashes. Seed BODYs only the
   main (non-vol) `.par2` and reserves half of each seed pass for shelved
   pending so named donors cannot starve hash.par2. BODY picks SFV, then the
-  first-volume RAR (`part01` / bare `.rar`, never `part099` or `.vol*.par2`),
-  then the main `.par2`. RAR4 `FILE_CRC` / ZIP CRC /
+  first-volume RAR (`part01` / bare `.rar`), then the last volume (RAR5
+  unpacked CRC; never `.vol*.par2`), then the main `.par2`. 95% complete
+  sets run before 80% ident BODY. RAR4 `FILE_CRC` / RAR5 Data CRC32 / ZIP CRC /
   SFV CRC32 is looked up on srrdb `archive-crc:` when that CRC is unique
   (`resultsCount==1`, size ±15%); srrdb ToS is use-don't-scrape (no catalog
   paging). An `.sfv` whose payload filename already parses as a scene title is

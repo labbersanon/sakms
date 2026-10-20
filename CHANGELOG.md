@@ -11834,3 +11834,22 @@ status stays active.
 | File | Change |
 |---|---|
 | `internal/usenetsearch/predb/irc.go` | JOIN on MOTD; 366; tagged sighting log |
+
+## 2026-10-19 — namefix BODY article timeout continues; IRC FILE aliases
+
+**Problem:** Namefix still `hash_hits=0 renamed=0`. Every pass was `body leftover=40 fetches=1 bytes=0 unresolved=0`. IRC tagged rows had `filename=""`. Quoted ingest was not a namefix win.
+**Root cause:** One hung BodyHead (tryGet dial used `Background()` / 30s, or a stale idle conn) returned DeadlineExceeded and aborted all 40 due PAR2 fetches. `#PreNNTmux` `[FN:]` was N/A; `[FILE:]` and FN-only follow-up lines were ignored.
+**Fix:** Per-article BodyHead is 8s including dial (`tryGetCtx`). Article timeout logs `namefix body msgid=` (no titles) and continues to the next PAR2/NFO pick. `[FILE:]`/`[FILENAME:]` map to filename; a hashed FN line without `[TT:]` updates the last title. Tag letters log as `predb irc tags keys=`.
+**Outcome:** A hung 20s BODY can no longer starve the rest of the due hash.par2 queue. Hash reverse still needs a hashed `[FN:]` or a PAR2 FileDesc that actually returns.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/pool.go` | `tryGetCtx` cancels dial |
+| `internal/usenet/headersource.go` | BodyHead borrow uses `tryGetCtx` |
+| `internal/usenetsearch/namefix.go` | 8s article timeout; continue; body log |
+| `internal/usenetsearch/predb/parse.go` | FILE aliases; FN follow-up; tag keys |
+| `internal/usenetsearch/predb/irc.go` | lastTitle FN follow-up; keys log |
+| `internal/usenetsearch/namefix_test.go` | hung first BODY still renames from next pick |
+| `docs/usenet-nntp-native.md` | 8s article; FILE aliases |

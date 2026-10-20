@@ -139,6 +139,18 @@ func (p *pool) get() (*nntp.Conn, error) {
 // Troubleshooting: crawler logs ErrBusy during active grabs (expected).
 // Review if: crawler gains a reserved token budget separate from tryGet.
 func (p *pool) tryGet() (*nntp.Conn, error) {
+	return p.tryGetCtx(context.Background())
+}
+
+// tryGetCtx is tryGet with a dial deadline. Namefix BodyHead must be able to
+// abort a 30s nntpDialTimeout when its 8s article budget is gone.
+//
+// Claude 2026-10-19: pass the caller ctx into dial.
+// Reason: live namefix leftover=40 after body_fetches=1 body_bytes=0;
+//   tryGet dialled with Background() so a new socket ignored the 20s phase.
+// Troubleshooting: namefix body remain_ms=0 with no "namefix body msgid"
+//   → borrow still using tryGet(). Review if: crawl OVER should share this.
+func (p *pool) tryGetCtx(ctx context.Context) (*nntp.Conn, error) {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
@@ -153,7 +165,7 @@ func (p *pool) tryGet() (*nntp.Conn, error) {
 	}
 	select {
 	case p.live <- struct{}{}:
-		c, err := p.dial(context.Background())
+		c, err := p.dial(ctx)
 		if err != nil {
 			<-p.live
 			return nil, err

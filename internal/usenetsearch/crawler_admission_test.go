@@ -30,6 +30,8 @@ type crawlStub struct {
 	bodyErr   error
 	bodyCalls []string
 	bodyDelay time.Duration
+	// bodyFailFirst returns DeadlineExceeded this many times before serving bodies.
+	bodyFailFirst int
 }
 
 func (c *crawlStub) BodyHead(ctx context.Context, msgID string, maxBytes int) (usenet.BodySample, error) {
@@ -43,6 +45,10 @@ func (c *crawlStub) BodyHead(ctx context.Context, msgID string, maxBytes int) (u
 		}
 	}
 	c.bodyCalls = append(c.bodyCalls, msgID)
+	if c.bodyFailFirst > 0 {
+		c.bodyFailFirst--
+		return usenet.BodySample{}, context.DeadlineExceeded
+	}
 	if c.bodyErr != nil {
 		return usenet.BodySample{}, c.bodyErr
 	}

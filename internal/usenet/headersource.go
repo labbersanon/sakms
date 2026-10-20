@@ -364,7 +364,12 @@ func (h *managerHeaderSource) borrow(ctx context.Context, tryOnly bool) (*nntp.C
 			err error
 		)
 		if tryOnly {
-			c, err = p.tryGet()
+			// Claude 2026-10-19: tryGetCtx so namefix's article deadline cancels dial.
+			// Reason: tryGet dialled with Background() (nntpDialTimeout 30s) and
+			//   ate the 20s namefix phase before BODY started.
+			// Troubleshooting: body leftover=N fetches=1 bytes=0 → this still
+			//   calls tryGet(). Review if: STAT tryOnly should stay Background.
+			c, err = p.tryGetCtx(ctx)
 			if errors.Is(err, ErrBusy) {
 				lastErr = ErrBusy
 				continue

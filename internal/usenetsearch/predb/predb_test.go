@@ -61,6 +61,22 @@ func TestParseAnnounce(t *testing.T) {
 			ok:       true,
 		},
 		{
+			line:     "[DT: 2026-10-19 22:00:00] [TT: File.Alias.2021.1080p.BluRay.x264-GRP] [CT: MOVIES] [FILE: abcdef0123456789abcdef0123456789.part1.rar]",
+			kind:     "NEW",
+			title:    "File.Alias.2021.1080p.BluRay.x264-GRP",
+			cat:      "MOVIES",
+			filename: "abcdef0123456789abcdef0123456789.part1.rar",
+			preAt:    time.Date(2026, 10, 19, 22, 0, 0, 0, time.UTC).Unix(),
+			ok:       true,
+		},
+		{
+			line:     "[TT: Filename.Alias.2021.1080p.WEB.h264-GRP] [FILENAME: abcdef0123456789abcdef0123456789.mkv]",
+			kind:     "NEW",
+			title:    "Filename.Alias.2021.1080p.WEB.h264-GRP",
+			filename: "abcdef0123456789abcdef0123456789.mkv",
+			ok:       true,
+		},
+		{
 			line:      "[DT: 2026-10-19 07:00:00] [TT: Grey.S21E03.720p.HDTV.x264-GRP] [SC: #a.b.teevee] [CT: TV] [RQ: 23051509] [SZ: 700MB] [FL: 12] [FN: N/A]",
 			kind:      "NEW",
 			title:     "Grey.S21E03.720p.HDTV.x264-GRP",
@@ -90,6 +106,30 @@ func TestParseAnnounce(t *testing.T) {
 			a.Entry.PreAt != c.preAt || a.Entry.Nuked != c.nuked || a.Reason != c.reason {
 			t.Fatalf("%q = %+v", c.line, a)
 		}
+	}
+}
+
+func TestTaggedKeyListAndFilenameFollowUp(t *testing.T) {
+	line := "[DT: 2026-10-19 22:00:00] [TT: Some.Show.S01E02.720p.HDTV.x264-GRP] [SC: srrdb] [CT: TV] [SZ: 700MB] [FL: 12] [FN: N/A]"
+	if got := taggedKeyList(line); got != "DT,TT,SC,CT,SZ,FL,FN" {
+		t.Fatalf("keys=%q", got)
+	}
+	if strings.Contains(taggedKeyList(line), "Some.Show") {
+		t.Fatal("tag keys must not include the title")
+	}
+	title, fn, ok := filenameFollowUp("[FN: abcdef0123456789abcdef0123456789.part1.rar]", "Some.Show.S01E02.720p.HDTV.x264-GRP")
+	if !ok || title != "Some.Show.S01E02.720p.HDTV.x264-GRP" || fn != "abcdef0123456789abcdef0123456789.part1.rar" {
+		t.Fatalf("follow-up FN = %q %q ok=%v", title, fn, ok)
+	}
+	title, fn, ok = filenameFollowUp("[FILE: abcdef0123456789abcdef0123456789.mkv]", "Some.Show.S01E02.720p.HDTV.x264-GRP")
+	if !ok || fn != "abcdef0123456789abcdef0123456789.mkv" {
+		t.Fatalf("follow-up FILE = %q %q ok=%v", title, fn, ok)
+	}
+	if _, _, ok := filenameFollowUp("[FN: hash.rar]", ""); ok {
+		t.Fatal("follow-up without last title must miss")
+	}
+	if _, _, ok := filenameFollowUp(line, "Some.Show.S01E02.720p.HDTV.x264-GRP"); ok {
+		t.Fatal("full [TT:] line must not be a follow-up")
 	}
 }
 

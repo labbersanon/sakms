@@ -172,6 +172,8 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   Each pass runs quoted ident-shaped header names first (no BODY; ignores
   `next_name_at`), then PreDB-only keys, then ident BODY, then 95% BODY,
   so a 20s BODY deadline cannot skip titles already sitting in the subject.
+  Each BODY article is capped at 8s (dial included); a hung fetch logs
+  `namefix body msgid=` and the pass continues to the next PAR2/NFO pick.
   Yield-group BODY is 40/pass at 95% plus 20/pass at ≥80% when PAR2 is present. A BODY whose FileDesc is
   the same hash is not retried (PreDB-only from then on).
   Sets with PAR2 are BODY-sampled even under 100 MiB. Accepted: a
@@ -244,9 +246,11 @@ counters under `gapFillStatus` (`releasesSearchable`, `releasesBelowGate`,
 - Migration `0044` has a Down that drops the new tables/columns; the `release_name`
   grouping key on headers is unchanged, so rolling back loses only recovered names.
 - **IRC format.** `#PreNNTmux` lines are tagged (`[TT:]` title, `[CT:]` category,
-  `[SZ:]`/`[FL:]` size/files, nuke tags). NNTmux-style `NEW:`/`NUKE:` lines still
-  parse. Keepalive `INFO:` lines have no `TT` and are ignored. The feed is on
-  by default.
+  `[SZ:]`/`[FL:]` size/files, `[FN:]`/`[FILE:]`/`[FILENAME:]` hashed inner name,
+  nuke tags). A hashed `[FN:]` line without `[TT:]` updates the last title.
+  Logs emit tag letters only (`predb irc tags keys=`), never titles. NNTmux-style
+  `NEW:`/`NUKE:` lines still parse. Keepalive `INFO:` lines have no `TT` and are
+  ignored. The feed is on by default.
 - With `namefix_enabled=false`, legacy subjects like `"<hash>.part01.rar"` can
   still produce bogus per-filename release names (pre-existing behavior).
 

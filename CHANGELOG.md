@@ -11803,3 +11803,21 @@ status stays active.
 | `internal/usenetsearch/namefix.go` | troubleshooting no longer points at backoff |
 | `internal/usenetsearch/namefix_test.go` | Madoka still due after +1h `next_name_at` |
 | `docs/usenet-nntp-native.md` | header queue ignores PreDB backoff |
+
+## 2026-10-19 — namefix: IRC NOTICE hashed [FN:] and filename stem
+
+**Problem:** Namefix `hash_hits=0 renamed=0` on complete hash.par2. IRC was "connected" with 1775 rows, all `filename="" size_bytes=0 pre_at=0`. Quoted-header recovery was treated as namefix working.
+**Root cause:** TmuxPREBot hashed `[FN:]` lines are NOTICE; the client only parsed PRIVMSG (`#pre PRE:` titles). `[DT:]` was never stored. `ByFilename` required an exact string (`hash.mkv` vs `hash.part1.rar`). BODY errors were swallowed so `body_bytes=0` looked like empty FileDesc.
+**Fix:** NOTICE is ingested like PRIVMSG. Tagged `[DT:]` sets `pre_at`. Filename lookup matches a 16+ character first label to `stem.part1.rar`. BODY deadline/errors surface. Quoted subject filenames are PreDB candidates.
+**Outcome:** New `#PreNNTmux` hashed FN lines can rename pending sets via `ByFilename` without BODY. Existing 1775 FN-empty IRC rows stay titles-only until those NOTICE lines arrive.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/predb/irc.go` | NOTICE; JOIN 473/475/477 logged |
+| `internal/usenetsearch/predb/parse.go` | `[DT:]` → PreAt |
+| `internal/usenetsearch/predb/store.go` | filename stem prefix match |
+| `internal/usenetsearch/namefix.go` | quoted FN candidates; BODY errors |
+| `internal/usenetsearch/predb/predb_test.go` | NOTICE FN; DT; stem ByFilename |
+| `docs/usenet-nntp-native.md` | NOTICE hashed FN |

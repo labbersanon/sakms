@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Announce is one parsed PreDB channel line.
@@ -27,6 +28,7 @@ var (
 	// Troubleshooting: parsed=0 while PRIVMSG traffic exists → line has no
 	//   [TT:] and no NEW:/PRE: prefix.
 	// Review if: TmuxPREBot changes its tag letters.
+	reTaggedDT   = regexp.MustCompile(`(?i)\[DT:\s*([^\]]+)\]`)
 	reTaggedTT   = regexp.MustCompile(`(?i)\[TT:\s*([^\]]+)\]`)
 	reTaggedCT   = regexp.MustCompile(`(?i)\[CT:\s*([^\]]+)\]`)
 	reTaggedSZ   = regexp.MustCompile(`(?i)\[SZ:\s*([^\]]+)\]`)
@@ -114,6 +116,9 @@ func parseTaggedAnnounce(line string) (Announce, bool) {
 		return Announce{}, false
 	}
 	a := Announce{Kind: "NEW", Entry: Entry{Title: title}}
+	if dt := taggedNA(line, reTaggedDT); dt != "" {
+		a.Entry.PreAt = parsePreAt(dt)
+	}
 	if cat := taggedNA(line, reTaggedCT); cat != "" {
 		a.Entry.Category = cat
 	}
@@ -153,6 +158,16 @@ func parseTaggedAnnounce(line string) (Announce, bool) {
 		a.Entry.Nuked = a.Kind == "NUKE" || a.Kind == "MODNUKE"
 	}
 	return a, true
+}
+
+func parsePreAt(raw string) int64 {
+	raw = strings.TrimSpace(raw)
+	for _, layout := range []string{"2006-01-02 15:04:05", time.RFC3339} {
+		if t, err := time.ParseInLocation(layout, raw, time.UTC); err == nil {
+			return t.Unix()
+		}
+	}
+	return 0
 }
 
 func sizeBytes(num, unit string) int64 {

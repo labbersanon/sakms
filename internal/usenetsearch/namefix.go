@@ -347,7 +347,11 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 			return true, nil
 		}
 		res.BodyFetches++
+		if errors.Is(berr, context.DeadlineExceeded) || errors.Is(berr, context.Canceled) {
+			return false, berr
+		}
 		if berr != nil {
+			log.Printf("usenetsearch: namefix body msgid=%s: %v", pick.MsgID, berr)
 			continue
 		}
 		sampled = true
@@ -641,7 +645,7 @@ func filenameCandidates(rows []HeaderRow) []string {
 			return
 		}
 		key := strings.ToLower(s)
-		if seen[key] || hashCore(key) != "" {
+		if seen[key] {
 			return
 		}
 		seen[key] = true
@@ -650,6 +654,8 @@ func filenameCandidates(rows []HeaderRow) []string {
 	for _, r := range rows {
 		add(r.Filename)
 		add(normalizeRecovered(r.Filename))
+		add(quotedFilename(r.Subject))
+		add(normalizeRecovered(quotedFilename(r.Subject)))
 	}
 	return out
 }

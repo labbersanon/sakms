@@ -147,6 +147,31 @@ func TestStore_HashLookupMissCacheAndNoMissHit(t *testing.T) {
 	}
 }
 
+func TestStore_ByFilenameStemMatchesPartRar(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	const title = "Stem.Movie.2021.1080p.BluRay.x264-GRP"
+	const fn = "abcdef0123456789abcdef0123456789.part1.rar"
+	if err := s.Upsert(ctx, Entry{Title: title, Filename: fn}, SourceIRC); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.ByFilename(ctx, "ABCDEF0123456789ABCDEF0123456789.mkv")
+	if err != nil || !ok || got.Title != title {
+		t.Fatalf("stem ByFilename = %+v ok=%v err=%v", got, ok, err)
+	}
+}
+
+func TestParseAnnounce_TaggedStoresPreAt(t *testing.T) {
+	a, ok := ParseAnnounce(`[DT: 2026-10-18 22:13:34] [TT: Some.Movie.2021.1080p.BluRay.x264-GRP] [CT: MOVIES] [SZ: 4GB] [FN: abcdef0123456789abcdef0123456789.part1.rar]`)
+	if !ok {
+		t.Fatal("tagged line must parse")
+	}
+	want := time.Date(2026, 10, 18, 22, 13, 34, 0, time.UTC).Unix()
+	if a.Entry.PreAt != want || a.Entry.Filename == "" {
+		t.Fatalf("pre_at=%d fn=%q want %d and hashed fn", a.Entry.PreAt, a.Entry.Filename, want)
+	}
+}
+
 func TestHTTPClient_HitMissAndFailures(t *testing.T) {
 	var calls atomic.Int32
 	mode := "hit"
@@ -411,6 +436,7 @@ func TestIRCClient_RandomNickHeartbeatNoNickServ(t *testing.T) {
 				if !sentLine {
 					sentLine = true
 					fmt.Fprint(c, ":pre!x@y PRIVMSG #PreNNTmux :[DT: 2026-10-18 22:13:34] [TT: Heart.Beat.2022.1080p.WEB.h264-GRP] [SC: srrdb] [CT: MOVIES] [RQ: N/A] [SZ: 2GB] [FL: 20]\r\n")
+					fmt.Fprint(c, ":pre!x@y NOTICE #PreNNTmux :[DT: 2026-10-18 22:13:34] [TT: Notice.Hash.2022.1080p.WEB.h264-GRP] [CT: MOVIES] [SZ: 1GB] [FL: 10] [FN: abcdef0123456789abcdef0123456789.part1.rar]\r\n")
 				}
 			}
 		}
@@ -438,7 +464,9 @@ func TestIRCClient_RandomNickHeartbeatNoNickServ(t *testing.T) {
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if e, ok, _ := store.ByTitle(context.Background(), "Heart.Beat.2022.1080p.WEB.h264-GRP"); ok && e.Category == "MOVIES" && e.Files == 20 {
+		e, ok, _ := store.ByTitle(context.Background(), "Heart.Beat.2022.1080p.WEB.h264-GRP")
+		fn, fnOK, _ := store.ByFilename(context.Background(), "abcdef0123456789abcdef0123456789.mkv")
+		if ok && e.Category == "MOVIES" && e.Files == 20 && fnOK && fn.Title == "Notice.Hash.2022.1080p.WEB.h264-GRP" {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -449,6 +477,10 @@ func TestIRCClient_RandomNickHeartbeatNoNickServ(t *testing.T) {
 	e, ok, err := store.ByTitle(context.Background(), "Heart.Beat.2022.1080p.WEB.h264-GRP")
 	if err != nil || !ok || e.Category != "MOVIES" || e.SizeBytes != 2<<30 || e.Files != 20 {
 		t.Fatalf("irc entry = %+v ok=%v err=%v", e, ok, err)
+	}
+	fn, ok, err := store.ByFilename(context.Background(), "abcdef0123456789abcdef0123456789.mkv")
+	if err != nil || !ok || fn.Title != "Notice.Hash.2022.1080p.WEB.h264-GRP" {
+		t.Fatalf("NOTICE hashed FN = %+v ok=%v err=%v", fn, ok, err)
 	}
 	if cl.Cfg.Nick == "" || len(cl.Cfg.Nick) != ircNickLen {
 		t.Fatalf("generated nick %q", cl.Cfg.Nick)

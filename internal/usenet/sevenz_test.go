@@ -9,6 +9,34 @@ import (
 	"testing"
 )
 
+func TestSevenZUint64RoundTrip(t *testing.T) {
+	for _, v := range []uint64{0, 1, 127, 128, 255, 256, 0xFFFF, 26635170624} {
+		enc := append7zUint64(nil, v)
+		got, n, ok := read7zUint64(enc, 0)
+		if !ok || got != v || n != len(enc) {
+			t.Fatalf("v=%d enc=%x got=%d n=%d ok=%v", v, enc, got, n, ok)
+		}
+	}
+}
+
+func TestEncodedPackLenAndPackPosPatch(t *testing.T) {
+	hdr := []byte{0x17, 0x06, 0x00, 0x01, 0x09, 0x64, 0x00}
+	packLen, ok := encodedPackLen(hdr)
+	if !ok || packLen != 0x64 {
+		t.Fatalf("packLen=%d ok=%v", packLen, ok)
+	}
+	wide := append([]byte{0x17, 0x06}, append7zUint64(nil, 26635170624)...)
+	wide = append(wide, 0x01, 0x09, 0x64, 0x00)
+	patched := patchEncodedPackPos(wide)
+	if patched == nil || patched[0] != 0x17 || patched[1] != 0x06 || patched[2] != 0 {
+		t.Fatalf("patched=%x", patched)
+	}
+	packLen, ok = encodedPackLen(patched)
+	if !ok || packLen != 0x64 {
+		t.Fatalf("patched packLen=%d ok=%v", packLen, ok)
+	}
+}
+
 func TestParse7zStart_RejectsGarbage(t *testing.T) {
 	if _, ok := Parse7zStart([]byte("Rar!\x1a\x07\x00")); ok {
 		t.Fatal("rar prefix must not parse as 7z")

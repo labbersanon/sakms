@@ -15,14 +15,13 @@ import (
 // Claude 2026-10-20: 7z inner CRC lives in the end header, not the first
 //   256KiB of .7z.001 (packed data).
 // Reason: live hash.par2 BODYed ngPost 7z.001 (magic=377abcaf271c0004,
-//   crcs=0). Split volumes put NextHeader at 32+NextHeaderOffset, which is
-//   the last bytes of the last .7z.NNN volume. Encoded headers need LZMA;
-//   the image already has 7z (p7zip-full / 7-Zip). A sparse file with the
-//   original start header and the last-segment tail at EOF lets `7z l -slt`
-//   print Path/CRC. kEncodedHeader (live sz=45) keeps LZMA bytes *before*
-//   NextHeader, so writing only NextHeaderSize zeros out that pack.
-// Troubleshooting: namefix crc 7z off=N sz=45 crcs=0 → last-segment tail
-//   shorter than packed-header+info, 7z missing, or overlay truncate fail.
+//   crcs=0). Split volumes put NextHeader at 32+NextHeaderOffset.
+//   Sparse+`7z l` worked for small offsets; live off=26GiB `7z l` exited
+//   255 (7z reads holes). kEncodedHeader (sz=44/45) is plaintext StreamsInfo
+//   plus LZMA packed header immediately before it — patch packPos=0 and
+//   list a few-KB mini archive instead.
+// Troubleshooting: namefix crc 7z mini miss nid=0x17 → pack sizes bigger
+//   than last-segment tail, or 7z l still errors (log `7z l crc mini=`).
 // Review if: a pure-Go LZMA header parser replaces the 7z spawn.
 // Related files: archive_names.go, namefix.go pickBodyTargets
 
@@ -31,6 +30,7 @@ var sevenZMagic = []byte("7z\xbc\xaf\x27\x1c")
 const (
 	max7zPackedOffset = 1 << 40 // 1 TiB sparse apparent size
 	max7zHeaderSize   = 4 << 20
+	max7zSparse       = 32 << 20 // 7z l reads holes; 26GiB sparse exited 255
 	sevenZListTimeout = 8 * time.Second
 )
 
@@ -89,7 +89,150 @@ func ArchiveFileCRCsFrom7zParts(start, tail []byte) []ArchiveFileCRC {
 	if st.CRC != 0 && crc32.ChecksumIEEE(hdr) != st.CRC {
 		return nil
 	}
+	if st.Offset > max7zSparse {
+		if files := sevenZListEncodedMini(start[:32], st, tail); len(files) > 0 {
+			return files
+		}
+		log.Printf("usenet: 7z mini miss off=%d sz=%d tail=%d nid=0x%x", st.Offset, st.Size, len(tail), hdr[0])
+		return nil
+	}
 	return sevenZListSparse(start[:32], st, tail)
+}
+
+func sevenZListEncodedMini(start []byte, st SevenZStart, tail []byte) []ArchiveFileCRC {
+	hdr := tail[uint64(len(tail))-st.Size:]
+	packLen, ok := encodedPackLen(hdr)
+	if !ok {
+		return nil
+	}
+	base := uint64(len(tail)) - st.Size
+	if packLen > base {
+		return nil
+	}
+	packed := tail[base-packLen : base]
+	patched := patchEncodedPackPos(hdr)
+	if patched == nil {
+		return nil
+	}
+	miniStart := append([]byte(nil), start[:32]...)
+	binary.LittleEndian.PutUint64(miniStart[12:20], packLen)
+	binary.LittleEndian.PutUint64(miniStart[20:28], uint64(len(patched)))
+	binary.LittleEndian.PutUint32(miniStart[28:32], crc32.ChecksumIEEE(patched))
+	binary.LittleEndian.PutUint32(miniStart[8:12], crc32.ChecksumIEEE(miniStart[12:32]))
+	blob := append(append(miniStart, packed...), patched...)
+	return sevenZListBlob(blob, st.Offset, st.Size, len(tail))
+}
+
+func sevenZListBlob(blob []byte, origOff, origSize uint64, tail int) []ArchiveFileCRC {
+	bin, err := lookPath("7z")
+	if err != nil {
+		return nil
+	}
+	dir, err := os.MkdirTemp("", "sakms-7z-crc-*")
+	if err != nil {
+		return nil
+	}
+	defer os.RemoveAll(dir)
+	path := filepath.Join(dir, "a.7z")
+	if err := os.WriteFile(path, blob, 0o600); err != nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), sevenZListTimeout)
+	defer cancel()
+	cmd := unpackCommand(ctx, bin, "l", "-slt", "-bd", path)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if len(msg) > 200 {
+			msg = msg[len(msg)-200:]
+		}
+		log.Printf("usenet: 7z l crc off=%d sz=%d tail=%d mini=%d err=%v %s", origOff, origSize, tail, len(blob), err, msg)
+		return nil
+	}
+	return parse7zSLT(string(out))
+}
+
+func read7zUint64(b []byte, i int) (uint64, int, bool) {
+	if i >= len(b) {
+		return 0, i, false
+	}
+	first := b[i]
+	i++
+	mask := byte(0x80)
+	var value uint64
+	for n := 0; n < 8; n++ {
+		if first&mask == 0 {
+			high := uint64(first & (mask - 1))
+			return value | high<<(8*n), i, true
+		}
+		if i >= len(b) {
+			return 0, i, false
+		}
+		value |= uint64(b[i]) << (8 * n)
+		i++
+		mask >>= 1
+	}
+	return value, i, true
+}
+
+func append7zUint64(dst []byte, value uint64) []byte {
+	first := byte(0)
+	mask := byte(0x80)
+	var i int
+	for i = 0; i < 8; i++ {
+		if value < uint64(1)<<(7*(i+1)) {
+			first |= byte(value >> (8 * i))
+			break
+		}
+		first |= mask
+		mask >>= 1
+	}
+	dst = append(dst, first)
+	for n := 0; n < i; n++ {
+		dst = append(dst, byte(value))
+		value >>= 8
+	}
+	return dst
+}
+
+func encodedPackLen(hdr []byte) (uint64, bool) {
+	if len(hdr) < 3 || hdr[0] != 0x17 || hdr[1] != 0x06 {
+		return 0, false
+	}
+	_, i, ok := read7zUint64(hdr, 2)
+	if !ok {
+		return 0, false
+	}
+	num, i, ok := read7zUint64(hdr, i)
+	if !ok || num == 0 || num > 4 {
+		return 0, false
+	}
+	if i >= len(hdr) || hdr[i] != 0x09 {
+		return 0, false
+	}
+	i++
+	var packLen uint64
+	for n := uint64(0); n < num; n++ {
+		sz, ni, ok := read7zUint64(hdr, i)
+		if !ok || sz == 0 || sz > max7zHeaderSize {
+			return 0, false
+		}
+		packLen += sz
+		i = ni
+	}
+	return packLen, true
+}
+
+func patchEncodedPackPos(hdr []byte) []byte {
+	if len(hdr) < 3 || hdr[0] != 0x17 || hdr[1] != 0x06 {
+		return nil
+	}
+	_, n, ok := read7zUint64(hdr, 2)
+	if !ok {
+		return nil
+	}
+	out := append([]byte{0x17, 0x06}, append7zUint64(nil, 0)...)
+	return append(out, hdr[n:]...)
 }
 
 func sevenZListSparse(start []byte, st SevenZStart, tail []byte) []ArchiveFileCRC {

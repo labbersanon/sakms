@@ -84,6 +84,12 @@ const (
 	namefixMinPayload = 100 << 20
 	// namefixHeadBytes caps the decoded bytes kept from one BODY.
 	namefixHeadBytes = 256 << 10
+	// Claude 2026-10-20: last-segment 7z BODY keeps up to 2MiB (article tail).
+	// Reason: 7z NextHeader is at EOF of the last .7z.NNN volume. BodyHead
+	//   already reads the whole article then truncates the *prefix*; 256KiB
+	//   of a 768KiB last yEnc part drops the footer. Typical last parts are
+	//   <1MiB. Review if: BodyHead grows a keep-tail flag for >2MiB parts.
+	namefixTailBytes = 2 << 20
 	// DefaultNameFixBodyMBPerHour caps BODY volume spent on name recovery.
 	DefaultNameFixBodyMBPerHour = 512
 	namefixSizeTolerance        = 0.15
@@ -391,6 +397,7 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 	sampled := false
 	triedBody := false
 	crcTried := false
+	var zstart []byte
 	for _, pick := range pickBodyTargets(rows) {
 		// Claude 2026-10-20: budget against the 256KiB head, not article bytes.
 		// Reason: part01 first segments are often 1–2MB; fits(pick.Bytes) would
@@ -399,9 +406,13 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		// Troubleshooting: namefix crc=0 with BudgetStop and pending rar →
 		//   this min() missing. Review if: BodyHead starts streaming full
 		//   articles.
+		headCap := namefixHeadBytes
+		if pick.Tail {
+			headCap = namefixTailBytes
+		}
 		est := pick.Bytes
-		if est > namefixHeadBytes {
-			est = namefixHeadBytes
+		if est > int64(headCap) {
+			est = int64(headCap)
 		} else if est < 0 {
 			est = 0
 		}
@@ -416,7 +427,7 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		// Troubleshooting: o2cli grep "namefix body skip" → this WithoutCancel
 		//   missing. Review if: one overtime BODY delays crawl (>30s/pass).
 		bodyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), namefixBodyArticleTimeout)
-		sample, berr := n.Src.BodyHead(bodyCtx, pick.MsgID, namefixHeadBytes)
+		sample, berr := n.Src.BodyHead(bodyCtx, pick.MsgID, headCap)
 		cancel()
 		if errors.Is(berr, usenet.ErrBusy) {
 			res.Busy = true
@@ -432,7 +443,24 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		sampled = true
 		n.Budget.add(sample.WireBytes)
 		res.BodyBytes += sample.WireBytes
+		if st, ok := usenet.Parse7zStart(sample.Data); ok {
+			zstart = append([]byte(nil), sample.Data[:32]...)
+			log.Printf("usenetsearch: namefix crc msgid=%s 7z off=%d sz=%d", pick.MsgID, st.Offset, st.Size)
+		}
 		cands := candidatesFromSample(sample, pick.NFO)
+		crcs := sampleCRCs(sample)
+		var extra []usenet.ArchiveFileCRC
+		if len(crcs) == 0 && len(zstart) == 32 {
+			extra = usenet.ArchiveFileCRCsFrom7zParts(zstart, sample.Data)
+			for _, f := range extra {
+				if f.CRC != "" {
+					crcs = append(crcs, f.CRC)
+				}
+				if f.Name != "" {
+					cands = append(cands, nameCand{f.Name, sourceRar})
+				}
+			}
+		}
 		isPar2 := bytes.HasPrefix(sample.Data, par2Magic)
 		cand0 := ""
 		if len(cands) > 0 {
@@ -444,7 +472,6 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		log.Printf("usenetsearch: namefix body msgid=%s bytes=%d remain_ms=%d wire=%d yenc=%d cands=%d par2=%t cand=%q err=<nil>",
 			pick.MsgID, pick.Bytes, namefixBodyArticleTimeout.Milliseconds(), sample.WireBytes, len(sample.YencName), len(cands), isPar2, cand0)
 		if pick.CRC {
-			crcs := sampleCRCs(sample)
 			if len(crcs) > 0 {
 				crcTried = true
 			}
@@ -455,9 +482,11 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 			inner := ""
 			if names := usenet.ArchiveMemberNames(sample.Data); len(names) > 0 {
 				inner = names[0]
-				if len(inner) > 80 {
-					inner = inner[:80]
-				}
+			} else if len(extra) > 0 {
+				inner = extra[0].Name
+			}
+			if len(inner) > 80 {
+				inner = inner[:80]
 			}
 			log.Printf("usenetsearch: namefix crc msgid=%s crcs=%d magic=%x name=%q", pick.MsgID, len(crcs), magic, inner)
 		}
@@ -502,7 +531,7 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		if isPar2 && allHash {
 			hashOnly = true
 		}
-		if hit, ok := n.lookupArchiveCRC(work, set, sample); ok {
+		if hit, ok := n.lookupCRCs(work, set, crcs); ok {
 			return n.promote(work, set, rows, hit.Title, sourceSRRDB, confMedium, "srrdb", res, statBudget)
 		}
 		// Claude 2026-10-20: do not break the pick loop on leftover phase ctx.
@@ -873,11 +902,11 @@ func (n *NameFixer) lookupPreDB(ctx context.Context, set PendingSet, rows []Head
 	return PreDBHit{}, false
 }
 
-func (n *NameFixer) lookupArchiveCRC(ctx context.Context, set PendingSet, sample usenet.BodySample) (PreDBHit, bool) {
+func (n *NameFixer) lookupCRCs(ctx context.Context, set PendingSet, crcs []string) (PreDBHit, bool) {
 	if n.SRRDB == nil {
 		return PreDBHit{}, false
 	}
-	for _, crc := range sampleCRCs(sample) {
+	for _, crc := range crcs {
 		hit, ok := n.SRRDB.ByCRC(ctx, crc)
 		if !ok || recoveredUnusable(hit.Title) || !sizeWithin(hit.SizeBytes, set.PayloadBytes) {
 			continue
@@ -1135,15 +1164,18 @@ type bodyPick struct {
 	Bytes int64
 	NFO   bool
 	CRC   bool
+	Tail  bool // last yEnc segment (7z end header)
 }
 
-// pickBodyTargets chooses up to namefixBodiesPerSet first-segment articles:
-// SFV, first-volume RAR/ZIP/7z (part01 / bare .rar), last volume when
-// partN>1, main non-vol PAR2, then NFO. Volume PAR2 never fills a slot.
+// pickBodyTargets chooses up to namefixBodiesPerSet articles:
+// SFV, first-volume RAR/ZIP/7z (part01 / .7z.001 / bare .rar), last volume
+// (RAR first segment; 7z last segment), main non-vol PAR2, then NFO.
+// Volume PAR2 never fills a slot. Encrypted .7z.enc is skipped.
 func pickBodyTargets(rows []HeaderRow) []bodyPick {
 	type file struct {
 		key   string
 		first HeaderRow
+		last  HeaderRow
 		total int64
 		nfo   bool
 	}
@@ -1157,13 +1189,16 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 		f := files[key]
 		if f == nil {
 			low := strings.ToLower(r.Subject + " " + r.Filename)
-			f = &file{key: key, first: r, nfo: strings.Contains(low, ".nfo")}
+			f = &file{key: key, first: r, last: r, nfo: strings.Contains(low, ".nfo")}
 			files[key] = f
 			order = append(order, key)
 		}
 		f.total += r.Bytes
 		if r.PartN > 0 && (r.PartN < f.first.PartN || f.first.PartN <= 0) {
 			f.first = r
+		}
+		if r.PartN > f.last.PartN {
+			f.last = r
 		}
 	}
 	sorted := make([]*file, 0, len(order))
@@ -1180,7 +1215,7 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 		return nil
 	}
 	anyName := func(f *file, pred func(string) bool) bool {
-		for _, n := range []string{f.key, f.first.Filename, f.first.Subject} {
+		for _, n := range []string{f.key, f.first.Filename, f.first.Subject, f.last.Filename, f.last.Subject} {
 			if pred(n) {
 				return true
 			}
@@ -1189,27 +1224,30 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 	}
 	var picks []bodyPick
 	seen := map[string]bool{}
-	add := func(f *file) {
-		if f == nil || seen[f.first.MsgID] || len(picks) >= namefixBodiesPerSet {
+	addRow := func(row HeaderRow, nfo, crc, tail bool) {
+		if row.MsgID == "" || seen[row.MsgID] || len(picks) >= namefixBodiesPerSet {
 			return
 		}
-		seen[f.first.MsgID] = true
-		picks = append(picks, bodyPick{
-			MsgID: f.first.MsgID,
-			Bytes: f.first.Bytes,
-			NFO:   f.nfo,
-			CRC:   anyName(f, crcCapableName),
-		})
+		seen[row.MsgID] = true
+		picks = append(picks, bodyPick{MsgID: row.MsgID, Bytes: row.Bytes, NFO: nfo, CRC: crc, Tail: tail})
+	}
+	addFirst := func(f *file) {
+		if f == nil {
+			return
+		}
+		crc := anyName(f, crcCapableName)
+		tail := anyName(f, is7zName) && f.last.MsgID == f.first.MsgID
+		addRow(f.first, f.nfo, crc || tail, tail)
 	}
 	for _, f := range sorted {
 		if anyName(f, isSFVName) {
-			add(f)
+			addFirst(f)
 			break
 		}
 	}
 	for _, f := range sorted {
 		if anyName(f, isFirstArchiveVolume) {
-			add(f)
+			addFirst(f)
 			break
 		}
 	}
@@ -1217,7 +1255,7 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 	lastN := 0
 	for _, f := range sorted {
 		n := 0
-		for _, name := range []string{f.key, f.first.Filename, f.first.Subject} {
+		for _, name := range []string{f.key, f.first.Filename, f.first.Subject, f.last.Filename, f.last.Subject} {
 			if p := archivePartNum(name); p > n {
 				n = p
 			}
@@ -1226,18 +1264,22 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 			lastN, last = n, f
 		}
 	}
-	if lastN > 1 {
-		add(last)
+	if last != nil && lastN >= 1 {
+		if anyName(last, is7zName) {
+			addRow(last.last, last.nfo, true, true)
+		} else if lastN > 1 {
+			addRow(last.first, last.nfo, true, false)
+		}
 	}
 	for _, f := range sorted {
 		if anyName(f, isMainPar2Name) {
-			add(f)
+			addFirst(f)
 			break
 		}
 	}
 	for _, f := range sorted {
 		if f.nfo {
-			add(f)
+			addFirst(f)
 			break
 		}
 	}
@@ -1256,28 +1298,43 @@ func isSFVName(name string) bool {
 }
 
 func archivePartNum(name string) int {
-	m := reArchivePart.FindStringSubmatch(strings.ToLower(name))
-	if len(m) < 2 {
-		return 0
+	low := strings.ToLower(name)
+	if m := reArchivePart.FindStringSubmatch(low); len(m) >= 2 {
+		n, err := strconv.Atoi(m[1])
+		if err != nil {
+			return 0
+		}
+		return n
 	}
-	n, err := strconv.Atoi(m[1])
-	if err != nil {
-		return 0
+	if m := reSplitVol.FindStringSubmatch(low); len(m) >= 2 {
+		n, err := strconv.Atoi(m[1])
+		if err != nil {
+			return 0
+		}
+		return n
 	}
-	return n
+	return 0
+}
+
+func isEncrypted7zName(name string) bool {
+	return strings.Contains(strings.ToLower(name), ".7z.enc")
+}
+
+func is7zName(name string) bool {
+	low := strings.ToLower(name)
+	if isEncrypted7zName(low) {
+		return false
+	}
+	return strings.Contains(low, ".7z")
 }
 
 func isFirstArchiveVolume(name string) bool {
 	low := strings.ToLower(name)
-	if isSFVName(low) || strings.Contains(low, ".par2") || strings.Contains(low, ".nfo") {
+	if isSFVName(low) || strings.Contains(low, ".par2") || strings.Contains(low, ".nfo") || isEncrypted7zName(low) {
 		return false
 	}
-	if reArchivePart.MatchString(low) {
+	if reArchivePart.MatchString(low) || reSplitVol.MatchString(low) {
 		return archivePartNum(low) == 1
-	}
-	if m := reSplitVol.FindStringSubmatch(low); len(m) > 1 {
-		n, _ := strconv.Atoi(m[1])
-		return n == 1
 	}
 	if reRarFollow.MatchString(low) {
 		return false
@@ -1291,7 +1348,7 @@ func crcCapableName(name string) bool {
 	//   CRC 322CD4F6 but pick.CRC was false so `namefix crc` never logged
 	//   and crcTried stayed 0 on first-volume split-after. Review if:
 	//   .r99 follow volumes need a last-volume detector besides partN.
-	return isSFVName(name) || isFirstArchiveVolume(name) || archivePartNum(name) > 1
+	return isSFVName(name) || isFirstArchiveVolume(name) || archivePartNum(name) > 1 || is7zName(name)
 }
 
 func hasCRCCapableTarget(rows []HeaderRow) bool {

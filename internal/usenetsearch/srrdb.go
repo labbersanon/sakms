@@ -20,7 +20,7 @@ import (
 //   public reverse lookup for an inner-file CRC32 (RAR FILE_CRC / SFV / ZIP).
 // Troubleshooting: name_source=srrdb stays 0 with rar BODY → CRC extract
 //   missed or resultsCount!=1. Review if: srrdb ToS forbids CRC lookup.
-// Related files: namefix.go lookupArchiveCRC, archive_names.go FILE_CRC
+// Related files: namefix.go lookupCRCs, sevenz.go, archive_names.go FILE_CRC
 
 // DefaultSRRDBURL is the public search prefix. Queries are CRC-only; do not
 // page this endpoint to build a catalog (provider: "Use but don't scrape").

@@ -43,7 +43,7 @@ var (
 	// Related files: .omc/plans/nntp-collection-grouping.md
 	reFileCount = regexp.MustCompile(`(?i)(?:^|[\[(\s])(\d{1,5})(?:/|[\s_]of[\s_]|-)(\d{1,5})(?:[\])\s:]|$)`)
 	reYencSz    = regexp.MustCompile(`(?i)yEnc\s*(?:\(.*?\)\s*)?(?:\[?\s*)?(\d+)\s*(?:bytes?)?`)
-	reFileTok   = regexp.MustCompile(`(?i)([\w.\-]+\.(?:rar|r\d{2}|part\d+\.rar|par2|nfo|sfv|mkv|mp4|avi|zip|7z))`)
+	reFileTok   = regexp.MustCompile(`(?i)([\w.\-]+\.(?:rar|r\d{2}|part\d+\.rar|par2|nfo|sfv|mkv|mp4|avi|zip|7z\.\d{3}|7z))`)
 	reHexBlob   = regexp.MustCompile(`(?i)^[a-f0-9]{16,}$`)
 	// 40 before 32 so a sha1 is not truncated to its md5-length prefix.
 	reHashToken = regexp.MustCompile(`(?i)(?:^|[^a-f0-9])([a-f0-9]{40}|[a-f0-9]{32})(?:[^a-f0-9]|$)`)
@@ -259,10 +259,14 @@ func requestIDFromSubject(s string) int64 {
 // quotedFilename is the NNTP `"file.ext"` payload name.
 // Claude 2026-10-19: first quote pair, spaces/`+`/`[]` kept.
 // Reason: reFileTok cannot match fansub filenames; namefix header
-//   candidates used only Filename, so live anime.highspeed 95% sets
-//   stayed unnamed with the title sitting in the subject.
+//
+//	candidates used only Filename, so live anime.highspeed 95% sets
+//	stayed unnamed with the title sitting in the subject.
+//
 // Troubleshooting: Filename=`01.par2` on a quoted title subject → parser
-//   fell through to reFileTok. Review if: nested quotes appear in HIGH.
+//
+//	fell through to reFileTok. Review if: nested quotes appear in HIGH.
+//
 // Related files: namefix.go headerNameCandidates
 func quotedFilename(s string) string {
 	i := strings.Index(s, `"`)

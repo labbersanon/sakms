@@ -52,7 +52,11 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             pkg-config libx11-dev libxcursor-dev libxrandr-dev \
             libxinerama-dev libxi-dev libxxf86vm-dev libgl1-mesa-dev \
-            libxkbcommon-dev libwayland-dev wayland-protocols
+            libxkbcommon-dev libwayland-dev wayland-protocols \
+            p7zip-full
+          # Claude 2026-10-20: p7zip-full for 7z end-header CRC tests.
+          # Reason: namefix lists split .7z.NNN footers with `7z l -slt`.
+          # Review if: a pure-Go LZMA header parser replaces the 7z spawn.
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod

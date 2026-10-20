@@ -9,6 +9,17 @@ import (
 	"github.com/labbersanon/sakms/internal/dbtest"
 )
 
+func TestParseSubject_SevenZSplitQuotedFilename(t *testing.T) {
+	ps := ParseSubject(`[01/38] - "NOmSbr4NWyZ7Cq1K3tUnmfcYON3VyPTBb4R2lKG78d2AHuIBdc.7z.001" yEnc (1/20)`)
+	if ps.Filename != "NOmSbr4NWyZ7Cq1K3tUnmfcYON3VyPTBb4R2lKG78d2AHuIBdc.7z.001" {
+		t.Fatalf("filename=%q, want quoted .7z.001 (not truncated to .7z)", ps.Filename)
+	}
+	tok := ParseSubject(`NOmSbr4NWyZ7Cq1K3tUnmfcYON3VyPTBb4R2lKG78d2AHuIBdc.7z.038 yEnc (12/20)`)
+	if !strings.HasSuffix(tok.Filename, ".7z.038") {
+		t.Fatalf("unquoted filename=%q, want .7z.038", tok.Filename)
+	}
+}
+
 func TestParseSubject_Scene(t *testing.T) {
 	ps := ParseSubject(`[Group] Some.Movie.2024.1080p.BluRay.x264-GROUP - "some.movie.2024.1080p.bluray.x264-group.part01.rar" yEnc (1/120)`)
 	if !ps.OK || ps.Obfuscated {

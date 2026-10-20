@@ -1688,7 +1688,7 @@ WHERE h.group_name=r.group_name AND h.release_name=r.release_key AND h.msgid='vs
 		t.Fatal(err)
 	}
 	if named != 1 || pending != 1 || res.BySource[sourceParHash] != 0 {
-		t.Fatalf("named=%d pending=%d res=%+v, want donor only (size ±5%)", named, pending, res)
+		t.Fatalf("named=%d pending=%d res=%+v, want donor only (size +/-5%%)", named, pending, res)
 	}
 }
 

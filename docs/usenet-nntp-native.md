@@ -175,7 +175,8 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   Each BODY article is capped at 8s (dial included) and does not inherit leftover
   phase crumbs, so setRows eating the 20s still fetches one PAR2. A hung fetch
   logs `namefix body msgid=` and continues to the next PAR2/NFO pick unless the
-  phase is already gone.
+  phase is already gone. PAR2 FileDesc / yEnc names that are md5/sha1 tokens
+  are reverse-looked up in the local PreDB (they are not in the header rows).
   Yield-group BODY is 40/pass at 95% plus 20/pass at ≥80% when PAR2 is present.
   A BODY whose FileDesc is the same hash is not retried (PreDB-only from then on).
   Sets with PAR2 are BODY-sampled even under 100 MiB. Accepted: a

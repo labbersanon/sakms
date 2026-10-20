@@ -385,6 +385,16 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 				pick.MsgID, pick.Bytes, namefixBodyArticleTimeout.Milliseconds(), sample.WireBytes, len(sample.YencName), len(cands), bytes.HasPrefix(sample.Data, par2Magic))
 			if len(cands) > 0 {
 				work := context.WithoutCancel(ctx)
+				// Claude 2026-10-19: FileDesc/yEnc hashes are not in header rows.
+				// Reason: live BODY now returns par2=true cands=1–2 renamed=0;
+				//   subjects are random tokens, PAR2 FileDesc is often md5(title).
+				// Troubleshooting: body_bytes>0 par2=true hash_hits=0 → this
+				//   ByHash/ByFilename on sample names not called. Review if:
+				//   FileDesc is a non-hex random token (then IRC FN only).
+				if hit, ok := n.lookupPreDBNames(work, set, cands); ok {
+					res.HashHits++
+					return n.promote(work, set, rows, hit.Title, sourcePreDB, confPreDB, "hit", res, statBudget)
+				}
 				allHash := true
 				for _, cand := range cands {
 					if recoveredUnusable(cand.name) {
@@ -601,26 +611,49 @@ func (n *NameFixer) promote(ctx context.Context, set PendingSet, rows []HeaderRo
 // lookupPreDB tries nZEDb-style reverse lookups: md5/sha1/md5md5 tokens from
 // every header's subject and filename, then PreDB.filename / IRC [FN:], then
 // dump/IRC request ids from EFNet/Bin-Req wrappers.
+func preDBHitOK(hit PreDBHit, ok bool, payload int64) bool {
+	return ok && hit.Title != "" && sizeWithin(hit.SizeBytes, payload)
+}
+
 func (n *NameFixer) lookupPreDB(ctx context.Context, set PendingSet, rows []HeaderRow) (PreDBHit, bool) {
 	if n.PreDB == nil {
 		return PreDBHit{}, false
 	}
-	okHit := func(hit PreDBHit, ok bool) bool {
-		return ok && hit.Title != "" && sizeWithin(hit.SizeBytes, set.PayloadBytes)
-	}
 	for _, h := range hashCandidates(rows) {
-		if hit, ok := n.PreDB.ByHash(ctx, h); okHit(hit, ok) {
+		if hit, ok := n.PreDB.ByHash(ctx, h); preDBHitOK(hit, ok, set.PayloadBytes) {
 			return hit, true
 		}
 	}
 	for _, fn := range filenameCandidates(rows) {
-		if hit, ok := n.PreDB.ByFilename(ctx, fn); okHit(hit, ok) {
+		if hit, ok := n.PreDB.ByFilename(ctx, fn); preDBHitOK(hit, ok, set.PayloadBytes) {
 			return hit, true
 		}
 	}
 	for _, id := range requestIDCandidates(rows) {
-		if hit, ok := n.PreDB.ByRequestID(ctx, id, set.Group); okHit(hit, ok) {
+		if hit, ok := n.PreDB.ByRequestID(ctx, id, set.Group); preDBHitOK(hit, ok, set.PayloadBytes) {
 			return hit, true
+		}
+	}
+	return PreDBHit{}, false
+}
+
+func (n *NameFixer) lookupPreDBNames(ctx context.Context, set PendingSet, cands []nameCand) (PreDBHit, bool) {
+	if n.PreDB == nil {
+		return PreDBHit{}, false
+	}
+	for _, cand := range cands {
+		for _, h := range hashTokens(cand.name) {
+			if hit, ok := n.PreDB.ByHash(ctx, h); preDBHitOK(hit, ok, set.PayloadBytes) {
+				return hit, true
+			}
+		}
+		if hit, ok := n.PreDB.ByFilename(ctx, cand.name); preDBHitOK(hit, ok, set.PayloadBytes) {
+			return hit, true
+		}
+		if recovered := normalizeRecovered(cand.name); recovered != cand.name {
+			if hit, ok := n.PreDB.ByFilename(ctx, recovered); preDBHitOK(hit, ok, set.PayloadBytes) {
+				return hit, true
+			}
 		}
 	}
 	return PreDBHit{}, false

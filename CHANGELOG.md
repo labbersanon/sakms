@@ -11867,3 +11867,17 @@ status stays active.
 |---|---|
 | `internal/usenetsearch/namefix.go` | WithoutCancel article + rename/retry |
 | `docs/usenet-nntp-native.md` | leftover phase crumbs |
+
+## 2026-10-19 — PAR2 FileDesc hashes reverse-lookup PreDB
+
+**Problem:** After #223, BODY worked (`fetches=3 bytes=801528 par2=true`) but `renamed=0 hash_hits=0`. FileDesc/yEnc names were hashes not in the header rows.
+**Root cause:** `lookupPreDB` only hashed subject/filename tokens. nZEDb-style PAR2 FileDesc is often `md5(title)` while the subject is a random token.
+**Fix:** After a BODY sample, `hashTokens` / `ByFilename` on FileDesc and yEnc names can PreDB-rename.
+**Outcome:** A FileDesc md5 that exists in the dump/IRC table becomes `name_source=predb`. Random FileDesc tokens still need IRC `[FN:]`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix.go` | `lookupPreDBNames` on BODY samples |
+| `internal/usenetsearch/namefix_test.go` | FileDesc md5 renames with zero header hash |

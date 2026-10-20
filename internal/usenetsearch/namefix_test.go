@@ -348,6 +348,26 @@ func TestNameFix_StagedThenRenamedFromPar2ThenSearchable(t *testing.T) {
 	}
 }
 
+func TestNameFix_Par2FileDescHashHitsPreDB(t *testing.T) {
+	const title = "FileDesc.Movie.2021.1080p.BluRay.x264-GRP"
+	sum := md5.Sum([]byte(title))
+	h := hex.EncodeToString(sum[:])
+	f := newNFFixture(t, obfuscatedSet("fd", nfHash, 1, 1), nil)
+	f.nf.PreDB = &fakePreDB{hashes: map[string]PreDBHit{h: {Title: title}}}
+	f.crawlAndRecompute(t)
+	f.src.bodies["fdpar2"] = par2Body(h + ".part01.rar")
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.HashHits != 1 || res.Renamed != 1 || res.BySource[sourcePreDB] != 1 || res.BodyFetches != 1 {
+		t.Fatalf("PAR2 FileDesc hash must PreDB-rename: %+v", res)
+	}
+	if _, _, display, _ := f.release(t); display != title {
+		t.Fatalf("display = %q", display)
+	}
+}
+
 func TestNameFix_Md5SubjectResolvesWithZeroBodyFetches(t *testing.T) {
 	const title = "Another.Movie.2020.1080p.WEB-DL.x264-GRP"
 	sum := md5.Sum([]byte(title))

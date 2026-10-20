@@ -633,6 +633,11 @@ func TestPickBodyTargets_SkipsVolPar2IncludesLastRar(t *testing.T) {
 	if len(picks) > namefixBodiesPerSet {
 		t.Fatalf("picks=%d, cap %d", len(picks), namefixBodiesPerSet)
 	}
+	for _, p := range picks {
+		if p.MsgID == "last@t" && !p.CRC {
+			t.Fatalf("last volume pick %+v must be CRC-capable (RAR5 unpacked CRC)", p)
+		}
+	}
 }
 
 func TestPickBodyTargets_BareRarIsFirstVolume(t *testing.T) {
@@ -746,6 +751,56 @@ func TestDuePendingNames_PrefersRarOverMkv(t *testing.T) {
 	}
 	if !hasRar {
 		t.Fatalf("first due set key=%s must be rar/sfv, headers=%d", sets[0].Key, len(hdrs))
+	}
+}
+
+func TestDuePendingNames_PrefersSfvOverRar(t *testing.T) {
+	rarHash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	sfvHash := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	rows := obfuscatedSet("r", rarHash, 1, 2)
+	n := rows[len(rows)-1].Number
+	rows = append(rows, usenet.MessageOverview{
+		Number: n + 1, Subject: fmt.Sprintf(`[01/2] - "%s.sfv" yEnc (1/2)`, sfvHash),
+		From: "poster@obf", MessageID: "sfv1", Bytes: 400, DateUnix: 1700000000,
+	})
+	rows = append(rows, usenet.MessageOverview{
+		Number: n + 2, Subject: fmt.Sprintf(`[01/2] - "%s.sfv" yEnc (2/2)`, sfvHash),
+		From: "poster@obf", MessageID: "sfv2", Bytes: 400, DateUnix: 1700000000,
+	})
+	rows = append(rows, usenet.MessageOverview{
+		Number: n + 3, Subject: fmt.Sprintf(`[02/2] - "%s.par2" yEnc (1/1)`, sfvHash),
+		From: "poster@obf", MessageID: "sfvpar2", Bytes: 40_000, DateUnix: 1700000000,
+	})
+	f := newNFFixture(t, rows, nil)
+	f.src.gr.High = n + 3
+	f.crawlAndRecompute(t)
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET completeness_bp=10000, declared_segs=10, seen_segs=10, dirty=FALSE, next_name_at=0`); err != nil {
+		t.Fatal(err)
+	}
+	rarKey := ObfKey(nfGroup, "poster@obf", rows[0].Subject)
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET ingested_at=? WHERE release_key=?`, time.Now().Unix()+3600, rarKey); err != nil {
+		t.Fatal(err)
+	}
+	sets, err := f.idx.DuePendingNames(context.Background(), []string{nfGroup}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sets) != 1 {
+		t.Fatalf("due=%d, want 1", len(sets))
+	}
+	hdrs, err := f.idx.SetRows(context.Background(), sets[0].Group, sets[0].Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasSFV := false
+	for _, h := range hdrs {
+		if strings.Contains(strings.ToLower(h.Filename+" "+h.Subject), ".sfv") {
+			hasSFV = true
+			break
+		}
+	}
+	if !hasSFV {
+		t.Fatalf("first due set key=%s must be sfv (ahead of newer rar), headers=%d", sets[0].Key, len(hdrs))
 	}
 }
 
@@ -1647,6 +1702,20 @@ func TestNameFix_QuotedHashFilenameDoesNotRename(t *testing.T) {
 	}
 }
 
+func TestQuotedReleaseName_UnderscoreYearVsHash(t *testing.T) {
+	for name, want := range map[string]bool{
+		"Metropolis_Magazine_-_September_2026.part1.rar": true,
+		"GsyXkGhhHtz7OQL.part01.rar":                     false,
+		"210313_12_57_32.rar":                            false,
+		nfHash + ".part01.rar":                           false,
+		"0G6IJMEdZG_f-Evmq.par2":                         false,
+	} {
+		if got := quotedReleaseName(name); got != want {
+			t.Errorf("quotedReleaseName(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
 func TestNameFix_QuotedTitleWithoutResSearchableAtIngest(t *testing.T) {
 	const title = "MilfAF - London River"
 	var rows []usenet.MessageOverview
@@ -1725,6 +1794,85 @@ func TestNameFix_HeaderRecoversUnderscore1080pPending(t *testing.T) {
 	}
 	if res.Renamed != 1 {
 		t.Fatalf("header must rename underscore 1080p without BODY: %+v", res)
+	}
+	var searchable bool
+	var display string
+	if err := sqlDB.QueryRow(`SELECT display_name, searchable FROM usenet_nntp_releases`).Scan(&display, &searchable); err != nil {
+		t.Fatal(err)
+	}
+	if display != title || !searchable {
+		t.Fatalf("display=%q searchable=%v", display, searchable)
+	}
+}
+
+func TestNameFix_QuotedUnderscoreYearTitleAtIngest(t *testing.T) {
+	const title = "Metropolis_Magazine_-_September_2026"
+	var rows []usenet.MessageOverview
+	for i := 1; i <= 5; i++ {
+		rows = append(rows, usenet.MessageOverview{
+			Number: i, Subject: fmt.Sprintf(`"%s.part1.rar" yEnc (%d/5)`, title, i),
+			From: "poster@obf", MessageID: fmt.Sprintf("mm%d@t", i), Bytes: 80_000_000, DateUnix: 1700000000,
+		})
+	}
+	f := newNFFixture(t, rows, nil)
+	f.crawlAndRecompute(t)
+	var n int
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases WHERE display_name=? AND searchable`, title).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("underscore year magazine must be searchable at ingest, got %d", n)
+	}
+}
+
+func TestNameFix_HeaderRecoversUnderscoreYearPending(t *testing.T) {
+	const title = "Metropolis_Magazine_-_September_2026"
+	subj := `[01/2] - "` + title + `.part1.rar" yEnc (1/2)`
+	key := ObfKey(nfGroup, "poster@obf", subj)
+	var rows []HeaderRow
+	for i := 1; i <= 2; i++ {
+		rows = append(rows, HeaderRow{
+			Group: nfGroup, MsgNum: i, MsgID: fmt.Sprintf("mmh%d@t", i), Subject: fmt.Sprintf(`[01/2] - "%s.part1.rar" yEnc (%d/2)`, title, i),
+			From: "poster@obf", PostedAt: 1700000000, Bytes: 80_000_000,
+			ReleaseName: key, PartN: i, PartM: 2, Filename: title + ".part1.rar",
+			Obfuscated: true, FileN: 1, FileM: 2, YencSize: 80_000_000,
+		})
+	}
+	rows = append(rows, HeaderRow{
+		Group: nfGroup, MsgNum: 3, MsgID: "mmhpar2@t", Subject: `[02/2] - "` + title + `.par2" yEnc (1/1)`,
+		From: "poster@obf", PostedAt: 1700000000, Bytes: 40_000,
+		ReleaseName: key, PartN: 1, PartM: 1, Filename: title + ".par2",
+		Obfuscated: true, IsMeta: true, FileN: 2, FileM: 2,
+	})
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	if err := idx.Upsert(ctx, rows); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.RecomputeDirty(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	due, err := idx.DuePendingHeaderNames(ctx, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(due) != 1 {
+		t.Fatalf("DuePendingHeaderNames=%d, want underscore year magazine pending", len(due))
+	}
+	budget := &bodyBudget{}
+	budget.setCapMB(0)
+	nf := &NameFixer{Src: &crawlStub{bodies: map[string]usenet.BodySample{}}, Index: idx, Groups: []string{nfGroup}, Budget: budget}
+	res, err := nf.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Renamed != 1 || res.BodyFetches != 0 {
+		t.Fatalf("header must rename underscore year magazine without BODY: %+v", res)
 	}
 	var searchable bool
 	var display string

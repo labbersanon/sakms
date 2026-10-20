@@ -782,7 +782,7 @@ func (n *NameFixer) lookupPreDB(ctx context.Context, set PendingSet, rows []Head
 }
 
 func (n *NameFixer) lookupArchiveCRC(ctx context.Context, set PendingSet, sample usenet.BodySample) (PreDBHit, bool) {
-	if n == nil || n.SRRDB == nil {
+	if n.SRRDB == nil {
 		return PreDBHit{}, false
 	}
 	for _, crc := range sampleCRCs(sample) {
@@ -1123,32 +1123,20 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 
 func isMainPar2Name(name string) bool {
 	low := strings.ToLower(name)
-	if !strings.Contains(low, ".par2") {
-		return false
-	}
-	return !strings.Contains(low, ".vol")
+	return strings.Contains(low, ".par2") && !strings.Contains(low, ".vol")
 }
 
 // pickPar2Targets returns the first-segment non-vol .par2 article only.
 // Named hash_16K seed must not BODY RAR volumes (live seed was 4.5MB/pass).
 func pickPar2Targets(rows []HeaderRow) []bodyPick {
-	var out []bodyPick
-	seen := map[string]bool{}
 	for _, r := range rows {
-		if r.PartN > 1 {
+		if r.PartN > 1 || r.MsgID == "" {
 			continue
 		}
 		if !isMainPar2Name(r.Filename) && !isMainPar2Name(r.Subject) {
 			continue
 		}
-		if r.MsgID == "" || seen[r.MsgID] {
-			continue
-		}
-		seen[r.MsgID] = true
-		out = append(out, bodyPick{MsgID: r.MsgID, Bytes: r.Bytes})
-		if len(out) >= 1 {
-			break
-		}
+		return []bodyPick{{MsgID: r.MsgID, Bytes: r.Bytes}}
 	}
-	return out
+	return nil
 }

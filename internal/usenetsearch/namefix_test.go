@@ -1806,7 +1806,7 @@ func TestNameFix_SRRDBSizeMismatchDoesNotRename(t *testing.T) {
 	}
 }
 
-func TestNameFix_SRRDBAmbiguousDoesNotRename(t *testing.T) {
+func TestNameFix_SRRDBMissDoesNotRename(t *testing.T) {
 	f := newNFFixture(t, obfuscatedSet("sa", nfHash, 1, 45), nil)
 	f.src.bodies["sapar2"] = par2Body(nfHash + ".part01.rar")
 	f.src.bodies["sa1_1@t"] = rar4BodyCRC(nfHash+".mkv", 0xAABBCCDD)
@@ -1821,7 +1821,7 @@ func TestNameFix_SRRDBAmbiguousDoesNotRename(t *testing.T) {
 		t.Fatal(err)
 	}
 	if pending != 1 || res.BySource[sourceSRRDB] != 0 {
-		t.Fatalf("ambiguous/miss must stay pending: pending=%d res=%+v", pending, res)
+		t.Fatalf("miss must stay pending: pending=%d res=%+v", pending, res)
 	}
 }
 

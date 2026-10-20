@@ -52,19 +52,6 @@ func sfvEntries(data []byte) []sfvEntry {
 	return out
 }
 
-func sfvCRCs(data []byte) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, e := range preferredSFVEntries(sfvEntries(data)) {
-		if seen[e.CRC] {
-			continue
-		}
-		seen[e.CRC] = true
-		out = append(out, e.CRC)
-	}
-	return out
-}
-
 func looksSFVText(data []byte) bool {
 	ctrl := 0
 	for _, b := range data {

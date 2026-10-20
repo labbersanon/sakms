@@ -34,15 +34,15 @@ const (
 	srrdbUserAgent = "sakms-srrdb/1"
 )
 
-var reArchiveCRC = regexp.MustCompile(`(?i)^[0-9a-f]{8}$`)
+var reArchiveCRC = regexp.MustCompile(`^[0-9A-F]{8}$`)
 
 // ArchiveCRCLookup resolves an inner-file CRC32 to a unique scene title.
 type ArchiveCRCLookup interface {
 	ByCRC(ctx context.Context, crc string) (PreDBHit, bool)
 }
 
-// SRRDBClient is GET {base}archive-crc:XXXXXXXX. found=false with a nil
-// error is a miss or an ambiguous (resultsCount!=1) hit — both are ignored.
+// SRRDBClient is GET {base}archive-crc:XXXXXXXX. ok=false is a miss or an
+// ambiguous (resultsCount!=1) hit — both are ignored.
 type SRRDBClient struct {
 	BaseURL  string
 	Client   *http.Client
@@ -165,6 +165,5 @@ func (c *SRRDBClient) ByCRC(ctx context.Context, crc string) (PreDBHit, bool) {
 	if title == "" {
 		return PreDBHit{}, false
 	}
-	log.Printf("usenetsearch: srrdb crc=%s results=1", crc)
 	return PreDBHit{Title: title, SizeBytes: out.Results[0].Size}, true
 }

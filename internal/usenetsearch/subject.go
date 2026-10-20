@@ -434,7 +434,17 @@ func obfKeyWith(group, from, subj string, extra []compiledExtra) string {
 	//   empty-skeleton bluray 100k-seg set → stageObfuscated must no-op.
 	// Review if: a collection row caches totalFiles so two same-token uploads
 	//   with different file counts stay separate.
-	sum := sha256.Sum256([]byte(group + "\x00" + from + "\x00" + strings.ToLower(obfSkeletonWith(subj, extra))))
+	// Claude 2026-10-20: ngPost GEN_FROM omits group from this hash.
+	// Reason: GROUP_POLICY ALL posts the same msgid to every group; including
+	//   group split one complete hash.7z into N incomplete obf: keys.
+	//   Fixed FROM still keys by group; skeleton separates random archives.
+	// Troubleshooting: same From+skeleton in two groups, two keys →
+	//   looksLikeNgPostFrom. Review if: a non-ngPost poster copies ALL groups.
+	g := group
+	if looksLikeNgPostFrom(from) {
+		g = ""
+	}
+	sum := sha256.Sum256([]byte(g + "\x00" + from + "\x00" + strings.ToLower(obfSkeletonWith(subj, extra))))
 	return obfKeyPrefix + hex.EncodeToString(sum[:8])
 }
 

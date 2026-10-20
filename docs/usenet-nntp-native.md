@@ -275,6 +275,14 @@ counters under `gapFillStatus` (`releasesSearchable`, `releasesBelowGate`,
   ignored. The feed is on by default.
 - With `namefix_enabled=false`, legacy subjects like `"<hash>.part01.rar"` can
   still produce bogus per-filename release names (pre-existing behavior).
+- **ngPost** (compress + gen_name + gen_pass + 7z): overview is
+  `[001/136] "random.7z.001" (10/732)` — no `yEnc` token, default article
+  716800 bytes, last article is a remainder. From is `N@ngPost.com`; msgid
+  `uuid@ngPost`. ObfKey omits group so GROUP_POLICY ALL does not split the
+  set. First `.7z.001` BODY is 64 bytes (signature). After the first charged
+  namefix attempt, further 7z HeadOnly/Tail BODY is skipped; PAR2 still runs.
+  Title and password are in the NZB, not on NNTP. `-x` UUID subjects have no
+  filename in OVERVIEW and stay skip_unparsed.
 
 ## Spike numbers
 

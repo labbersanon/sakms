@@ -407,8 +407,14 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 	var zstart []byte
 	var zsize uint64
 	pat := detectNamePattern(rows)
-	log.Printf("usenetsearch: namefix pattern obf=%s pack=%s files=%s", pat.Obf, pat.Pack, pat.Ext)
+	ngPost := looksLikeNgPost(rows)
+	skip7z := ngPost && pat.Pack == "7z-split" && set.Attempts > 0
+	log.Printf("usenetsearch: namefix pattern obf=%s pack=%s files=%s ngpost=%t skip_7z=%t",
+		pat.Obf, pat.Pack, pat.Ext, ngPost, skip7z)
 	for _, pick := range pickBodyTargets(rows) {
+		if skip7z && (pick.HeadOnly || pick.Tail) {
+			continue
+		}
 		// Claude 2026-10-20: budget against the 256KiB head, not article bytes.
 		// Reason: part01 first segments are often 1–2MB; fits(pick.Bytes) would
 		//   skip FILE_CRC when the hourly cap has <2MB left. BodyHead already
@@ -1252,9 +1258,19 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 		}
 		crc := anyName(f, crcCapableName)
 		is7z := anyName(f, is7zName)
-		tail := is7z && f.last.MsgID == f.first.MsgID
-		headOnly := is7z && anyName(f, isFirstArchiveVolume) && !tail
-		addRow(f.first, f.nfo, crc || tail, tail, headOnly)
+		firstVol := anyName(f, isFirstArchiveVolume)
+		// Claude 2026-10-20: split .7z.001 is never the end header.
+		// Reason: ngPost first volume is often one 716800-byte yEnc part, so
+		//   last==first msgid used to set Tail and skip HeadOnly (live
+		//   wire=716800 on .7z.001). CRC is the last .7z.NNN segment.
+		//   Bare unsplit .7z (no .NNN) still uses Tail on that one article.
+		// Troubleshooting: namefix pattern pack=7z-split still wire=700k on
+		//   .7z.001 → HeadOnly not set. Review if: a single-volume .7z.001
+		//   exists (same msgid: HeadOnly is added first, last-volume Tail skipped).
+		split7z := is7z && (archivePartNum(f.key) > 0 || archivePartNum(f.first.Filename) > 0 || archivePartNum(f.first.Subject) > 0)
+		tail := is7z && f.last.MsgID == f.first.MsgID && !split7z
+		headOnly := is7z && firstVol && !tail
+		addRow(f.first, f.nfo, (crc && !headOnly) || tail, tail, headOnly)
 	}
 	for _, f := range sorted {
 		if anyName(f, isSFVName) {

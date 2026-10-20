@@ -31,6 +31,7 @@ func TestParseAnnounce(t *testing.T) {
 		files     int
 		filename  string
 		requestID int64
+		preAt     int64
 		nuked     bool
 		reason    string
 		ok        bool
@@ -45,7 +46,8 @@ func TestParseAnnounce(t *testing.T) {
 		{line: "INFO: [2026-10-18 22:13:34 This message is to confirm I am still active.]"},
 		{
 			line: "[DT: 2026-10-18 22:13:34] [TT: Some.Show.S01E02.720p.HDTV.x264-GRP] [SC: #a.b.teevee] [CT: TV-X264] [RQ: N/A] [SZ: 700MB] [FL: 12] [FN: N/A]",
-			kind: "NEW", title: "Some.Show.S01E02.720p.HDTV.x264-GRP", cat: "TV-X264", size: 700 << 20, files: 12, ok: true,
+			kind: "NEW", title: "Some.Show.S01E02.720p.HDTV.x264-GRP", cat: "TV-X264", size: 700 << 20, files: 12,
+			preAt: time.Date(2026, 10, 18, 22, 13, 34, 0, time.UTC).Unix(), ok: true,
 		},
 		{
 			line:     "[DT: 2026-10-18 22:13:34] [TT: Some.Movie.2021.1080p.BluRay.x264-GRP] [SC: srrdb] [CT: MOVIES] [SZ: 4GB] [FL: 50] [FN: abcdef0123456789abcdef0123456789.part1.rar]",
@@ -55,6 +57,7 @@ func TestParseAnnounce(t *testing.T) {
 			size:     4 << 30,
 			files:    50,
 			filename: "abcdef0123456789abcdef0123456789.part1.rar",
+			preAt:    time.Date(2026, 10, 18, 22, 13, 34, 0, time.UTC).Unix(),
 			ok:       true,
 		},
 		{
@@ -65,11 +68,13 @@ func TestParseAnnounce(t *testing.T) {
 			size:      700 << 20,
 			files:     12,
 			requestID: 23051509,
+			preAt:     time.Date(2026, 10, 19, 7, 0, 0, 0, time.UTC).Unix(),
 			ok:        true,
 		},
 		{
 			line: "[DT: 2026-10-18 22:13:34] [TT: Some.Movie.2021.1080p.BluRay.x264-GRP] [SC: srrdb] [CT: MOVIES] [RQ: N/A] [SZ: N/A] [FL: N/A] [NUKED: dupe.2021-05-01]",
-			kind: "NUKE", title: "Some.Movie.2021.1080p.BluRay.x264-GRP", cat: "MOVIES", nuked: true, reason: "dupe.2021-05-01", ok: true,
+			kind: "NUKE", title: "Some.Movie.2021.1080p.BluRay.x264-GRP", cat: "MOVIES",
+			preAt: time.Date(2026, 10, 18, 22, 13, 34, 0, time.UTC).Unix(), nuked: true, reason: "dupe.2021-05-01", ok: true,
 		},
 	}
 	for _, c := range cases {
@@ -82,7 +87,7 @@ func TestParseAnnounce(t *testing.T) {
 		}
 		if a.Kind != c.kind || a.Entry.Title != c.title || a.Entry.Category != c.cat || a.Entry.SizeBytes != c.size ||
 			a.Entry.Files != c.files || a.Entry.Filename != c.filename || a.Entry.RequestID != c.requestID ||
-			a.Entry.Nuked != c.nuked || a.Reason != c.reason {
+			a.Entry.PreAt != c.preAt || a.Entry.Nuked != c.nuked || a.Reason != c.reason {
 			t.Fatalf("%q = %+v", c.line, a)
 		}
 	}
@@ -158,17 +163,6 @@ func TestStore_ByFilenameStemMatchesPartRar(t *testing.T) {
 	got, ok, err := s.ByFilename(ctx, "ABCDEF0123456789ABCDEF0123456789.mkv")
 	if err != nil || !ok || got.Title != title {
 		t.Fatalf("stem ByFilename = %+v ok=%v err=%v", got, ok, err)
-	}
-}
-
-func TestParseAnnounce_TaggedStoresPreAt(t *testing.T) {
-	a, ok := ParseAnnounce(`[DT: 2026-10-18 22:13:34] [TT: Some.Movie.2021.1080p.BluRay.x264-GRP] [CT: MOVIES] [SZ: 4GB] [FN: abcdef0123456789abcdef0123456789.part1.rar]`)
-	if !ok {
-		t.Fatal("tagged line must parse")
-	}
-	want := time.Date(2026, 10, 18, 22, 13, 34, 0, time.UTC).Unix()
-	if a.Entry.PreAt != want || a.Entry.Filename == "" {
-		t.Fatalf("pre_at=%d fn=%q want %d and hashed fn", a.Entry.PreAt, a.Entry.Filename, want)
 	}
 }
 

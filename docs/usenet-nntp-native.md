@@ -94,12 +94,11 @@ IRC announce feed (default on: synIRC `#PreNNTmux`).
   pass the title + (year|episode) + (resolution|source) check.
 
 A name-lookup HTTP API cannot reverse a hash. Reverse lookups use the local
-table: IRC announces (forward-only, including `[FN:]` filenames and `[RQ:]`
-request ids) plus an operator-supplied nZEDb dump (`usenet_nntp_predb_dump_path`,
-local TSV/gz or an http(s) dump *file* URL). Channel bots that NOTICE hashed
-`[FN:]` lines (TmuxPREBot on `#PreNNTmux`) are ingested the same as PRIVMSG.
-Do not scrape `api.predb.net` to
-populate that table. nZEDbPre_Dumps stopped publishing new daily files in
+table: IRC announces (forward-only, including NOTICE hashed `[FN:]` filenames
+from TmuxPREBot on `#PreNNTmux` and `[RQ:]` request ids) plus an
+operator-supplied nZEDb dump (`usenet_nntp_predb_dump_path`, local TSV/gz or
+an http(s) dump *file* URL). Do not scrape `api.predb.net` to populate that
+table. nZEDbPre_Dumps stopped publishing new daily files in
 2024-05; historical `dumps/*/*_predb_dump.csv.gz` are still on GitHub and
 import as quoted MySQL TSV (`\N` nulls). There is no default dump URL.
 Default IRC is on: synIRC `#PreNNTmux`, TLS 6697, a random unregistered

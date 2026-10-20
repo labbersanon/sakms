@@ -652,10 +652,11 @@ func filenameCandidates(rows []HeaderRow) []string {
 		out = append(out, s)
 	}
 	for _, r := range rows {
+		q := quotedFilename(r.Subject)
 		add(r.Filename)
 		add(normalizeRecovered(r.Filename))
-		add(quotedFilename(r.Subject))
-		add(normalizeRecovered(quotedFilename(r.Subject)))
+		add(q)
+		add(normalizeRecovered(q))
 	}
 	return out
 }

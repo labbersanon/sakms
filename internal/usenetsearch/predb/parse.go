@@ -116,9 +116,7 @@ func parseTaggedAnnounce(line string) (Announce, bool) {
 		return Announce{}, false
 	}
 	a := Announce{Kind: "NEW", Entry: Entry{Title: title}}
-	if dt := taggedNA(line, reTaggedDT); dt != "" {
-		a.Entry.PreAt = parsePreAt(dt)
-	}
+	a.Entry.PreAt = parsePreAt(taggedNA(line, reTaggedDT))
 	if cat := taggedNA(line, reTaggedCT); cat != "" {
 		a.Entry.Category = cat
 	}

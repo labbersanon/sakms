@@ -31,6 +31,7 @@ func TestParseAnnounce(t *testing.T) {
 		files     int
 		filename  string
 		requestID int64
+		preAt     int64
 		nuked     bool
 		reason    string
 		ok        bool
@@ -45,7 +46,8 @@ func TestParseAnnounce(t *testing.T) {
 		{line: "INFO: [2026-10-18 22:13:34 This message is to confirm I am still active.]"},
 		{
 			line: "[DT: 2026-10-18 22:13:34] [TT: Some.Show.S01E02.720p.HDTV.x264-GRP] [SC: #a.b.teevee] [CT: TV-X264] [RQ: N/A] [SZ: 700MB] [FL: 12] [FN: N/A]",
-			kind: "NEW", title: "Some.Show.S01E02.720p.HDTV.x264-GRP", cat: "TV-X264", size: 700 << 20, files: 12, ok: true,
+			kind: "NEW", title: "Some.Show.S01E02.720p.HDTV.x264-GRP", cat: "TV-X264", size: 700 << 20, files: 12,
+			preAt: time.Date(2026, 10, 18, 22, 13, 34, 0, time.UTC).Unix(), ok: true,
 		},
 		{
 			line:     "[DT: 2026-10-18 22:13:34] [TT: Some.Movie.2021.1080p.BluRay.x264-GRP] [SC: srrdb] [CT: MOVIES] [SZ: 4GB] [FL: 50] [FN: abcdef0123456789abcdef0123456789.part1.rar]",
@@ -55,6 +57,7 @@ func TestParseAnnounce(t *testing.T) {
 			size:     4 << 30,
 			files:    50,
 			filename: "abcdef0123456789abcdef0123456789.part1.rar",
+			preAt:    time.Date(2026, 10, 18, 22, 13, 34, 0, time.UTC).Unix(),
 			ok:       true,
 		},
 		{
@@ -65,11 +68,13 @@ func TestParseAnnounce(t *testing.T) {
 			size:      700 << 20,
 			files:     12,
 			requestID: 23051509,
+			preAt:     time.Date(2026, 10, 19, 7, 0, 0, 0, time.UTC).Unix(),
 			ok:        true,
 		},
 		{
 			line: "[DT: 2026-10-18 22:13:34] [TT: Some.Movie.2021.1080p.BluRay.x264-GRP] [SC: srrdb] [CT: MOVIES] [RQ: N/A] [SZ: N/A] [FL: N/A] [NUKED: dupe.2021-05-01]",
-			kind: "NUKE", title: "Some.Movie.2021.1080p.BluRay.x264-GRP", cat: "MOVIES", nuked: true, reason: "dupe.2021-05-01", ok: true,
+			kind: "NUKE", title: "Some.Movie.2021.1080p.BluRay.x264-GRP", cat: "MOVIES",
+			preAt: time.Date(2026, 10, 18, 22, 13, 34, 0, time.UTC).Unix(), nuked: true, reason: "dupe.2021-05-01", ok: true,
 		},
 	}
 	for _, c := range cases {
@@ -82,7 +87,7 @@ func TestParseAnnounce(t *testing.T) {
 		}
 		if a.Kind != c.kind || a.Entry.Title != c.title || a.Entry.Category != c.cat || a.Entry.SizeBytes != c.size ||
 			a.Entry.Files != c.files || a.Entry.Filename != c.filename || a.Entry.RequestID != c.requestID ||
-			a.Entry.Nuked != c.nuked || a.Reason != c.reason {
+			a.Entry.PreAt != c.preAt || a.Entry.Nuked != c.nuked || a.Reason != c.reason {
 			t.Fatalf("%q = %+v", c.line, a)
 		}
 	}
@@ -144,6 +149,20 @@ func TestStore_HashLookupMissCacheAndNoMissHit(t *testing.T) {
 	}
 	if _, ok, _ := s.ByTitle(ctx, "Nope.2020.1080p-X"); !ok {
 		t.Fatal("upsert did not replace the miss")
+	}
+}
+
+func TestStore_ByFilenameStemMatchesPartRar(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	const title = "Stem.Movie.2021.1080p.BluRay.x264-GRP"
+	const fn = "abcdef0123456789abcdef0123456789.part1.rar"
+	if err := s.Upsert(ctx, Entry{Title: title, Filename: fn}, SourceIRC); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.ByFilename(ctx, "ABCDEF0123456789ABCDEF0123456789.mkv")
+	if err != nil || !ok || got.Title != title {
+		t.Fatalf("stem ByFilename = %+v ok=%v err=%v", got, ok, err)
 	}
 }
 
@@ -411,6 +430,7 @@ func TestIRCClient_RandomNickHeartbeatNoNickServ(t *testing.T) {
 				if !sentLine {
 					sentLine = true
 					fmt.Fprint(c, ":pre!x@y PRIVMSG #PreNNTmux :[DT: 2026-10-18 22:13:34] [TT: Heart.Beat.2022.1080p.WEB.h264-GRP] [SC: srrdb] [CT: MOVIES] [RQ: N/A] [SZ: 2GB] [FL: 20]\r\n")
+					fmt.Fprint(c, ":pre!x@y NOTICE #PreNNTmux :[DT: 2026-10-18 22:13:34] [TT: Notice.Hash.2022.1080p.WEB.h264-GRP] [CT: MOVIES] [SZ: 1GB] [FL: 10] [FN: abcdef0123456789abcdef0123456789.part1.rar]\r\n")
 				}
 			}
 		}
@@ -438,7 +458,9 @@ func TestIRCClient_RandomNickHeartbeatNoNickServ(t *testing.T) {
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if e, ok, _ := store.ByTitle(context.Background(), "Heart.Beat.2022.1080p.WEB.h264-GRP"); ok && e.Category == "MOVIES" && e.Files == 20 {
+		e, ok, _ := store.ByTitle(context.Background(), "Heart.Beat.2022.1080p.WEB.h264-GRP")
+		fn, fnOK, _ := store.ByFilename(context.Background(), "abcdef0123456789abcdef0123456789.mkv")
+		if ok && e.Category == "MOVIES" && e.Files == 20 && fnOK && fn.Title == "Notice.Hash.2022.1080p.WEB.h264-GRP" {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -449,6 +471,10 @@ func TestIRCClient_RandomNickHeartbeatNoNickServ(t *testing.T) {
 	e, ok, err := store.ByTitle(context.Background(), "Heart.Beat.2022.1080p.WEB.h264-GRP")
 	if err != nil || !ok || e.Category != "MOVIES" || e.SizeBytes != 2<<30 || e.Files != 20 {
 		t.Fatalf("irc entry = %+v ok=%v err=%v", e, ok, err)
+	}
+	fn, ok, err := store.ByFilename(context.Background(), "abcdef0123456789abcdef0123456789.mkv")
+	if err != nil || !ok || fn.Title != "Notice.Hash.2022.1080p.WEB.h264-GRP" {
+		t.Fatalf("NOTICE hashed FN = %+v ok=%v err=%v", fn, ok, err)
 	}
 	if cl.Cfg.Nick == "" || len(cl.Cfg.Nick) != ircNickLen {
 		t.Fatalf("generated nick %q", cl.Cfg.Nick)

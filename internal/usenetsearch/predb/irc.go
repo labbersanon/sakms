@@ -323,6 +323,13 @@ func (c *IRCClient) session(ctx context.Context, conn net.Conn) (registered bool
 					}
 				}
 			}
+		case "473", "475", "477", "479":
+			// Claude 2026-10-19: log JOIN denials.
+			// Reason: connected=true with parsed=0 and empty IRC filenames looked
+			//   like a live feed while +k/+i left us outside #PreNNTmux.
+			// Troubleshooting: o2cli grep "predb irc join failed".
+			// Review if: the channel uses a key (JOIN #chan key).
+			log.Printf("usenetsearch: predb irc join failed cmd=%s %s", cmd, params)
 		case "433": // nick in use — mint another unregistered identity
 			n, nerr := RandomNick()
 			if nerr != nil {
@@ -333,7 +340,14 @@ func (c *IRCClient) session(ctx context.Context, conn net.Conn) (registered bool
 			if err := send("NICK %s", c.Cfg.Nick); err != nil {
 				return registered, err
 			}
-		case "PRIVMSG":
+		case "PRIVMSG", "NOTICE":
+			// Claude 2026-10-19: TmuxPREBot hashed [FN:] lines are NOTICE.
+			// Reason: live synIRC connected 1775 IRC rows, all filename="" size=0
+			//   pre_at=0 — #pre PRE: PRIVMSG titles only. hash_hits=0 because
+			//   ByFilename never saw a hash.part1.rar from #PreNNTmux.
+			// Troubleshooting: irc rows with filename still 0 after NOTICE →
+			//   bot is not on this nick's channel view (need +v / log 473).
+			// Review if: TmuxPREBot switches back to PRIVMSG-only.
 			c.handlePrivmsg(ctx, params)
 		}
 	}
@@ -356,7 +370,7 @@ func splitIRC(line string) (prefix, cmd, params string) {
 
 func (c *IRCClient) handlePrivmsg(ctx context.Context, params string) {
 	i := strings.Index(params, " :")
-	if i < 0 || !strings.HasPrefix(params, "#") {
+	if i < 0 || !strings.Contains(params[:i], "#") {
 		return
 	}
 	a, ok := ParseAnnounce(params[i+2:])

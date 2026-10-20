@@ -148,13 +148,27 @@ func (s *Store) ByRequestID(ctx context.Context, id int64, group string) (Entry,
 }
 
 // ByFilename resolves a PreDB inner/archive filename (exact, case-insensitive).
+// A 16+ character first label (`hash.mkv`) also matches `hash.part1.rar`
+// (IRC [FN:] vs a quoted yEnc name).
 func (s *Store) ByFilename(ctx context.Context, filename string) (Entry, bool, error) {
 	fn := strings.ToLower(strings.TrimSpace(filename))
 	if fn == "" {
 		return Entry{}, false, nil
 	}
-	return scanEntry(s.db.QueryRowContext(ctx,
+	e, ok, err := scanEntry(s.db.QueryRowContext(ctx,
 		selectEntry+` WHERE lower(filename)=? AND source<>? LIMIT 1`, fn, SourceMiss))
+	if err != nil || ok {
+		return e, ok, err
+	}
+	stem := fn
+	if i := strings.IndexByte(fn, '.'); i >= 0 {
+		stem = fn[:i]
+	}
+	if len(stem) < 16 {
+		return Entry{}, false, nil
+	}
+	return scanEntry(s.db.QueryRowContext(ctx,
+		selectEntry+` WHERE lower(filename) LIKE ? AND source<>? LIMIT 1`, stem+".%", SourceMiss))
 }
 
 // RecentMiss reports whether title has a cached negative lookup newer than ttl.

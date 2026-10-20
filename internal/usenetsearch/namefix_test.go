@@ -3,10 +3,14 @@ package usenetsearch
 import (
 	"context"
 	"crypto/md5"
+	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -649,6 +653,42 @@ func TestPickBodyTargets_BareRarIsFirstVolume(t *testing.T) {
 	ids := pickIDs(picks)
 	if !ids["rar@t"] || ids["vol@t"] {
 		t.Fatalf("picks=%+v, want bare .rar not vol par2", picks)
+	}
+}
+
+func TestPickBodyTargets_LastSevenZUsesLastSegment(t *testing.T) {
+	rows := []HeaderRow{
+		{MsgID: "first-seg@t", Filename: "hash.7z.001", Bytes: 2_000_000, PartN: 1, PartM: 2},
+		{MsgID: "first-last@t", Filename: "hash.7z.001", Bytes: 400_000, PartN: 2, PartM: 2},
+		{MsgID: "last-first@t", Filename: "hash.7z.038", Bytes: 2_000_000, PartN: 1, PartM: 2, FileN: 38},
+		{MsgID: "last-seg@t", Filename: "hash.7z.038", Bytes: 50_000, PartN: 2, PartM: 2, FileN: 38},
+		{MsgID: "par2@t", Filename: "hash.par2", Bytes: 20_000, IsMeta: true},
+		{MsgID: "enc@t", Filename: "hash.7z.enc", Bytes: 2_000_000, PartN: 1},
+	}
+	picks := pickBodyTargets(rows)
+	ids := pickIDs(picks)
+	if !ids["first-seg@t"] || !ids["last-seg@t"] {
+		t.Fatalf("picks=%+v, want .7z.001 first segment and .7z.038 last segment", picks)
+	}
+	if ids["last-first@t"] || ids["enc@t"] {
+		t.Fatalf("picks=%+v, must not BODY last-volume first segment or .7z.enc", picks)
+	}
+	for _, p := range picks {
+		if p.MsgID == "last-seg@t" && (!p.Tail || !p.CRC) {
+			t.Fatalf("last 7z segment %+v must be Tail+CRC", p)
+		}
+	}
+}
+
+func TestArchivePartNum_SevenZSplit(t *testing.T) {
+	if archivePartNum("hash.7z.038") != 38 || archivePartNum("hash.part12.rar") != 12 {
+		t.Fatalf("part nums 7z=%d rar=%d", archivePartNum("hash.7z.038"), archivePartNum("hash.part12.rar"))
+	}
+	if archivePartNum("hash.7z.enc") != 0 || isFirstArchiveVolume("hash.7z.enc") || crcCapableName("hash.7z.enc") {
+		t.Fatal(".7z.enc must not be a CRC target")
+	}
+	if !isFirstArchiveVolume("hash.7z.001") || !is7zName("hash.7z.038") {
+		t.Fatal(".7z.001 is first volume; .7z.038 is 7z")
 	}
 }
 
@@ -2331,4 +2371,112 @@ WHERE display_name='' OR name_source=''`, maxNameAttempts); err != nil {
 	if len(sets) != 2 || pending != 1 {
 		t.Fatalf("seed=%d pending=%d sets=%+v, want 1 named + 1 pending", len(sets), pending, sets)
 	}
+}
+
+func obfuscated7zSet(prefix, hash string, startNum, files int) []usenet.MessageOverview {
+	var out []usenet.MessageOverview
+	n := startNum
+	for f := 1; f <= files; f++ {
+		for p := 1; p <= 2; p++ {
+			out = append(out, usenet.MessageOverview{
+				Number:    n,
+				Subject:   fmt.Sprintf(`[%02d/%d] - "%s.7z.%03d" yEnc (%d/2)`, f, files+1, hash, f, p),
+				From:      "poster@obf",
+				MessageID: fmt.Sprintf("%s%d_%d@t", prefix, f, p),
+				Bytes:     2_000_000,
+				DateUnix:  1700000000,
+			})
+			n++
+		}
+	}
+	out = append(out, usenet.MessageOverview{
+		Number:    n,
+		Subject:   fmt.Sprintf(`[%02d/%d] - "%s.par2" yEnc (1/1)`, files+1, files+1, hash),
+		From:      "poster@obf",
+		MessageID: prefix + "par2",
+		Bytes:     40_000,
+		DateUnix:  1700000000,
+	})
+	return out
+}
+
+func TestNameFix_SRRDBArchiveCRCRenamesHash7zSplit(t *testing.T) {
+	const title = "Srrdb.SevenZ.2021.1080p.BluRay.x264-GRP"
+	start, tail, crc := makeNameFixSevenZSplit(t, nfHash+".mkv")
+	f := newNFFixture(t, obfuscated7zSet("z7", nfHash, 1, 45), nil)
+	f.src.bodies["z7par2"] = par2Body(nfHash + ".7z.001")
+	f.src.bodies["z71_1@t"] = usenet.BodySample{Data: start, YencName: nfHash + ".7z.001", WireBytes: int64(len(start))}
+	f.src.bodies["z745_2@t"] = usenet.BodySample{Data: tail, YencName: nfHash + ".7z.045", WireBytes: int64(len(tail))}
+	f.nf.SRRDB = &fakeSRRDB{crcs: map[string]PreDBHit{
+		crc: {Title: title},
+	}}
+	f.crawlAndRecompute(t)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var named int
+	var src string
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*), COALESCE(MAX(name_source),'') FROM usenet_nntp_releases WHERE display_name=?`, title).Scan(&named, &src); err != nil {
+		t.Fatal(err)
+	}
+	if named != 1 || src != sourceSRRDB || res.BySource[sourceSRRDB] != 1 {
+		t.Fatalf("named=%d src=%q res=%+v calls=%v, want 7z footer srrdb CRC hit", named, src, res, f.src.bodyCalls)
+	}
+	var sawFirst, sawLast bool
+	for _, id := range f.src.bodyCalls {
+		if id == "z71_1@t" {
+			sawFirst = true
+		}
+		if id == "z745_2@t" {
+			sawLast = true
+		}
+	}
+	if !sawFirst || !sawLast {
+		t.Fatalf("BODY calls %v, want first .7z.001 segment and last .7z.045 segment", f.src.bodyCalls)
+	}
+}
+
+func makeNameFixSevenZSplit(t *testing.T, member string) (start, tail []byte, crc string) {
+	t.Helper()
+	if _, err := exec.LookPath("7z"); err != nil {
+		t.Skip("7z not on PATH")
+	}
+	dir := t.TempDir()
+	payload := make([]byte, 200_000)
+	if _, err := rand.Read(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, member), payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("7z", "a", "-bd", "-v64k", filepath.Join(dir, "split.7z"), filepath.Join(dir, member))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("7z a: %v (%s)", err, out)
+	}
+	vols, err := filepath.Glob(filepath.Join(dir, "split.7z.*"))
+	if err != nil || len(vols) < 2 {
+		t.Fatalf("volumes = %v err=%v", vols, err)
+	}
+	first, err := os.ReadFile(vols[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	last, err := os.ReadFile(vols[len(vols)-1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, ok := usenet.Parse7zStart(first)
+	if !ok {
+		t.Fatal("7z start header")
+	}
+	listed := usenet.ArchiveFileCRCsFrom7zParts(first[:32], last)
+	if len(listed) == 0 || listed[0].CRC == "" {
+		t.Fatalf("7z list = %+v", listed)
+	}
+	head := first
+	if len(head) > 256 {
+		head = head[:256]
+	}
+	return head, last[uint64(len(last))-st.Size:], listed[0].CRC
 }

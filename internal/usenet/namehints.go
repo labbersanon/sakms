@@ -1,15 +1,17 @@
 package usenet
 
 // ArchiveMemberNames returns filenames advertised in a ZIP or RAR prefix
-// (RAR4 header walk, ZIP local headers, RAR5 vint file header).
+// (RAR4 header walk, ZIP local headers, RAR5 vint file header) or a complete
+// 7z blob whose end header fits in data.
 // Truncated first-segment blobs may yield a partial list.
 func ArchiveMemberNames(data []byte) []string {
 	return archiveMemberNames(data)
 }
 
 // ArchiveFileCRCs returns unpacked inner-file CRC32 values from a ZIP or RAR4
-// first-segment prefix. Empty when the blob is not those formats or the CRC
-// field is zero (data descriptor / not yet written).
+// first-segment prefix, a complete 7z blob, or a RAR5 last-volume header.
+// Empty when the blob is not those formats or the CRC field is zero
+// (data descriptor / not yet written / 7z first-volume packed data).
 func ArchiveFileCRCs(data []byte) []ArchiveFileCRC {
 	return archiveFileCRCs(data)
 }

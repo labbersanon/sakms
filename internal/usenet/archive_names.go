@@ -54,6 +54,9 @@ func archiveFiles(data []byte) []ArchiveFileCRC {
 	if bytes.HasPrefix(data, []byte("Rar!\x1a\x07\x01\x00")) {
 		return rar5Files(data)
 	}
+	if bytes.HasPrefix(data, sevenZMagic) {
+		return sevenZFiles(data)
+	}
 	return nil
 }
 

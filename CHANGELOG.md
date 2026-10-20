@@ -11982,3 +11982,21 @@ status stays active.
 | `internal/usenetsearch/completeness.go` | identNameSQL +parhash/sfv/srrdb |
 | `internal/usenetsearch/namefix_test.go` | magazine ingest/header; SFV prefer; hash still unnamed |
 | `docs/usenet-nntp-native.md` | underscore-separated quoted titles |
+
+## 2026-10-20 — 7z last-volume footer CRC for srrdb
+
+**Problem:** After #230, live `name_source=srrdb|sfv|parhash` stayed 0. Namefix BODYed ngPost `hash.7z.001` (`magic=377abcaf271c0004 crcs=0`). 32 pending95 split `.7z.0xx` sets never yielded a CRC.
+**Root cause:** 7z inner CRC/names live in the end header at `32+NextHeaderOffset` (last bytes of the last `.7z.NNN` volume). `archivePartNum` only parsed `.partN.rar`. `pickBodyTargets` took the first yEnc segment of the first volume. BodyHead kept a 256KiB *prefix*, so even a last-volume BODY would drop the footer. `archiveFiles` returned nil on 7z magic. `.7z.enc` looked like a first volume via `reBareArchive`.
+**Fix:** Parse `.7z.NNN` part numbers. BODY the last segment of the last 7z volume (2MiB cap). Reconstruct a sparse 7z from the start header + footer and `7z l -slt` (container already has 7-Zip) for Path/CRC. Skip `.7z.enc`. Match unquoted `.7z.001` in `reFileTok`. CI installs `p7zip-full`.
+**Outcome:** A complete hash.7z.001…NNN set can srrdb-rename from the last-volume footer CRC. Encrypted `.7z.enc` and MKV-only posts still need IRC `[FN:]` or a parhash donor. Success remains `name_source=srrdb|sfv|parhash`, not Searchable/subject.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/sevenz.go` | start header parse; sparse `7z l -slt` CRC list |
+| `internal/usenet/archive_names.go` | complete 7z blobs through sevenZFiles |
+| `internal/usenetsearch/namefix.go` | last-segment 7z pick; stitch start+tail; skip .7z.enc |
+| `internal/usenetsearch/subject.go` | `reFileTok` keeps `.7z.NNN` |
+| `.github/workflows/go-test.yml` | install p7zip-full |
+| `docs/usenet-nntp-native.md` | 7z last-segment footer CRC |

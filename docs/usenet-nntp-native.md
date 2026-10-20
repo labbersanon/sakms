@@ -185,10 +185,12 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   a hash.par2 sibling whose FileDesc names are also hashes. Seed BODYs only the
   main (non-vol) `.par2` and reserves half of each seed pass for shelved
   pending so named donors cannot starve hash.par2. BODY picks SFV, then the
-  first-volume RAR (`part01` / bare `.rar`), then the last volume (RAR5
-  unpacked CRC; never `.vol*.par2`), then the main `.par2`. 95% complete
+  first-volume RAR/7z (`part01` / `.7z.001` / bare `.rar`), then the last
+  volume (RAR5 first segment; 7z last segment of `.7z.NNN` for the end
+  header — never `.vol*.par2` or `.7z.enc`), then the main `.par2`. 95% complete
   sets run before 80% ident BODY. RAR4 `FILE_CRC` / RAR5 Data CRC32 / ZIP CRC /
-  SFV CRC32 is looked up on srrdb `archive-crc:` when that CRC is unique
+  7z end-header CRC (via container `7z l`) / SFV CRC32 is looked up on srrdb
+  `archive-crc:` when that CRC is unique
   (`resultsCount==1`, size ±15%); srrdb ToS is use-don't-scrape (no catalog
   paging). An `.sfv` whose payload filename already parses as a scene title is
   accepted as `name_source=sfv` without HTTP.

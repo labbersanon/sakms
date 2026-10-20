@@ -172,10 +172,12 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   Each pass runs quoted ident-shaped header names first (no BODY; ignores
   `next_name_at`), then PreDB-only keys, then ident BODY, then 95% BODY,
   so a 20s BODY deadline cannot skip titles already sitting in the subject.
-  Each BODY article is capped at 8s (dial included); a hung fetch logs
-  `namefix body msgid=` and the pass continues to the next PAR2/NFO pick.
-  Yield-group BODY is 40/pass at 95% plus 20/pass at ≥80% when PAR2 is present. A BODY whose FileDesc is
-  the same hash is not retried (PreDB-only from then on).
+  Each BODY article is capped at 8s (dial included) and does not inherit leftover
+  phase crumbs, so setRows eating the 20s still fetches one PAR2. A hung fetch
+  logs `namefix body msgid=` and continues to the next PAR2/NFO pick unless the
+  phase is already gone.
+  Yield-group BODY is 40/pass at 95% plus 20/pass at ≥80% when PAR2 is present.
+  A BODY whose FileDesc is the same hash is not retried (PreDB-only from then on).
   Sets with PAR2 are BODY-sampled even under 100 MiB. Accepted: a
   PreDB-confirmed name (size within ±15% when PreDB reports one), or a
   PAR2/RAR/yEnc name that parses as title + (year|episode) +

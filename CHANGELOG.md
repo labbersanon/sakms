@@ -11853,3 +11853,17 @@ status stays active.
 | `internal/usenetsearch/predb/irc.go` | lastTitle FN follow-up; keys log |
 | `internal/usenetsearch/namefix_test.go` | hung first BODY still renames from next pick |
 | `docs/usenet-nntp-native.md` | 8s article; FILE aliases |
+
+## 2026-10-19 — namefix BODY still fetches after the 20s phase is gone
+
+**Problem:** After #222, the first due hash.par2 was skipped: `namefix body skip msgid=… bytes=43596 remain_ms=-1`, `body_fetches=0 leftover=40 unresolved=1`.
+**Root cause:** setRows/lookupPreDB ate the 20s phase. BodyHead inherited that deadline and skipped the 43KB par2. BumpNameAttempt on the expired ctx aborted the rest of the queue.
+**Fix:** BodyHead uses `WithoutCancel` + 8s. Rename/retry writes also use `WithoutCancel` after a sample. Do not skip when remain_ms is negative.
+**Outcome:** A 43KB par2 still gets one BODY after the phase clock is gone.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix.go` | WithoutCancel article + rename/retry |
+| `docs/usenet-nntp-native.md` | leftover phase crumbs |

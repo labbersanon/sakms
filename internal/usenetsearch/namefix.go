@@ -67,8 +67,10 @@ const (
 	//   → this deadline missing or BodyHead ignoring articleIOTimeout.
 	// Review if: 20s leaves 95% yield unnamed (raise, do not remove).
 	namefixMaxDuration = 20 * time.Second
-	// Skip BodyHead when the phase has less than this left (dial/BODY cannot finish).
-	namefixMinBodyRemain = 200 * time.Millisecond
+	// Claude 2026-10-19: namefixMinBodyRemain skipped BodyHead when the 20s
+	//   phase was already gone (live remain_ms=-1 on a 43KB par2). Replaced
+	//   by WithoutCancel+8s so one overtime article still runs.
+	// namefixMinBodyRemain = 200 * time.Millisecond
 	// PreDB-only needs hash/filename tokens, not every header.
 	namefixPreDBHeaderSample = 64
 	// namefixMinPayload: smaller sets without PAR2 are finalized (no BODY).
@@ -86,9 +88,13 @@ const (
 //
 // Claude 2026-10-19: 8s per article, independent of the 20s phase.
 // Reason: live every pass was body leftover=40 fetches=1 bytes=0 unresolved=0.
-//   One hung BODY/dial returned DeadlineExceeded and aborted all 40 due sets.
+//
+//	One hung BODY/dial returned DeadlineExceeded and aborted all 40 due sets.
+//
 // Troubleshooting: o2cli grep "namefix body"; remain_ms=0 + leftover=body →
-//   article timeout not applied or parent ctx already dead before BodyHead.
+//
+//	article timeout not applied or parent ctx already dead before BodyHead.
+//
 // Review if: 8s leaves 20KB par2 unnamed (raise, still continue to next pick).
 var namefixBodyArticleTimeout = 8 * time.Second
 
@@ -353,18 +359,13 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 			res.BudgetStop = true
 			return true, nil
 		}
-		remain := namefixBodyArticleTimeout
-		if d, ok := ctx.Deadline(); ok {
-			left := time.Until(d)
-			if left < namefixMinBodyRemain {
-				log.Printf("usenetsearch: namefix body skip msgid=%s bytes=%d remain_ms=%d", pick.MsgID, pick.Bytes, left.Milliseconds())
-				break
-			}
-			if left < remain {
-				remain = left
-			}
-		}
-		bodyCtx, cancel := context.WithTimeout(ctx, remain)
+		// Claude 2026-10-19: 8s article ctx is not the leftover phase crumbs.
+		// Reason: live after #222, first BODY set skipped a 43KB par2 with
+		//   remain_ms=-1 (setRows/lookupPreDB ate the 20s) and leftover=40
+		//   with body_fetches=0. Hash.par2 never moved.
+		// Troubleshooting: o2cli grep "namefix body skip" → this WithoutCancel
+		//   missing. Review if: one overtime BODY delays crawl (>30s/pass).
+		bodyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), namefixBodyArticleTimeout)
 		sample, berr := n.Src.BodyHead(bodyCtx, pick.MsgID, namefixHeadBytes)
 		cancel()
 		if errors.Is(berr, usenet.ErrBusy) {
@@ -372,49 +373,46 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 			return true, nil
 		}
 		res.BodyFetches++
-		// Claude 2026-10-19: per-article timeout continues; only parent ctx stops the phase.
-		// Reason: live leftover=40 after one hung BODY; 21–42KB par2s never ran.
-		// Troubleshooting: o2cli grep "namefix body"; leftover=body with one msgid
-		//   repeating → next pick not continuing. Review if: 8s is raised.
 		if berr != nil {
 			log.Printf("usenetsearch: namefix body msgid=%s bytes=%d remain_ms=%d wire=0 yenc=0 cands=0 par2=false err=%v",
-				pick.MsgID, pick.Bytes, remain.Milliseconds(), berr)
-			if (errors.Is(berr, context.DeadlineExceeded) || errors.Is(berr, context.Canceled)) && ctx.Err() != nil {
-				return false, ctx.Err()
+				pick.MsgID, pick.Bytes, namefixBodyArticleTimeout.Milliseconds(), berr)
+		} else {
+			sampled = true
+			n.Budget.add(sample.WireBytes)
+			res.BodyBytes += sample.WireBytes
+			cands := candidatesFromSample(sample, pick.NFO)
+			log.Printf("usenetsearch: namefix body msgid=%s bytes=%d remain_ms=%d wire=%d yenc=%d cands=%d par2=%t err=<nil>",
+				pick.MsgID, pick.Bytes, namefixBodyArticleTimeout.Milliseconds(), sample.WireBytes, len(sample.YencName), len(cands), bytes.HasPrefix(sample.Data, par2Magic))
+			if len(cands) > 0 {
+				work := context.WithoutCancel(ctx)
+				allHash := true
+				for _, cand := range cands {
+					if recoveredUnusable(cand.name) {
+						continue
+					}
+					allHash = false
+					name, source, conf, predb, ok := n.accept(work, cand.name, cand.source, set.PayloadBytes)
+					if ok {
+						return n.promote(work, set, rows, name, source, conf, predb, res, statBudget)
+					}
+				}
+				if allHash {
+					hashOnly = true
+					break
+				}
 			}
-			continue
 		}
-		sampled = true
-		n.Budget.add(sample.WireBytes)
-		res.BodyBytes += sample.WireBytes
-		cands := candidatesFromSample(sample, pick.NFO)
-		log.Printf("usenetsearch: namefix body msgid=%s bytes=%d remain_ms=%d wire=%d yenc=%d cands=%d par2=%t err=<nil>",
-			pick.MsgID, pick.Bytes, remain.Milliseconds(), sample.WireBytes, len(sample.YencName), len(cands), bytes.HasPrefix(sample.Data, par2Magic))
-		if len(cands) == 0 {
-			continue
-		}
-		allHash := true
-		for _, cand := range cands {
-			if recoveredUnusable(cand.name) {
-				continue
-			}
-			allHash = false
-			name, source, conf, predb, ok := n.accept(ctx, cand.name, cand.source, set.PayloadBytes)
-			if ok {
-				return n.promote(ctx, set, rows, name, source, conf, predb, res, statBudget)
-			}
-		}
-		if allHash {
-			hashOnly = true
+		if ctx.Err() != nil {
 			break
 		}
 	}
 
 	res.Unresolved++
+	dbCtx := context.WithoutCancel(ctx)
 	if sampled && hashOnly && keepCompleteYield(set.Group, set.CompletenessBP, set.PayloadBytes) {
-		return false, n.Index.ShelveBodyAttempts(ctx, set.Group, set.Key)
+		return false, n.Index.ShelveBodyAttempts(dbCtx, set.Group, set.Key)
 	}
-	return false, n.Index.BumpNameAttempt(ctx, set.Group, set.Key, set.Attempts)
+	return false, n.Index.BumpNameAttempt(dbCtx, set.Group, set.Key, set.Attempts)
 }
 
 func (n *NameFixer) finalize(ctx context.Context, set PendingSet) error {

@@ -120,10 +120,11 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
 - **Collection grouping.** `headers.release_name` is the upload, not the file.
   `ParseSubject` strips `[k/N]`, `(n/m)`, and `N of M` from the stem (NNTmux
   collection hash input) and stores the file counter on `file_n`/`file_m`.
-  `[48/73] Show…` and `[01/73] Show…` share one key. An ident-shaped quoted
-  filename (`SxxEyy` / year / multi-word + resolution) is the episode key
-  instead of the pack stem or `obf:`; completeness then ignores collection
-  `file_m` so one mkv is not scored as 12 missing files. Leading `[#a.b.teevee]` /
+  `[48/73] Show…` and `[01/73] Show…` share one key. A quoted filename that is
+  already a title (resolution, including underscore `1080p`; a spacey name;
+  or `[Group] fansub`) is the release key instead of the pack stem or `obf:`.
+  Completeness then ignores collection `file_m` on ident-shaped keys so one
+  mkv is not scored as 12 missing files. Hash.par2 quotes stay staged. Leading `[#a.b.teevee]` /
   `[Group]` tags are stripped. EFNet `[id]-[FULL]-[#a.b…@EFNet]-[ Title ]` and
   `www.Bin-Req.net Presents: #id - Title` wrappers are stripped to the title;
   a request-id-only leftover (`23051509 ]`) is staged, not searchable, so dump

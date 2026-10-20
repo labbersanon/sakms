@@ -272,6 +272,28 @@ func TestStageObfuscated_HdtvQuotedHashMkv(t *testing.T) {
 	}
 }
 
+func TestParseHeader_UnderscoreFansub1080pIsKey(t *testing.T) {
+	const title = "[Fancutfags]_Puella_Magi_Madoka_Magica_-_03_[BD-Fancut][h264-1080p_FLAC][245C3BA1]"
+	h := parseHeader("alt.binaries.multimedia.anime.highspeed",
+		`[01/27] - "`+title+`.vol001+002.par2" yEnc (1/1)`, "p@x", "m@x", 1, 1, 1000, true)
+	if isObfKey(h.ReleaseName) || h.ReleaseName != title {
+		t.Fatalf("release=%q, want underscore 1080p fansub title", h.ReleaseName)
+	}
+}
+
+func TestParseHeader_QuotedTitleWithoutResIsKey(t *testing.T) {
+	h := parseHeader("alt.binaries.multimedia.erotica",
+		`"MilfAF - London River.mkv.part2.rar" yEnc (yEnc) (01/82)`, "p@x", "m@x", 1, 1, 1000, true)
+	if isObfKey(h.ReleaseName) || h.ReleaseName != "MilfAF - London River" {
+		t.Fatalf("release=%q, want quoted title without resolution", h.ReleaseName)
+	}
+	hash := parseHeader("alt.binaries.anime",
+		`[4/10] - "nBRXqe48CSFbDwIghsuUcWr.vol001+002.par2" yEnc (1/1)`, "p@x", "m2@x", 2, 1, 1000, true)
+	if !isObfKey(hash.ReleaseName) {
+		t.Fatalf("hash par2 must stay staged, got %q", hash.ReleaseName)
+	}
+}
+
 func TestParseHeader_QuotedIdentEpisodeIsKey(t *testing.T) {
 	const title = "WOR-HAZ Chivalry of a Failed Knight S01E09 BD HEVC 1080p FLAC"
 	subj := `[9/12] - "` + title + `.mkv" yEnc (2269/3248)`

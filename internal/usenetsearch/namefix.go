@@ -432,7 +432,7 @@ func (n *NameFixer) accept(ctx context.Context, raw, source string, payload int6
 		}
 		predb = "miss"
 	}
-	if source != sourceNFO && (parsesAsRelease(norm) || identShapedName(norm)) {
+	if source != sourceNFO && (parsesAsRelease(norm) || quotedReleaseName(norm)) {
 		return norm, source, confMedium, predb, true
 	}
 	return "", "", "", "", false
@@ -453,19 +453,46 @@ func identShapedName(name string) bool {
 	if hasTitleAndMarker(name) {
 		return true
 	}
-	if !strings.ContainsAny(name, ". ") {
+	// Claude 2026-10-19: '_' is a word separator (underscore fansubs).
+	// Reason: live `[Fancutfags]_Puella_Magi_…1080p…` is pending_name at 100%
+	//   because ContainsAny(". ") failed and header SQL required a space
+	//   inside the quotes. Searchable sat at 115.
+	// Troubleshooting: 100% quoted 1080p still pending → this still
+	//   requiring space/dot. Review if: 576p / 4K-without-p.
+	if !strings.ContainsAny(name, ". _") {
 		return false
 	}
+	return letterCount(name) >= 3
+}
+
+// quotedReleaseName is a destemmed quoted filename that is already a title:
+// ident-shaped (resolution), a scene parse, or a multi-word / bracketed name
+// that is not a hash token. Hash.par2 stays unnamed (IRC/PAR2).
+func quotedReleaseName(name string) bool {
+	n := normalizeRecovered(name)
+	if n == "" || hashCore(n) != "" {
+		return false
+	}
+	if identShapedName(n) || parsesAsRelease(n) {
+		return true
+	}
+	if letterCount(n) < 6 {
+		return false
+	}
+	if strings.Contains(n, "[") && strings.Contains(n, "]") {
+		return true
+	}
+	return strings.ContainsAny(n, " ") || strings.Count(n, "_") >= 2
+}
+
+func letterCount(s string) int {
 	n := 0
-	for _, r := range name {
+	for _, r := range s {
 		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
 			n++
-			if n >= 3 {
-				return true
-			}
 		}
 	}
-	return false
+	return n
 }
 
 // promote runs an accepted name through the admission gate and STAT (when
@@ -491,7 +518,7 @@ func (n *NameFixer) promote(ctx context.Context, set PendingSet, rows []HeaderRo
 			//   Scene PAR2 names stay dotted and still go through gate.
 			// Troubleshooting: reject_gate on a spacey 1080p title → this skip
 			//   missing. Review if: a dotted scene title is rewritten with spaces.
-			skipGate := identShapedName(name) && strings.Contains(name, " ")
+			skipGate := quotedReleaseName(name) && strings.ContainsAny(name, " _[")
 			if !skipGate {
 				var modes []string
 				if c.GroupModesFn != nil {

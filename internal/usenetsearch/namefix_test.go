@@ -1409,6 +1409,85 @@ func TestNameFix_QuotedHashFilenameDoesNotRename(t *testing.T) {
 	}
 }
 
+func TestNameFix_QuotedTitleWithoutResSearchableAtIngest(t *testing.T) {
+	const title = "MilfAF - London River"
+	var rows []usenet.MessageOverview
+	for i := 1; i <= 5; i++ {
+		rows = append(rows, usenet.MessageOverview{
+			Number: i, Subject: fmt.Sprintf(`"%s.mkv" yEnc (%d/5)`, title, i),
+			From: "poster@obf", MessageID: fmt.Sprintf("lr%d@t", i), Bytes: 80_000_000, DateUnix: 1700000000,
+		})
+	}
+	f := newNFFixture(t, rows, nil)
+	f.crawlAndRecompute(t)
+	var n int
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases WHERE display_name=? AND searchable`, title).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("quoted title without resolution must be searchable at 100%%, got %d", n)
+	}
+}
+
+func TestNameFix_HeaderRecoversUnderscore1080pPending(t *testing.T) {
+	const title = "[Fancutfags]_Puella_Magi_Madoka_Magica_-_03_[BD-Fancut][h264-1080p_FLAC][245C3BA1]"
+	subj := `[01/2] - "` + title + `.mkv" yEnc (1/2)`
+	key := ObfKey(nfGroup, "poster@obf", subj)
+	var rows []HeaderRow
+	for i := 1; i <= 2; i++ {
+		rows = append(rows, HeaderRow{
+			Group: nfGroup, MsgNum: i, MsgID: fmt.Sprintf("md%d@t", i), Subject: fmt.Sprintf(`[01/2] - "%s.mkv" yEnc (%d/2)`, title, i),
+			From: "poster@obf", PostedAt: 1700000000, Bytes: 80_000_000,
+			ReleaseName: key, PartN: i, PartM: 2, Filename: title + ".mkv",
+			Obfuscated: true, FileN: 1, FileM: 2, YencSize: 80_000_000,
+		})
+	}
+	rows = append(rows, HeaderRow{
+		Group: nfGroup, MsgNum: 3, MsgID: "mdpar2@t", Subject: `[02/2] - "` + title + `.par2" yEnc (1/1)`,
+		From: "poster@obf", PostedAt: 1700000000, Bytes: 40_000,
+		ReleaseName: key, PartN: 1, PartM: 1, Filename: title + ".par2",
+		Obfuscated: true, IsMeta: true, FileN: 2, FileM: 2,
+	})
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	if err := idx.Upsert(ctx, rows); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.RecomputeDirty(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	due, err := idx.DuePendingHeaderNames(ctx, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(due) != 1 {
+		t.Fatalf("DuePendingHeaderNames=%d, want underscore 1080p pending", len(due))
+	}
+	budget := &bodyBudget{}
+	budget.setCapMB(0)
+	nf := &NameFixer{Index: idx, Groups: []string{nfGroup}, Budget: budget}
+	res, err := nf.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Renamed != 1 {
+		t.Fatalf("header must rename underscore 1080p without BODY: %+v", res)
+	}
+	var searchable bool
+	var display string
+	if err := sqlDB.QueryRow(`SELECT display_name, searchable FROM usenet_nntp_releases`).Scan(&display, &searchable); err != nil {
+		t.Fatal(err)
+	}
+	if display != title || !searchable {
+		t.Fatalf("display=%q searchable=%v", display, searchable)
+	}
+}
+
 func TestNameFix_QuotedTitleFromStubFilenameBeatsBodyQueue(t *testing.T) {
 	const title = "[UQW] Black Clover - Ep170 [BDRip 1080p HEVC-YUV420P10 FLAC]"
 	quoted := []usenet.MessageOverview{

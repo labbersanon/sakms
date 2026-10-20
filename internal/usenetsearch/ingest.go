@@ -88,7 +88,7 @@ func parseHeader(group, subj, from, msgid string, num int, postedAt, bytes int64
 		// Troubleshooting: Chivalry/Black Clover quoted in HIGH but
 		//   completeness_bp≈450 / Searchable=0 → this still using stem/obf.
 		// Review if: a pack NZB (all 12 files, one key) is an operator mode.
-		if n := normalizeRecovered(ps.Filename); n != "" && identShapedName(n) {
+		if n := normalizeRecovered(ps.Filename); quotedReleaseName(n) {
 			h.ReleaseName = n
 			h.Obfuscated = false
 		} else {

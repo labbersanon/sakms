@@ -67,6 +67,11 @@ func (p *NNTPPreDB) Reload(ctx context.Context) {
 		svc.HTTP = predb.NewHTTPClient(g.PreDBHTTPURL)
 	}
 	p.svc.SetPreDB(svc)
+	if g.SRRDBEnabled {
+		p.svc.SetSRRDB(usenetsearch.NewSRRDBClient(""))
+	} else {
+		p.svc.SetSRRDB(nil)
+	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()

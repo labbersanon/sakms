@@ -31,7 +31,7 @@ func TestNNTPGapFill_DefaultsAreOnIncludingIRC(t *testing.T) {
 		t.Fatalf("defaults: %+v", cfg)
 	}
 	g := r.GapFill
-	if !g.PreDBHTTPEnabled || !g.PreDBIRCEnabled || g.IRCPasswordSet || g.PreDBHTTPURL != "https://api.predb.net/" || g.PreDBDumpPath != "" {
+	if !g.PreDBHTTPEnabled || !g.PreDBIRCEnabled || !g.SRRDBEnabled || g.IRCPasswordSet || g.PreDBHTTPURL != "https://api.predb.net/" || g.PreDBDumpPath != "" {
 		t.Fatalf("predb defaults: %+v", g)
 	}
 	if len(g.PreDBIRCExtra) != 1 || g.PreDBIRCExtra[0].Server != "irc.corrupt-net.org" || len(g.PreDBIRCExtra[0].Channels) != 1 || g.PreDBIRCExtra[0].Channels[0] != "#pre" {
@@ -45,7 +45,7 @@ func TestNNTPGapFill_KillSwitchesReachConfig(t *testing.T) {
 	for _, k := range []string{
 		usenetsearch.KeyNameFixEnabled, usenetsearch.KeyRepairEnabled,
 		usenetsearch.KeyBackfillEnabled, usenetsearch.KeyPreDBHTTPEnabled,
-		usenetsearch.KeyCollectionDriftEnabled,
+		usenetsearch.KeySRRDBEnabled, usenetsearch.KeyCollectionDriftEnabled,
 	} {
 		if err := store.Set(ctx, k, "false"); err != nil {
 			t.Fatal(err)
@@ -59,7 +59,7 @@ func TestNNTPGapFill_KillSwitchesReachConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := configFromNNTPResponse(r)
-	if cfg.RepairEnabled || cfg.NameFixEnabled || cfg.BackfillEnabled || r.GapFill.PreDBHTTPEnabled || cfg.CollectionDriftEnabled {
+	if cfg.RepairEnabled || cfg.NameFixEnabled || cfg.BackfillEnabled || r.GapFill.PreDBHTTPEnabled || r.GapFill.SRRDBEnabled || cfg.CollectionDriftEnabled {
 		t.Fatalf("kill switches ignored: %+v / %+v", cfg, r.GapFill)
 	}
 	if cfg.BackfillDays != 30 {

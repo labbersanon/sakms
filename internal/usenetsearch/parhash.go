@@ -130,19 +130,12 @@ WHERE h.hash IN (`+ph+`)
 	return out, rows.Err()
 }
 
-// DueParHashSeed returns named (donors first) then pending yield sets with
-// PAR2 that have not yet stored hash_16K. Used to bootstrap already-sampled
-// FileDesc titles and shelved hash.par2 sets after deploy.
+// DueParHashSeed returns unsampled PAR2 sets: up to half pending (so shelved
+// hash.par2 can store hashes while named donors still exist), the rest named.
+// Named leftover fills any unused pending slots.
 func (idx *Index) DueParHashSeed(ctx context.Context, groups []string, limit int) ([]PendingSet, error) {
 	if limit <= 0 {
 		return nil, nil
-	}
-	named, err := idx.dueParHashSeedNamed(ctx, limit)
-	if err != nil {
-		return nil, err
-	}
-	if len(named) >= limit {
-		return named, nil
 	}
 	var yield []string
 	for _, g := range groups {
@@ -150,9 +143,19 @@ func (idx *Index) DueParHashSeed(ctx context.Context, groups []string, limit int
 			yield = append(yield, g)
 		}
 	}
-	pending, err := idx.dueParHashSeedPending(ctx, yield, limit-len(named))
+	// Claude 2026-10-20: reserve half the seed for pending hash.par2.
+	// Reason: live named_unsampled=156 filled all 20 slots every pass;
+	//   pending95_par2 never stored hash_16K (dup_hashes stayed 0).
+	// Troubleshooting: parhash=20 with no pending keys → this split
+	//   missing or pending is not has_par2/attempts>=max.
+	// Review if: named seed has drained (then pending can take the rest).
+	pending, err := idx.dueParHashSeedPending(ctx, yield, limit/2)
 	if err != nil {
-		return named, err
+		return nil, err
+	}
+	named, err := idx.dueParHashSeedNamed(ctx, limit-len(pending))
+	if err != nil {
+		return pending, err
 	}
 	return append(named, pending...), nil
 }

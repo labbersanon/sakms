@@ -112,6 +112,8 @@ const (
 	sourceRar     = "rar"
 	sourceYenc    = "ybegin"
 	sourceNFO     = "nfo"
+	sourceSFV     = "sfv"
+	sourceSRRDB   = "srrdb"
 	confPreDB     = "predb_exact"
 	confMedium    = "medium"
 	verdictNamed  = "namefix"
@@ -170,8 +172,10 @@ type NameFixer struct {
 	Index   *Index
 	Crawler *Crawler // admission snapshot, group modes, statVerdict
 	PreDB   PreDBLookup
-	Groups  []string
-	Budget  *bodyBudget
+	// SRRDB resolves RAR/ZIP/SFV inner-file CRC32 (nil disables it).
+	SRRDB  ArchiveCRCLookup
+	Groups []string
+	Budget *bodyBudget
 	// SkipBody runs PreDB-only (OVER/download busy). PAR2 BODY waits.
 	SkipBody bool
 	// PassBudget caps one Run; zero uses namefixMaxDuration. Tests shorten it.
@@ -438,8 +442,13 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 				}
 				if allHash {
 					hashOnly = true
-					break
 				}
+			}
+			if hit, ok := n.lookupArchiveCRC(work, set, sample); ok {
+				return n.promote(work, set, rows, hit.Title, sourceSRRDB, confMedium, "srrdb", res, statBudget)
+			}
+			if hashOnly && !isPar2 {
+				break
 			}
 		}
 		if ctx.Err() != nil {
@@ -478,7 +487,7 @@ func (n *NameFixer) seedParHashes(ctx context.Context, set PendingSet, res *Name
 	}
 	work := context.WithoutCancel(ctx)
 	tried := false
-	for _, pick := range pickBodyTargets(rows) {
+	for _, pick := range pickPar2Targets(rows) {
 		if !n.Budget.fits(pick.Bytes) {
 			res.BudgetStop = true
 			return true, nil
@@ -772,6 +781,49 @@ func (n *NameFixer) lookupPreDB(ctx context.Context, set PendingSet, rows []Head
 	return PreDBHit{}, false
 }
 
+func (n *NameFixer) lookupArchiveCRC(ctx context.Context, set PendingSet, sample usenet.BodySample) (PreDBHit, bool) {
+	if n.SRRDB == nil {
+		return PreDBHit{}, false
+	}
+	for _, crc := range sampleCRCs(sample) {
+		hit, ok := n.SRRDB.ByCRC(ctx, crc)
+		if !ok || recoveredUnusable(hit.Title) || !sizeWithin(hit.SizeBytes, set.PayloadBytes) {
+			continue
+		}
+		return hit, true
+	}
+	return PreDBHit{}, false
+}
+
+func sampleCRCs(s usenet.BodySample) []string {
+	if bytes.HasPrefix(s.Data, par2Magic) {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	add := func(crc string) {
+		crc = strings.ToUpper(strings.TrimSpace(crc))
+		if crc == "" || crc == "00000000" || seen[crc] {
+			return
+		}
+		seen[crc] = true
+		out = append(out, crc)
+	}
+	if files := usenet.ArchiveFileCRCs(s.Data); len(files) > 0 {
+		for _, f := range files {
+			add(f.CRC)
+		}
+		return out
+	}
+	for _, e := range preferredSFVEntries(sfvEntries(s.Data)) {
+		add(e.CRC)
+	}
+	if len(out) > 2 {
+		out = out[:2]
+	}
+	return out
+}
+
 func (n *NameFixer) lookupPreDBNames(ctx context.Context, set PendingSet, cands []nameCand) (PreDBHit, bool) {
 	if n.PreDB == nil {
 		return PreDBHit{}, false
@@ -957,8 +1009,14 @@ func candidatesFromSample(s usenet.BodySample, nfo bool) []nameCand {
 			raw = append(raw, nameCand{nm, sourceNFO})
 		}
 	default:
-		for _, nm := range usenet.ArchiveMemberNames(s.Data) {
-			raw = append(raw, nameCand{nm, sourceRar})
+		if entries := sfvEntries(s.Data); len(entries) > 0 {
+			for _, e := range entries {
+				raw = append(raw, nameCand{e.Name, sourceSFV})
+			}
+		} else {
+			for _, nm := range usenet.ArchiveMemberNames(s.Data) {
+				raw = append(raw, nameCand{nm, sourceRar})
+			}
 		}
 	}
 	if s.YencName != "" {
@@ -1061,4 +1119,24 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 		add(payload[0])
 	}
 	return picks
+}
+
+func isMainPar2Name(name string) bool {
+	low := strings.ToLower(name)
+	return strings.Contains(low, ".par2") && !strings.Contains(low, ".vol")
+}
+
+// pickPar2Targets returns the first-segment non-vol .par2 article only.
+// Named hash_16K seed must not BODY RAR volumes (live seed was 4.5MB/pass).
+func pickPar2Targets(rows []HeaderRow) []bodyPick {
+	for _, r := range rows {
+		if r.PartN > 1 || r.MsgID == "" {
+			continue
+		}
+		if !isMainPar2Name(r.Filename) && !isMainPar2Name(r.Subject) {
+			continue
+		}
+		return []bodyPick{{MsgID: r.MsgID, Bytes: r.Bytes}}
+	}
+	return nil
 }

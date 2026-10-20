@@ -65,6 +65,7 @@ type usenetNNTPGapFill struct {
 	UnnamedMaxPct          int               `json:"unnamedMaxPct"`
 	PreDBHTTPEnabled       bool              `json:"predbHttpEnabled"`
 	PreDBHTTPURL           string            `json:"predbHttpUrl"`
+	SRRDBEnabled           bool              `json:"srrdbEnabled"`
 	PreDBIRCEnabled        bool              `json:"predbIrcEnabled"`
 	IRCPasswordSet         bool              `json:"predbIrcPasswordSet"`
 	PreDBIRCExtra          []predb.IRCConfig `json:"predbIrcExtra"`
@@ -683,6 +684,7 @@ func loadNNTPGapFill(ctx context.Context, st *settings.Store) (usenetNNTPGapFill
 		{&g.NameFixEnabled, usenetsearch.KeyNameFixEnabled, true},
 		{&g.PreDBHTTPEnabled, usenetsearch.KeyPreDBHTTPEnabled, true},
 		{&g.PreDBIRCEnabled, usenetsearch.KeyPreDBIRCEnabled, true},
+		{&g.SRRDBEnabled, usenetsearch.KeySRRDBEnabled, true},
 		{&g.RepairEnabled, usenetsearch.KeyRepairEnabled, true},
 		{&g.BackfillEnabled, usenetsearch.KeyBackfillEnabled, true},
 		{&g.CollectionDriftEnabled, usenetsearch.KeyCollectionDriftEnabled, true},

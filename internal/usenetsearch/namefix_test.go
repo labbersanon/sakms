@@ -677,6 +677,9 @@ func TestPickBodyTargets_LastSevenZUsesLastSegment(t *testing.T) {
 		if p.MsgID == "last-seg@t" && (!p.Tail || !p.CRC) {
 			t.Fatalf("last 7z segment %+v must be Tail+CRC", p)
 		}
+		if p.MsgID == "first-seg@t" && !p.HeadOnly {
+			t.Fatalf("first 7z volume %+v must be HeadOnly (signature, not packed data)", p)
+		}
 	}
 }
 

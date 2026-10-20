@@ -261,6 +261,91 @@ func rar5Files(data []byte) []ArchiveFileCRC {
 	return files
 }
 
+// PayloadKind classifies a BODY prefix: par2, rar4, rar5, rar5-enc, zip,
+// 7z, sfv, ybegin, or unknown. 7z NextHeader kinds are SevenZHeaderKind.
+func PayloadKind(data []byte) string {
+	switch {
+	case len(data) == 0:
+		return ""
+	case bytes.HasPrefix(data, []byte("PAR2\x00PKT")):
+		return "par2"
+	case bytes.HasPrefix(data, []byte("Rar!\x1a\x07\x00")):
+		return "rar4"
+	case bytes.HasPrefix(data, []byte("Rar!\x1a\x07\x01\x00")):
+		if rar5Encrypted(data) {
+			return "rar5-enc"
+		}
+		return "rar5"
+	case bytes.HasPrefix(data, []byte("PK\x03\x04")), bytes.HasPrefix(data, []byte("PK\x05\x06")):
+		return "zip"
+	case bytes.HasPrefix(data, sevenZMagic):
+		return "7z"
+	case bytes.HasPrefix(bytes.TrimSpace(data), []byte("=ybegin")):
+		return "ybegin"
+	case looksSFVPayload(data):
+		return "sfv"
+	default:
+		return "unknown"
+	}
+}
+
+func rar5Encrypted(data []byte) bool {
+	i := 8
+	for n := 0; n < 8 && i+8 <= len(data); n++ {
+		i += 4
+		size, next, ok := readRAR5Vint(data, i)
+		if !ok || size == 0 || size > 1<<21 {
+			return false
+		}
+		hdrStart := next
+		hdrEnd := hdrStart + int(size)
+		if hdrEnd > len(data) {
+			return false
+		}
+		typ, _, ok := readRAR5Vint(data, hdrStart)
+		if !ok {
+			return false
+		}
+		if typ == 4 || typ == 5 {
+			return true
+		}
+		i = hdrEnd
+	}
+	return false
+}
+
+func looksSFVPayload(data []byte) bool {
+	n := len(data)
+	if n > 4096 {
+		n = 4096
+	}
+	lines := 0
+	for _, line := range strings.Split(string(data[:n]), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, ";") {
+			continue
+		}
+		i := strings.LastIndexByte(line, ' ')
+		if i < 1 || i+1+8 > len(line) {
+			return false
+		}
+		crc := line[i+1:]
+		if len(crc) != 8 {
+			return false
+		}
+		for _, c := range crc {
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+				return false
+			}
+		}
+		lines++
+		if lines >= 1 {
+			return true
+		}
+	}
+	return false
+}
+
 func archiveBaseName(name string) string {
 	if i := strings.LastIndexAny(name, `/\`); i >= 0 {
 		return name[i+1:]

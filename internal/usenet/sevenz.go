@@ -45,6 +45,27 @@ type SevenZStart struct {
 	CRC    uint32
 }
 
+// SevenZHeaderKind classifies a NextHeader blob without listing files.
+// Values: "7z" (plain kHeader), "7z-encoded" (LZMA packed header),
+// "7z-aes" (header encryption), "7z-packed" (not a header), "".
+func SevenZHeaderKind(hdr []byte) string {
+	if len(hdr) == 0 {
+		return ""
+	}
+	switch hdr[0] {
+	case 0x01:
+		return "7z"
+	case 0x17:
+		si, _, ok := parse7zStreams(hdr, 1)
+		if ok && len(si.folders) > 0 && si.folders[0].encrypted {
+			return "7z-aes"
+		}
+		return "7z-encoded"
+	default:
+		return "7z-packed"
+	}
+}
+
 // Parse7zStart reads NextHeaderOffset/Size from a 7z signature prefix.
 func Parse7zStart(data []byte) (SevenZStart, bool) {
 	if len(data) < 32 || !bytes.HasPrefix(data, sevenZMagic) {

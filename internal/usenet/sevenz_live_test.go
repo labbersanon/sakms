@@ -29,4 +29,7 @@ func TestParseLiveEncodedAESHeader(t *testing.T) {
 	if !bytes.Equal(f.method, sevenZLZMA) || f.unpackSize != 542 || f.unpackSizes[0] != 218 {
 		t.Fatalf("folder method=%x unpack=%d sizes=%v", f.method, f.unpackSize, f.unpackSizes)
 	}
+	if SevenZHeaderKind(h) != "7z-aes" {
+		t.Fatalf("kind=%q", SevenZHeaderKind(h))
+	}
 }

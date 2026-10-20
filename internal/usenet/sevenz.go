@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"hash/crc32"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,10 +18,11 @@ import (
 //   crcs=0). Split volumes put NextHeader at 32+NextHeaderOffset, which is
 //   the last bytes of the last .7z.NNN volume. Encoded headers need LZMA;
 //   the image already has 7z (p7zip-full / 7-Zip). A sparse file with the
-//   original start header and the footer at the real offset lets `7z l -slt`
-//   print Path/CRC without the packed streams.
-// Troubleshooting: namefix crc magic=377abcaf271c0004 crcs=0 → last .7z.NNN
-//   segment was not fetched, NextHeaderSize exceeded the tail, or 7z missing.
+//   original start header and the last-segment tail at EOF lets `7z l -slt`
+//   print Path/CRC. kEncodedHeader (live sz=45) keeps LZMA bytes *before*
+//   NextHeader, so writing only NextHeaderSize zeros out that pack.
+// Troubleshooting: namefix crc 7z off=N sz=45 crcs=0 → last-segment tail
+//   shorter than packed-header+info, 7z missing, or overlay truncate fail.
 // Review if: a pure-Go LZMA header parser replaces the 7z spawn.
 // Related files: archive_names.go, namefix.go pickBodyTargets
 
@@ -29,7 +31,7 @@ var sevenZMagic = []byte("7z\xbc\xaf\x27\x1c")
 const (
 	max7zPackedOffset = 1 << 40 // 1 TiB sparse apparent size
 	max7zHeaderSize   = 4 << 20
-	sevenZListTimeout = 5 * time.Second
+	sevenZListTimeout = 8 * time.Second
 )
 
 // SevenZStart is the 32-byte 7z signature header.
@@ -67,7 +69,7 @@ func sevenZFiles(data []byte) []ArchiveFileCRC {
 	if st.Offset+st.Size < st.Offset || end > uint64(len(data)) {
 		return nil
 	}
-	return sevenZListFiles(data[:32], data[32+st.Offset:end])
+	return sevenZListSparse(data[:32], st, data[32:end])
 }
 
 // ArchiveFileCRCsFrom7zParts lists inner-file CRC32 values from a 7z start
@@ -87,13 +89,23 @@ func ArchiveFileCRCsFrom7zParts(start, tail []byte) []ArchiveFileCRC {
 	if st.CRC != 0 && crc32.ChecksumIEEE(hdr) != st.CRC {
 		return nil
 	}
-	return sevenZListFiles(start[:32], hdr)
+	return sevenZListSparse(start[:32], st, tail)
 }
 
-func sevenZListFiles(start, header []byte) []ArchiveFileCRC {
-	st, ok := Parse7zStart(start)
-	if !ok || uint64(len(header)) != st.Size {
+func sevenZListSparse(start []byte, st SevenZStart, tail []byte) []ArchiveFileCRC {
+	if len(start) < 32 || len(tail) == 0 {
 		return nil
+	}
+	end := 32 + st.Offset + st.Size
+	pos := int64(end) - int64(len(tail))
+	chunk := tail
+	if pos < 32 {
+		skip := int(32 - pos)
+		if skip >= len(tail) {
+			return nil
+		}
+		chunk = tail[skip:]
+		pos = 32
 	}
 	bin, err := lookPath("7z")
 	if err != nil {
@@ -113,11 +125,13 @@ func sevenZListFiles(start, header []byte) []ArchiveFileCRC {
 		f.Close()
 		return nil
 	}
-	if err := f.Truncate(int64(32 + st.Offset + st.Size)); err != nil {
+	if err := f.Truncate(int64(end)); err != nil {
+		log.Printf("usenet: 7z sparse truncate off=%d sz=%d err=%v", st.Offset, st.Size, err)
 		f.Close()
 		return nil
 	}
-	if _, err := f.WriteAt(header, int64(32+st.Offset)); err != nil {
+	if _, err := f.WriteAt(chunk, pos); err != nil {
+		log.Printf("usenet: 7z sparse write off=%d pos=%d tail=%d err=%v", st.Offset, pos, len(chunk), err)
 		f.Close()
 		return nil
 	}
@@ -129,6 +143,11 @@ func sevenZListFiles(start, header []byte) []ArchiveFileCRC {
 	cmd := unpackCommand(ctx, bin, "l", "-slt", "-bd", path)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if len(msg) > 200 {
+			msg = msg[len(msg)-200:]
+		}
+		log.Printf("usenet: 7z l crc off=%d sz=%d tail=%d err=%v %s", st.Offset, st.Size, len(tail), err, msg)
 		return nil
 	}
 	return parse7zSLT(string(out))

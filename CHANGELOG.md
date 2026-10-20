@@ -12014,3 +12014,16 @@ status stays active.
 |---|---|
 | `internal/usenetsearch/namefix_index.go` | 7z CASE before rar/zip |
 | `internal/usenetsearch/namefix_test.go` | prefer 7z over newer rar |
+
+## 2026-10-20 — 7z encoded header needs packed tail, not NextHeaderSize only
+
+**Problem:** After #232, namefix parsed live `7z off=93083748480 sz=45` then `crcs=0` on the last-segment BODY (`magic=43b79d45…`).
+**Root cause:** kEncodedHeader NextHeaderSize is only the 0x17 StreamsInfo (45 bytes). The LZMA packed header sits immediately before it at EOF. Sparse reconstruct wrote only those 45 bytes, so 7z decoded zeros.
+**Fix:** Place the whole last-segment tail so it ends at `32+offset+size`. Log `7z l` failures.
+**Outcome:** Encoded-header split 7z can list Path/CRC from a last-volume yEnc part. Success remains `name_source=srrdb`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/sevenz.go` | write full tail at EOF; log 7z l errors |

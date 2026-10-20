@@ -137,25 +137,24 @@ func (idx *Index) DueParHashSeed(ctx context.Context, groups []string, limit int
 	if limit <= 0 {
 		return nil, nil
 	}
+	named, err := idx.dueParHashSeedNamed(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	if len(named) >= limit {
+		return named, nil
+	}
 	var yield []string
 	for _, g := range groups {
 		if IsNameFixYieldGroup(g) {
 			yield = append(yield, g)
 		}
 	}
-	named, err := idx.dueParHashSeedNamed(ctx, limit)
+	pending, err := idx.dueParHashSeedPending(ctx, yield, limit-len(named))
 	if err != nil {
-		return nil, err
+		return named, err
 	}
-	out := named
-	if len(out) >= limit {
-		return out[:limit], nil
-	}
-	pending, err := idx.dueParHashSeedPending(ctx, yield, limit-len(out))
-	if err != nil {
-		return out, err
-	}
-	return append(out, pending...), nil
+	return append(named, pending...), nil
 }
 
 func (idx *Index) dueParHashSeedNamed(ctx context.Context, limit int) ([]PendingSet, error) {
@@ -235,7 +234,11 @@ func pickParHashDonor(donors []parHashDonor, payload int64) (parHashDonor, bool)
 		if delta < 0 {
 			delta = -delta
 		}
-		if bestDelta < 0 || delta < bestDelta || (delta == bestDelta && (d.Group < best.Group || (d.Group == best.Group && d.Key < best.Key))) {
+		better := bestDelta < 0 || delta < bestDelta
+		if !better && delta == bestDelta {
+			better = d.Group < best.Group || (d.Group == best.Group && d.Key < best.Key)
+		}
+		if better {
 			best = d
 			bestDelta = delta
 		}

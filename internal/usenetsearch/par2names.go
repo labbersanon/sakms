@@ -45,14 +45,8 @@ func par2FileNames(data []byte) []string {
 
 // par2FileDescs returns FileDesc name + hash_16K + length from data.
 // Claude 2026-10-20: keep hash_16K, not only the filename.
-// Reason: NNTmux donor-renames hash.par2 sets whose FileDesc is also a hash
-//
-//	by matching MD5(first 16KiB) against already-named releases.
-//
-// Troubleshooting: parhash stored=0 after a par2=true BODY → packet shorter
-//
-//	than 48 body bytes or hash field is zeros (test fixtures).
-//
+// Reason: NNTmux matches MD5(first 16KiB) when FileDesc names are also hashes.
+// Troubleshooting: parhash stored=0 after par2=true BODY → short packet or zero hash field.
 // Review if: PAR 3.0 packets appear on Usenet.
 func par2FileDescs(data []byte) []par2File {
 	var out []par2File

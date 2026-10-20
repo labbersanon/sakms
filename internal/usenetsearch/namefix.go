@@ -401,12 +401,16 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 			n.Budget.add(sample.WireBytes)
 			res.BodyBytes += sample.WireBytes
 			cands := candidatesFromSample(sample, pick.NFO)
+			isPar2 := bytes.HasPrefix(sample.Data, par2Magic)
 			log.Printf("usenetsearch: namefix body msgid=%s bytes=%d remain_ms=%d wire=%d yenc=%d cands=%d par2=%t err=<nil>",
-				pick.MsgID, pick.Bytes, namefixBodyArticleTimeout.Milliseconds(), sample.WireBytes, len(sample.YencName), len(cands), bytes.HasPrefix(sample.Data, par2Magic))
+				pick.MsgID, pick.Bytes, namefixBodyArticleTimeout.Milliseconds(), sample.WireBytes, len(sample.YencName), len(cands), isPar2)
 			work := context.WithoutCancel(ctx)
-			if bytes.HasPrefix(sample.Data, par2Magic) {
+			if isPar2 {
 				n.rememberParHashes(work, set, sample.Data)
-				if name, ok := n.lookupParHashDonor(work, set); ok {
+				name, ok, err := n.Index.LookupParHashDonor(work, set.Group, set.Key, set.PayloadBytes)
+				if err != nil {
+					log.Printf("usenetsearch: parhash lookup group=%s err=%v", set.Group, err)
+				} else if ok {
 					return n.promote(work, set, rows, name, sourceParHash, confMedium, "parhash", res, statBudget)
 				}
 			}
@@ -495,9 +499,10 @@ func (n *NameFixer) seedParHashes(ctx context.Context, set PendingSet, res *Name
 		}
 		n.Budget.add(sample.WireBytes)
 		res.BodyBytes += sample.WireBytes
+		isPar2 := bytes.HasPrefix(sample.Data, par2Magic)
 		log.Printf("usenetsearch: namefix body msgid=%s bytes=%d remain_ms=%d wire=%d yenc=%d cands=0 par2=%t err=<nil>",
-			pick.MsgID, pick.Bytes, namefixBodyArticleTimeout.Milliseconds(), sample.WireBytes, len(sample.YencName), bytes.HasPrefix(sample.Data, par2Magic))
-		if bytes.HasPrefix(sample.Data, par2Magic) {
+			pick.MsgID, pick.Bytes, namefixBodyArticleTimeout.Milliseconds(), sample.WireBytes, len(sample.YencName), isPar2)
+		if isPar2 {
 			n.rememberParHashes(work, set, sample.Data)
 			break
 		}
@@ -527,18 +532,6 @@ func (n *NameFixer) rememberParHashes(ctx context.Context, set PendingSet, data 
 	if err := n.Index.MarkParHashSampled(ctx, set.Group, set.Key); err != nil {
 		log.Printf("usenetsearch: parhash sampled group=%s err=%v", set.Group, err)
 	}
-}
-
-func (n *NameFixer) lookupParHashDonor(ctx context.Context, set PendingSet) (string, bool) {
-	if n == nil || n.Index == nil {
-		return "", false
-	}
-	name, ok, err := n.Index.LookupParHashDonor(ctx, set.Group, set.Key, set.PayloadBytes)
-	if err != nil {
-		log.Printf("usenetsearch: parhash lookup group=%s err=%v", set.Group, err)
-		return "", false
-	}
-	return name, ok
 }
 
 func (n *NameFixer) promoteParHashSiblings(ctx context.Context, set PendingSet, name string, res *NameFixResult, statBudget *int) {

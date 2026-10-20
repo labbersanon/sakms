@@ -170,18 +170,18 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   name). PreDB (no BODY) also runs on ≥80% pending sets in **any** group
   (including boneless), 200 per pass, even when OVER is busy (BODY waits).
   Each pass runs quoted ident-shaped header names first (no BODY; ignores
-  `next_name_at`), then PreDB-only keys, then ident BODY, then 95% BODY,
-  so a 20s BODY deadline cannot skip titles already sitting in the subject.
+  `next_name_at`), then PreDB-only keys, then a one-shot hash_16K seed of
+  named/shelved PAR2, then ident BODY, then 95% BODY, so a 20s BODY
+  deadline cannot skip titles already sitting in the subject.
   Each BODY article is capped at 8s (dial included) and does not inherit leftover
   phase crumbs, so setRows eating the 20s still fetches one PAR2. A hung fetch
   logs `namefix body msgid=` and continues to the next PAR2/NFO pick unless the
-  phase is already gone.   PAR2 FileDesc / yEnc names that are md5/sha1 tokens
+  phase is already gone. PAR2 FileDesc / yEnc names that are md5/sha1 tokens
   are reverse-looked up in the local PreDB (they are not in the header rows).
   FileDesc `hash_16K` (MD5 of the first 16 KiB) is stored in
   `usenet_nntp_par_hashes` and matched to already-named releases within ±5%
   size (NNTmux `fixNamesWithParHash`). A named PAR2 set can copy its title onto
-  a hash.par2 sibling whose FileDesc names are also hashes. Named and already-
-  shelved PAR2 sets are BODY-sampled once after deploy to fill that table.
+  a hash.par2 sibling whose FileDesc names are also hashes.
   Yield-group BODY is 40/pass at 95% plus 20/pass at ≥80% when PAR2 is present.
   A BODY whose FileDesc is the same hash is not retried (PreDB-only from then on).
   Sets with PAR2 are BODY-sampled even under 100 MiB. Accepted: a

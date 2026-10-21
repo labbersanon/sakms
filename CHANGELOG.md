@@ -12116,3 +12116,16 @@ status stays active.
 | `internal/usenet/sevenz.go` | `ArchiveFileCRCsFrom7zPartsWithPasswords` |
 | `internal/usenetsearch/namefix.go` | 7z-aes miss → Newznab lookup |
 | `internal/api/nzbpassword.go` | wire Prowlarr keys at runtime |
+
+## 2026-10-21 — Newznab lookup on header stem despite skip_7z
+
+**Problem:** Live ngPost sets already have `Attempts>0` so `skip_7z=true` and never hit the 7z-aes BODY miss that triggered Newznab.
+**Root cause:** Password lookup was inside the BODY loop after empty decrypt.
+**Fix:** Search by the header archive stem before BODY. An ident-shaped NZB title promotes as `name_source=nzb`. A password clears `skip_7z` so Tail can still decrypt CRC.
+**Outcome:** skip_7z sets are queried. Unit test `TestNameFix_NZBPasswordHeaderLookupDespiteSkip7z`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix.go` | header-stem lookup before BODY |

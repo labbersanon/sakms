@@ -315,30 +315,7 @@ const nfGroup = "alt.binaries.movies"
 // obfuscatedSet builds files x 2 OVER rows of one hash-obfuscated RAR set plus
 // a small .par2 (first segment msgid "<prefix>par2"). ~131 MB payload.
 func obfuscatedSet(prefix, hash string, startNum, files int) []usenet.MessageOverview {
-	var out []usenet.MessageOverview
-	n := startNum
-	for f := 1; f <= files; f++ {
-		for p := 1; p <= 2; p++ {
-			out = append(out, usenet.MessageOverview{
-				Number:    n,
-				Subject:   fmt.Sprintf(`[%02d/%d] - "%s.part%02d.rar" yEnc (%d/2)`, f, files+1, hash, f, p),
-				From:      "poster@obf",
-				MessageID: fmt.Sprintf("%s%d_%d@t", prefix, f, p),
-				Bytes:     2_000_000,
-				DateUnix:  1700000000,
-			})
-			n++
-		}
-	}
-	out = append(out, usenet.MessageOverview{
-		Number:    n,
-		Subject:   fmt.Sprintf(`[%02d/%d] - "%s.par2" yEnc (1/1)`, files+1, files+1, hash),
-		From:      "poster@obf",
-		MessageID: prefix + "par2",
-		Bytes:     40_000,
-		DateUnix:  1700000000,
-	})
-	return out
+	return obfuscatedFiles(prefix, hash, startNum, files, "%s.part%02d.rar")
 }
 
 type nfFixture struct {
@@ -2422,13 +2399,17 @@ WHERE display_name='' OR name_source=''`, maxNameAttempts); err != nil {
 }
 
 func obfuscated7zSet(prefix, hash string, startNum, files int) []usenet.MessageOverview {
+	return obfuscatedFiles(prefix, hash, startNum, files, "%s.7z.%03d")
+}
+
+func obfuscatedFiles(prefix, hash string, startNum, files int, volFmt string) []usenet.MessageOverview {
 	var out []usenet.MessageOverview
 	n := startNum
 	for f := 1; f <= files; f++ {
 		for p := 1; p <= 2; p++ {
 			out = append(out, usenet.MessageOverview{
 				Number:    n,
-				Subject:   fmt.Sprintf(`[%02d/%d] - "%s.7z.%03d" yEnc (%d/2)`, f, files+1, hash, f, p),
+				Subject:   fmt.Sprintf(`[%02d/%d] - "`+volFmt+`" yEnc (%d/2)`, f, files+1, hash, f, p),
 				From:      "poster@obf",
 				MessageID: fmt.Sprintf("%s%d_%d@t", prefix, f, p),
 				Bytes:     2_000_000,
@@ -2437,7 +2418,7 @@ func obfuscated7zSet(prefix, hash string, startNum, files int) []usenet.MessageO
 			n++
 		}
 	}
-	out = append(out, usenet.MessageOverview{
+	return append(out, usenet.MessageOverview{
 		Number:    n,
 		Subject:   fmt.Sprintf(`[%02d/%d] - "%s.par2" yEnc (1/1)`, files+1, files+1, hash),
 		From:      "poster@obf",
@@ -2445,7 +2426,6 @@ func obfuscated7zSet(prefix, hash string, startNum, files int) []usenet.MessageO
 		Bytes:     40_000,
 		DateUnix:  1700000000,
 	})
-	return out
 }
 
 func TestNameFix_SRRDBArchiveCRCRenamesHash7zSplit(t *testing.T) {
@@ -2579,7 +2559,7 @@ func TestNameFix_NZBPasswordDecrypts7zAES(t *testing.T) {
 	f.src.bodies["pw1_1@t"] = usenet.BodySample{Data: start, YencName: nfHash + ".7z.001", WireBytes: int64(len(start))}
 	f.src.bodies["pw1_2@t"] = usenet.BodySample{Data: blob, YencName: nfHash + ".7z.001", WireBytes: int64(len(blob))}
 	f.nf.SRRDB = &fakeSRRDB{crcs: map[string]PreDBHit{crc: {Title: title}}}
-	lookup := &fakeNZBPW{ok: true, hit: NZBPasswordHit{Title: title, Passwords: []string{pw}, Indexer: "NZBGeek"}}
+	lookup := &fakeNZBPW{ok: true, hit: NZBPasswordHit{Title: nfHash, Passwords: []string{pw}, Indexer: "NZBGeek"}}
 	f.nf.NZBPassword = lookup
 	f.crawlAndRecompute(t)
 	res, err := f.nf.Run(context.Background())
@@ -2616,6 +2596,34 @@ func TestNameFix_NZBPasswordTitleRenamesWithoutCRC(t *testing.T) {
 		t.Fatal(err)
 	}
 	if named != 1 || src != sourceNZB || res.BySource[sourceNZB] != 1 {
+		t.Fatalf("named=%d src=%q res=%+v calls=%v", named, src, res, lookup.calls)
+	}
+}
+
+func TestNameFix_NZBPasswordHeaderLookupDespiteSkip7z(t *testing.T) {
+	const title = "Skip.SevenZ.S01E01.1080p.WEB-DL.x264-GRP"
+	rows := obfuscated7zSet("sk", nfHash, 1, 1)
+	for i := range rows {
+		rows[i].From = "AbCdEfGhIjKlM@ngPost.com"
+		rows[i].MessageID = strings.TrimSuffix(rows[i].MessageID, "@t") + "@ngPost"
+	}
+	f := newNFFixture(t, rows, nil)
+	lookup := &fakeNZBPW{ok: true, hit: NZBPasswordHit{Title: title, Indexer: "NZBGeek"}}
+	f.nf.NZBPassword = lookup
+	f.crawlAndRecompute(t)
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET name_attempts=2, dirty=FALSE`); err != nil {
+		t.Fatal(err)
+	}
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var named int
+	var src string
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*), COALESCE(MAX(name_source),'') FROM usenet_nntp_releases WHERE display_name=?`, title).Scan(&named, &src); err != nil {
+		t.Fatal(err)
+	}
+	if named != 1 || src != sourceNZB || res.BySource[sourceNZB] != 1 || len(lookup.calls) == 0 {
 		t.Fatalf("named=%d src=%q res=%+v calls=%v", named, src, res, lookup.calls)
 	}
 }

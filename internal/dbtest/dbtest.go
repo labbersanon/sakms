@@ -26,6 +26,7 @@ var (
 	adminOnce    sync.Once
 	adminDB      *sql.DB
 	adminErr     error
+	dropSem      = make(chan struct{}, 4)
 )
 
 // New returns a migrated, isolated Postgres database for one test.
@@ -213,13 +214,23 @@ func ensureClone(t *testing.T, name string) {
 		}
 	}
 	t.Cleanup(func() {
-		// Drop clone; terminate backends first. Keep sharedAdmin open.
-		_, _ = admin.ExecContext(context.Background(),
-			`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`,
-			name,
-		)
-		_, _ = admin.ExecContext(context.Background(), "DROP DATABASE IF EXISTS "+quoteIdent(name))
+		// Claude 2026-10-21: DROP in the background so the next test's
+		// CREATE DATABASE is not gated on ~40ms drop. Sem-limited so a
+		// 1679-test package does not stampede Postgres.
+		go dropClone(admin, name)
 	})
+}
+
+func dropClone(admin *sql.DB, name string) {
+	dropSem <- struct{}{}
+	defer func() { <-dropSem }()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, _ = admin.ExecContext(ctx,
+		`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`,
+		name,
+	)
+	_, _ = admin.ExecContext(ctx, "DROP DATABASE IF EXISTS "+quoteIdent(name))
 }
 
 func quoteIdent(name string) string {

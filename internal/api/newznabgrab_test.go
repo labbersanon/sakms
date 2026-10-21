@@ -25,6 +25,20 @@ func TestInsertNewznabPhase(t *testing.T) {
 	if len(insertNewznabPhase(phases)) != 3 {
 		t.Fatal("idempotent")
 	}
+	rest := insertNewznabPhase([]prowlarr.Scope{prowlarr.ScopeUsenet, prowlarr.ScopeTorrent})
+	if len(rest) != 3 || !rest[0].IsNewznab() || rest[1] != prowlarr.ScopeUsenet || rest[2] != prowlarr.ScopeTorrent {
+		t.Fatalf("prowlarr last: %+v", rest)
+	}
+}
+
+func TestMergeGrabReleases_ProwlarrLast(t *testing.T) {
+	out := mergeGrabReleases(
+		[]prowlarr.Release{{Title: "nzb", Indexer: "newznab"}},
+		[]prowlarr.Release{{Title: "tor", Indexer: "prowlarr"}},
+	)
+	if len(out) != 2 || out[0].Indexer != "newznab" || out[1].Indexer != "prowlarr" {
+		t.Fatalf("order=%+v", out)
+	}
 }
 
 func TestNewznabGrabSearch_ConfiguredHostNoHTML(t *testing.T) {

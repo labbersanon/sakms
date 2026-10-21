@@ -12427,3 +12427,20 @@ status stays active.
 | `internal/api/search.go` | merge Newznab into Search |
 | `cmd/sakms/main.go` | AttachNewznabGrabSearch; drop live namefix attach |
 | `frontend/src/screens/settings/Usenet.tsx` | grab-search copy |
+
+## 2026-10-21 — Prowlarr is last on grab search
+
+**Problem:** Search / Discover / batch queried Prowlarr before the Settings NZB host.
+**Root cause:** Merge appended Newznab after a Prowlarr-first call.
+**Fix:** Query Newznab first; `mergeGrabReleases` keeps Prowlarr last. Autograb phases were already native → Newznab → Prowlarr.
+**Outcome:** `TestMergeGrabReleases_ProwlarrLast`; insertNewznabPhase before ScopeUsenet/Torrent.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/newznabgrab.go` | mergeGrabReleases |
+| `internal/api/search.go` | Newznab then Prowlarr |
+| `internal/api/search_catalog.go` | Newznab then Prowlarr |
+| `internal/api/discover_availability.go` | Newznab then Prowlarr |
+| `internal/api/autograb_batch.go` | Newznab then Prowlarr |

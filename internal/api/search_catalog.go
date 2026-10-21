@@ -132,29 +132,29 @@ func adultSearchHandler(connStore *connections.Store, scStore *serviceconn.Store
 		defer cancel()
 
 		q := adultnewest.NormalizeAdultQuery(query)
-		var releases []prowlarr.Release
+		nn, nnErr := newznabGrabSearch(tctx, q, []int{adultAutoGrabCategory})
+		if nnErr != nil && sess.Prowlarr == nil {
+			http.Error(w, nnErr.Error(), http.StatusBadGateway)
+			return
+		}
+		if nnErr != nil {
+			log.Printf("search catalog: newznab err=%v — trying prowlarr", nnErr)
+			nn = nil
+		}
+		var pr []prowlarr.Release
 		if sess.Prowlarr != nil {
 			found, err := sess.Prowlarr.Search(tctx, q, []int{adultAutoGrabCategory})
-			if err != nil && !newznabGrabConfigured(ctx) {
+			if err != nil && len(nn) == 0 {
 				http.Error(w, err.Error(), http.StatusBadGateway)
 				return
 			}
 			if err != nil {
-				log.Printf("search catalog: prowlarr err=%v — trying newznab", err)
+				log.Printf("search catalog: prowlarr err=%v", err)
 			} else {
-				releases = found
+				pr = found
 			}
 		}
-		extra, err := newznabGrabSearch(tctx, q, []int{adultAutoGrabCategory})
-		if err != nil {
-			if len(releases) == 0 {
-				http.Error(w, err.Error(), http.StatusBadGateway)
-				return
-			}
-			log.Printf("search catalog: newznab err=%v", err)
-		} else {
-			releases = append(releases, extra...)
-		}
+		releases := mergeGrabReleases(nn, pr)
 
 		// Collapse true cross-posts (one release on several indexers) up front,
 		// keyed on DownloadURL OR normalized RAW title — the SAME dedupeReleases

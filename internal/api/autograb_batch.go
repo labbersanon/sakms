@@ -363,30 +363,31 @@ func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, stor
 	// Review if: grabOneBatchItem delegates to RunAutoGrab.
 	var releases []prowlarr.Release
 	var runtimeSeconds float64
-	if sess.Prowlarr != nil {
-		found, rt, err := autoGrabSearch(ctx, sess, m, store, prowlarr.ScopeAll, req)
-		if err != nil && !newznabGrabConfigured(ctx) {
-			return nil, false, false, nil, "", err
-		}
-		if err != nil {
-			log.Printf("auto-grab batch: prowlarr err=%v — trying newznab", err)
-		} else {
-			releases = found
-			runtimeSeconds = rt
-		}
-	}
-	extra, err := newznabAutoGrabSearch(ctx, m, AutoGrabRequest{
+	nn, nnErr := newznabAutoGrabSearch(ctx, m, AutoGrabRequest{
 		Mode: m, Title: req.Title, Season: req.SeasonNumber, Episode: req.EpisodeNumber,
 		SeasonSpecified: req.SeasonSpecified, ReleaseTitle: req.ReleaseTitle,
 	})
-	if err != nil {
-		if len(releases) == 0 {
+	if nnErr != nil && sess.Prowlarr == nil {
+		return nil, false, false, nil, "", nnErr
+	}
+	if nnErr != nil {
+		log.Printf("auto-grab batch: newznab err=%v — trying prowlarr", nnErr)
+		nn = nil
+	}
+	var pr []prowlarr.Release
+	if sess.Prowlarr != nil {
+		found, rt, err := autoGrabSearch(ctx, sess, m, store, prowlarr.ScopeAll, req)
+		if err != nil && len(nn) == 0 {
 			return nil, false, false, nil, "", err
 		}
-		log.Printf("auto-grab batch: newznab err=%v", err)
-	} else {
-		releases = append(releases, extra...)
+		if err != nil {
+			log.Printf("auto-grab batch: prowlarr err=%v", err)
+		} else {
+			pr = found
+			runtimeSeconds = rt
+		}
 	}
+	releases = mergeGrabReleases(nn, pr)
 
 	// Claude 2026-08-03: apply FilterSeasonScope on the batch path too.
 	// Reason: grabOneBatchItem reimplements score-and-dispatch rather than

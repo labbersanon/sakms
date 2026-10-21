@@ -85,6 +85,20 @@ func insertNewznabPhase(phases []prowlarr.Scope) []prowlarr.Scope {
 	return out
 }
 
+// mergeGrabReleases keeps Newznab hits ahead of Prowlarr. Prowlarr is last.
+func mergeGrabReleases(newznab, prowlarrHits []prowlarr.Release) []prowlarr.Release {
+	if len(prowlarrHits) == 0 {
+		return newznab
+	}
+	if len(newznab) == 0 {
+		return prowlarrHits
+	}
+	out := make([]prowlarr.Release, 0, len(newznab)+len(prowlarrHits))
+	out = append(out, newznab...)
+	out = append(out, prowlarrHits...)
+	return out
+}
+
 func newznabGrabSearch(ctx context.Context, query string, cats []int) ([]prowlarr.Release, error) {
 	idx, client, ok := newznabGrabIndexer(ctx)
 	if !ok {

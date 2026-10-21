@@ -95,29 +95,29 @@ func searchHandler(httpClient *http.Client, connStore *connections.Store, scStor
 		}
 
 		cats := categoriesForSearch(m)
-		var releases []prowlarr.Release
+		nn, nnErr := newznabGrabSearch(ctx, query, cats)
+		if nnErr != nil && sess.Prowlarr == nil {
+			http.Error(w, nnErr.Error(), http.StatusBadGateway)
+			return
+		}
+		if nnErr != nil {
+			log.Printf("search: newznab err=%v — trying prowlarr", nnErr)
+			nn = nil
+		}
+		var pr []prowlarr.Release
 		if sess.Prowlarr != nil {
 			found, err := sess.Prowlarr.Search(ctx, query, cats)
-			if err != nil && !newznabGrabConfigured(ctx) {
+			if err != nil && len(nn) == 0 {
 				http.Error(w, err.Error(), http.StatusBadGateway)
 				return
 			}
 			if err != nil {
-				log.Printf("search: prowlarr err=%v — trying newznab", err)
+				log.Printf("search: prowlarr err=%v", err)
 			} else {
-				releases = found
+				pr = found
 			}
 		}
-		extra, err := newznabGrabSearch(ctx, query, cats)
-		if err != nil {
-			if len(releases) == 0 {
-				http.Error(w, err.Error(), http.StatusBadGateway)
-				return
-			}
-			log.Printf("search: newznab err=%v", err)
-		} else {
-			releases = append(releases, extra...)
-		}
+		releases := mergeGrabReleases(nn, pr)
 
 		// Collapse duplicate releases (the same release cross-posted to multiple
 		// indexers) BEFORE scoring, keeping the highest-seeder survivor of each

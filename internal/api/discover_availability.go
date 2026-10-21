@@ -164,39 +164,48 @@ func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections
 		// Review if: a non-Adult mode ever needs release persistence.
 		var releases []prowlarr.Release
 		var runtimeSeconds float64
-		if m == mode.Adult {
-			if sess.Prowlarr != nil {
-				res, err := resolveAdultReleases(ctx, sess, releaseStore, adultConsumerPicker, req)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusBadGateway)
-					return
-				}
-				releases = res.Releases
-				log.Printf("discover availability: mode=adult title=%q servedFromCache=%v", title, res.FromCache)
-			}
-			runtimeSeconds = float64(req.DurationSeconds)
-		} else if sess.Prowlarr != nil {
-			var err error
-			// ScopeAll: discoverAvailabilityHandler is operator-facing, never two-phase.
-			releases, runtimeSeconds, err = autoGrabSearch(ctx, sess, m, releaseStore, prowlarr.ScopeAll, req)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadGateway)
-				return
-			}
-		}
-		extra, err := newznabAutoGrabSearch(ctx, m, AutoGrabRequest{
+		nn, nnErr := newznabAutoGrabSearch(ctx, m, AutoGrabRequest{
 			Mode: m, Title: req.Title, Season: req.SeasonNumber, Episode: req.EpisodeNumber,
 			SeasonSpecified: req.SeasonSpecified, ReleaseTitle: req.ReleaseTitle,
 		})
-		if err != nil {
-			if len(releases) == 0 {
+		if nnErr != nil && sess.Prowlarr == nil {
+			http.Error(w, nnErr.Error(), http.StatusBadGateway)
+			return
+		}
+		if nnErr != nil {
+			log.Printf("discover availability: newznab err=%v — trying prowlarr", nnErr)
+			nn = nil
+		}
+		var pr []prowlarr.Release
+		if m == mode.Adult {
+			runtimeSeconds = float64(req.DurationSeconds)
+			if sess.Prowlarr != nil {
+				res, err := resolveAdultReleases(ctx, sess, releaseStore, adultConsumerPicker, req)
+				if err != nil && len(nn) == 0 {
+					http.Error(w, err.Error(), http.StatusBadGateway)
+					return
+				}
+				if err != nil {
+					log.Printf("discover availability: prowlarr err=%v", err)
+				} else {
+					pr = res.Releases
+					log.Printf("discover availability: mode=adult title=%q servedFromCache=%v", title, res.FromCache)
+				}
+			}
+		} else if sess.Prowlarr != nil {
+			found, rt, err := autoGrabSearch(ctx, sess, m, releaseStore, prowlarr.ScopeAll, req)
+			if err != nil && len(nn) == 0 {
 				http.Error(w, err.Error(), http.StatusBadGateway)
 				return
 			}
-			log.Printf("discover availability: newznab err=%v", err)
-		} else {
-			releases = append(releases, extra...)
+			if err != nil {
+				log.Printf("discover availability: prowlarr err=%v", err)
+			} else {
+				pr = found
+				runtimeSeconds = rt
+			}
 		}
+		releases = mergeGrabReleases(nn, pr)
 		if hasKnownAdultEnclosure {
 			cardEnclosure := knownAdultEnclosure
 			found := false

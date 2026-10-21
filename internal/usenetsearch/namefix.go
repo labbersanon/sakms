@@ -190,7 +190,7 @@ type NameFixer struct {
 	// SRRDB resolves RAR/ZIP/SFV inner-file CRC32 (nil disables it).
 	SRRDB ArchiveCRCLookup
 	// NZBPassword looks up unpack passwords by obfuscated archive name
-	// (Newznab via Prowlarr-listed indexers; nil disables it).
+	// (configured Newznab host; nil disables it).
 	NZBPassword NZBPasswordLookup
 	Groups      []string
 	Budget      *bodyBudget

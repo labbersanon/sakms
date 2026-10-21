@@ -110,3 +110,57 @@ func TestLookup_EmptyQuery(t *testing.T) {
 		t.Fatal("empty filename")
 	}
 }
+
+func TestNormalizeEndpoint(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"https://api.nzbgeek.info", "https://api.nzbgeek.info/api"},
+		{"https://api.nzbgeek.info/", "https://api.nzbgeek.info/api"},
+		{"https://api.nzbgeek.info/api", "https://api.nzbgeek.info/api"},
+		{"https://api.nzbgeek.info/api?apikey=secret", "https://api.nzbgeek.info/api"},
+		{"http://prowlarr:9696/5/", "http://prowlarr:9696/5"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := NormalizeEndpoint(tc.in); got != tc.want {
+			t.Errorf("NormalizeEndpoint(%q)=%q want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestCaps_SuccessAndErrorXML(t *testing.T) {
+	var sawHTML bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "login") || strings.Contains(r.URL.Path, "details") {
+			sawHTML = true
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Query().Get("t") != "caps" {
+			t.Errorf("t=%s", r.URL.Query().Get("t"))
+		}
+		if r.URL.Query().Get("apikey") != "idx-key" {
+			t.Error("missing apikey")
+		}
+		io.WriteString(w, `<?xml version="1.0"?><caps><server version="0.1" title="Test"/></caps>`)
+	}))
+	defer srv.Close()
+	c := &Client{HTTP: srv.Client(), Interval: time.Nanosecond}
+	if err := c.Caps(context.Background(), Indexer{Endpoint: srv.URL, APIKey: "idx-key"}); err != nil {
+		t.Fatal(err)
+	}
+	if sawHTML {
+		t.Fatal("HTML scrape")
+	}
+
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `<?xml version="1.0"?><error code="100" description="Incorrect API key"/>`)
+	}))
+	defer bad.Close()
+	err := c.Caps(context.Background(), Indexer{Endpoint: bad.URL, APIKey: "bad"})
+	if err == nil || !strings.Contains(err.Error(), "Incorrect API key") {
+		t.Fatalf("error xml: %v", err)
+	}
+	if strings.Contains(err.Error(), "bad") {
+		t.Fatalf("leaked key: %v", err)
+	}
+}

@@ -221,6 +221,34 @@ func TestTestConnection_Brave_IgnoresReqURL(t *testing.T) {
 	}
 }
 
+func TestTestConnection_Newznab_Caps(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("t") != "caps" {
+			t.Errorf("t=%s", r.URL.Query().Get("t"))
+		}
+		if r.URL.Path == "/login" {
+			t.Errorf("HTML path %s", r.URL.Path)
+		}
+		w.Write([]byte(`<?xml version="1.0"?><caps><server title="NZBGeek"/></caps>`))
+	}))
+	defer srv.Close()
+	result := TestConnection(context.Background(), testHTTPClient(), ConnectionTestRequest{
+		Service: "newznab", URL: srv.URL, APIKey: "idx-key",
+	})
+	if !result.OK || result.Error != "" {
+		t.Fatalf("expected success, got %+v", result)
+	}
+}
+
+func TestTestConnection_Newznab_RequiresKey(t *testing.T) {
+	result := TestConnection(context.Background(), testHTTPClient(), ConnectionTestRequest{
+		Service: "newznab", URL: "http://127.0.0.1:9",
+	})
+	if result.OK {
+		t.Fatal("expected failure without api key")
+	}
+}
+
 func TestTestConnection_UnsupportedService(t *testing.T) {
 	result := TestConnection(context.Background(), testHTTPClient(), ConnectionTestRequest{
 		Service: "plex", URL: "http://example.com",

@@ -3,8 +3,8 @@
 //
 // It has its own page precisely because a Usenet subscription's field set is
 // richer than the URL + API-key shape ConnectionRow renders: label, host, port,
-// TLS, username, password, max-connections. Deliberately does NOT reuse
-// ConnectionRow.
+// TLS, username, password, max-connections. NNTP rows do not reuse
+// ConnectionRow. The NZB host API card does (one Newznab URL + key).
 //
 // Two things this page must never grow:
 //   - Priority / fallback ordering between subscriptions. When a download needs
@@ -13,7 +13,7 @@
 //     takedown coverage, not as a ranked chain. There is no priority field and
 //     no reorder UI beyond cosmetic sorting.
 //   - A generic "add any connection type" framework. This page adds NNTP
-//     subscriptions and nothing else.
+//     subscriptions and one Newznab host (name recovery). Nothing else.
 //   - A retry-interval input. The cadence is coupled to the auto-grab toggle
 //     server-side (on → 86400s, off → 0) precisely so the two can't disagree;
 //     there is deliberately no user-facing control for it.
@@ -63,6 +63,7 @@ import {
   inputClass,
   labelClass,
 } from "../../components/ui";
+import { ConnectionServiceTable } from "./ConnectionRow";
 import {
   AutoGrabSlotFields,
   Card,
@@ -83,7 +84,24 @@ export const UsenetSection: Component = () => (
     <ResumeCard />
     <AutoGrabCard />
     <NativeSearchCard />
+    <NewznabHostCard />
   </div>
+);
+
+// Claude 2026-10-21: dedicated Newznab host for namefix password/title lookup.
+// Reason: Prowlarr is grab-search; this URL+key is t=search/t=get only.
+// Troubleshooting: row missing after save → PUT /api/connections/newznab.
+// Review if: a second Newznab host is required.
+// Related files: internal/api/nzbpassword.go
+const NewznabHostCard: Component = () => (
+  <Card title="NZB host API">
+    <Muted class="mb-3">
+      Newznab API URL and key used only to recover names and archive passwords
+      for obfuscated NNTP sets. Not used for grabbing. Example:
+      https://api.nzbgeek.info/api
+    </Muted>
+    <ConnectionServiceTable services={() => ["newznab"]} />
+  </Card>
 );
 
 // SubscriptionDraft is one subscription's editable field set — the shape both

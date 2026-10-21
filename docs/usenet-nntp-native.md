@@ -253,7 +253,7 @@ are dropped again and completeness is still recorded.
 | `predb_irc_password_enc` | — | NickServ password, `secrets.Store` ciphertext; set via `PUT /api/settings/usenet-nntp-native/predb-irc-password` `{"password":"…"}` (empty clears) |
 | `predb_dump_path` | empty | nZEDb PreDB dump file, directory, or http(s) dump *file* URL (`\t\t` TSV, optional `.gz`; quoted MySQL fields and `\N` are stripped). PUT `predbDumpPath` reloads the importer; SQL still needs a restart. Imported on boot/reload and every 15 minutes when mtime/size (or URL ETag) changes. Search APIs (`api.predb.net`, `?type=pre`) are rejected. Live file: `/data/predb/predb.tsv.gz` (host `/mnt/iscsi/sakms/predb/predb.tsv.gz`, nZEDb dailies through 2024-05-02). |
 | `srrdb_enabled` | true | CRC-only lookup at `https://api.srrdb.com/v1/search/archive-crc:XXXXXXXX` (2s spacing). Unique hit + size ±15% → `name_source=srrdb`. Kill switch; do not scrape the catalog. |
-| `nzb_password_enabled` | true | After empty 7zAES miss, Newznab `t=search`/`t=get` on Prowlarr-listed Usenet indexers. Kill switch; do not scrape HTML. |
+| `nzb_password_enabled` | true | After empty 7zAES miss, Newznab `t=search`/`t=get` on the Settings → Download → Usenet NZB host (`connections` service `newznab`). Kill switch; do not scrape HTML. |
 | `min_completeness_pct` / `incomplete_ttl_days` | 95 / 3 | Completeness gate / reap |
 | `repair_enabled` | true | Gap capture + repair |
 | `backfill_enabled` / `backfill_days` / `backfill_budget_pct` | true / 0 (retention) / 90 | Backfill |

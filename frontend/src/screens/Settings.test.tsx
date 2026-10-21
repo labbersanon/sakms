@@ -3205,6 +3205,50 @@ describe("Usenet subscriptions — three-state secret semantics through the UI",
   });
 });
 
+describe("Usenet NZB host API — Newznab connection", () => {
+  it("renders the Newznab URL+key row on Usenet, not on API Connections", async () => {
+    stubFetch();
+    renderSettings();
+    goToDownloadSubTab("Usenet");
+    expect(await screen.findByText("NZB host API")).toBeInTheDocument();
+    expect(await screen.findByLabelText("newznab URL")).toBeInTheDocument();
+    expect(screen.getByLabelText("newznab API key")).toBeInTheDocument();
+
+    goToAPIConnections();
+    await screen.findByText("prowlarr");
+    expect(screen.queryByText("NZB host API")).toBeNull();
+    expect(screen.queryByLabelText("newznab URL")).toBeNull();
+  });
+
+  it("Save PUTs /api/connections/newznab with url and apiKey", async () => {
+    const calls = stubFetch();
+    renderSettings();
+    goToDownloadSubTab("Usenet");
+    fireEvent.input(await screen.findByLabelText("newznab URL"), {
+      target: { value: "https://api.nzbgeek.info/api" },
+    });
+    fireEvent.input(screen.getByLabelText("newznab API key"), {
+      target: { value: "idx-key" },
+    });
+    clickCardSave("NZB host API");
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.method === "PUT" && c.url.endsWith("/api/connections/newznab"),
+        ),
+      ).toBe(true),
+    );
+    const put = calls.find(
+      (c) => c.method === "PUT" && c.url.endsWith("/api/connections/newznab"),
+    )!;
+    expect(put.body).toEqual({
+      url: "https://api.nzbgeek.info/api",
+      apiKey: "idx-key",
+    });
+  });
+});
+
 describe("Usenet Downloads card — Recalibrate hardware", () => {
   it("shows Recalibrate hardware and POSTs calibrate-hardware", async () => {
     const calls = stubFetch((url, init) => {

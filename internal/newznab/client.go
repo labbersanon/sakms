@@ -20,14 +20,11 @@ import (
 	"github.com/labbersanon/sakms/internal/usenet"
 )
 
-// Claude 2026-10-21: Newznab filename + poster, then group/size NZB browse.
-// Reason: ngPost title/password live in NZB meta. Stem q= and poster= miss on
-//   NZBGeek (caps q,group; RSS 2010 attrs have size/usenetdate, not poster).
-//   Browse group+maxage, t=get, require the hash in NZB subjects. No HTML.
-// Troubleshooting: o2cli grep "nzb-password"; browse skip group_not_listed →
-//   caps groups omit the NNTP group (NZBGeek lists only alt.binaries.usenet);
-//   browse cands=0 → size/group; nzb=N hit=0 → subjects lack the stem.
-//   Review if: NZBGeek adds alt.binaries.x264 (or poster) to caps.
+// Claude 2026-10-21: Newznab filename + poster, then caps-gated group browse.
+// Reason: optional namefix supplement after a local 7z-aes miss. NZBGeek
+//   caps are q,group (no poster); browse only when caps lists the NNTP group.
+// Troubleshooting: o2cli grep "nzb-password"; group_not_listed → caps omit
+//   the group; skip_7z has no lookup. Review if: an indexer lists x264.
 // Related files: internal/api/nzbpassword.go, namefix.go, nzbpw.go
 
 const (

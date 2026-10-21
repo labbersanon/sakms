@@ -2603,7 +2603,7 @@ func TestNameFix_NZBPasswordTitleRenamesWithoutCRC(t *testing.T) {
 	}
 }
 
-func TestNameFix_NZBPasswordHeaderLookupDespiteSkip7z(t *testing.T) {
+func TestNameFix_Skip7zDoesNotQueryNZB(t *testing.T) {
 	const title = "Skip.SevenZ.S01E01.1080p.WEB-DL.x264-GRP"
 	rows := obfuscated7zSet("sk", nfHash, 1, 1)
 	for i := range rows {
@@ -2617,25 +2617,45 @@ func TestNameFix_NZBPasswordHeaderLookupDespiteSkip7z(t *testing.T) {
 	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET name_attempts=2, dirty=FALSE`); err != nil {
 		t.Fatal(err)
 	}
-	res, err := f.nf.Run(context.Background())
-	if err != nil {
+	if _, err := f.nf.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	var named int
-	var src string
-	if err := f.idx.db.QueryRow(`SELECT COUNT(*), COALESCE(MAX(name_source),'') FROM usenet_nntp_releases WHERE display_name=?`, title).Scan(&named, &src); err != nil {
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases WHERE display_name=?`, title).Scan(&named); err != nil {
 		t.Fatal(err)
 	}
-	if named != 1 || src != sourceNZB || res.BySource[sourceNZB] != 1 || len(lookup.calls) == 0 {
-		t.Fatalf("named=%d src=%q res=%+v calls=%v", named, src, res, lookup.calls)
+	if named != 0 || len(lookup.calls) != 0 {
+		t.Fatalf("skip_7z must not query Newznab; named=%d calls=%v", named, lookup.calls)
 	}
-	var sawPoster bool
-	for _, c := range lookup.calls {
-		if c == "AbCdEfGhIjKlM@ngPost.com" {
-			sawPoster = true
-		}
+	var attempts int
+	if err := f.idx.db.QueryRow(`SELECT name_attempts FROM usenet_nntp_releases`).Scan(&attempts); err != nil {
+		t.Fatal(err)
 	}
-	if !sawPoster {
-		t.Fatalf("poster not queried: %v", lookup.calls)
+	if attempts <= 2 {
+		t.Fatalf("skip_7z miss must bump name_attempts, got %d", attempts)
+	}
+}
+
+func TestNameFix_NZBPasswordMissBumpsAttempts(t *testing.T) {
+	start, blob, _ := makeNameFixSevenZAES(t, nfHash+".mkv", "secret")
+	f := newNFFixture(t, obfuscated7zSet("pm", nfHash, 1, 1), nil)
+	f.src.bodies["pmpar2"] = par2Body(nfHash + ".7z.001")
+	f.src.bodies["pm1_1@t"] = usenet.BodySample{Data: start, YencName: nfHash + ".7z.001", WireBytes: int64(len(start))}
+	f.src.bodies["pm1_2@t"] = usenet.BodySample{Data: blob, YencName: nfHash + ".7z.001", WireBytes: int64(len(blob))}
+	lookup := &fakeNZBPW{}
+	f.nf.NZBPassword = lookup
+	f.crawlAndRecompute(t)
+	if _, err := f.nf.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(lookup.calls) == 0 {
+		t.Fatal("7z-aes miss must query Newznab")
+	}
+	var attempts int
+	if err := f.idx.db.QueryRow(`SELECT name_attempts FROM usenet_nntp_releases`).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts < 1 {
+		t.Fatalf("Newznab miss must bump name_attempts, got %d", attempts)
 	}
 }

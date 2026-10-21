@@ -189,8 +189,8 @@ type NameFixer struct {
 	PreDB   PreDBLookup
 	// SRRDB resolves RAR/ZIP/SFV inner-file CRC32 (nil disables it).
 	SRRDB ArchiveCRCLookup
-	// NZBPassword looks up unpack passwords by archive stem and NNTP From
-	// (configured Newznab host; nil disables it).
+	// NZBPassword is an optional Newznab supplement after a local 7z-aes miss
+	// (nil disables it). Native PAR2/PreDB/srrdb stay the name path.
 	NZBPassword NZBPasswordLookup
 	Groups      []string
 	Budget      *bodyBudget
@@ -409,7 +409,6 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 	sampled := false
 	triedBody := false
 	crcTried := false
-	heldPW := false
 	var zstart []byte
 	var zsize uint64
 	pat := detectNamePattern(rows)
@@ -418,26 +417,6 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 	work := context.WithoutCancel(ctx)
 	var nzbHit NZBPasswordHit
 	var nzbGot bool
-	// Claude 2026-10-21: Newznab lookup uses header filename + From, not BODY.
-	// Reason: ngPost skip_7z after Attempts>0 skipped the 7z-aes miss path,
-	//   so live hash.7z never queried indexers. Stem q= misses when the
-	//   NZB title is the real name; poster= is nZEDb fromname. A password
-	//   clears skip_7z so Tail can decrypt CRC.
-	// Troubleshooting: skip_7z=true and no nzb-password log → this header
-	//   lookup missing. Review if: password-only hits should persist.
-	if n.NZBPassword != nil && (pat.Pack == "7z-split" || pat.Obf == "hash-7z") {
-		if n.nzbPWUsed >= namefixNZBPasswordPerPass {
-			heldPW = true
-		} else if hit, ok := n.fetchNZBPassword(work, set, rows); ok {
-			nzbHit, nzbGot = hit, true
-			if name, source, conf, predb, ok := n.accept(work, hit.Title, sourceNZB, set.PayloadBytes); ok {
-				return n.promote(work, set, rows, name, source, conf, predb, res, statBudget)
-			}
-			if len(hit.Passwords) > 0 {
-				skip7z = false
-			}
-		}
-	}
 	log.Printf("usenetsearch: namefix pattern obf=%s pack=%s files=%s ngpost=%t skip_7z=%t",
 		pat.Obf, pat.Pack, pat.Ext, ngPost, skip7z)
 	for _, pick := range pickBodyTargets(rows) {
@@ -583,20 +562,15 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		if hit, ok := n.lookupCRCs(work, set, crcs); ok {
 			return n.promote(work, set, rows, hit.Title, sourceSRRDB, confMedium, "srrdb", res, statBudget)
 		}
-		// Claude 2026-10-21: Newznab password after empty 7zAES miss.
-		// Reason: payload=7z-aes crcs=0 is an empty-password miss; the
-		//   password is in the indexer NZB (X-DNZB / meta), not on NNTP.
-		//   HTML scrape is not used. Cap lookups per pass; if the cap
-		//   hits, do not bump attempts so the set stays due.
-		// Troubleshooting: nzb-password miss with skip_7z=true → lookup
-		//   already ran. Review if: RAR passwords should use this too.
+		// Claude 2026-10-21: Newznab is supplemental after a local 7z-aes miss.
+		// Reason: NZBGeek (and peers) do not ingest ngPost hash.7z NZBs;
+		//   header-first lookup + heldPW stalled name_attempts on miss.
+		//   Native PAR2/PreDB/srrdb stay the path; t=search is optional.
+		// Troubleshooting: nzb-password on skip_7z ngPost → this block
+		//   must not run (no 7z BODY). Review if: an indexer lists x264.
 		if kind == "7z-aes" && len(crcs) == 0 {
-			if !nzbGot {
-				if n.NZBPassword != nil && n.nzbPWUsed >= namefixNZBPasswordPerPass {
-					heldPW = true
-				} else {
-					nzbHit, nzbGot = n.fetchNZBPassword(work, set, rows)
-				}
+			if !nzbGot && n.NZBPassword != nil && n.nzbPWUsed < namefixNZBPasswordPerPass {
+				nzbHit, nzbGot = n.fetchNZBPassword(work, set, rows)
 			}
 			if nzbGot {
 				stop, done, err := n.applyNZBHit(work, set, rows, sample, zstart, nzbHit, res, statBudget)
@@ -632,9 +606,6 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		if crcTried || !hasCRCCapableTarget(rows) {
 			return false, n.Index.ShelveBodyAttempts(work, set.Group, set.Key)
 		}
-	}
-	if heldPW {
-		return false, nil
 	}
 	return false, n.Index.BumpNameAttempt(work, set.Group, set.Key, set.Attempts)
 }

@@ -14,7 +14,7 @@
 //     takedown coverage, not as a ranked chain. There is no priority field and
 //     no reorder UI beyond cosmetic sorting.
 //   - A generic "add any connection type" framework. This page adds NNTP
-//     subscriptions and one Newznab host (name recovery). Nothing else.
+//     subscriptions and one optional Newznab host (supplemental name/NZB). Nothing else.
 //   - A retry-interval input. The cadence is coupled to the auto-grab toggle
 //     server-side (on → 86400s, off → 0) precisely so the two can't disagree;
 //     there is deliberately no user-facing control for it.
@@ -96,12 +96,12 @@ export const UsenetSection: Component = () => (
   </div>
 );
 
-// Claude 2026-10-21: stacked URL+key card for Newznab namefix lookup.
-// Reason: Prowlarr is grab-search; this URL+key is t=search/t=get only.
-//   ConnectionMiniTable is the metadata/API-connections layout (Service/URL/
-//   Username/Key). Usenet cards are labeled fields + Save at the bottom.
+// Claude 2026-10-21: stacked URL+key card for optional Newznab supplement.
+// Reason: Prowlarr is grab-search; this URL+key is t=search/t=get after a
+//   local 7z-aes miss. Native NNTP namefix is the path. ConnectionMiniTable
+//   is the metadata/API-connections layout.
 // Troubleshooting: operator filled URL+key, no Save visible, live connections had 0 newznab rows.
-// Review if: a second Newznab host is required.
+// Review if: an indexer lists alt.binaries.x264 and poster search.
 // Related files: internal/api/nzbpassword.go
 const NewznabHostCard: Component = () => {
   const [conns, { refetch }] = createResource(fetchConnections);
@@ -111,9 +111,9 @@ const NewznabHostCard: Component = () => {
   return (
     <Card title="NZB host API">
       <Muted class="mb-3">
-        Newznab API URL and key used only to recover names and archive passwords
-        for obfuscated NNTP sets. Not used for grabbing. Example:
-        https://api.nzbgeek.info/api
+        Optional Newznab supplement after native NNTP name recovery. Used when
+        a 7z archive needs a title or unpack password the local index does not
+        have. Not used for grabbing. Example: https://api.nzbgeek.info/api
       </Muted>
       <Show when={conns.error}>
         <ErrorText>{(conns.error as Error)?.message}</ErrorText>

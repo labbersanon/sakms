@@ -13,14 +13,11 @@ import (
 	"github.com/labbersanon/sakms/internal/usenetsearch"
 )
 
-// Claude 2026-10-21: namefix Newznab lookup uses the dedicated `newznab`
-// connection (Settings → Download → Usenet), not Prowlarr's indexer list.
-// Reason: Prowlarr is grab-search; password/title recovery needs a Newznab
-//   host URL + API key the operator sets. HTML scrape is not used.
-// Troubleshooting: nzb-password never logs → newznab connection missing,
-//   kill switch off, or t=search miss. poster= is nZEDb fromname after
-//   stem miss. Browse is group+maxage+size then t=get only when caps lists
-//   the NNTP group. Review if: NZBGeek adds x264 or poster to caps.
+// Claude 2026-10-21: dedicated `newznab` host is a namefix supplement.
+// Reason: Prowlarr is grab-search; this URL+key is optional t=search/t=get
+//   after a local 7z-aes miss. Native NNTP namefix is the path. No HTML.
+// Troubleshooting: nzb-password never logs → host unset, kill switch off,
+//   or not a 7z-aes BODY miss. Review if: an indexer lists x264 + poster.
 // Related files: internal/newznab/client.go, frontend Usenet.tsx
 
 type nzbPasswordLookup struct {
@@ -29,7 +26,7 @@ type nzbPasswordLookup struct {
 	client   *newznab.Client
 }
 
-// AttachNZBPasswordLookup injects Newznab password lookup into NNTP namefix.
+// AttachNZBPasswordLookup injects the optional Newznab namefix supplement.
 func AttachNZBPasswordLookup(svc *usenetsearch.Service, connStore *connections.Store, settingsStore *settings.Store, httpClient *http.Client) {
 	if svc == nil {
 		return

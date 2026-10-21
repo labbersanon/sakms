@@ -365,7 +365,7 @@ func (s *Service) SetSRRDB(c ArchiveCRCLookup) {
 	s.mu.Unlock()
 }
 
-// SetNZBPassword wires Newznab password lookup for name recovery (nil disables it).
+// SetNZBPassword wires the optional Newznab supplement after a local 7z-aes miss (nil disables it).
 func (s *Service) SetNZBPassword(p NZBPasswordLookup) {
 	s.mu.Lock()
 	s.nzbpw = p

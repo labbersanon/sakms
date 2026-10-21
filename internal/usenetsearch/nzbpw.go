@@ -6,13 +6,12 @@ import (
 	"strings"
 )
 
-// Claude 2026-10-21: Newznab password lookup for namefix (API, not HTML).
-// Reason: ngPost passwords are in the NZB; NNTP hash.7z is 7z-aes. Lookup
-//   searches the archive stem then the NNTP From (poster) on the configured
-//   Newznab host. Do not scrape indexer sites. Do not brute-force.
-// Troubleshooting: o2cli grep "nzb-password"; browse skip group_not_listed →
-//   caps omits the NNTP group; cands=0 → size/group; name_source=nzb|srrdb
-//   after payload=7z-aes. Review if: NZBGeek adds x264 or poster to caps.
+// Claude 2026-10-21: optional Newznab supplement after a local 7z-aes miss.
+// Reason: ngPost passwords are not on NNTP and NZBGeek never ingested those
+//   NZBs. Lookup is t=search stem/poster then caps-gated browse; it must
+//   not hold name_attempts. Do not scrape HTML. Do not brute-force.
+// Troubleshooting: o2cli grep "nzb-password"; skip_7z has no lookup;
+//   group_not_listed → caps omits the group. Review if: an indexer lists x264.
 // Related files: internal/newznab/client.go, namefix.go
 
 const namefixNZBPasswordPerPass = 6

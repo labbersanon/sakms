@@ -12387,3 +12387,24 @@ status stays active.
 |---|---|
 | `internal/api/testing_main_test.go` | TestMain lifts TMDB limiter |
 | `internal/dbtest/dbtest.go` | skip goose on clones; shared admin; async DROP |
+
+## 2026-10-21 — Newznab namefix is supplemental
+
+**Problem:** NZBGeek cannot supply ngPost passwords; header-first lookup + `heldPW` retried `miss` forever and skipped `name_attempts`.
+**Root cause:** Newznab was treated as the password path for `skip_7z` hash.7z. Caps omit `alt.binaries.x264`; those NZBs were never ingested.
+**Fix:** Native PAR2/PreDB/srrdb is the path. Newznab runs only after a local empty `7z-aes` BODY miss. `skip_7z` does not query. Misses bump attempts. Settings copy: optional supplement.
+**Outcome:** `TestNameFix_Skip7zDoesNotQueryNZB`; miss bumps `name_attempts`; 7z-aes decrypt/title tests still pass.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix.go` | drop header-first lookup and heldPW |
+| `internal/usenetsearch/namefix_test.go` | skip_7z does not query; miss bumps attempts |
+| `internal/usenetsearch/nzbpw.go` | supplement comments |
+| `internal/usenetsearch/service.go` | optional-supplement SetNZBPassword |
+| `internal/api/nzbpassword.go` | supplement comments |
+| `internal/newznab/client.go` | supplement comments |
+| `frontend/src/screens/settings/Usenet.tsx` | optional-supplement copy |
+| `frontend/src/screens/Settings.test.tsx` | assert supplement copy |
+| `docs/usenet-nntp-native.md` | skip_7z does not query Newznab |

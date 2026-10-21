@@ -12196,3 +12196,22 @@ status stays active.
 | `frontend/vite.config.ts` | `manualChunks` name `hls` |
 | `frontend/scripts/report-size.mjs` | shell vs playback totals |
 | `frontend/src/components/PlaybackVideo.test.ts` | native vs hls.js attach |
+
+## 2026-10-21 — Frontend Vitest assertions match current UI
+
+**Problem:** Full frontend suite was 12 failed / 1347 passed. Failures were reported as pre-existing after the Node 22 / hls.js shell-budget change.
+**Root cause:** Tests still expected Discover PIN copy, `/video` preview `src`, a single `Quality`/`480p` text node, discs "Pick one DVD ISO", and no Review action. Product already used Lighthouse, HLS-wrapped preview URLs, TitleQualityPrefs DualRangeSlider ticks, library-first discs copy, and `ROW_ACTIONS` Review.
+**Fix:** Assert availability `480p` via `role=button` so DualRangeSlider ticks do not collide. Scope Library `Quality` to the heading `<p>`. Read preview URL from `data-src` (PlaybackVideo now sets it). Expect HLS `/video/hls/index.m3u8`, Review in the dropdown, Lighthouse PIN copy, and "Pick the library first".
+**Outcome:** Frontend Vitest 1359 passed / 101 files.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/components/PlaybackVideo.tsx` | `data-src` for intended media URL |
+| `frontend/src/screens/Rename.preview.test.tsx` | HLS `data-src`; Review option |
+| `frontend/src/screens/Discover.test.tsx` | `480p` via button role |
+| `frontend/src/screens/Discover.search.test.tsx` | `480p` via button role |
+| `frontend/src/screens/Library.test.tsx` | Quality heading `<p>` |
+| `frontend/src/screens/Organize.test.tsx` | discs empty-state copy |
+| `frontend/src/screens/SearchTakeover.test.tsx` | Lighthouse PIN copy |

@@ -411,6 +411,58 @@ func TestGroupInCaps(t *testing.T) {
 	}
 }
 
+func TestSearchGrab_ReturnsEnclosureWithoutFetchingNZB(t *testing.T) {
+	var gotQ, gotCat, gotT string
+	var fetchedNZB bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "login") || strings.Contains(r.URL.Path, "details") {
+			t.Errorf("HTML scrape path %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Path == "/getnzb" {
+			fetchedNZB = true
+			http.NotFound(w, r)
+			return
+		}
+		gotT = r.URL.Query().Get("t")
+		gotQ = r.URL.Query().Get("q")
+		gotCat = r.URL.Query().Get("cat")
+		w.Header().Set("Content-Type", "application/xml")
+		io.WriteString(w, `<?xml version="1.0"?>
+<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2007/feeds/attributes/">
+  <channel>
+    <item>
+      <title>Grab.Movie.2021.1080p.WEB-DL.x264-GRP</title>
+      <guid>nzbg-1</guid>
+      <pubDate>Wed, 21 Oct 2026 00:00:00 +0000</pubDate>
+      <enclosure url="http://example.test/getnzb?id=nzbg-1" length="12345" type="application/x-nzb"/>
+      <newznab:attr name="size" value="12345"/>
+      <newznab:attr name="category" value="2000"/>
+    </item>
+  </channel>
+</rss>`)
+	}))
+	defer srv.Close()
+
+	c := &Client{HTTP: srv.Client(), Interval: time.Nanosecond}
+	rels, err := c.SearchGrab(context.Background(), Indexer{
+		Name: "NZBGeek", Endpoint: srv.URL + "/api", APIKey: "idx-key",
+	}, "Grab Movie", []int{2000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotT != "search" || gotQ != "Grab Movie" || gotCat != "2000" {
+		t.Fatalf("wire t=%q q=%q cat=%q", gotT, gotQ, gotCat)
+	}
+	if fetchedNZB {
+		t.Fatal("grab search must not fetch the NZB")
+	}
+	if len(rels) != 1 || rels[0].Title == "" || rels[0].DownloadURL == "" || rels[0].Size != 12345 {
+		t.Fatalf("rels=%+v", rels)
+	}
+}
+
 func TestUnpackPasswordAttr_FlagsIgnored(t *testing.T) {
 	if unpackPasswordAttr("0") != "" || unpackPasswordAttr("-1") != "" || unpackPasswordAttr("1") != "" {
 		t.Fatal("flags")

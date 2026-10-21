@@ -3241,7 +3241,7 @@ describe("Usenet NZB host API — Newznab connection", () => {
     renderSettings();
     goToDownloadSubTab("Usenet");
     expect(await screen.findByText("NZB host API")).toBeInTheDocument();
-    expect(screen.getByText(/Optional Newznab supplement/)).toBeInTheDocument();
+    expect(screen.getByText(/Optional Newznab indexer for Usenet grab search/)).toBeInTheDocument();
     expect(await screen.findByLabelText("newznab URL")).toBeInTheDocument();
     expect(screen.getByLabelText("newznab API key")).toBeInTheDocument();
     const nzbCard = screen.getByText("NZB host API").closest("div")!;

@@ -421,6 +421,13 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 	if nativePhaseWanted(ctx, deps, req.Mode) && !req.SkipNativePhase {
 		phases = prependNativePhase(phases)
 	}
+	// Claude 2026-10-21: Newznab grab phase after native, before Prowlarr.
+	// Reason: Settings NZB host is an alternate Usenet search, not passwords.
+	// Troubleshooting: no newznab hits → host unset; indexerIds=-4 → leak.
+	// Review if: Prowlarr already includes the same indexer.
+	if newznabGrabConfigured(ctx) {
+		phases = insertNewznabPhase(phases)
+	}
 
 	// scoreOnePhase runs one phase's search → filter → score and returns the
 	// releases and Selection for that phase. Extracted here rather than as a
@@ -449,10 +456,25 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 				pr.releases = rels
 				pr.runtimeSeconds = req.RuntimeSeconds
 			}
+		} else if scope.IsNewznab() {
+			if req.Releases != nil {
+				pr.releases = req.Releases
+				pr.runtimeSeconds = req.RuntimeSeconds
+			} else {
+				rels, err := newznabAutoGrabSearch(ctx, req.Mode, req)
+				if err != nil {
+					return pr, err
+				}
+				pr.releases = rels
+				pr.runtimeSeconds = req.RuntimeSeconds
+			}
 		} else if req.Releases != nil {
 			pr.releases = req.Releases
 			pr.runtimeSeconds = req.RuntimeSeconds
 		} else {
+			if sess.Prowlarr == nil {
+				return pr, nil
+			}
 			var err error
 			pr.releases, pr.runtimeSeconds, err = autoGrabSearch(ctx, sess, req.Mode, deps.ReleaseStore, scope, apidto.AutoGrabRequest{
 				Title: req.Title, TMDBID: req.TMDBID, Studio: req.Studio,
@@ -541,8 +563,8 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 		pr, err := scoreOnePhase(phase)
 		if err != nil {
 			// Claude 2026-09-17: native phase errors degrade to next phase (§7.2).
-			if phase.IsNative() {
-				log.Printf("auto-grab: native phase error for %q: %v — continuing", req.Title, err)
+			if phase.IsNative() || phase.IsNewznab() {
+				log.Printf("auto-grab: %v phase error for %q: %v — continuing", phase, req.Title, err)
 				continue
 			}
 			return AutoGrabOutcome{Status: http.StatusBadGateway, Err: err}, err

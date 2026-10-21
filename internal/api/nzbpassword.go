@@ -13,12 +13,12 @@ import (
 	"github.com/labbersanon/sakms/internal/usenetsearch"
 )
 
-// Claude 2026-10-21: dedicated `newznab` host is a namefix supplement.
-// Reason: Prowlarr is grab-search; this URL+key is optional t=search/t=get
-//   after a local 7z-aes miss. Native NNTP namefix is the path. No HTML.
-// Troubleshooting: nzb-password never logs → host unset, kill switch off,
-//   or not a 7z-aes BODY miss. Review if: an indexer lists x264 + poster.
-// Related files: internal/newznab/client.go, frontend Usenet.tsx
+// Claude 2026-10-21: NZBPasswordLookup stays for tests only.
+// Reason: live Newznab is grab-search (newznabgrab.go). Passwords are not
+//   recoverable from NZBGeek. main does not AttachNZBPasswordLookup.
+// Troubleshooting: nzb-password logs on server1 → attach was restored.
+// Review if: this file is deleted after tests move off Lookup.
+// Related files: internal/api/newznabgrab.go
 
 type nzbPasswordLookup struct {
 	conns    *connections.Store

@@ -67,10 +67,22 @@ const (
 	// Troubleshooting: Prowlarr 400 on indexerIds=-3 means a leak.
 	// Review if: SearchPhases widens to a struct.
 	ScopeNative Scope = -3
+	// ScopeNewznab is sakms-internal only (Settings `newznab` host). Never emit
+	// on the Prowlarr wire — see addIndexerScope.
+	//
+	// Claude 2026-10-21: dedicated NZB indexer as a grab-search phase.
+	// Reason: passwords are not recoverable from NZBGeek; this host is an
+	//   alternate Usenet grab search after native NNTP.
+	// Troubleshooting: Prowlarr 400 on indexerIds=-4 means a leak.
+	// Review if: SearchPhases becomes a struct.
+	ScopeNewznab Scope = -4
 )
 
 // IsNative reports whether s is the sakms-native NNTP search phase.
 func (s Scope) IsNative() bool { return s == ScopeNative }
+
+// IsNewznab reports whether s is the Settings Newznab grab-search phase.
+func (s Scope) IsNewznab() bool { return s == ScopeNewznab }
 
 // Config parameterizes the client for one Prowlarr instance.
 type Config struct {
@@ -344,8 +356,9 @@ func addIndexerScope(q url.Values, scope Scope, indexerIDs []int) {
 		}
 		return
 	}
-	if scope.IsNative() {
+	if scope.IsNative() || scope.IsNewznab() {
 		// Claude 2026-09-17: never send ScopeNative to Prowlarr.
+		// Claude 2026-10-21: ScopeNewznab is the Settings NZB host, not Prowlarr.
 		return
 	}
 	if scope != ScopeAll {

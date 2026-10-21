@@ -8,8 +8,8 @@ import (
 )
 
 // Claude 2026-09-17: adapt usenetsearch.Candidate → prowlarr.Release for RunAutoGrab.
-// Reason: v1 keeps the scorer/DTOs on prowlarr.Release; exit when a second
-//   non-Prowlarr source appears (plan §4.1).
+// Reason: v1 keeps the scorer/DTOs on prowlarr.Release. A second non-Prowlarr
+//   source (Settings Newznab) uses adaptNewznabReleases, not this helper.
 // Troubleshooting: bitrate floor wrong → check PayloadBytes vs WireBytes.
 // Review if: neutral release.Candidate type replaces prowlarr.Release in AutoGrab.
 

@@ -242,8 +242,11 @@ func runAutoGrabDrainCycle(
 		log.Printf("autograb drain: building series session failed (%T) — skipping tick", rootCause(sessErr))
 		return
 	}
-	if sess.TMDB == nil || sess.Prowlarr == nil {
-		return // TMDB or Prowlarr not configured
+	if sess.TMDB == nil {
+		return
+	}
+	if sess.Prowlarr == nil && !newznabGrabConfigured(ctx) {
+		return
 	}
 
 	// Claude 2026-09-17: resume transport-parked rows before the drain proper.

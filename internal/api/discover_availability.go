@@ -80,7 +80,7 @@ func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if sess.Prowlarr == nil {
+		if sess.Prowlarr == nil && !newznabGrabConfigured(ctx) {
 			http.Error(w, "prowlarr isn't configured yet — add it in Settings first", http.StatusBadRequest)
 			return
 		}
@@ -165,15 +165,17 @@ func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections
 		var releases []prowlarr.Release
 		var runtimeSeconds float64
 		if m == mode.Adult {
-			res, err := resolveAdultReleases(ctx, sess, releaseStore, adultConsumerPicker, req)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadGateway)
-				return
+			if sess.Prowlarr != nil {
+				res, err := resolveAdultReleases(ctx, sess, releaseStore, adultConsumerPicker, req)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadGateway)
+					return
+				}
+				releases = res.Releases
+				log.Printf("discover availability: mode=adult title=%q servedFromCache=%v", title, res.FromCache)
 			}
-			releases = res.Releases
 			runtimeSeconds = float64(req.DurationSeconds)
-			log.Printf("discover availability: mode=adult title=%q servedFromCache=%v", title, res.FromCache)
-		} else {
+		} else if sess.Prowlarr != nil {
 			var err error
 			// ScopeAll: discoverAvailabilityHandler is operator-facing, never two-phase.
 			releases, runtimeSeconds, err = autoGrabSearch(ctx, sess, m, releaseStore, prowlarr.ScopeAll, req)
@@ -181,6 +183,19 @@ func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections
 				http.Error(w, err.Error(), http.StatusBadGateway)
 				return
 			}
+		}
+		extra, err := newznabAutoGrabSearch(ctx, m, AutoGrabRequest{
+			Mode: m, Title: req.Title, Season: req.SeasonNumber, Episode: req.EpisodeNumber,
+			SeasonSpecified: req.SeasonSpecified, ReleaseTitle: req.ReleaseTitle,
+		})
+		if err != nil {
+			if len(releases) == 0 {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			log.Printf("discover availability: newznab err=%v", err)
+		} else {
+			releases = append(releases, extra...)
 		}
 		if hasKnownAdultEnclosure {
 			cardEnclosure := knownAdultEnclosure

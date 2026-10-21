@@ -89,15 +89,33 @@ func searchHandler(httpClient *http.Client, connStore *connections.Store, scStor
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if sess.Prowlarr == nil {
+		if sess.Prowlarr == nil && !newznabGrabConfigured(ctx) {
 			http.Error(w, "prowlarr isn't configured yet — add it in Settings first", http.StatusBadRequest)
 			return
 		}
 
-		releases, err := sess.Prowlarr.Search(ctx, query, categoriesForSearch(m))
+		var releases []prowlarr.Release
+		if sess.Prowlarr != nil {
+			found, err := sess.Prowlarr.Search(ctx, query, categoriesForSearch(m))
+			if err != nil && !newznabGrabConfigured(ctx) {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			if err != nil {
+				log.Printf("search: prowlarr err=%v — trying newznab", err)
+			} else {
+				releases = found
+			}
+		}
+		extra, err := newznabGrabSearch(ctx, query, categoriesForSearch(m))
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
+			if len(releases) == 0 {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			log.Printf("search: newznab err=%v", err)
+		} else {
+			releases = append(releases, extra...)
 		}
 
 		// Collapse duplicate releases (the same release cross-posted to multiple

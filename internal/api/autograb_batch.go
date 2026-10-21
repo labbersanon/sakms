@@ -168,7 +168,7 @@ func autoGrabBatchHandler(httpClient *http.Client, connStore *connections.Store,
 					directGrab = true
 				}
 			}
-			if sess.Prowlarr == nil && !directGrab {
+			if sess.Prowlarr == nil && !directGrab && !newznabGrabConfigured(ctx) {
 				fail("prowlarr isn't configured yet — add it in Settings first")
 				continue
 			}

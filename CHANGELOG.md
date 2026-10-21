@@ -12408,3 +12408,22 @@ status stays active.
 | `frontend/src/screens/settings/Usenet.tsx` | optional-supplement copy |
 | `frontend/src/screens/Settings.test.tsx` | assert supplement copy |
 | `docs/usenet-nntp-native.md` | skip_7z does not query Newznab |
+
+## 2026-10-21 — Newznab is an alternate Usenet grab search
+
+**Problem:** "Supplemental" was implemented as namefix after a 7z-aes miss. The operator meant grab search.
+**Root cause:** NZB indexers cannot recover ngPost passwords; the Settings host should search for NZBs to grab.
+**Fix:** `SearchGrab` (`t=search` title+cat, enclosure URL, no NZB fetch). Autograb phase after native, before Prowlarr. Manual Search / Discover availability merge results. Live namefix no longer attaches Newznab.
+**Outcome:** `TestSearchGrab_ReturnsEnclosureWithoutFetchingNZB`; `TestNewznabGrabSearch_ConfiguredHostNoHTML`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/newznab/client.go` | SearchGrab grab-shaped releases |
+| `internal/prowlarr/client.go` | ScopeNewznab |
+| `internal/api/newznabgrab.go` | attach, phase insert, adapt |
+| `internal/api/autograb_shared.go` | Newznab phase; Prowlarr-nil skip |
+| `internal/api/search.go` | merge Newznab into Search |
+| `cmd/sakms/main.go` | AttachNewznabGrabSearch; drop live namefix attach |
+| `frontend/src/screens/settings/Usenet.tsx` | grab-search copy |

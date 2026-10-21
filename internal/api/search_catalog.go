@@ -123,7 +123,7 @@ func adultSearchHandler(connStore *connections.Store, scStore *serviceconn.Store
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if sess.Prowlarr == nil {
+		if sess.Prowlarr == nil && !newznabGrabConfigured(ctx) {
 			http.Error(w, "prowlarr isn't configured yet — add it in Settings first", http.StatusBadRequest)
 			return
 		}
@@ -131,10 +131,29 @@ func adultSearchHandler(connStore *connections.Store, scStore *serviceconn.Store
 		tctx, cancel := context.WithTimeout(ctx, newestScenesOutboundTimeout)
 		defer cancel()
 
-		releases, err := sess.Prowlarr.Search(tctx, adultnewest.NormalizeAdultQuery(query), []int{adultAutoGrabCategory})
+		q := adultnewest.NormalizeAdultQuery(query)
+		var releases []prowlarr.Release
+		if sess.Prowlarr != nil {
+			found, err := sess.Prowlarr.Search(tctx, q, []int{adultAutoGrabCategory})
+			if err != nil && !newznabGrabConfigured(ctx) {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			if err != nil {
+				log.Printf("search catalog: prowlarr err=%v — trying newznab", err)
+			} else {
+				releases = found
+			}
+		}
+		extra, err := newznabGrabSearch(tctx, q, []int{adultAutoGrabCategory})
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
+			if len(releases) == 0 {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			log.Printf("search catalog: newznab err=%v", err)
+		} else {
+			releases = append(releases, extra...)
 		}
 
 		// Collapse true cross-posts (one release on several indexers) up front,

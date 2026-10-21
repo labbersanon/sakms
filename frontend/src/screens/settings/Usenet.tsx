@@ -14,7 +14,7 @@
 //     takedown coverage, not as a ranked chain. There is no priority field and
 //     no reorder UI beyond cosmetic sorting.
 //   - A generic "add any connection type" framework. This page adds NNTP
-//     subscriptions and one optional Newznab host (supplemental name/NZB). Nothing else.
+//     subscriptions and one optional Newznab host (alternate Usenet grab search). Nothing else.
 //   - A retry-interval input. The cadence is coupled to the auto-grab toggle
 //     server-side (on → 86400s, off → 0) precisely so the two can't disagree;
 //     there is deliberately no user-facing control for it.
@@ -96,13 +96,12 @@ export const UsenetSection: Component = () => (
   </div>
 );
 
-// Claude 2026-10-21: stacked URL+key card for optional Newznab supplement.
-// Reason: Prowlarr is grab-search; this URL+key is t=search/t=get after a
-//   local 7z-aes miss. Native NNTP namefix is the path. ConnectionMiniTable
-//   is the metadata/API-connections layout.
+// Claude 2026-10-21: stacked URL+key card for optional Newznab grab search.
+// Reason: native NNTP is first; this host is an alternate Usenet grab indexer
+//   before Prowlarr. Passwords are not recoverable from NZBGeek.
 // Troubleshooting: operator filled URL+key, no Save visible, live connections had 0 newznab rows.
-// Review if: an indexer lists alt.binaries.x264 and poster search.
-// Related files: internal/api/nzbpassword.go
+// Review if: Prowlarr already includes the same indexer.
+// Related files: internal/api/newznabgrab.go
 const NewznabHostCard: Component = () => {
   const [conns, { refetch }] = createResource(fetchConnections);
   const existing = () =>
@@ -111,9 +110,9 @@ const NewznabHostCard: Component = () => {
   return (
     <Card title="NZB host API">
       <Muted class="mb-3">
-        Optional Newznab supplement after native NNTP name recovery. Used when
-        a 7z archive needs a title or unpack password the local index does not
-        have. Not used for grabbing. Example: https://api.nzbgeek.info/api
+        Optional Newznab indexer for Usenet grab search. Tried after native
+        NNTP and before Prowlarr. Not used for torrents or name recovery.
+        Example: https://api.nzbgeek.info/api
       </Muted>
       <Show when={conns.error}>
         <ErrorText>{(conns.error as Error)?.message}</ErrorText>

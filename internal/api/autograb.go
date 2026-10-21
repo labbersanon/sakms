@@ -193,7 +193,7 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, scSt
 			return
 		}
 
-		if sess.Prowlarr == nil {
+		if sess.Prowlarr == nil && !newznabGrabConfigured(ctx) {
 			http.Error(w, "prowlarr isn't configured yet — add it in Settings first", http.StatusBadRequest)
 			return
 		}

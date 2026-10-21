@@ -20,23 +20,25 @@ import (
 	"github.com/labbersanon/sakms/internal/usenet"
 )
 
-// Claude 2026-10-21: Newznab filename + poster, then caps-gated group browse.
-// Reason: optional namefix supplement after a local 7z-aes miss. NZBGeek
-//   caps are q,group (no poster); browse only when caps lists the NNTP group.
-// Troubleshooting: o2cli grep "nzb-password"; group_not_listed → caps omit
-//   the group; skip_7z has no lookup. Review if: an indexer lists x264.
-// Related files: internal/api/nzbpassword.go, namefix.go, nzbpw.go
+// Claude 2026-10-21: Newznab grab search (t=search/t=get) plus leftover
+//   filename lookup used only by tests.
+// Reason: the Settings `newznab` host is an alternate Usenet grab indexer,
+//   not a password engine. Passwords are not recoverable from NZBGeek.
+// Troubleshooting: grab results empty → caps omit cat; enclosure/link missing.
+// Review if: NZBGeek grows tvsearch/movie id params we should send.
+// Related files: internal/api/newznabgrab.go, frontend Usenet.tsx
 
 const (
-	maxSearchItems    = 5
-	maxNZBsPerIndexer = 2
-	maxIndexers       = 3
-	maxBrowsePages    = 5
-	maxBrowseLimit    = 100
-	maxBrowseNZBs     = 4
-	browseSizeTol     = 0.15
-	userAgent         = "sakms-newznab/1"
-	minInterval       = time.Second
+	maxSearchItems     = 5
+	maxGrabSearchItems = 50
+	maxNZBsPerIndexer  = 2
+	maxIndexers        = 3
+	maxBrowsePages     = 5
+	maxBrowseLimit     = 100
+	maxBrowseNZBs      = 4
+	browseSizeTol      = 0.15
+	userAgent          = "sakms-newznab/1"
+	minInterval        = time.Second
 )
 
 // Indexer is a Newznab API endpoint. APIKey must not be logged.
@@ -51,6 +53,18 @@ type Hit struct {
 	Title     string
 	Passwords []string
 	Indexer   string
+}
+
+// Release is one grab-search hit. DownloadURL is an NZB enclosure or t=get.
+// Passwords are not a grab identity and are not populated here.
+type Release struct {
+	GUID        string
+	Title       string
+	Indexer     string
+	Size        int64
+	DownloadURL string
+	PublishDate string
+	Categories  []int
 }
 
 type Client struct {
@@ -119,10 +133,34 @@ type searchReq struct {
 	q           string
 	poster      string
 	group       string
+	cats        []int
 	maxage      int
 	offset      int
 	limit       int
 	allowSingle bool
+}
+
+// SearchGrab runs t=search for a title and returns NZB download URLs.
+// It does not fetch NZBs and does not scrape HTML.
+func (c *Client) SearchGrab(ctx context.Context, idx Indexer, query string, cats []int) ([]Release, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, nil
+	}
+	idx.Endpoint = NormalizeEndpoint(idx.Endpoint)
+	items, err := c.search(ctx, idx, searchReq{q: query, cats: cats, limit: maxGrabSearchItems})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Release, 0, len(items))
+	for _, it := range items {
+		rel, ok := grabReleaseFromItem(idx, it)
+		if !ok {
+			continue
+		}
+		out = append(out, rel)
+	}
+	return out, nil
 }
 
 // Lookup searches each indexer and returns the first NZB that carries a
@@ -193,7 +231,9 @@ func (c *Client) lookupOne(ctx context.Context, idx Indexer, q Query) (Hit, bool
 // Claude 2026-10-21: NZBGeek cannot search poster or the hash filename.
 // Reason: caps q,group so poster= is latest-N; browse group+maxage, t=get, NZB stem. No HTML.
 // Troubleshooting: browse skip group_not_listed → caps omits the NNTP group;
-//   cands=0 → size/group mismatch; nzb=N hit=0 → no hash.
+//
+//	cands=0 → size/group mismatch; nzb=N hit=0 → no hash.
+//
 // Review if: NZBGeek adds alt.binaries.x264 or poster to caps.
 func (c *Client) lookupBrowse(ctx context.Context, idx Indexer, q Query, needles []string) (Hit, bool) {
 	group := strings.TrimSpace(q.Group)
@@ -271,13 +311,15 @@ type rssItem struct {
 	Link        string    `xml:"link"`
 	Description string    `xml:"description"`
 	GUID        string    `xml:"guid"`
+	PubDate     string    `xml:"pubDate"`
 	Enclosure   rssEnc    `xml:"enclosure"`
 	Attrs       []rssAttr `xml:"http://www.newznab.com/DTD/2007/feeds/attributes/ attr"`
 	Attrs2010   []rssAttr `xml:"http://www.newznab.com/DTD/2010/feeds/attributes/ attr"`
 }
 
 type rssEnc struct {
-	URL string `xml:"url,attr"`
+	URL    string `xml:"url,attr"`
+	Length string `xml:"length,attr"`
 }
 
 type rssAttr struct {
@@ -366,6 +408,17 @@ func (c *Client) search(ctx context.Context, idx Indexer, req searchReq) ([]rssI
 	}
 	if req.offset > 0 {
 		vals.Set("offset", strconv.Itoa(req.offset))
+	}
+	if len(req.cats) > 0 {
+		parts := make([]string, 0, len(req.cats))
+		for _, cat := range req.cats {
+			if cat > 0 {
+				parts = append(parts, strconv.Itoa(cat))
+			}
+		}
+		if len(parts) > 0 {
+			vals.Set("cat", strings.Join(parts, ","))
+		}
 	}
 	limit := req.limit
 	if limit <= 0 {
@@ -496,6 +549,49 @@ func usenetDateUnix(s string) int64 {
 		}
 	}
 	return 0
+}
+
+func grabReleaseFromItem(idx Indexer, it rssItem) (Release, bool) {
+	title := strings.TrimSpace(it.Title)
+	nzbURL := strings.TrimSpace(it.Enclosure.URL)
+	if nzbURL == "" {
+		nzbURL = strings.TrimSpace(it.Link)
+	}
+	guid := strings.TrimSpace(it.GUID)
+	if guid == "" {
+		guid = it.attr("guid")
+	}
+	if nzbURL == "" && guid != "" {
+		nzbURL = getURL(idx, guid)
+	}
+	if title == "" || nzbURL == "" {
+		return Release{}, false
+	}
+	if guid == "" {
+		guid = nzbURL
+	}
+	size, _ := strconv.ParseInt(it.attr("size"), 10, 64)
+	if size <= 0 {
+		size, _ = strconv.ParseInt(it.Enclosure.Length, 10, 64)
+	}
+	var cats []int
+	if raw := it.attr("category"); raw != "" {
+		for _, p := range strings.Split(raw, ",") {
+			n, err := strconv.Atoi(strings.TrimSpace(p))
+			if err == nil && n > 0 {
+				cats = append(cats, n)
+			}
+		}
+	}
+	return Release{
+		GUID:        guid,
+		Title:       title,
+		Indexer:     idx.Name,
+		Size:        size,
+		DownloadURL: nzbURL,
+		PublishDate: strings.TrimSpace(it.PubDate),
+		Categories:  cats,
+	}, true
 }
 
 func getURL(idx Indexer, id string) string {

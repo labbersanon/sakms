@@ -223,7 +223,7 @@ export const ConnectionRow: Component<{
   const failClass = () => (isFailing() ? "border-danger bg-danger/10" : "");
 
   return (
-    <div class="rounded border border-border p-3">
+    <div class="rounded border border-border p-3" data-connection-service={props.service}>
       <div class="mb-2 text-sm font-medium text-fg">
         {serviceLabel(props.service)}
       </div>

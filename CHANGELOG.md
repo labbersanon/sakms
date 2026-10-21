@@ -12244,3 +12244,17 @@ status stays active.
 | `frontend/src/screens/settings/Usenet.tsx` | stacked NewznabHostFields |
 | `frontend/src/screens/settings/ConnectionRow.tsx` | drop newznab table special-case |
 | `frontend/src/screens/Settings.test.tsx` | assert stacked labels, no Service column |
+
+## 2026-10-21 — Settings connection cards: no horizontal scroll
+
+**Problem:** Settings cards that reused ConnectionMiniTable still scrolled sideways (Service / URL / empty Username / key / buttons).
+**Root cause:** Shared chrome was a 6-column `overflow-x-auto` table. NZB host was stacked; API Connections, Metadata sources, and AI were not.
+**Fix:** ConnectionRow is labeled URL + API key + Test/Save/Delete. ConnectionMiniTable is a vertical stack. No overflow-x-auto in settings.
+**Outcome:** Settings.test 136 passed.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/settings/ConnectionRow.tsx` | stacked fields; MiniTable is `space-y-3` |
+| `frontend/src/screens/Settings.test.tsx` | no table/h-scroll; row queries use data-connection-service |

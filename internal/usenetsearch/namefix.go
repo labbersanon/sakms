@@ -591,17 +591,17 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		// Troubleshooting: nzb-password miss with skip_7z=true → lookup
 		//   already ran. Review if: RAR passwords should use this too.
 		if kind == "7z-aes" && len(crcs) == 0 {
-			if !nzbGot && n.NZBPassword != nil && n.nzbPWUsed >= namefixNZBPasswordPerPass {
-				heldPW = true
-			} else {
-				if !nzbGot {
+			if !nzbGot {
+				if n.NZBPassword != nil && n.nzbPWUsed >= namefixNZBPasswordPerPass {
+					heldPW = true
+				} else {
 					nzbHit, nzbGot = n.fetchNZBPassword(work, rows)
 				}
-				if nzbGot {
-					stop, done, err := n.applyNZBHit(work, set, rows, sample, zstart, nzbHit, res, statBudget)
-					if done || err != nil {
-						return stop, err
-					}
+			}
+			if nzbGot {
+				stop, done, err := n.applyNZBHit(work, set, rows, sample, zstart, nzbHit, res, statBudget)
+				if done || err != nil {
+					return stop, err
 				}
 			}
 		}

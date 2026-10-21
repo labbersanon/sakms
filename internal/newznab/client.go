@@ -132,7 +132,13 @@ func (c *Client) Lookup(ctx context.Context, indexers []Indexer, q Query) (Hit, 
 
 func (c *Client) lookupOne(ctx context.Context, idx Indexer, q Query) (Hit, bool) {
 	idx.Endpoint = NormalizeEndpoint(idx.Endpoint)
-	needles := []string{q.Filename, q.Poster}
+	var needles []string
+	if q.Filename != "" {
+		needles = append(needles, q.Filename)
+	}
+	if q.Poster != "" && q.Poster != q.Filename {
+		needles = append(needles, q.Poster)
+	}
 	// Claude 2026-10-21: poster after stem miss; never browse unfiltered.
 	// Reason: ngPost title/password are on the NZB keyed by From
 	//   (nZEDb searchadvposter / fromname). NZBGeek caps list q,group
@@ -157,12 +163,11 @@ func (c *Client) lookupOne(ctx context.Context, idx Indexer, q Query) (Hit, bool
 			continue
 		}
 		picked := pickItems(items, needles, req.allowSingle)
-		for i, it := range picked {
-			if i >= maxNZBsPerIndexer {
-				break
-			}
-			hit, ok := c.fetchHit(ctx, idx, it)
-			if ok {
+		if len(picked) > maxNZBsPerIndexer {
+			picked = picked[:maxNZBsPerIndexer]
+		}
+		for _, it := range picked {
+			if hit, ok := c.fetchHit(ctx, idx, it); ok {
 				return hit, true
 			}
 		}

@@ -12179,3 +12179,20 @@ status stays active.
 | `deploy/sakms/sakms-auto-update.py` | `--deploy-local` / `--from-github`; skip if GitHub behind live |
 | `Makefile` | `test-ci` `deploy-local` `ship-local` `nightly-sync` |
 | `AGENTS.md` | local merge/deploy rule |
+
+## 2026-10-21 — Node 22 for local CI; hls.js off the 200 KB shell ceiling
+
+**Problem:** `make test-ci` warned Unsupported engine (Node 24 vs `>=22 <23`). Gzipped JS was 375 KB vs Guardrail #9's 200 KB.
+**Root cause:** Cursor prepends Node 24; Fedora's `/usr/bin/node` is already 22. hls.js was a static import (~184 KB gzip) in the only app chunk.
+**Fix:** ci-local puts `/usr/bin` first when `node-22` exists. Playback uses native HLS when available and `import("hls.js")` otherwise; report-size applies the 200 KB ceiling to the app shell only.
+**Outcome:** Node 22.23.1 in local CI (no engine warning). Shell 193.7 KB / 200 KB (ok). Playback chunk 181.5 KB, loaded on demand.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `scripts/ci-local.sh` | prefer `/usr/bin/node-22` |
+| `frontend/src/components/PlaybackVideo.tsx` | native HLS first; dynamic hls.js |
+| `frontend/vite.config.ts` | `manualChunks` name `hls` |
+| `frontend/scripts/report-size.mjs` | shell vs playback totals |
+| `frontend/src/components/PlaybackVideo.test.ts` | native vs hls.js attach |

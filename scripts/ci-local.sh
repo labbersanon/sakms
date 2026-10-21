@@ -50,11 +50,17 @@ export CI=true
 
 echo "postgres ready at $SAKMS_TEST_DATABASE_URL"
 
-export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+# Claude 2026-10-21: npx pnpm@9.15.9 instead of corepack.
+# Reason: wade-pc PATH's node is Cursor's (no corepack). packageManager is
+#   pnpm@9.15.9; npx does not need `corepack enable`.
+# Troubleshooting: "corepack: command not found" means this fallback was
+#   reverted. "ERR_PNPM_OUTDATED_LOCKFILE" means the lockfile needs 9.x.
+# Review if: PATH has a system node with corepack and we want to use that.
+export NPM_CONFIG_YES=true
 (
   cd frontend
-  corepack pnpm install --frozen-lockfile
-  corepack pnpm build
+  npx --yes pnpm@9.15.9 install --frozen-lockfile
+  npx --yes pnpm@9.15.9 build
 )
 
 echo "go test ./... (CI flags)"

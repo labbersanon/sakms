@@ -289,9 +289,8 @@ func rejectSeasonEpisodeOverlap(items []apidto.AutoGrabBatchItem) error {
 // whose enclosure was populated by the persistence feeder below) takes the
 // direct-grab path first — shared with the single handler via grabDirectEnclosure
 // — before autoGrabSearch (which dereferences sess.Prowlarr), so it neither
-// searches nor requires Prowlarr (C1/D4). For every OTHER item the precondition
-// still holds: callers must have confirmed sess.Prowlarr (and, for non-Adult,
-// sess.TMDB) is non-nil.
+// searches nor requires Prowlarr (C1/D4). Search items may use Prowlarr and/or
+// the Settings Newznab host; sess.TMDB is still required for non-Adult.
 //
 // Claude 2026-08-11: store parameter added (A3/§6.1) for Adult release cache;
 // nil degrades to a live Prowlarr search.
@@ -357,9 +356,36 @@ func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, stor
 	}
 	// ScopeAll: grabOneBatchItem is operator-initiated (TriggerOperator equivalent),
 	// never two-phase; scope scoping belongs to the drain's SearchPhases loop only.
-	releases, runtimeSeconds, err := autoGrabSearch(ctx, sess, m, store, prowlarr.ScopeAll, req)
+	// Claude 2026-10-21: merge Newznab; do not deref nil Prowlarr.
+	// Reason: Settings NZB host is an alternate grab search. Batch used to
+	//   call autoGrabSearch only, which panics without Prowlarr.
+	// Troubleshooting: bulk grab 400/panic with only newznab configured.
+	// Review if: grabOneBatchItem delegates to RunAutoGrab.
+	var releases []prowlarr.Release
+	var runtimeSeconds float64
+	if sess.Prowlarr != nil {
+		found, rt, err := autoGrabSearch(ctx, sess, m, store, prowlarr.ScopeAll, req)
+		if err != nil && !newznabGrabConfigured(ctx) {
+			return nil, false, false, nil, "", err
+		}
+		if err != nil {
+			log.Printf("auto-grab batch: prowlarr err=%v — trying newznab", err)
+		} else {
+			releases = found
+			runtimeSeconds = rt
+		}
+	}
+	extra, err := newznabAutoGrabSearch(ctx, m, AutoGrabRequest{
+		Mode: m, Title: req.Title, Season: req.SeasonNumber, Episode: req.EpisodeNumber,
+		SeasonSpecified: req.SeasonSpecified, ReleaseTitle: req.ReleaseTitle,
+	})
 	if err != nil {
-		return nil, false, false, nil, "", err
+		if len(releases) == 0 {
+			return nil, false, false, nil, "", err
+		}
+		log.Printf("auto-grab batch: newznab err=%v", err)
+	} else {
+		releases = append(releases, extra...)
 	}
 
 	// Claude 2026-08-03: apply FilterSeasonScope on the batch path too.

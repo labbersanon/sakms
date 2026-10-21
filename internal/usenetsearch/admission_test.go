@@ -259,6 +259,24 @@ func TestGate_BelowMinReject(t *testing.T) {
 	}
 }
 
+func TestSkipAdmissionGate_HDIdentOnly(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"[UQW] Black Clover - Ep170 [BDRip 1080p HEVC-YUV420P10 FLAC]", true},
+		{"[WhyNot] Saint Young Men OVA [DVD 480p AAC].part01", false},
+		{"[PSXJowie] Plastic Nee-san OAD [BD 1920x1080]", true},
+		{"Some.Movie.2020.1080p.WEB-DL.x264-GROUP", false},
+		{"MilfAF - London River", false},
+	}
+	for _, tc := range cases {
+		if got := skipAdmissionGate(tc.name); got != tc.want {
+			t.Errorf("skipAdmissionGate(%q) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestLoosestOf_AnyNoFloorWins(t *testing.T) {
 	snap := &PolicySnapshot{
 		Modes: map[string]Standard{

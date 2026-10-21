@@ -569,13 +569,13 @@ func (c *Crawler) admitChunk(ctx context.Context, group string, a, b int, header
 				rejectReason = reason
 			}
 		}
-		// Claude 2026-10-19: spaced ident-shaped names skip the quality gate
-		// at ingest, same as namefix promote.
-		// Reason: multimedia skip_res dropped quoted 1080p fansubs under a
-		//   2160p movies floor; those titles never reached the index.
-		// Troubleshooting: skip_res=chunk on ident 1080p subjects → this
-		//   still gating ingest. Review if: dotted scene names should skip too.
-		if passIdx < 0 && quotedReleaseName(name) && strings.ContainsAny(name, " _[") && len(stds) > 0 {
+		// Claude 2026-10-20: skipGate is HD ident only (snapped >= 720).
+		// Reason: quoted `[DVD 480p]` was admitted with min_res=720 because
+		//   any bracketed quotedReleaseName skipped the floor. 1080p fansubs
+		//   under a 2160p movies floor still skip. SD faces MinRes.
+		// Troubleshooting: admit … res=480 min_res=720 → skipAdmissionGate.
+		// Review if: 576p PAL ident should skip a 720 floor (today: no).
+		if passIdx < 0 && skipAdmissionGate(name) && len(stds) > 0 {
 			passIdx = 0
 		}
 		if passIdx < 0 {

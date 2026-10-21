@@ -202,8 +202,9 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   PAR2/RAR/yEnc name that parses as title + (year|episode) +
   (resolution|source), or an ident-shaped name (resolution plus year, season,
   or a multi-word title such as fansub `Ep170` / spaces), even on a PreDB miss.
-  Spaced ident-shaped header names skip the quality gate so a 2160p movies
-  floor cannot delete a complete 1080p quoted set. NFO-only names need a PreDB hit.
+  Spaced HD ident-shaped header names (snapped ≥720) skip the quality gate so a
+  2160p movies floor cannot delete a complete 1080p quoted set. SD ident (480p)
+  still faces MinRes. NFO-only names need a PreDB hit.
   Sets under 100 MiB without PAR2 are never BODY-fetched; after 3 attempts or
   `unnamed_ttl_days` a set is finalized and deleted, except ≥80% yield-group
   sets which stay for PreDB-only retries so a later IRC line or dump

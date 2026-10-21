@@ -841,13 +841,13 @@ func (n *NameFixer) promote(ctx context.Context, set PendingSet, rows []HeaderRo
 			return false, err
 		}
 		if snap != nil {
-			// Claude 2026-10-19: spaced ident-shaped names skip the quality gate.
-			// Reason: live pending95 quoted fansubs (`[UQW] Black Clover… 1080p`)
-			//   would hit reject_gate+delete when movies MinRes=2160 / High.
-			//   Scene PAR2 names stay dotted and still go through gate.
-			// Troubleshooting: reject_gate on a spacey 1080p title → this skip
-			//   missing. Review if: a dotted scene title is rewritten with spaces.
-			skipGate := quotedReleaseName(name) && strings.ContainsAny(name, " _[")
+			// Claude 2026-10-20: skipGate is HD ident only (snapped >= 720).
+			// Reason: live `[WhyNot] … [DVD 480p AAC]` skipped MinRes=720 at
+			//   ingest and would skip again here. 1080p fansubs under a 2160p
+			//   movies floor still skip. Scene PAR2 names stay dotted.
+			// Troubleshooting: reject_gate missing on a 480p quoted title →
+			//   skipAdmissionGate. Review if: 576p PAL ident should skip 720.
+			skipGate := skipAdmissionGate(name)
 			if !skipGate {
 				var modes []string
 				if c.GroupModesFn != nil {

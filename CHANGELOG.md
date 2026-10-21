@@ -12373,3 +12373,17 @@ status stays active.
 |---|---|
 | `internal/newznab/client.go` | drop nil caps map guard |
 | `internal/newznab/client_test.go` | merge poster-attr tests |
+
+## 2026-10-21 — api tests: disable TMDB production rate limit
+
+**Problem:** `go test ./internal/api` hit a 60s timeout on `TestCalendarUpcomingMovies_TypedDateOutsideWindow` (0s elapsed — it was next in line).
+**Root cause:** (1) TMDB's process-wide 40 req / 10s limiter applies to httptest fakes — `internal/tmdb`'s TestMain already sets `rate.Inf`; `internal/api` did not. (2) Each `dbtest.New` ran `db.Open` (goose + 15×2s ping) and a fresh admin ping+DROP on the clone.
+**Fix:** api `TestMain` sets the shared limiter to Inf. Clones ping once without goose; admin connection is reused.
+**Outcome:** `go test ./internal/api` completes under a 90s timeout.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/testing_main_test.go` | TestMain lifts TMDB limiter |
+| `internal/dbtest/dbtest.go` | skip goose on clones; shared admin |

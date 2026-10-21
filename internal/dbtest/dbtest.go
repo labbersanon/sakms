@@ -23,6 +23,9 @@ var (
 	templateOnce sync.Once
 	templateErr  error
 	templateName = "sakms_goose_template"
+	adminOnce    sync.Once
+	adminDB      *sql.DB
+	adminErr     error
 )
 
 // New returns a migrated, isolated Postgres database for one test.
@@ -56,9 +59,23 @@ func OpenSchema(t *testing.T, name string) *sql.DB {
 func OpenNamed(t *testing.T, name string) *sql.DB {
 	t.Helper()
 	ensureClone(t, name)
-	sqlDB, err := db.Open(context.Background(), withDBName(testDSN(t), name), db.DefaultPoolOptions())
+	// Claude 2026-10-21: clones skip goose.Up and the 15×2s Open ping loop.
+	// Reason: TEMPLATE already migrated; api's 1679 tests each called db.Open
+	//   and a fresh admin ping+DROP. go test ./internal/api hit 60s/90s
+	//   timeouts on whichever test was next (TypedDateOutsideWindow).
+	// Troubleshooting: clone missing a new migration → remake sakms_goose_template
+	//   (ensureTemplate still db.Open's it). Review if: tests need goose on clones.
+	sqlDB, err := sql.Open("pgx-qmark", withDBName(testDSN(t), name))
 	if err != nil {
 		t.Fatalf("dbtest open %q: %v", name, err)
+	}
+	sqlDB.SetMaxOpenConns(4)
+	sqlDB.SetMaxIdleConns(1)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := sqlDB.PingContext(ctx); err != nil {
+		_ = sqlDB.Close()
+		t.Fatalf("dbtest ping %q: %v", name, err)
 	}
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	return sqlDB
@@ -82,6 +99,32 @@ func uniqueName(t *testing.T) string {
 		name = name[:40]
 	}
 	return fmt.Sprintf("t_%s_%d", strings.ToLower(name), time.Now().UnixNano())
+}
+
+func sharedAdmin(t *testing.T) *sql.DB {
+	t.Helper()
+	dsn := testDSN(t)
+	adminOnce.Do(func() {
+		d, err := sql.Open("pgx", withDBName(dsn, "postgres"))
+		if err != nil {
+			adminErr = err
+			return
+		}
+		d.SetMaxOpenConns(8)
+		d.SetMaxIdleConns(2)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := d.PingContext(ctx); err != nil {
+			_ = d.Close()
+			adminErr = err
+			return
+		}
+		adminDB = d
+	})
+	if adminErr != nil {
+		t.Fatalf("dbtest admin: %v", adminErr)
+	}
+	return adminDB
 }
 
 func adminOpen(t *testing.T, dsn string) *sql.DB {
@@ -153,32 +196,29 @@ func ensureClone(t *testing.T, name string) {
 	t.Helper()
 	dsn := testDSN(t)
 	ensureTemplate(t, dsn)
-	admin := adminOpen(t, dsn)
+	admin := sharedAdmin(t)
 	ctx := context.Background()
 
 	var exists bool
 	if err := admin.QueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)`, name,
 	).Scan(&exists); err != nil {
-		_ = admin.Close()
 		t.Fatalf("dbtest exists check: %v", err)
 	}
 	if !exists {
 		if _, err := admin.ExecContext(ctx,
 			"CREATE DATABASE "+quoteIdent(name)+" TEMPLATE "+quoteIdent(templateName),
 		); err != nil {
-			_ = admin.Close()
 			t.Fatalf("create clone %s: %v", name, err)
 		}
 	}
 	t.Cleanup(func() {
-		// Drop clone; terminate backends first.
+		// Drop clone; terminate backends first. Keep sharedAdmin open.
 		_, _ = admin.ExecContext(context.Background(),
 			`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`,
 			name,
 		)
 		_, _ = admin.ExecContext(context.Background(), "DROP DATABASE IF EXISTS "+quoteIdent(name))
-		_ = admin.Close()
 	})
 }
 

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -2526,4 +2527,95 @@ func makeNameFixSevenZSplit(t *testing.T, member string) (start, tail []byte, cr
 		head = head[:256]
 	}
 	return head, last[uint64(len(last))-st.Size:], listed[0].CRC
+}
+
+type fakeNZBPW struct {
+	hit   NZBPasswordHit
+	ok    bool
+	calls []string
+}
+
+func (f *fakeNZBPW) Lookup(_ context.Context, filename string) (NZBPasswordHit, bool) {
+	f.calls = append(f.calls, filename)
+	return f.hit, f.ok
+}
+
+func makeNameFixSevenZAES(t *testing.T, member, password string) (start, blob []byte, crc string) {
+	t.Helper()
+	if _, err := exec.LookPath("7z"); err != nil {
+		t.Skip("7z not on PATH")
+	}
+	dir := t.TempDir()
+	payload := make([]byte, 80_000)
+	if _, err := rand.Read(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, member), payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "enc.7z")
+	cmd := exec.Command("7z", "a", "-bd", "-mhe=on", "-p"+password, path, filepath.Join(dir, member))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("7z a: %v (%s)", err, out)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crc = fmt.Sprintf("%08X", crc32.ChecksumIEEE(payload))
+	head := data
+	if len(head) > 256 {
+		head = head[:256]
+	}
+	return head, data, crc
+}
+
+func TestNameFix_NZBPasswordDecrypts7zAES(t *testing.T) {
+	const title = "Nzb.Pass.Show.S01E01.1080p.WEB-DL.x264-GRP"
+	const pw = "hunter2"
+	start, blob, crc := makeNameFixSevenZAES(t, nfHash+".mkv", pw)
+	f := newNFFixture(t, obfuscated7zSet("pw", nfHash, 1, 1), nil)
+	f.src.bodies["pwpar2"] = par2Body(nfHash + ".7z.001")
+	f.src.bodies["pw1_1@t"] = usenet.BodySample{Data: start, YencName: nfHash + ".7z.001", WireBytes: int64(len(start))}
+	f.src.bodies["pw1_2@t"] = usenet.BodySample{Data: blob, YencName: nfHash + ".7z.001", WireBytes: int64(len(blob))}
+	f.nf.SRRDB = &fakeSRRDB{crcs: map[string]PreDBHit{crc: {Title: title}}}
+	lookup := &fakeNZBPW{ok: true, hit: NZBPasswordHit{Title: title, Passwords: []string{pw}, Indexer: "NZBGeek"}}
+	f.nf.NZBPassword = lookup
+	f.crawlAndRecompute(t)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var named int
+	var src string
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*), COALESCE(MAX(name_source),'') FROM usenet_nntp_releases WHERE display_name=?`, title).Scan(&named, &src); err != nil {
+		t.Fatal(err)
+	}
+	if named != 1 || src != sourceSRRDB || res.BySource[sourceSRRDB] != 1 || len(lookup.calls) == 0 {
+		t.Fatalf("named=%d src=%q res=%+v calls=%v", named, src, res, lookup.calls)
+	}
+}
+
+func TestNameFix_NZBPasswordTitleRenamesWithoutCRC(t *testing.T) {
+	const title = "Nzb.Title.Show.S01E02.1080p.WEB-DL.x264-GRP"
+	start, blob, _ := makeNameFixSevenZAES(t, nfHash+".mkv", "secret")
+	f := newNFFixture(t, obfuscated7zSet("pt", nfHash, 1, 1), nil)
+	f.src.bodies["ptpar2"] = par2Body(nfHash + ".7z.001")
+	f.src.bodies["pt1_1@t"] = usenet.BodySample{Data: start, YencName: nfHash + ".7z.001", WireBytes: int64(len(start))}
+	f.src.bodies["pt1_2@t"] = usenet.BodySample{Data: blob, YencName: nfHash + ".7z.001", WireBytes: int64(len(blob))}
+	lookup := &fakeNZBPW{ok: true, hit: NZBPasswordHit{Title: title, Indexer: "NZBGeek"}}
+	f.nf.NZBPassword = lookup
+	f.crawlAndRecompute(t)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var named int
+	var src string
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*), COALESCE(MAX(name_source),'') FROM usenet_nntp_releases WHERE display_name=?`, title).Scan(&named, &src); err != nil {
+		t.Fatal(err)
+	}
+	if named != 1 || src != sourceNZB || res.BySource[sourceNZB] != 1 {
+		t.Fatalf("named=%d src=%q res=%+v calls=%v", named, src, res, lookup.calls)
+	}
 }

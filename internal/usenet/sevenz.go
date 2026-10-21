@@ -86,30 +86,36 @@ func Parse7zStart(data []byte) (SevenZStart, bool) {
 }
 
 func sevenZFiles(data []byte) []ArchiveFileCRC {
-	st, ok := Parse7zStart(data)
-	if !ok {
-		return nil
-	}
-	end := 32 + st.Offset + st.Size
-	if st.Offset+st.Size < st.Offset || end > uint64(len(data)) {
-		return nil
-	}
-	hdr := data[32+st.Offset : end]
-	if st.CRC != 0 && crc32.ChecksumIEEE(hdr) != st.CRC {
-		return nil
-	}
-	return sevenZFilesFromHeader(hdr, data[32:32+st.Offset])
+	return sevenZFilesWith(data, nil)
 }
 
 // ArchiveFileCRCsFrom7zParts lists inner-file CRC32 values from a 7z start
 // header plus either a complete archive blob or a last-volume tail.
 func ArchiveFileCRCsFrom7zParts(start, tail []byte) []ArchiveFileCRC {
+	return archiveFileCRCsFrom7zParts(start, tail, nil)
+}
+
+// Claude 2026-10-21: 7zAES decrypt with indexer passwords (no brute force).
+// Reason: ngPost -mhe=on -p puts the password in NZB meta, not on NNTP.
+//   Empty decrypt stays the first try; this path is opt-in after a 7z-aes miss.
+// Troubleshooting: crcs=0 with payload=7z-aes after nzb-password pw=true →
+//   wrong password or NumCyclesPower > 20. Never log the password values.
+// Review if: ngPost stops using header encryption.
+// Related files: sevenz_aes.go, newznab/client.go, namefix.go
+
+// ArchiveFileCRCsFrom7zPartsWithPasswords retries AES header decrypt with
+// the given passwords after an empty-password miss. Values are never logged.
+func ArchiveFileCRCsFrom7zPartsWithPasswords(start, tail []byte, passwords []string) []ArchiveFileCRC {
+	return archiveFileCRCsFrom7zParts(start, tail, sevenZAESKeysFromStrings(passwords))
+}
+
+func archiveFileCRCsFrom7zParts(start, tail []byte, passwords [][]byte) []ArchiveFileCRC {
 	st, ok := Parse7zStart(start)
 	if !ok {
 		return nil
 	}
 	if _, complete := Parse7zStart(tail); complete {
-		return sevenZFiles(tail)
+		return sevenZFilesWith(tail, passwords)
 	}
 	if uint64(len(tail)) < st.Size {
 		return nil
@@ -118,7 +124,7 @@ func ArchiveFileCRCsFrom7zParts(start, tail []byte) []ArchiveFileCRC {
 	if st.CRC != 0 && crc32.ChecksumIEEE(hdr) != st.CRC {
 		return nil
 	}
-	files := sevenZFilesFromHeader(hdr, tail[:uint64(len(tail))-st.Size])
+	files := sevenZFilesFromHeader(hdr, tail[:uint64(len(tail))-st.Size], passwords)
 	if len(files) == 0 {
 		sevenZMiss(st, tail, hdr)
 	}
@@ -138,7 +144,23 @@ func sevenZMiss(st SevenZStart, tail, hdr []byte) {
 		st.Offset, st.Size, len(tail), nid, hdr[:n])
 }
 
-func sevenZFilesFromHeader(hdr, packedBefore []byte) []ArchiveFileCRC {
+func sevenZFilesWith(data []byte, passwords [][]byte) []ArchiveFileCRC {
+	st, ok := Parse7zStart(data)
+	if !ok {
+		return nil
+	}
+	end := 32 + st.Offset + st.Size
+	if st.Offset+st.Size < st.Offset || end > uint64(len(data)) {
+		return nil
+	}
+	hdr := data[32+st.Offset : end]
+	if st.CRC != 0 && crc32.ChecksumIEEE(hdr) != st.CRC {
+		return nil
+	}
+	return sevenZFilesFromHeader(hdr, data[32:32+st.Offset], passwords)
+}
+
+func sevenZFilesFromHeader(hdr, packedBefore []byte, passwords [][]byte) []ArchiveFileCRC {
 	if len(hdr) == 0 {
 		return nil
 	}
@@ -146,7 +168,7 @@ func sevenZFilesFromHeader(hdr, packedBefore []byte) []ArchiveFileCRC {
 	case 0x01:
 		return parse7zPlainHeader(hdr)
 	case 0x17:
-		decoded := decode7zEncodedHeader(hdr, packedBefore)
+		decoded := decode7zEncodedHeader(hdr, packedBefore, passwords)
 		if len(decoded) == 0 {
 			return nil
 		}
@@ -156,7 +178,7 @@ func sevenZFilesFromHeader(hdr, packedBefore []byte) []ArchiveFileCRC {
 	}
 }
 
-func decode7zEncodedHeader(hdr, packedBefore []byte) []byte {
+func decode7zEncodedHeader(hdr, packedBefore []byte, passwords [][]byte) []byte {
 	si, _, ok := parse7zStreams(hdr, 1)
 	if !ok || len(si.folders) != 1 {
 		return nil
@@ -170,18 +192,31 @@ func decode7zEncodedHeader(hdr, packedBefore []byte) []byte {
 		return nil
 	}
 	packed := packedBefore[uint64(len(packedBefore))-packLen:]
-	out, err := unpack7zFolder(si.folders[0], packed)
-	if err != nil {
-		log.Printf("usenet: 7z encoded lzma pack=%d unpack=%d method=%x err=%v",
-			len(packed), si.folders[0].unpackSize, si.folders[0].method, err)
-		return nil
+	f := si.folders[0]
+	if len(passwords) == 0 {
+		passwords = [][]byte{nil}
 	}
-	return out
+	var lastErr error
+	for _, pw := range passwords {
+		out, err := unpack7zFolder(f, packed, pw)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if len(out) > 0 && out[0] == 0x01 {
+			return out
+		}
+	}
+	if lastErr != nil {
+		log.Printf("usenet: 7z encoded lzma pack=%d unpack=%d method=%x err=%v",
+			len(packed), f.unpackSize, f.method, lastErr)
+	}
+	return nil
 }
 
-func unpack7zFolder(f sevenZFolder, packed []byte) ([]byte, error) {
+func unpack7zFolder(f sevenZFolder, packed, password []byte) ([]byte, error) {
 	if f.encrypted {
-		plain, err := decrypt7zAESEmpty(f.aesProps, packed)
+		plain, err := decrypt7zAES(f.aesProps, packed, password)
 		if err != nil {
 			return nil, err
 		}

@@ -4,26 +4,35 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
+	"strings"
+	"unicode/utf16"
 )
-
-// Claude 2026-10-20: empty-password 7zAES on encoded headers.
-// Reason: live ngPost nid=0x17 sz=58 is AES+LZMA (`06f10701`), not plain
-//   LZMA. Indexers that rename hash.7z still see CRC after header decrypt
-//   when the poster used -mhe with an empty password. A non-empty password
-//   stays a miss (no brute force).
-// Troubleshooting: 7z encoded lzma err=aes after this → real password or
-//   NumCyclesPower > 20. Review if: ngPost starts using a non-empty -p.
-// Related files: sevenz.go unpack7zFolder
 
 const max7zAESCycles = 20
 
-// sevenZAESPassword is UTF-16LE of the 7z header password. Production
-// leaves it nil (empty). Tests set it for -mhe=on -p archives.
-var sevenZAESPassword []byte
+// sevenZAESKeysFromStrings is UTF-16LE of each non-empty password. Never log
+// the input; callers pass these into header decrypt only.
+func sevenZAESKeysFromStrings(passwords []string) [][]byte {
+	var keys [][]byte
+	for _, pw := range passwords {
+		pw = strings.TrimSpace(pw)
+		if pw == "" {
+			continue
+		}
+		keys = append(keys, utf16LEPassword(pw))
+	}
+	return keys
+}
 
-func decrypt7zAESEmpty(props, packed []byte) ([]byte, error) {
-	return decrypt7zAES(props, packed, sevenZAESPassword)
+func utf16LEPassword(s string) []byte {
+	u := utf16.Encode([]rune(s))
+	out := make([]byte, 2*len(u))
+	for i, w := range u {
+		binary.LittleEndian.PutUint16(out[i*2:], w)
+	}
+	return out
 }
 
 func decrypt7zAES(props, packed, password []byte) ([]byte, error) {

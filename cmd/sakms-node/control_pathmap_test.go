@@ -130,7 +130,13 @@ func TestPathMap_DebounceCoalescesRapidEdits(t *testing.T) {
 	mediaRoot := t.TempDir()
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	cfg := &NodeConfig{ServerURL: srv.URL, APIKey: "k", NodeName: "n", MediaRoots: []string{mediaRoot}}
-	pusher := newPathmapPusher(cfg, &nodeSession{}, http.DefaultClient, 80*time.Millisecond)
+	// Claude 2026-10-21: 500ms quiet window, not 80ms.
+	// Reason: three HTTP set+mkdir+save round trips exceeded 80ms on CI, so
+	//   the first timer fired before set #2 and the test saw a second push.
+	// Troubleshooting: "second push fired" with gen debounce still in place →
+	//   bump this window. Review if: tests use a fake clock.
+	const quiet = 500 * time.Millisecond
+	pusher := newPathmapPusher(cfg, &nodeSession{}, http.DefaultClient, quiet)
 	pushed := make(chan string, 8)
 	pusher.pushHook = func(key string, _ pathmapOp, _ error) { pushed <- key }
 	client, _, _ := startTestSocketWith(t, cfg, configPath, pusher, &nodeSession{})
@@ -154,11 +160,11 @@ func TestPathMap_DebounceCoalescesRapidEdits(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("expected a debounced push to fire")
 	}
-	// ...and no second one (coalesced).
+	// ...and no second one (coalesced). Wait past one full quiet window.
 	select {
 	case <-pushed:
 		t.Fatal("a second push fired — rapid edits were NOT coalesced")
-	case <-time.After(300 * time.Millisecond):
+	case <-time.After(quiet + 250*time.Millisecond):
 	}
 
 	if n := rec.count(); n != 1 {
@@ -176,6 +182,39 @@ func TestPathMap_DebounceCoalescesRapidEdits(t *testing.T) {
 	// D9: the push self-reports mediaRoots.
 	if len(body.MediaRoots) != 1 || body.MediaRoots[0] != mediaRoot {
 		t.Fatalf("push must self-report mediaRoots, got %v", body.MediaRoots)
+	}
+}
+
+func TestPathmapPusher_ScheduleCoalescesWithoutHTTPGap(t *testing.T) {
+	rec := &pushRecorder{}
+	srv := rec.server(t)
+	root, sub := mediaRootWithSubdir(t, "movies")
+	cfg := &NodeConfig{
+		ServerURL:     srv.URL,
+		APIKey:        "k",
+		NodeName:      "n",
+		MediaRoots:    []string{root},
+		AuthoredPaths: []AuthoredPathMapping{{Key: moviesKey, NodePath: sub}},
+	}
+	const quiet = 50 * time.Millisecond
+	pusher := newPathmapPusher(cfg, &nodeSession{}, http.DefaultClient, quiet)
+	pushed := make(chan struct{}, 8)
+	pusher.pushHook = func(string, pathmapOp, error) { pushed <- struct{}{} }
+	for i := 0; i < 20; i++ {
+		pusher.schedule(moviesKey, opSet)
+	}
+	select {
+	case <-pushed:
+	case <-time.After(time.Second):
+		t.Fatal("expected a coalesced push")
+	}
+	select {
+	case <-pushed:
+		t.Fatal("a second push fired — schedule burst was not coalesced")
+	case <-time.After(quiet + 100*time.Millisecond):
+	}
+	if n := rec.count(); n != 1 {
+		t.Fatalf("expected exactly 1 push recorded, got %d", n)
 	}
 }
 

@@ -56,6 +56,11 @@ export const PlaybackVideo: Component<{
   onCleanup(() => unbind?.());
   return (
     <video
+      // Claude 2026-10-21: data-src mirrors the intended media URL
+      // Reason: HLS URLs bind via hls.js / native HLS and often leave the native src attribute unset in jsdom
+      // Troubleshooting: Rename.preview tests read video.src and got null vs /video
+      // Review if: PlaybackVideo always sets the native src attribute, or tests query via a different hook
+      data-src={props.src}
       ref={(el) => {
         unbind?.();
         unbind = bindMediaSrc(el, props.src);

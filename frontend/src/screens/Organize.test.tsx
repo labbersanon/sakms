@@ -124,7 +124,11 @@ describe("Organize — query tab", () => {
     stubFetch();
     renderOrganize("/organize?tab=discs");
     expect(await screen.findByText("Discs")).toBeInTheDocument();
-    expect(screen.getByText(/Pick one DVD ISO/)).toBeInTheDocument();
+    // Claude 2026-10-21: discs tab empty-state copy
+    // Reason: current UI asks for library first, not "Pick one DVD ISO"
+    // Troubleshooting: Organize discs test failed against live copy
+    // Review if: discs empty-state copy changes again
+    expect(screen.getByText(/Pick the library first/)).toBeInTheDocument();
     expect(screen.queryByText("No proposals yet — click Scan.")).toBeNull();
   });
 

@@ -335,7 +335,11 @@ describe("Discover — custom slider rows", () => {
     fireEvent.click(within(movieCard).getByText("Mixed Movie Item"));
     // Movies are ungated: the popup's resolution selector renders immediately
     // and no season grid is offered.
-    expect(await screen.findByText("480p")).toBeInTheDocument();
+    // Claude 2026-10-21: assert the availability PillSelector button, not the DualRangeSlider tick
+    // Reason: TitleQualityPrefs ticks also render "480p" as spans, so findByText("480p") is ambiguous
+    // Troubleshooting: 12 frontend tests failed after quality-prefs landed; product was correct
+    // Review if: DualRangeSlider ticks no longer include 480p, or the popup no longer shows both
+    expect(await screen.findByRole("button", { name: "480p" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Season 1.*eps/ })).toBeNull();
     fireEvent.click(screen.getByText("Close"));
 
@@ -361,7 +365,7 @@ describe("Discover — custom slider rows", () => {
     // "480p" is async-vacuous on its own (null on this tick whether gated or
     // not) — the real proof is the backstop below: no NEW availability request
     // fired while the popup sat on the season grid.
-    expect(screen.queryByText("480p")).toBeNull();
+    expect(screen.queryByRole("button", { name: "480p" })).toBeNull();
     expect(
       fetchMock.mock.calls.filter(([u]) => String(u).includes("/discover/availability"))
         .length,
@@ -401,7 +405,7 @@ describe("Discover — custom slider rows", () => {
     // The popup opens on the season grid, not the availability grid — the
     // gating step must come first for Series.
     await screen.findByRole("button", { name: /Season 2.*eps/ });
-    expect(screen.queryByText("480p")).toBeNull();
+    expect(screen.queryByRole("button", { name: "480p" })).toBeNull();
     // The season data came from the popup's own detail bundle, NOT the picker's
     // card-path self-fetch: passing `seasons` at all switches self-fetching off
     // (SeasonEpisodePicker's own prop doc), so no ?sections=seasons request
@@ -418,7 +422,7 @@ describe("Discover — custom slider rows", () => {
 
     // The gate clears and the availability grid renders, scoped to exactly the
     // picked (season, episode) — the proof the drill's pick was threaded.
-    expect(await screen.findByText("480p")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "480p" })).toBeInTheDocument();
     expect(
       calls.some(
         (u) =>
@@ -1293,7 +1297,7 @@ describe("Discover — Adult admin newest rows", () => {
     // Review if: EntityCard is ever resized to match AdultCard.
     const sceneCard = screen.getByText("Fresh Scene").closest(".w-\\[160px\\]") as HTMLElement;
     fireEvent.click(within(sceneCard).getByText("Fresh Scene"));
-    expect(await screen.findByText("480p")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "480p" })).toBeInTheDocument();
     fireEvent.click(screen.getByText("Close"));
 
     const perfCard = screen.getByText("Fresh Performer").closest(".w-\\[140px\\]") as HTMLElement;
@@ -1928,10 +1932,10 @@ describe("Discover — DetailPopup wiring (hover overlay + click-to-open, Poster
 
     // DetailPopup opened — its resolution selector (popup-only markup, never
     // rendered by the card itself) appears.
-    expect(await screen.findByText("480p")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "480p" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByText("Close"));
-    expect(screen.queryByText("480p")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "480p" })).not.toBeInTheDocument();
   });
 
   it("AdultCard shows a hover overlay (studio/date summary — scenes carry no overview field) and no longer carries the title= tooltip", async () => {
@@ -1999,7 +2003,7 @@ describe("Discover — DetailPopup wiring (hover overlay + click-to-open, Poster
     expect(within(card).queryByText("Grab")).not.toBeInTheDocument();
 
     fireEvent.click(within(card).getByText("Click Scene"));
-    expect(await screen.findByText("480p")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "480p" })).toBeInTheDocument();
 
     // Opened in ADULT mode, not misrouted through a TMDB path: the availability
     // search is the adult one and carries the scene's studio, and no TMDB-only
@@ -2014,7 +2018,7 @@ describe("Discover — DetailPopup wiring (hover overlay + click-to-open, Poster
     ).toBe(false);
 
     fireEvent.click(screen.getByText("Close"));
-    expect(screen.queryByText("480p")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "480p" })).not.toBeInTheDocument();
   });
 });
 

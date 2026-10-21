@@ -129,7 +129,11 @@ describe("Discover search — Mainstream catalog-first (two-step)", () => {
     expect(within(card).queryByText("Grab")).not.toBeInTheDocument();
 
     fireEvent.click(card);
-    expect(await screen.findByText("480p")).toBeInTheDocument();
+    // Claude 2026-10-21: assert the availability PillSelector button, not the DualRangeSlider tick
+    // Reason: TitleQualityPrefs ticks also render "480p" as spans, so findByText("480p") is ambiguous
+    // Troubleshooting: Discover search tests failed after quality-prefs landed; product was correct
+    // Review if: DualRangeSlider ticks no longer include 480p, or the popup no longer shows both
+    expect(await screen.findByRole("button", { name: "480p" })).toBeInTheDocument();
     expect(calls.filter((c) => isReleasePickerCall(c.url))).toHaveLength(0);
   });
 
@@ -158,7 +162,7 @@ describe("Discover search — Mainstream catalog-first (two-step)", () => {
 
     const card = await screen.findByRole("button", { name: "Pick Movie" });
     fireEvent.click(card);
-    expect(await screen.findByText("480p")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "480p" })).toBeInTheDocument();
     expect(calls.some((c) => /\/search\/grab/.test(c.url))).toBe(false);
     expect(calls.filter((c) => isReleasePickerCall(c.url))).toHaveLength(0);
   });
@@ -252,7 +256,7 @@ describe("Discover search — Adult one-shot", () => {
     expect(within(card).queryByText("Grab")).not.toBeInTheDocument();
 
     fireEvent.click(card);
-    expect(await screen.findByText("480p")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "480p" })).toBeInTheDocument();
     expect(screen.queryByText("Adult.Scene.XXX.2160p-GRP")).not.toBeInTheDocument();
     expect(screen.queryByText("Adult.Scene.XXX.1080p-GRP")).not.toBeInTheDocument();
     expect(calls.some((c) => c.url.includes("/discover/availability"))).toBe(true);
@@ -290,7 +294,7 @@ describe("Discover search — Adult one-shot", () => {
 
     const card = await screen.findByRole("button", { name: "Grab Scene" });
     fireEvent.click(card);
-    expect(await screen.findByText("480p")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "480p" })).toBeInTheDocument();
     expect(screen.queryByText("Grab.Scene.1080p")).not.toBeInTheDocument();
     expect(calls.some((c) => /\/search\/grab/.test(c.url))).toBe(false);
   });
@@ -342,7 +346,7 @@ describe("Discover browse-row regression guard (unchanged by the search redesign
     const card = await screen.findByRole("button", { name: "Browse Movie" });
     // Clicking the body opens DetailPopup (popup-only "480p" markup), not the picker.
     fireEvent.click(card);
-    expect(await screen.findByText("480p")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "480p" })).toBeInTheDocument();
     // Zero release-picker /search calls ever fired.
     expect(calls.filter((c) => isReleasePickerCall(c.url))).toHaveLength(0);
   });
@@ -368,7 +372,7 @@ describe("Discover browse-row regression guard (unchanged by the search redesign
     const card = await screen.findByRole("button", { name: "Browse Scene" });
     // Clicking the body opens DetailPopup, not the picker.
     fireEvent.click(card);
-    expect(await screen.findByText("480p")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "480p" })).toBeInTheDocument();
     expect(calls.filter((c) => isAdultSearchCall(c.url))).toHaveLength(0);
   });
 });

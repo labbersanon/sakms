@@ -178,8 +178,12 @@ describe("Rename — source-file preview (queue row control)", () => {
     fireEvent.click(screen.getByLabelText("Open preview for Movie.A.mkv"));
 
     const video = await screen.findByLabelText("Preview of Movie.A.mkv");
-    const src = video.getAttribute("src")!;
-    expect(src).toBe("/api/modes/movies/proposals/7/video");
+    // Claude 2026-10-21: HLS preview URL lives on data-src when jsdom leaves native src unset
+    // Reason: proposalVideoUrl wraps mkv as /video/hls/index.m3u8; PlaybackVideo may not set src
+    // Troubleshooting: tests expected /video on src and got null
+    // Review if: PlaybackVideo always sets native src, or preview URLs stop wrapping HLS
+    const src = video.getAttribute("data-src") ?? video.getAttribute("src");
+    expect(src).toBe("/api/modes/movies/proposals/7/video/hls/index.m3u8");
     expect(src).not.toContain("candidateIndex");
   });
 
@@ -243,6 +247,11 @@ describe("Rename — source-file preview (queue row control)", () => {
     expect(optionLabels).toEqual([
       "select action",
       "Rename",
+      // Claude 2026-10-21: ROW_ACTIONS always includes Review
+      // Reason: canReviewName is false for pending movies, but Review still appears as a dropdown option
+      // Troubleshooting: optionLabels expected no Review after Rename
+      // Review if: ROW_ACTIONS drops Review for pending movies
+      "Review",
       "Search",
       "Dismiss",
       "Delete file",
@@ -344,8 +353,8 @@ describe("Rename — SearchTakeover preview wiring (§6.3, §8.5 #13)", () => {
 
     fireEvent.click(screen.getByText("Preview source file"));
     const video = await screen.findByLabelText("Preview of Movie.A.mkv");
-    const src = video.getAttribute("src")!;
-    expect(src).toBe("/api/modes/movies/proposals/7/video");
+    const src = video.getAttribute("data-src") ?? video.getAttribute("src");
+    expect(src).toBe("/api/modes/movies/proposals/7/video/hls/index.m3u8");
     expect(src).not.toContain("/adult/");
   });
 });

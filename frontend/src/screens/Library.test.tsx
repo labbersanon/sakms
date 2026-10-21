@@ -1707,7 +1707,13 @@ describe("Library — detail section order", () => {
     const rating = await within(dialog).findByText("Rating");
     const cast = await within(dialog).findByText("Cast");
     const streaming = await within(dialog).findByText("Currently Streaming On");
-    const quality = within(dialog).getByText("Quality");
+    // Claude 2026-10-21: Quality heading is the <p> label, not DualRangeSlider's "Quality"
+    // Reason: TitleQualityPrefs also renders "Quality" so getByText("Quality") is ambiguous
+    // Troubleshooting: Library detail section-order test found two Quality nodes
+    // Review if: DualRangeSlider no longer labels itself Quality, or the heading tag changes
+    const quality = within(dialog).getByText((_, el) =>
+      el?.tagName === "P" && el.textContent === "Quality",
+    );
     const files = within(dialog).getByText("Files");
     const tags = within(dialog).getByText("Tags");
     const more = await within(dialog).findByText("More like this");

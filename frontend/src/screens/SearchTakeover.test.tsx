@@ -190,7 +190,11 @@ describe("SearchTakeover — search 403 is section-agnostic", () => {
     fireEvent.click(screen.getByText("Search"));
 
     expect(
-      await screen.findByText("Discover is PIN-locked — unlock it to search"),
+      // Claude 2026-10-21: sectionLabel("discover") is Lighthouse
+      // Reason: Discover was renamed in the product; PIN-lock copy follows sectionLabel
+      // Troubleshooting: SearchTakeover 403 test still expected "Discover is PIN-locked"
+      // Review if: sectionLabel("discover") changes again
+      await screen.findByText("Lighthouse is PIN-locked — unlock it to search"),
     ).toBeInTheDocument();
     // Never the fixed Adult-only commit copy on a search failure.
     expect(

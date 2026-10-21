@@ -250,14 +250,10 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 	//   add(sets) ran before preOnly. Review if: 20s is raised, not removed.
 	skipPre := map[string]bool{}
 	keyOf := func(set PendingSet) string { return set.Group + "\x00" + set.Key }
-	for _, set := range sets {
-		skipPre[keyOf(set)] = true
-	}
-	for _, set := range ident {
-		skipPre[keyOf(set)] = true
-	}
-	for _, set := range headerSets {
-		skipPre[keyOf(set)] = true
+	for _, list := range [][]PendingSet{sets, ident, headerSets} {
+		for _, set := range list {
+			skipPre[keyOf(set)] = true
+		}
 	}
 	var preOnly []PendingSet
 	for _, set := range predbSets {
@@ -283,10 +279,13 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 	run := func(in []PendingSet, phase string) error {
 		phaseCtx, cancel := context.WithTimeout(ctx, budget)
 		defer cancel()
+		deadline := func(i int) error {
+			log.Printf("usenetsearch: namefix deadline phase=%s leftover=%d", phase, len(in)-i)
+			return nil
+		}
 		for i, set := range in {
-			if err := phaseCtx.Err(); err != nil {
-				log.Printf("usenetsearch: namefix deadline phase=%s leftover=%d", phase, len(in)-i)
-				return nil
+			if phaseCtx.Err() != nil {
+				return deadline(i)
 			}
 			if done[keyOf(set)] {
 				continue
@@ -294,8 +293,7 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 			renamed := res.Renamed
 			stop, err := n.fixSet(phaseCtx, set, &res, &statBudget)
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-				log.Printf("usenetsearch: namefix deadline phase=%s leftover=%d", phase, len(in)-i)
-				return nil
+				return deadline(i)
 			}
 			if err != nil {
 				return err
@@ -417,6 +415,28 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 	pat := detectNamePattern(rows)
 	ngPost := looksLikeNgPost(rows)
 	skip7z := ngPost && pat.Pack == "7z-split" && set.Attempts > 0
+	work := context.WithoutCancel(ctx)
+	var nzbHit NZBPasswordHit
+	var nzbGot bool
+	// Claude 2026-10-21: Newznab lookup uses the header filename, not BODY.
+	// Reason: ngPost skip_7z after Attempts>0 skipped the 7z-aes miss path,
+	//   so live hash.7z never queried indexers. Title can promote without
+	//   a footer; a password clears skip_7z so Tail can decrypt CRC.
+	// Troubleshooting: skip_7z=true and no nzb-password log → this header
+	//   lookup missing. Review if: password-only hits should persist.
+	if n.NZBPassword != nil && (pat.Pack == "7z-split" || pat.Obf == "hash-7z") {
+		if n.nzbPWUsed >= namefixNZBPasswordPerPass {
+			heldPW = true
+		} else if hit, ok := n.fetchNZBPassword(work, rows); ok {
+			nzbHit, nzbGot = hit, true
+			if name, source, conf, predb, ok := n.accept(work, hit.Title, sourceNZB, set.PayloadBytes); ok {
+				return n.promote(work, set, rows, name, source, conf, predb, res, statBudget)
+			}
+			if len(hit.Passwords) > 0 {
+				skip7z = false
+			}
+		}
+	}
 	log.Printf("usenetsearch: namefix pattern obf=%s pack=%s files=%s ngpost=%t skip_7z=%t",
 		pat.Obf, pat.Pack, pat.Ext, ngPost, skip7z)
 	for _, pick := range pickBodyTargets(rows) {
@@ -452,7 +472,7 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		//   with body_fetches=0. Hash.par2 never moved.
 		// Troubleshooting: o2cli grep "namefix body skip" → this WithoutCancel
 		//   missing. Review if: one overtime BODY delays crawl (>30s/pass).
-		bodyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), namefixBodyArticleTimeout)
+		bodyCtx, cancel := context.WithTimeout(work, namefixBodyArticleTimeout)
 		sample, berr := n.Src.BodyHead(bodyCtx, pick.MsgID, headCap)
 		cancel()
 		if errors.Is(berr, usenet.ErrBusy) {
@@ -519,7 +539,6 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 			log.Printf("usenetsearch: namefix crc msgid=%s crcs=%d magic=%x payload=%s name=%q",
 				pick.MsgID, len(crcs), magic, kind, inner)
 		}
-		work := context.WithoutCancel(ctx)
 		if isPar2 {
 			n.rememberParHashes(work, set, sample.Data)
 			name, ok, err := n.Index.LookupParHashDonor(work, set.Group, set.Key, set.PayloadBytes)
@@ -570,13 +589,18 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		//   hits, do not bump attempts so the set stays due.
 		// Troubleshooting: nzb-password miss with skip_7z=true → lookup
 		//   already ran. Review if: RAR passwords should use this too.
-		if n.NZBPassword != nil && kind == "7z-aes" && len(crcs) == 0 {
-			if n.nzbPWUsed >= namefixNZBPasswordPerPass {
+		if kind == "7z-aes" && len(crcs) == 0 {
+			if !nzbGot && n.NZBPassword != nil && n.nzbPWUsed >= namefixNZBPasswordPerPass {
 				heldPW = true
 			} else {
-				stop, done, err := n.applyNZBPassword(work, set, rows, sample, zstart, res, statBudget)
-				if done || err != nil {
-					return stop, err
+				if !nzbGot {
+					nzbHit, nzbGot = n.fetchNZBPassword(work, rows)
+				}
+				if nzbGot {
+					stop, done, err := n.applyNZBHit(work, set, rows, sample, zstart, nzbHit, res, statBudget)
+					if done || err != nil {
+						return stop, err
+					}
 				}
 			}
 		}
@@ -588,7 +612,6 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 	}
 
 	res.Unresolved++
-	dbCtx := context.WithoutCancel(ctx)
 	// Claude 2026-10-20: one hash_16K BODY, even when the article is not PAR2.
 	// Reason: DueParHashSeed would re-fetch shelved sets every pass (backoff
 	//   tests and PreDB-only retries). Live 225 still seed because the
@@ -596,7 +619,7 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 	// Troubleshooting: parhash=N on every pass for the same keys → sampled
 	//   not set after BodyHead. Review if: 430 should retry after dump import.
 	if triedBody {
-		_ = n.Index.MarkParHashSampled(dbCtx, set.Group, set.Key)
+		_ = n.Index.MarkParHashSampled(work, set.Group, set.Key)
 	}
 	if sampled && hashOnly && keepCompleteYield(set.Group, set.CompletenessBP, set.PayloadBytes) {
 		// Claude 2026-10-20: do not shelf until a first-volume RAR/SFV ran.
@@ -606,13 +629,13 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		//   namefix crc log → this crcTried gate missing. Review if:
 		//   crc_sampled column replaces the gate.
 		if crcTried || !hasCRCCapableTarget(rows) {
-			return false, n.Index.ShelveBodyAttempts(dbCtx, set.Group, set.Key)
+			return false, n.Index.ShelveBodyAttempts(work, set.Group, set.Key)
 		}
 	}
 	if heldPW {
 		return false, nil
 	}
-	return false, n.Index.BumpNameAttempt(dbCtx, set.Group, set.Key, set.Attempts)
+	return false, n.Index.BumpNameAttempt(work, set.Group, set.Key, set.Attempts)
 }
 
 // seedParHashes BODY-reads a named PAR2 set once to index hash_16K donors.
@@ -857,14 +880,18 @@ func letterCount(s string) int {
 // admission is on), then renames the set. A gate reject or confirmed-missing
 // STAT deletes the set (same irreversibility as crawl admission).
 func (n *NameFixer) promote(ctx context.Context, set PendingSet, rows []HeaderRow, name, source, conf, predb string, res *NameFixResult, statBudget *int) (bool, error) {
-	busy := false
-	if c := n.Crawler; c != nil && !c.languageOK(name) {
-		res.RejectGate++
+	reject := func(counter *int) (bool, error) {
+		*counter++
 		n.markRejected(set)
 		_, err := n.Index.skipAndDelete(ctx, []releaseKey{{set.Group, set.Key}}, skipReasonRejected)
 		return false, err
 	}
-	if c := n.Crawler; c != nil && c.AdmissionEnabled && c.Admitter != nil {
+	busy := false
+	c := n.Crawler
+	if c != nil && !c.languageOK(name) {
+		return reject(&res.RejectGate)
+	}
+	if c != nil && c.AdmissionEnabled && c.Admitter != nil {
 		snap, err := c.Admitter.Snapshot(ctx)
 		if err != nil {
 			return false, err
@@ -891,19 +918,13 @@ func (n *NameFixer) promote(ctx context.Context, set PendingSet, rows []HeaderRo
 					}
 				}
 				if !passed {
-					res.RejectGate++
-					n.markRejected(set)
-					_, err := n.Index.skipAndDelete(ctx, []releaseKey{{set.Group, set.Key}}, skipReasonRejected)
-					return false, err
+					return reject(&res.RejectGate)
 				}
 			}
 			var st chunkStats
 			keep, _, _ := c.statVerdict(ctx, set.Group, name, rows, false, statBudget, &busy, &st)
 			if !keep {
-				res.RejectStat++
-				n.markRejected(set)
-				_, err := n.Index.skipAndDelete(ctx, []releaseKey{{set.Group, set.Key}}, skipReasonRejected)
-				return false, err
+				return reject(&res.RejectStat)
 			}
 		}
 	}
@@ -950,19 +971,19 @@ func (n *NameFixer) lookupPreDB(ctx context.Context, set PendingSet, rows []Head
 	return PreDBHit{}, false
 }
 
-func (n *NameFixer) applyNZBPassword(ctx context.Context, set PendingSet, rows []HeaderRow, sample usenet.BodySample, zstart []byte, res *NameFixResult, statBudget *int) (stop bool, done bool, err error) {
+func (n *NameFixer) fetchNZBPassword(ctx context.Context, rows []HeaderRow) (NZBPasswordHit, bool) {
 	if n.NZBPassword == nil {
-		return false, false, nil
+		return NZBPasswordHit{}, false
 	}
 	stem := archiveSearchStem(rows)
 	if stem == "" {
-		return false, false, nil
+		return NZBPasswordHit{}, false
 	}
 	n.nzbPWUsed++
 	hit, ok := n.NZBPassword.Lookup(ctx, stem)
 	if !ok {
 		log.Printf("usenetsearch: namefix nzb-password q=%q miss", stem)
-		return false, false, nil
+		return NZBPasswordHit{}, false
 	}
 	shown := hit.Title
 	if len(shown) > 80 {
@@ -970,6 +991,14 @@ func (n *NameFixer) applyNZBPassword(ctx context.Context, set PendingSet, rows [
 	}
 	log.Printf("usenetsearch: namefix nzb-password q=%q indexer=%s pw=%t title=%q",
 		stem, hit.Indexer, len(hit.Passwords) > 0, shown)
+	return hit, true
+}
+
+func (n *NameFixer) applyNZBHit(ctx context.Context, set PendingSet, rows []HeaderRow, sample usenet.BodySample, zstart []byte, hit NZBPasswordHit, res *NameFixResult, statBudget *int) (stop bool, done bool, err error) {
+	try := func(name, source, conf, predb string) (bool, bool, error) {
+		stop, err := n.promote(ctx, set, rows, name, source, conf, predb, res, statBudget)
+		return stop, true, err
+	}
 	if len(hit.Passwords) > 0 && len(zstart) == 32 {
 		var crcs []string
 		var cands []nameCand
@@ -982,26 +1011,22 @@ func (n *NameFixer) applyNZBPassword(ctx context.Context, set PendingSet, rows [
 			}
 		}
 		if srr, ok := n.lookupCRCs(ctx, set, crcs); ok {
-			stop, err := n.promote(ctx, set, rows, srr.Title, sourceSRRDB, confMedium, "srrdb", res, statBudget)
-			return stop, true, err
+			return try(srr.Title, sourceSRRDB, confMedium, "srrdb")
 		}
 		if pre, ok := n.lookupPreDBNames(ctx, set, cands); ok {
 			res.HashHits++
-			stop, err := n.promote(ctx, set, rows, pre.Title, sourcePreDB, confPreDB, "hit", res, statBudget)
-			return stop, true, err
+			return try(pre.Title, sourcePreDB, confPreDB, "hit")
 		}
 		for _, cand := range cands {
 			name, source, conf, predb, ok := n.accept(ctx, cand.name, cand.source, set.PayloadBytes)
 			if ok {
-				stop, err := n.promote(ctx, set, rows, name, source, conf, predb, res, statBudget)
-				return stop, true, err
+				return try(name, source, conf, predb)
 			}
 		}
 	}
 	name, source, conf, predb, ok := n.accept(ctx, hit.Title, sourceNZB, set.PayloadBytes)
 	if ok {
-		stop, err := n.promote(ctx, set, rows, name, source, conf, predb, res, statBudget)
-		return stop, true, err
+		return try(name, source, conf, predb)
 	}
 	return false, false, nil
 }
@@ -1416,19 +1441,14 @@ func isSFVName(name string) bool {
 
 func archivePartNum(name string) int {
 	low := strings.ToLower(name)
-	if m := reArchivePart.FindStringSubmatch(low); len(m) >= 2 {
-		n, err := strconv.Atoi(m[1])
-		if err != nil {
-			return 0
+	for _, re := range []*regexp.Regexp{reArchivePart, reSplitVol} {
+		if m := re.FindStringSubmatch(low); len(m) >= 2 {
+			n, err := strconv.Atoi(m[1])
+			if err != nil {
+				return 0
+			}
+			return n
 		}
-		return n
-	}
-	if m := reSplitVol.FindStringSubmatch(low); len(m) >= 2 {
-		n, err := strconv.Atoi(m[1])
-		if err != nil {
-			return 0
-		}
-		return n
 	}
 	return 0
 }

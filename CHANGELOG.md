@@ -12288,3 +12288,16 @@ status stays active.
 | File | Change |
 |---|---|
 | `frontend/src/screens/settings/ConnectionRow.tsx` | drop isFailing; inline upsert |
+
+## 2026-10-21 — ConnectionRow: inline test status and key placeholder
+
+**Problem:** Post-ship deslop still had one-use helpers and a stale "empty map" comment.
+**Root cause:** `setStatusFromTest` and `keyPlaceholder` each had a single caller; `serviceLabel` comment still said the override map was empty.
+**Fix:** Inline both helpers. Comment: OMDb is the only override; former jellyfin/nntp entries went with those services.
+**Outcome:** Settings.test 136 passed; `tsc --noEmit` ok.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/settings/ConnectionRow.tsx` | inline test status + key placeholder |

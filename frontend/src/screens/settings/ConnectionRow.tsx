@@ -43,12 +43,9 @@ import type { ConnectionSummary, NetscanFinding } from "../../api/settings";
 import { Button, ErrorText, inputClass, labelClass } from "../../components/ui";
 import { SaveStatus, useSaveStatus, useSectionSaveItem } from "./shared";
 
-// serviceLabel maps a connection service id to its display name. Every current
-// singleton service's id already reads correctly as its own label, so the map is
-// empty — it stays as the one place to add an override without touching the JSX.
-// The former "jellyfin"/"nntp" entries are gone with the services themselves:
-// media players and Usenet subscriptions moved to the multi-connection registry
-// (migration 0053) and are no longer ConnectionRows.
+// serviceLabel maps a connection service id to its display name. OMDb is the
+// only override — every other singleton service id already reads as its label.
+// Former jellyfin/nntp entries went with those services (migration 0053).
 const serviceLabel = (service: string): string => {
   const labels: Record<string, string> = { omdb: "OMDb" };
   return labels[service] ?? service;
@@ -66,14 +63,12 @@ export const ConnectionRow: Component<{
   finding: NetscanFinding | undefined;
   onChanged: () => void;
   // failing/onManualTestResult drive the shared red-tint state owned by the
-  // parent table (auto-test-all + manual Test converge on one map). Optional so
+  // parent (auto-test-all + manual Test converge on one map). Optional so
   // the AI tab's ConnectionRows, which have no auto-test, keep compiling and
   // behave exactly as before.
   failing?: () => boolean;
   onManualTestResult?: (ok: boolean) => void;
 }> = (props) => {
-  // needsFixedUrl services have a hardcoded server-side base URL — the row shows
-  // no URL input, and save/test skip the "url is required" guard for them.
   const needsFixedUrl = SERVICES_WITH_FIXED_URL.includes(props.service);
   const allowHostProbe = SERVICES_WITH_HOST_LOOKUP.includes(props.service);
   const [url, setUrl] = createSignal(props.existing?.url ?? "");
@@ -86,10 +81,6 @@ export const ConnectionRow: Component<{
   const [hint, setHint] = createSignal("");
 
   const hasExistingKey = () => !!props.existing?.hasApiKey;
-  const keyPlaceholder = () =>
-    hasExistingKey()
-      ? `unchanged (••••${props.existing?.keySuffix ?? ""})`
-      : "api key (if needed)";
 
   // needsUsername is always false here: no SINGLETON service authenticates with
   // username+password any more. nntp, the only one that ever did, moved to the
@@ -118,18 +109,15 @@ export const ConnectionRow: Component<{
         username: b.username,
         apiKey: b.apiKey,
       });
-      setStatusFromTest(r.ok, r.error);
+      if (r.ok) status.set("✓ ok");
+      else status.failed(new Error(r.error || "connection failed"));
+      // Feed the outcome into the parent's shared failing-map so a manual Test
+      // updates the SAME red-tint the auto-test-all populates (and a passing
+      // manual Test clears it).
+      props.onManualTestResult?.(r.ok);
     } catch (e) {
       status.failed(e);
     }
-  };
-  const setStatusFromTest = (ok: boolean, err?: string) => {
-    if (ok) status.set("✓ ok");
-    else status.failed(new Error(err || "connection failed"));
-    // Feed the outcome into the parent's shared failing-map so a manual Test
-    // updates the SAME red-tint the auto-test-all populates (and a passing
-    // manual Test clears it).
-    props.onManualTestResult?.(ok);
   };
 
   // save sets its OWN inline status (per-row failure visibility) and rethrows on
@@ -325,7 +313,11 @@ export const ConnectionRow: Component<{
         <input
           type="password"
           class={`${inputClass} mt-1 ${failClass()}`}
-          placeholder={keyPlaceholder()}
+          placeholder={
+            hasExistingKey()
+              ? `unchanged (••••${props.existing?.keySuffix ?? ""})`
+              : "api key (if needed)"
+          }
           aria-label={`${props.service} API key`}
           value={key()}
           onInput={(e) => {

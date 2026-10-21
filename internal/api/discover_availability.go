@@ -168,11 +168,11 @@ func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections
 			Mode: m, Title: req.Title, Season: req.SeasonNumber, Episode: req.EpisodeNumber,
 			SeasonSpecified: req.SeasonSpecified, ReleaseTitle: req.ReleaseTitle,
 		})
-		if nnErr != nil && sess.Prowlarr == nil {
-			http.Error(w, nnErr.Error(), http.StatusBadGateway)
-			return
-		}
 		if nnErr != nil {
+			if sess.Prowlarr == nil {
+				http.Error(w, nnErr.Error(), http.StatusBadGateway)
+				return
+			}
 			log.Printf("discover availability: newznab err=%v — trying prowlarr", nnErr)
 			nn = nil
 		}
@@ -181,11 +181,11 @@ func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections
 			runtimeSeconds = float64(req.DurationSeconds)
 			if sess.Prowlarr != nil {
 				res, err := resolveAdultReleases(ctx, sess, releaseStore, adultConsumerPicker, req)
-				if err != nil && len(nn) == 0 {
-					http.Error(w, err.Error(), http.StatusBadGateway)
-					return
-				}
 				if err != nil {
+					if len(nn) == 0 {
+						http.Error(w, err.Error(), http.StatusBadGateway)
+						return
+					}
 					log.Printf("discover availability: prowlarr err=%v", err)
 				} else {
 					pr = res.Releases
@@ -194,11 +194,11 @@ func discoverAvailabilityHandler(httpClient *http.Client, connStore *connections
 			}
 		} else if sess.Prowlarr != nil {
 			found, rt, err := autoGrabSearch(ctx, sess, m, releaseStore, prowlarr.ScopeAll, req)
-			if err != nil && len(nn) == 0 {
-				http.Error(w, err.Error(), http.StatusBadGateway)
-				return
-			}
 			if err != nil {
+				if len(nn) == 0 {
+					http.Error(w, err.Error(), http.StatusBadGateway)
+					return
+				}
 				log.Printf("discover availability: prowlarr err=%v", err)
 			} else {
 				pr = found

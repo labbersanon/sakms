@@ -31,13 +31,13 @@ var (
 // AttachNewznabGrabSearch registers the Settings NZB host for grab search.
 // Pass a nil store to clear (tests).
 func AttachNewznabGrabSearch(connStore *connections.Store, httpClient *http.Client) {
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 30 * time.Second}
-	}
 	newznabGrabMu.Lock()
 	newznabGrabConns = connStore
 	newznabGrabClient = nil
 	if connStore != nil {
+		if httpClient == nil {
+			httpClient = &http.Client{Timeout: 30 * time.Second}
+		}
 		newznabGrabClient = &newznab.Client{HTTP: httpClient}
 	}
 	newznabGrabMu.Unlock()

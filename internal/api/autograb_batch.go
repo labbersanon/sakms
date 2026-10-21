@@ -367,20 +367,20 @@ func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, stor
 		Mode: m, Title: req.Title, Season: req.SeasonNumber, Episode: req.EpisodeNumber,
 		SeasonSpecified: req.SeasonSpecified, ReleaseTitle: req.ReleaseTitle,
 	})
-	if nnErr != nil && sess.Prowlarr == nil {
-		return nil, false, false, nil, "", nnErr
-	}
 	if nnErr != nil {
+		if sess.Prowlarr == nil {
+			return nil, false, false, nil, "", nnErr
+		}
 		log.Printf("auto-grab batch: newznab err=%v — trying prowlarr", nnErr)
 		nn = nil
 	}
 	var pr []prowlarr.Release
 	if sess.Prowlarr != nil {
 		found, rt, err := autoGrabSearch(ctx, sess, m, store, prowlarr.ScopeAll, req)
-		if err != nil && len(nn) == 0 {
-			return nil, false, false, nil, "", err
-		}
 		if err != nil {
+			if len(nn) == 0 {
+				return nil, false, false, nil, "", err
+			}
 			log.Printf("auto-grab batch: prowlarr err=%v", err)
 		} else {
 			pr = found

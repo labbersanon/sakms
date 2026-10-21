@@ -63,6 +63,27 @@ export NPM_CONFIG_YES=true
   npx --yes pnpm@9.15.9 build
 )
 
+# Claude 2026-10-21: generate glfw Wayland protocol headers (Fedora).
+# Reason: go-gl/glfw #includes *-client-protocol.h that `go test` does not
+#   generate. GitHub Ubuntu has them via apt; Fedora RPM %build runs this
+#   same wayland-scanner loop (packaging/rpm/sakms-node.spec). Without it,
+#   ./cmd/sakms-node-config fails: xdg-shell-client-protocol.h missing.
+# Troubleshooting: wayland-scanner is in wayland-devel. XML lives under
+#   vendor/.../glfw/deps/wayland. Headers are untracked under glfw/src.
+# Review if: go-gl/glfw vendors the generated headers or CI drops ./...
+GLFW_SRC="$ROOT/vendor/github.com/go-gl/glfw/v3.4/glfw/glfw"
+if [[ ! -f "$GLFW_SRC/src/xdg-shell-client-protocol.h" ]]; then
+  echo "generating glfw Wayland protocol headers"
+  for proto in wayland xdg-shell xdg-decoration-unstable-v1 viewporter \
+               relative-pointer-unstable-v1 pointer-constraints-unstable-v1 \
+               fractional-scale-v1 xdg-activation-v1 idle-inhibit-unstable-v1; do
+    wayland-scanner client-header "${GLFW_SRC}/deps/wayland/${proto}.xml" \
+      "${GLFW_SRC}/src/${proto}-client-protocol.h"
+    wayland-scanner private-code "${GLFW_SRC}/deps/wayland/${proto}.xml" \
+      "${GLFW_SRC}/src/${proto}-client-protocol-code.h"
+  done
+fi
+
 echo "go test ./... (CI flags)"
 go test -count=1 -timeout 45m -p 4 ./...
 echo "ci-local ok"

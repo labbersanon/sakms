@@ -83,6 +83,26 @@ func nzbMetaValue(nzb *NZB, typ string) string {
 	return ""
 }
 
+// Claude 2026-10-21: export NZB password/title for Newznab namefix lookup.
+// Reason: grab path already used collectJobPasswords; namefix 7z-aes needs
+//   the same sources without importing manager internals.
+// Troubleshooting: nzb-password pw=false with a password NZB → meta type
+//   mismatch. Never log the values.
+// Review if: a UI per-job password field is added.
+// Related files: nzb.go, internal/newznab/client.go
+
+// PasswordsFromNZB returns unpack passwords from X-DNZB-Password, NZB meta,
+// and SAB-style title embeddings. Values must not be logged.
+func PasswordsFromNZB(dnzb DNZBHeaders, nzb *NZB, name string) []string {
+	return collectJobPasswords(dnzb, nzb, name, nil)
+}
+
+// TitleFromNZB prefers X-DNZB-Name / NZB meta title over an obfuscated
+// filename. Password embeddings are stripped.
+func TitleFromNZB(dnzb DNZBHeaders, nzb *NZB, name string) string {
+	return preferredNZBName(name, dnzb, nzb)
+}
+
 func collectJobPasswords(dnzb DNZBHeaders, nzb *NZB, name string, extra []string) []string {
 	var out []string
 	seen := map[string]bool{}

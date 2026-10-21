@@ -12,6 +12,7 @@
 package usenet
 
 import (
+	"context"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -19,6 +20,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/labbersanon/sakms/internal/httpx"
 )
 
 // NZB represents a parsed .nzb file per the NZB 1.1 specification.
@@ -123,12 +126,35 @@ func nzbHTTPClient(base *http.Client) *http.Client {
 //
 //	or non-http enclosure as usenet.
 func fetchNZB(httpClient *http.Client, rawURL string) (*NZB, DNZBHeaders, error) {
+	return FetchNZB(context.Background(), httpClient, rawURL)
+}
+
+// Claude 2026-10-21: context FetchNZB; transport errors strip the URL.
+// Reason: Newznab getnzb URLs carry apikey=; logging the *url.Error leaked it.
+// Troubleshooting: "request to host failed" without the query string is
+//   expected. Review if: httpx.WrapTransportError is used at every Get.
+// Related files: internal/newznab/client.go
+
+// FetchNZB GETs an NZB over http(s). Errors omit the URL so an apikey query
+// is not logged.
+func FetchNZB(ctx context.Context, httpClient *http.Client, rawURL string) (*NZB, DNZBHeaders, error) {
 	if err := requireHTTPURL(rawURL); err != nil {
 		return nil, DNZBHeaders{}, err
 	}
-	resp, err := nzbHTTPClient(httpClient).Get(rawURL)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, DNZBHeaders{}, fmt.Errorf("usenet: fetching NZB: %w", err)
+	}
+	resp, err := nzbHTTPClient(httpClient).Do(req)
+	if err != nil {
+		host := ""
+		if req.URL != nil {
+			host = req.URL.Host
+		}
+		return nil, DNZBHeaders{}, fmt.Errorf("usenet: fetching NZB: %w", httpx.WrapTransportError(host, err))
 	}
 	defer resp.Body.Close()
 

@@ -286,6 +286,12 @@ func run() error {
 	//   rewrite v2 still running, or crawler not idle.
 	// Review if: extras should kick a v3 header rewrite.
 	api.AttachNNTPCollectionDrift(nntpSearch, connStore, settingsStore, &http.Client{Timeout: outboundTimeout})
+	// Claude 2026-10-21: Newznab password lookup for namefix 7zAES.
+	// Reason: indexer NZB meta carries ngPost passwords; NNTP does not.
+	//   Prowlarr keys are fetched at runtime. Do not scrape HTML.
+	// Troubleshooting: nzb-password never logs → Prowlarr unset or kill switch.
+	// Review if: password lookup moves into usenetsearch.Config.
+	api.AttachNZBPasswordLookup(nntpSearch, connStore, settingsStore, &http.Client{Timeout: outboundTimeout})
 	defer nntpSearch.Close()
 	// traktStore persists Trakt's single application connection + linked
 	// account tokens (its own table, not connections.Store — see

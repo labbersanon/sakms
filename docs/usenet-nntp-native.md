@@ -190,10 +190,16 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   volume (RAR5 first segment; 7z last segment of `.7z.NNN` for the end
   header — never `.vol*.par2` or `.7z.enc`), then the main `.par2`. 95% complete
   sets run before 80% ident BODY. RAR4 `FILE_CRC` / RAR5 Data CRC32 / ZIP CRC /
-  7z end-header CRC (via container `7z l`) / SFV CRC32 is looked up on srrdb
+  7z end-header CRC / SFV CRC32 is looked up on srrdb
   `archive-crc:` when that CRC is unique
   (`resultsCount==1`, size ±15%); srrdb ToS is use-don't-scrape (no catalog
-  paging). An `.sfv` whose payload filename already parses as a scene title is
+  paging). After an empty-password `7z-aes` miss, namefix searches the
+  obfuscated archive stem (`t=search&q=`) on Usenet Newznab indexers listed by
+  Prowlarr (`GET /api/v1/indexer`) and downloads the NZB (`t=get` / enclosure)
+  for `X-DNZB-Password` / `<meta type="password">`. Keys stay in Prowlarr; sakms
+  does not scrape indexer HTML and does not brute-force. Decrypt + CRC can still
+  become `name_source=srrdb`; an ident-shaped NZB title is `name_source=nzb`.
+  An `.sfv` whose payload filename already parses as a scene title is
   accepted as `name_source=sfv` without HTTP.
   Yield-group BODY is 40/pass at 95% plus 20/pass at ≥80% when PAR2 is present.
   A BODY whose FileDesc is the same hash is not retried (PreDB-only from then on).
@@ -247,6 +253,7 @@ are dropped again and completeness is still recorded.
 | `predb_irc_password_enc` | — | NickServ password, `secrets.Store` ciphertext; set via `PUT /api/settings/usenet-nntp-native/predb-irc-password` `{"password":"…"}` (empty clears) |
 | `predb_dump_path` | empty | nZEDb PreDB dump file, directory, or http(s) dump *file* URL (`\t\t` TSV, optional `.gz`; quoted MySQL fields and `\N` are stripped). PUT `predbDumpPath` reloads the importer; SQL still needs a restart. Imported on boot/reload and every 15 minutes when mtime/size (or URL ETag) changes. Search APIs (`api.predb.net`, `?type=pre`) are rejected. Live file: `/data/predb/predb.tsv.gz` (host `/mnt/iscsi/sakms/predb/predb.tsv.gz`, nZEDb dailies through 2024-05-02). |
 | `srrdb_enabled` | true | CRC-only lookup at `https://api.srrdb.com/v1/search/archive-crc:XXXXXXXX` (2s spacing). Unique hit + size ±15% → `name_source=srrdb`. Kill switch; do not scrape the catalog. |
+| `nzb_password_enabled` | true | After empty 7zAES miss, Newznab `t=search`/`t=get` on Prowlarr-listed Usenet indexers. Kill switch; do not scrape HTML. |
 | `min_completeness_pct` / `incomplete_ttl_days` | 95 / 3 | Completeness gate / reap |
 | `repair_enabled` | true | Gap capture + repair |
 | `backfill_enabled` / `backfill_days` / `backfill_budget_pct` | true / 0 (retention) / 90 | Backfill |
@@ -259,7 +266,7 @@ counters under `gapFillStatus` (`releasesSearchable`, `releasesBelowGate`,
 
 ### Operating notes
 
-- O2 queries: `o2cli grep "collection rewrite"`, `"collection drift"`, `"namefix pass"`, `"repair pass"`,
+- O2 queries: `o2cli grep "collection rewrite"`, `"collection drift"`, `"namefix pass"`, `"nzb-password"`, `"repair pass"`,
   `"backfill group="`, `"completeness recompute"`, `"predb"`.
   `backfill ... state=paused reason=budget` means the index is at the budget.
 - Re-run a finished backfill (e.g. after raising `backfill_days`):
@@ -282,7 +289,8 @@ counters under `gapFillStatus` (`releasesSearchable`, `releasesBelowGate`,
   `uuid@ngPost`. ObfKey omits group so GROUP_POLICY ALL does not split the
   set. First `.7z.001` BODY is 64 bytes (signature). After the first charged
   namefix attempt, further 7z HeadOnly/Tail BODY is skipped; PAR2 still runs.
-  Title and password are in the NZB, not on NNTP. `-x` UUID subjects have no
+  Title and password are in the NZB, not on NNTP; namefix reads them via Newznab
+  after a `7z-aes` miss (not by scraping the indexer site). `-x` UUID subjects have no
   filename in OVERVIEW and stay skip_unparsed.
 
 ## Spike numbers

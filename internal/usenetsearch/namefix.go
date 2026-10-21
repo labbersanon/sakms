@@ -128,6 +128,7 @@ const (
 	sourceNFO     = "nfo"
 	sourceSFV     = "sfv"
 	sourceSRRDB   = "srrdb"
+	sourceNZB     = "nzb"
 	confPreDB     = "predb_exact"
 	confMedium    = "medium"
 	verdictNamed  = "namefix"
@@ -187,20 +188,26 @@ type NameFixer struct {
 	Crawler *Crawler // admission snapshot, group modes, statVerdict
 	PreDB   PreDBLookup
 	// SRRDB resolves RAR/ZIP/SFV inner-file CRC32 (nil disables it).
-	SRRDB  ArchiveCRCLookup
-	Groups []string
-	Budget *bodyBudget
+	SRRDB ArchiveCRCLookup
+	// NZBPassword looks up unpack passwords by obfuscated archive name
+	// (Newznab via Prowlarr-listed indexers; nil disables it).
+	NZBPassword NZBPasswordLookup
+	Groups      []string
+	Budget      *bodyBudget
 	// SkipBody runs PreDB-only (OVER/download busy). PAR2 BODY waits.
 	SkipBody bool
 	// PassBudget caps one Run; zero uses namefixMaxDuration. Tests shorten it.
 	PassBudget time.Duration
 
 	UnnamedTTL time.Duration
+
+	nzbPWUsed int
 }
 
 // Run does one pass: TTL/attempt sweep, then up to namefixSetsPerPass due sets.
 // ErrBusy or an exhausted BODY budget stops the pass without charging attempts.
 func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
+	n.nzbPWUsed = 0
 	res := NameFixResult{BySource: map[string]int{}}
 	ttl := n.UnnamedTTL
 	if ttl <= 0 {
@@ -404,6 +411,7 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 	sampled := false
 	triedBody := false
 	crcTried := false
+	heldPW := false
 	var zstart []byte
 	var zsize uint64
 	pat := detectNamePattern(rows)
@@ -490,6 +498,7 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		}
 		log.Printf("usenetsearch: namefix body msgid=%s bytes=%d remain_ms=%d wire=%d yenc=%d cands=%d par2=%t cand=%q err=<nil>",
 			pick.MsgID, pick.Bytes, namefixBodyArticleTimeout.Milliseconds(), sample.WireBytes, len(sample.YencName), len(cands), isPar2, cand0)
+		kind := payloadKind(sample.Data, zstart, zsize)
 		if pick.CRC {
 			if len(crcs) > 0 {
 				crcTried = true
@@ -508,7 +517,7 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 				inner = inner[:80]
 			}
 			log.Printf("usenetsearch: namefix crc msgid=%s crcs=%d magic=%x payload=%s name=%q",
-				pick.MsgID, len(crcs), magic, payloadKind(sample.Data, zstart, zsize), inner)
+				pick.MsgID, len(crcs), magic, kind, inner)
 		}
 		work := context.WithoutCancel(ctx)
 		if isPar2 {
@@ -554,6 +563,23 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		if hit, ok := n.lookupCRCs(work, set, crcs); ok {
 			return n.promote(work, set, rows, hit.Title, sourceSRRDB, confMedium, "srrdb", res, statBudget)
 		}
+		// Claude 2026-10-21: Newznab password after empty 7zAES miss.
+		// Reason: payload=7z-aes crcs=0 is an empty-password miss; the
+		//   password is in the indexer NZB (X-DNZB / meta), not on NNTP.
+		//   HTML scrape is not used. Cap lookups per pass; if the cap
+		//   hits, do not bump attempts so the set stays due.
+		// Troubleshooting: nzb-password miss with skip_7z=true → lookup
+		//   already ran. Review if: RAR passwords should use this too.
+		if n.NZBPassword != nil && kind == "7z-aes" && len(crcs) == 0 {
+			if n.nzbPWUsed >= namefixNZBPasswordPerPass {
+				heldPW = true
+			} else {
+				stop, done, err := n.applyNZBPassword(work, set, rows, sample, zstart, res, statBudget)
+				if done || err != nil {
+					return stop, err
+				}
+			}
+		}
 		// Claude 2026-10-20: do not break the pick loop on leftover phase ctx.
 		// Reason: #227 still skipped rar when vol PAR2 filled 3 slots, or when
 		//   cands=0 left hashOnly false. BodyHead is already 8s WithoutCancel;
@@ -582,6 +608,9 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		if crcTried || !hasCRCCapableTarget(rows) {
 			return false, n.Index.ShelveBodyAttempts(dbCtx, set.Group, set.Key)
 		}
+	}
+	if heldPW {
+		return false, nil
 	}
 	return false, n.Index.BumpNameAttempt(dbCtx, set.Group, set.Key, set.Attempts)
 }
@@ -919,6 +948,62 @@ func (n *NameFixer) lookupPreDB(ctx context.Context, set PendingSet, rows []Head
 		}
 	}
 	return PreDBHit{}, false
+}
+
+func (n *NameFixer) applyNZBPassword(ctx context.Context, set PendingSet, rows []HeaderRow, sample usenet.BodySample, zstart []byte, res *NameFixResult, statBudget *int) (stop bool, done bool, err error) {
+	if n.NZBPassword == nil {
+		return false, false, nil
+	}
+	stem := archiveSearchStem(rows)
+	if stem == "" {
+		return false, false, nil
+	}
+	n.nzbPWUsed++
+	hit, ok := n.NZBPassword.Lookup(ctx, stem)
+	if !ok {
+		log.Printf("usenetsearch: namefix nzb-password q=%q miss", stem)
+		return false, false, nil
+	}
+	shown := hit.Title
+	if len(shown) > 80 {
+		shown = shown[:80]
+	}
+	log.Printf("usenetsearch: namefix nzb-password q=%q indexer=%s pw=%t title=%q",
+		stem, hit.Indexer, len(hit.Passwords) > 0, shown)
+	if len(hit.Passwords) > 0 && len(zstart) == 32 {
+		var crcs []string
+		var cands []nameCand
+		for _, f := range usenet.ArchiveFileCRCsFrom7zPartsWithPasswords(zstart, sample.Data, hit.Passwords) {
+			if f.CRC != "" {
+				crcs = append(crcs, f.CRC)
+			}
+			if f.Name != "" {
+				cands = append(cands, nameCand{f.Name, sourceRar})
+			}
+		}
+		if srr, ok := n.lookupCRCs(ctx, set, crcs); ok {
+			stop, err := n.promote(ctx, set, rows, srr.Title, sourceSRRDB, confMedium, "srrdb", res, statBudget)
+			return stop, true, err
+		}
+		if pre, ok := n.lookupPreDBNames(ctx, set, cands); ok {
+			res.HashHits++
+			stop, err := n.promote(ctx, set, rows, pre.Title, sourcePreDB, confPreDB, "hit", res, statBudget)
+			return stop, true, err
+		}
+		for _, cand := range cands {
+			name, source, conf, predb, ok := n.accept(ctx, cand.name, cand.source, set.PayloadBytes)
+			if ok {
+				stop, err := n.promote(ctx, set, rows, name, source, conf, predb, res, statBudget)
+				return stop, true, err
+			}
+		}
+	}
+	name, source, conf, predb, ok := n.accept(ctx, hit.Title, sourceNZB, set.PayloadBytes)
+	if ok {
+		stop, err := n.promote(ctx, set, rows, name, source, conf, predb, res, statBudget)
+		return stop, true, err
+	}
+	return false, false, nil
 }
 
 func (n *NameFixer) lookupCRCs(ctx context.Context, set PendingSet, crcs []string) (PreDBHit, bool) {

@@ -78,7 +78,13 @@ const (
 	//   "Use but don't scrape" — CRC queries, never catalog paging.
 	// Troubleshooting: name_source=srrdb stays 0 → this key false or SRRDB
 	//   client nil. Review if: provider rate-limits sakms-srrdb/1.
-	KeySRRDBEnabled       = "usenet_nntp_srrdb_enabled"
+	KeySRRDBEnabled = "usenet_nntp_srrdb_enabled"
+	// Claude 2026-10-21: Newznab password lookup kill switch (default on).
+	// Reason: namefix 7z-aes empty miss uses Prowlarr-listed indexer keys
+	//   via t=search/t=get. Off = current skip_7z after first attempt.
+	// Troubleshooting: nzb-password never logs → this key false or Prowlarr
+	//   missing. Review if: a Settings UI toggle ships.
+	KeyNZBPasswordEnabled = "usenet_nntp_nzb_password_enabled"
 	KeyMinCompletenessPct = "usenet_nntp_min_completeness_pct"
 	KeyIncompleteTTLDays  = "usenet_nntp_incomplete_ttl_days"
 	KeyRepairEnabled      = "usenet_nntp_repair_enabled"
@@ -324,6 +330,8 @@ type Service struct {
 	predb PreDBLookup
 	// srrdb resolves RAR/ZIP/SFV inner-file CRC32 (nil disables it).
 	srrdb ArchiveCRCLookup
+	// nzbpw looks up NZB unpack passwords by obfuscated filename (nil = off).
+	nzbpw NZBPasswordLookup
 	// ranges is the last crawl pass's per-group provider range (read-only once
 	// stored; each pass builds a fresh map) — GapFillStatus reports backfill
 	// targets from it.
@@ -354,6 +362,13 @@ func (s *Service) SetPreDB(p PreDBLookup) {
 func (s *Service) SetSRRDB(c ArchiveCRCLookup) {
 	s.mu.Lock()
 	s.srrdb = c
+	s.mu.Unlock()
+}
+
+// SetNZBPassword wires Newznab password lookup for name recovery (nil disables it).
+func (s *Service) SetNZBPassword(p NZBPasswordLookup) {
+	s.mu.Lock()
+	s.nzbpw = p
 	s.mu.Unlock()
 }
 
@@ -950,11 +965,13 @@ func (s *Service) runNameFix(ctx context.Context, c *Crawler, budget *bodyBudget
 	cfg := s.cfg
 	predb := s.predb
 	srrdb := s.srrdb
+	nzbpw := s.nzbpw
 	s.mu.Unlock()
 	budget.setCapMB(cfg.NameFixBodyMBPerHour)
 	nf := &NameFixer{
 		Src: c.Src, Index: c.Index, Crawler: c, PreDB: predb, SRRDB: srrdb,
-		Groups: c.Groups, Budget: budget, SkipBody: skipBody,
+		NZBPassword: nzbpw,
+		Groups:      c.Groups, Budget: budget, SkipBody: skipBody,
 		UnnamedTTL: time.Duration(cfg.UnnamedTTLDays) * 24 * time.Hour,
 	}
 	res, err := nf.Run(ctx)

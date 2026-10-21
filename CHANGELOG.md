@@ -12099,3 +12099,20 @@ status stays active.
 |---|---|
 | `cmd/sakms-node/pathmap_push.go` | gen token on schedule/fire |
 | `cmd/sakms-node/control_pathmap_test.go` | 500ms quiet window; ScheduleCoalescesWithoutHTTPGap |
+
+## 2026-10-21 — Newznab password lookup for namefix 7zAES
+
+**Problem:** ngPost hash.7z is `payload=7z-aes`; empty-password decrypt yields `crcs=0`. Title and password live in the indexer NZB, not on NNTP. HTML scrape of indexer sites is disallowed.
+**Root cause:** Namefix never asked Newznab. Grab/unpack already read `X-DNZB-Password` / `<meta type="password">`.
+**Fix:** After an empty 7zAES miss, list enabled Usenet Newznab indexers from Prowlarr `GET /api/v1/indexer` (keys stay in Prowlarr), `t=search&q=<archive stem>`, `t=get` / enclosure, then decrypt with those passwords. Ident-shaped NZB titles are `name_source=nzb`. Kill switch `usenet_nntp_nzb_password_enabled` (default on). No HTML scrape, no brute force, no password logs.
+**Outcome:** Unit tests cover indexer filter, search/getnzb, stem parse, AES decrypt-with-password, and namefix rename. Live proof remains `name_source=srrdb|sfv|parhash|nzb` after deploy.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/prowlarr/indexers.go` | Usenet Newznab list from Prowlarr |
+| `internal/newznab/client.go` | `t=search` / `t=get` password extract |
+| `internal/usenet/sevenz.go` | `ArchiveFileCRCsFrom7zPartsWithPasswords` |
+| `internal/usenetsearch/namefix.go` | 7z-aes miss → Newznab lookup |
+| `internal/api/nzbpassword.go` | wire Prowlarr keys at runtime |

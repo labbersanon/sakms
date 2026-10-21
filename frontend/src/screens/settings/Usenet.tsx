@@ -68,6 +68,7 @@ import {
   AutoGrabSlotFields,
   Card,
   SaveStatus,
+  SectionSave,
   autoGrabSlotsValid,
   useSaveStatus,
   useSectionSaveItem,
@@ -88,10 +89,11 @@ export const UsenetSection: Component = () => (
   </div>
 );
 
-// Claude 2026-10-21: dedicated Newznab host for namefix password/title lookup.
+// Claude 2026-10-21: dedicated Newznab host + card-level SectionSave.
 // Reason: Prowlarr is grab-search; this URL+key is t=search/t=get only.
-// Troubleshooting: row missing after save → PUT /api/connections/newznab.
-// Review if: a second Newznab host is required.
+//   Per-row Save sat in a 6-column table and scrolled off-screen; fields do not autosave.
+// Troubleshooting: operator filled URL+key, no Save visible, live connections had 0 newznab rows.
+// Review if: a second Newznab host is required, or ConnectionMiniTable drops unused columns.
 // Related files: internal/api/nzbpassword.go
 const NewznabHostCard: Component = () => (
   <Card title="NZB host API">
@@ -100,7 +102,9 @@ const NewznabHostCard: Component = () => (
       for obfuscated NNTP sets. Not used for grabbing. Example:
       https://api.nzbgeek.info/api
     </Muted>
-    <ConnectionServiceTable services={() => ["newznab"]} />
+    <SectionSave>
+      <ConnectionServiceTable services={() => ["newznab"]} />
+    </SectionSave>
   </Card>
 );
 

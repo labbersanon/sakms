@@ -3229,6 +3229,10 @@ describe("Usenet NZB host API — Newznab connection", () => {
     expect(await screen.findByText("NZB host API")).toBeInTheDocument();
     expect(await screen.findByLabelText("newznab URL")).toBeInTheDocument();
     expect(screen.getByLabelText("newznab API key")).toBeInTheDocument();
+    const nzbCard = screen.getByText("NZB host API").closest("div")!;
+    // Card-level Save (SectionSave), not a per-row button hidden in the table.
+    expect(within(nzbCard).getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(within(nzbCard).getByRole("button", { name: "Test" })).toBeInTheDocument();
 
     goToAPIConnections();
     await screen.findByText("prowlarr");

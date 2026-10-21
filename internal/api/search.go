@@ -94,9 +94,10 @@ func searchHandler(httpClient *http.Client, connStore *connections.Store, scStor
 			return
 		}
 
+		cats := categoriesForSearch(m)
 		var releases []prowlarr.Release
 		if sess.Prowlarr != nil {
-			found, err := sess.Prowlarr.Search(ctx, query, categoriesForSearch(m))
+			found, err := sess.Prowlarr.Search(ctx, query, cats)
 			if err != nil && !newznabGrabConfigured(ctx) {
 				http.Error(w, err.Error(), http.StatusBadGateway)
 				return
@@ -107,7 +108,7 @@ func searchHandler(httpClient *http.Client, connStore *connections.Store, scStor
 				releases = found
 			}
 		}
-		extra, err := newznabGrabSearch(ctx, query, categoriesForSearch(m))
+		extra, err := newznabGrabSearch(ctx, query, cats)
 		if err != nil {
 			if len(releases) == 0 {
 				http.Error(w, err.Error(), http.StatusBadGateway)

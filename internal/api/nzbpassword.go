@@ -26,7 +26,8 @@ type nzbPasswordLookup struct {
 	client   *newznab.Client
 }
 
-// AttachNZBPasswordLookup injects the optional Newznab namefix supplement.
+// AttachNZBPasswordLookup injects Newznab namefix lookup. Production main
+// does not call this; tests still do.
 func AttachNZBPasswordLookup(svc *usenetsearch.Service, connStore *connections.Store, settingsStore *settings.Store, httpClient *http.Client) {
 	if svc == nil {
 		return

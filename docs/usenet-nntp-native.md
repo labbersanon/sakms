@@ -289,8 +289,8 @@ counters under `gapFillStatus` (`releasesSearchable`, `releasesBelowGate`,
   `uuid@ngPost`. ObfKey omits group so GROUP_POLICY ALL does not split the
   set. First `.7z.001` BODY is 64 bytes (signature). After the first charged
   namefix attempt, further 7z HeadOnly/Tail BODY is skipped; PAR2 still runs.
-  Title and password are in the NZB, not on NNTP; namefix reads them via Newznab
-  after a `7z-aes` miss (not by scraping the indexer site). `-x` UUID subjects have no
+  Title and password are in the NZB, not on NNTP; native namefix does not
+  query Newznab (passwords are not recoverable from NZB indexers). `-x` UUID subjects have no
   filename in OVERVIEW and stay skip_unparsed.
 
 ## Spike numbers

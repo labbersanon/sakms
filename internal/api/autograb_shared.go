@@ -443,38 +443,27 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 		var pr phaseResult
 		pr.native = scope.IsNative()
 
-		if scope.IsNative() {
-			// Pre-fetched releases skip native (Search hook already has a list).
-			if req.Releases != nil {
-				pr.releases = req.Releases
-				pr.runtimeSeconds = req.RuntimeSeconds
-			} else {
-				rels, err := nativeAutoGrabSearch(ctx, deps, req)
-				if err != nil {
-					return pr, err
-				}
-				pr.releases = rels
-				pr.runtimeSeconds = req.RuntimeSeconds
-			}
-		} else if scope.IsNewznab() {
-			if req.Releases != nil {
-				pr.releases = req.Releases
-				pr.runtimeSeconds = req.RuntimeSeconds
-			} else {
-				rels, err := newznabAutoGrabSearch(ctx, req.Mode, req)
-				if err != nil {
-					return pr, err
-				}
-				pr.releases = rels
-				pr.runtimeSeconds = req.RuntimeSeconds
-			}
-		} else if req.Releases != nil {
+		if req.Releases != nil {
+			// Pre-fetched releases skip per-phase search (Search hook already has a list).
 			pr.releases = req.Releases
 			pr.runtimeSeconds = req.RuntimeSeconds
-		} else {
-			if sess.Prowlarr == nil {
-				return pr, nil
+		} else if scope.IsNative() {
+			rels, err := nativeAutoGrabSearch(ctx, deps, req)
+			if err != nil {
+				return pr, err
 			}
+			pr.releases = rels
+			pr.runtimeSeconds = req.RuntimeSeconds
+		} else if scope.IsNewznab() {
+			rels, err := newznabAutoGrabSearch(ctx, req.Mode, req)
+			if err != nil {
+				return pr, err
+			}
+			pr.releases = rels
+			pr.runtimeSeconds = req.RuntimeSeconds
+		} else if sess.Prowlarr == nil {
+			return pr, nil
+		} else {
 			var err error
 			pr.releases, pr.runtimeSeconds, err = autoGrabSearch(ctx, sess, req.Mode, deps.ReleaseStore, scope, apidto.AutoGrabRequest{
 				Title: req.Title, TMDBID: req.TMDBID, Studio: req.Studio,

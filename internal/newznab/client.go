@@ -231,9 +231,7 @@ func (c *Client) lookupOne(ctx context.Context, idx Indexer, q Query) (Hit, bool
 // Claude 2026-10-21: NZBGeek cannot search poster or the hash filename.
 // Reason: caps q,group so poster= is latest-N; browse group+maxage, t=get, NZB stem. No HTML.
 // Troubleshooting: browse skip group_not_listed → caps omits the NNTP group;
-//
-//	cands=0 → size/group mismatch; nzb=N hit=0 → no hash.
-//
+// cands=0 → size/group mismatch; nzb=N hit=0 → no hash.
 // Review if: NZBGeek adds alt.binaries.x264 or poster to caps.
 func (c *Client) lookupBrowse(ctx context.Context, idx Indexer, q Query, needles []string) (Hit, bool) {
 	group := strings.TrimSpace(q.Group)

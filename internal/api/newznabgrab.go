@@ -36,37 +36,36 @@ func AttachNewznabGrabSearch(connStore *connections.Store, httpClient *http.Clie
 	}
 	newznabGrabMu.Lock()
 	newznabGrabConns = connStore
-	if connStore == nil {
-		newznabGrabClient = nil
-	} else {
+	newznabGrabClient = nil
+	if connStore != nil {
 		newznabGrabClient = &newznab.Client{HTTP: httpClient}
 	}
 	newznabGrabMu.Unlock()
 }
 
 func newznabGrabConfigured(ctx context.Context) bool {
-	idx, ok := newznabGrabIndexer(ctx)
-	return ok && idx.Endpoint != "" && idx.APIKey != ""
+	_, _, ok := newznabGrabIndexer(ctx)
+	return ok
 }
 
-func newznabGrabIndexer(ctx context.Context) (newznab.Indexer, bool) {
+func newznabGrabIndexer(ctx context.Context) (newznab.Indexer, *newznab.Client, bool) {
 	newznabGrabMu.RLock()
 	conns := newznabGrabConns
 	client := newznabGrabClient
 	newznabGrabMu.RUnlock()
 	if conns == nil || client == nil {
-		return newznab.Indexer{}, false
+		return newznab.Indexer{}, nil, false
 	}
 	conn, err := optionalConnAPI(ctx, conns, "newznab")
 	if err != nil || conn == nil {
-		return newznab.Indexer{}, false
+		return newznab.Indexer{}, nil, false
 	}
 	url := strings.TrimSpace(conn.URL)
 	key := strings.TrimSpace(conn.APIKey)
 	if url == "" || key == "" {
-		return newznab.Indexer{}, false
+		return newznab.Indexer{}, nil, false
 	}
-	return newznab.Indexer{Name: "newznab", Endpoint: url, APIKey: key}, true
+	return newznab.Indexer{Name: "newznab", Endpoint: url, APIKey: key}, client, true
 }
 
 func insertNewznabPhase(phases []prowlarr.Scope) []prowlarr.Scope {
@@ -87,14 +86,8 @@ func insertNewznabPhase(phases []prowlarr.Scope) []prowlarr.Scope {
 }
 
 func newznabGrabSearch(ctx context.Context, query string, cats []int) ([]prowlarr.Release, error) {
-	idx, ok := newznabGrabIndexer(ctx)
+	idx, client, ok := newznabGrabIndexer(ctx)
 	if !ok {
-		return nil, nil
-	}
-	newznabGrabMu.RLock()
-	client := newznabGrabClient
-	newznabGrabMu.RUnlock()
-	if client == nil {
 		return nil, nil
 	}
 	rels, err := client.SearchGrab(ctx, idx, query, cats)
@@ -106,8 +99,10 @@ func newznabGrabSearch(ctx context.Context, query string, cats []int) ([]prowlar
 
 func newznabAutoGrabSearch(ctx context.Context, m mode.Mode, req AutoGrabRequest) ([]prowlarr.Release, error) {
 	q := strings.TrimSpace(req.Title)
-	if m == mode.Adult && strings.TrimSpace(req.ReleaseTitle) != "" {
-		q = strings.TrimSpace(req.ReleaseTitle)
+	if m == mode.Adult {
+		if rt := strings.TrimSpace(req.ReleaseTitle); rt != "" {
+			q = rt
+		}
 	}
 	if m == mode.Series && req.SeasonSpecified {
 		if req.Episode > 0 {

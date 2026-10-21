@@ -5,13 +5,22 @@
 // job. This script never fails the build — it prints the total and flags
 // (does not block) an over-ceiling bundle, matching the plan's "soft
 // guardrail, flag if exceeded" wording.
+//
+// Claude 2026-10-21: ceiling applies to the app shell, not hls.js.
+// Reason: hls.js is ~184 KB gzipped by itself and is only needed when a
+//   browser without native HLS starts playback. Counting it in the shell
+//   made Settings pay for a video engine. Playback chunks are printed
+//   separately and do not trip the warning.
+// Troubleshooting: OVER CEILING on "shell" means app code grew; a missing
+//   hls-*.js line means the dynamic import / manualChunks split broke.
+// Review if: Guardrail #9 is redefined to include optional playback engines.
 
 import { readdir, readFile } from "node:fs/promises";
 import { gzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { join, relative } from "node:path";
 
-const CEILING_BYTES = 200 * 1024; // 200 KB gzipped JS, soft ceiling
+const CEILING_BYTES = 200 * 1024; // 200 KB gzipped JS, soft ceiling (app shell)
 
 // outDir from vite.config.ts, resolved relative to this script.
 const outDir = fileURLToPath(new URL("../../internal/web/static", import.meta.url));
@@ -39,25 +48,40 @@ function kb(bytes) {
   return (bytes / 1024).toFixed(1);
 }
 
+function isPlaybackEngine(file) {
+  const rel = relative(outDir, file).replaceAll("\\", "/");
+  return /(^|\/)hls[-.]/i.test(rel);
+}
+
 const files = await jsFiles(outDir);
 if (files.length === 0) {
   console.warn("[bundle-size] no built .js files found under", relative(process.cwd(), outDir));
   process.exit(0);
 }
 
-let totalGzip = 0;
+let shellGzip = 0;
+let playbackGzip = 0;
 console.log("[bundle-size] gzipped JS:");
 for (const file of files.sort()) {
   const gz = gzipSync(await readFile(file)).length;
-  totalGzip += gz;
-  console.log(`  ${kb(gz).padStart(8)} KB  ${relative(outDir, file)}`);
+  const rel = relative(outDir, file);
+  if (isPlaybackEngine(file)) {
+    playbackGzip += gz;
+    console.log(`  ${kb(gz).padStart(8)} KB  ${rel}  (playback)`);
+  } else {
+    shellGzip += gz;
+    console.log(`  ${kb(gz).padStart(8)} KB  ${rel}`);
+  }
 }
 
-const status = totalGzip > CEILING_BYTES ? "OVER CEILING" : "ok";
+const status = shellGzip > CEILING_BYTES ? "OVER CEILING" : "ok";
 console.log(
-  `[bundle-size] total gzipped JS: ${kb(totalGzip)} KB / ${kb(CEILING_BYTES)} KB ceiling (${status})`,
+  `[bundle-size] app shell gzipped JS: ${kb(shellGzip)} KB / ${kb(CEILING_BYTES)} KB ceiling (${status})`,
 );
-if (totalGzip > CEILING_BYTES) {
+if (playbackGzip > 0) {
+  console.log(`[bundle-size] playback engine gzipped JS: ${kb(playbackGzip)} KB (not in ceiling)`);
+}
+if (shellGzip > CEILING_BYTES) {
   console.warn(
     "[bundle-size] WARNING: gzipped JS exceeds the 200 KB soft ceiling (Guardrail #9). Not blocking the build.",
   );

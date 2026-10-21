@@ -52,5 +52,20 @@ export default defineConfig({
     // The whole static/ dir is generated build output now (no tracked files
     // left in it after the Stage 5 cutover), so a clean empty is safe.
     emptyOutDir: true,
+    // Claude 2026-10-21: keep hls.js out of the app-shell chunk.
+    // Reason: static import of hls.js was ~184 KB gzipped and blew Guardrail
+    //   #9's 200 KB shell ceiling (total 375 KB). Playback still loads it on
+    //   demand via import("hls.js"); this name is what report-size.mjs
+    //   excludes from the shell total.
+    // Troubleshooting: a chunk named hls-*.js missing after build means the
+    //   dynamic import was reverted to a static import.
+    // Review if: hls.js is replaced or the ceiling starts counting playback.
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("node_modules/hls.js")) return "hls";
+        },
+      },
+    },
   },
 });

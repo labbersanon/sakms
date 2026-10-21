@@ -1,26 +1,43 @@
 // PlaybackVideo attaches native src for Direct Play URLs and hls.js for HLS.
+// hls.js is imported only when native HLS is missing so the app shell stays
+// under Guardrail #9 (200 KB gzipped JS). Safari never downloads it.
 import { type Component, onCleanup } from "solid-js";
-import Hls from "hls.js";
 import { isHlsSrc } from "../playback";
 
-export function bindMediaSrc(el: HTMLVideoElement, src: string): () => void {
-  if (!isHlsSrc(src)) {
-    el.src = src;
-    return () => {
-      el.removeAttribute("src");
-    };
-  }
-  if (Hls.isSupported()) {
-    const hls = new Hls({ maxBufferLength: 30 });
-    hls.loadSource(src);
-    hls.attachMedia(el);
-    return () => {
-      hls.destroy();
-    };
-  }
+function attachNative(el: HTMLVideoElement, src: string): () => void {
   el.src = src;
   return () => {
     el.removeAttribute("src");
+  };
+}
+
+function canPlayNativeHls(el: HTMLVideoElement): boolean {
+  return el.canPlayType("application/vnd.apple.mpegurl") !== "";
+}
+
+export function bindMediaSrc(el: HTMLVideoElement, src: string): () => void {
+  if (!isHlsSrc(src) || canPlayNativeHls(el)) {
+    return attachNative(el, src);
+  }
+
+  let cancelled = false;
+  let unbind: (() => void) | undefined;
+  void import("hls.js").then(({ default: Hls }) => {
+    if (cancelled) return;
+    if (Hls.isSupported()) {
+      const hls = new Hls({ maxBufferLength: 30 });
+      hls.loadSource(src);
+      hls.attachMedia(el);
+      unbind = () => {
+        hls.destroy();
+      };
+      return;
+    }
+    unbind = attachNative(el, src);
+  });
+  return () => {
+    cancelled = true;
+    unbind?.();
   };
 }
 

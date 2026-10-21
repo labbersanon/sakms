@@ -50,6 +50,19 @@ export CI=true
 
 echo "postgres ready at $SAKMS_TEST_DATABASE_URL"
 
+# Claude 2026-10-21: put distro Node 22 ahead of Cursor's Node 24 on PATH.
+# Reason: engines/.nvmrc/Dockerfile pin Node 22. Cursor prepends v24.5.0;
+#   pnpm then warns Unsupported engine. /usr/bin/node is already node-22
+#   (Fedora nodejs22). Do not widen engines to 24 — CI and the image stay 22.
+# Troubleshooting: "Unsupported engine ... current node 24" means this PATH
+#   prefix was skipped. Missing /usr/bin/node-22 → dnf install nodejs22.
+# Review if: Dockerfile node image major is no longer 22.
+# Related files: frontend/package.json engines, frontend/.nvmrc
+if [[ -x /usr/bin/node-22 ]]; then
+  export PATH="/usr/bin:${PATH}"
+fi
+echo "node $(command -v node) $(node -v)"
+
 # Claude 2026-10-21: npx pnpm@9.15.9 instead of corepack.
 # Reason: wade-pc PATH's node is Cursor's (no corepack). packageManager is
 #   pnpm@9.15.9; npx does not need `corepack enable`.

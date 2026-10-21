@@ -410,6 +410,9 @@ const clickTraktSave = () => {
 // goToAPIConnections opens the Connections screen (Prowlarr/Stash/players).
 const goToAPIConnections = () => goToSection("Connections");
 
+const connectionBlock = (el: Element) =>
+  el.closest("[data-connection-service]") as HTMLElement;
+
 // goToLibraryConnections opens Metadata's per-mode source rows: TMDB under
 // Movies, TVDB under Series, StashDB/FansDB/TPDB under Adult.
 const goToLibraryConnections = async (mode?: "Series" | "Adult") => {
@@ -597,7 +600,7 @@ describe("Connections table — untouched key is never sent (Acceptance Criterio
     renderSettings();
     goToAPIConnections();
     const url = await screen.findByLabelText("prowlarr URL");
-    const block = (url as HTMLElement).closest("[data-connection-service]")!;
+    const block = connectionBlock(url);
     expect(block.querySelector("table")).toBeNull();
     expect(block.closest(".overflow-x-auto")).toBeNull();
     expect(within(block).queryByText("Username")).toBeNull();
@@ -822,7 +825,7 @@ describe("Connections table — untouched key is never sent (Acceptance Criterio
     renderSettings();
     goToAPIConnections();
     const urlInput = await screen.findByLabelText("prowlarr URL");
-    const row = (urlInput as HTMLElement).closest("[data-connection-service]")!;
+    const row = connectionBlock(urlInput as HTMLElement);
     fireEvent.click(within(row).getByText("Delete"));
     await waitFor(() =>
       expect(
@@ -857,7 +860,7 @@ describe("Connections — netscan LAN-discovery hints", () => {
     const urlInput = (await screen.findByLabelText(
       "prowlarr URL",
     )) as HTMLInputElement;
-    const row = urlInput.closest("[data-connection-service]")!;
+    const row = connectionBlock(urlInput);
     fireEvent.click(within(row).getByText("Use this URL"));
     expect(urlInput.value).toBe("http://prowlarr:9696");
     clickAPISectionSave();
@@ -885,7 +888,7 @@ describe("Connections — netscan LAN-discovery hints", () => {
     const urlInput = (await screen.findByLabelText(
       "prowlarr URL",
     )) as HTMLInputElement;
-    const row = urlInput.closest("[data-connection-service]")!;
+    const row = connectionBlock(urlInput);
     fireEvent.click(within(row).getByText("Use this URL"));
     fireEvent.click(within(row).getByText("Fetch API key"));
     // Wait for the fetched key to actually land in the input (the fetch is
@@ -1014,7 +1017,7 @@ describe("Connections — auto-test-all on mount + red-tint", () => {
       ).toBe(true),
     );
     expect(keyInput.className).not.toContain("border-danger");
-    const row = keyInput.closest("[data-connection-service]")!;
+    const row = connectionBlock(keyInput);
     // Manual Test #1 fails → tint.
     fireEvent.click(within(row).getByText("Test"));
     await waitFor(() => expect(keyInput.className).toContain("border-danger"));

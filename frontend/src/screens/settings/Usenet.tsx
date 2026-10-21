@@ -23,12 +23,10 @@ import {
   type Component,
   For,
   Show,
-  createEffect,
   createMemo,
   createResource,
   createSignal,
   onMount,
-  untrack,
 } from "solid-js";
 import {
   buildConnectionUpsertBody,
@@ -140,12 +138,6 @@ const NewznabHostFields: Component<{
   const [dirty, setDirty] = createSignal(false);
   const status = useSaveStatus();
 
-  createEffect(() => {
-    const next = props.existing;
-    if (untrack(dirty)) return;
-    setUrl(next?.url ?? "");
-  });
-
   const hasExistingKey = () => !!props.existing?.hasApiKey;
   const body = () =>
     buildConnectionUpsertBody({
@@ -158,8 +150,9 @@ const NewznabHostFields: Component<{
 
   const save = async () => {
     if (!url().trim()) {
-      status.failed(new Error("url is required"));
-      throw new Error("url is required");
+      const err = new Error("url is required");
+      status.failed(err);
+      throw err;
     }
     try {
       await upsertConnection("newznab", body());

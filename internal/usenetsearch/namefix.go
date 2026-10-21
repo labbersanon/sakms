@@ -847,8 +847,7 @@ func (n *NameFixer) promote(ctx context.Context, set PendingSet, rows []HeaderRo
 			//   movies floor still skip. Scene PAR2 names stay dotted.
 			// Troubleshooting: reject_gate missing on a 480p quoted title →
 			//   skipAdmissionGate. Review if: 576p PAL ident should skip 720.
-			skipGate := skipAdmissionGate(name)
-			if !skipGate {
+			if !skipAdmissionGate(name) {
 				var modes []string
 				if c.GroupModesFn != nil {
 					modes = c.GroupModesFn(set.Group)

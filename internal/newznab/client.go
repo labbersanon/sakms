@@ -3,6 +3,7 @@
 package newznab
 
 import (
+	"bytes"
 	"context"
 	"encoding/xml"
 	"fmt"
@@ -19,12 +20,11 @@ import (
 )
 
 // Claude 2026-10-21: Newznab filename search + NZB password (no HTML scrape).
-// Reason: ngPost title/password live in NZB meta. Prowlarr already holds the
-//   indexer keys; t=search&q=<archive stem> then t=get is the keyed API path
-//   (plan 2B). Do not GET /details or login pages.
+// Reason: ngPost title/password live in NZB meta. The operator-configured
+//   `newznab` connection is t=search / t=get. Do not GET /details or login.
 // Troubleshooting: o2cli grep "nzb-password"; pw=true without crcs → decrypt
 //   miss, not a scrape gap. Review if: an indexer requires t=tvsearch only.
-// Related files: internal/prowlarr/indexers.go, namefix.go
+// Related files: internal/api/nzbpassword.go, namefix.go
 
 const (
 	maxSearchItems    = 5
@@ -116,6 +116,7 @@ func (c *Client) Lookup(ctx context.Context, indexers []Indexer, filename string
 }
 
 func (c *Client) lookupOne(ctx context.Context, idx Indexer, filename string) (Hit, bool) {
+	idx.Endpoint = NormalizeEndpoint(idx.Endpoint)
 	items, err := c.search(ctx, idx, filename)
 	if err != nil {
 		log.Printf("usenetsearch: nzb-password indexer=%s search err=%v", idx.Name, err)
@@ -282,6 +283,68 @@ func mergeUnique(a, b []string) []string {
 		}
 	}
 	return out
+}
+
+// NormalizeEndpoint turns a Newznab base (site origin or /api URL) into the
+// API endpoint used for t=search / t=caps. Query strings are dropped so an
+// apikey never stays in the stored URL.
+func NormalizeEndpoint(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	if u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return raw
+	}
+	if u.Path == "" || u.Path == "/" {
+		u.Path = "/api"
+	}
+	u.RawQuery = ""
+	u.Fragment = ""
+	return strings.TrimRight(u.String(), "/")
+}
+
+type capsError struct {
+	XMLName     xml.Name `xml:"error"`
+	Code        string   `xml:"code,attr"`
+	Description string   `xml:"description,attr"`
+}
+
+// Caps is the Test-connection ping: t=caps, never HTML login/details.
+func (c *Client) Caps(ctx context.Context, idx Indexer) error {
+	idx.Endpoint = NormalizeEndpoint(idx.Endpoint)
+	u, err := url.Parse(idx.Endpoint)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("indexer endpoint")
+	}
+	vals := u.Query()
+	vals.Set("t", "caps")
+	vals.Set("apikey", idx.APIKey)
+	vals.Set("o", "xml")
+	u.RawQuery = vals.Encode()
+	body, err := c.get(ctx, u)
+	if err != nil {
+		return err
+	}
+	var capErr capsError
+	if err := xml.Unmarshal(body, &capErr); err == nil && capErr.XMLName.Local == "error" {
+		desc := strings.TrimSpace(capErr.Description)
+		if desc == "" {
+			desc = strings.TrimSpace(capErr.Code)
+		}
+		if desc == "" {
+			desc = "error"
+		}
+		return fmt.Errorf("newznab: %s", desc)
+	}
+	if !bytes.Contains(body, []byte("<caps")) {
+		return fmt.Errorf("not a Newznab caps response")
+	}
+	return nil
 }
 
 func (c *Client) get(ctx context.Context, u *url.URL) ([]byte, error) {

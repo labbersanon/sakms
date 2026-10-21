@@ -5,36 +5,27 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/newznab"
-	"github.com/labbersanon/sakms/internal/prowlarr"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenetsearch"
 )
 
-// Claude 2026-10-21: wire Newznab password lookup without usenetsearch
-// importing Prowlarr. Keys stay in Prowlarr; sakms never writes them.
-// Reason: namefix 7z-aes miss needs t=search by archive filename. HTML
-//   scrape is not used.
-// Troubleshooting: nzb-password never logs → Prowlarr missing, kill switch
-//   off, or zero Usenet Newznab indexers. Review if: Prowlarr indexer
-//   list shape changes.
-// Related files: internal/prowlarr/indexers.go, internal/newznab/client.go
-
-const nzbPasswordIndexerTTL = 10 * time.Minute
+// Claude 2026-10-21: namefix Newznab lookup uses the dedicated `newznab`
+// connection (Settings → Download → Usenet), not Prowlarr's indexer list.
+// Reason: Prowlarr is grab-search; password/title recovery needs a Newznab
+//   host URL + API key the operator sets. HTML scrape is not used.
+// Troubleshooting: nzb-password never logs → newznab connection missing,
+//   kill switch off, or t=search miss. Review if: a second Newznab host
+//   is required.
+// Related files: internal/newznab/client.go, frontend Usenet.tsx
 
 type nzbPasswordLookup struct {
 	conns    *connections.Store
 	settings *settings.Store
-	http     *http.Client
 	client   *newznab.Client
-
-	mu       sync.Mutex
-	cached   []prowlarr.NewznabIndexer
-	cachedAt time.Time
 }
 
 // AttachNZBPasswordLookup injects Newznab password lookup into NNTP namefix.
@@ -48,7 +39,6 @@ func AttachNZBPasswordLookup(svc *usenetsearch.Service, connStore *connections.S
 	svc.SetNZBPassword(&nzbPasswordLookup{
 		conns:    connStore,
 		settings: settingsStore,
-		http:     httpClient,
 		client:   &newznab.Client{HTTP: httpClient},
 	})
 }
@@ -67,55 +57,19 @@ func (c *nzbPasswordLookup) Lookup(ctx context.Context, filename string) (usenet
 			return usenetsearch.NZBPasswordHit{}, false
 		}
 	}
-	indexers, err := c.indexers(ctx)
+	conn, err := optionalConnAPI(ctx, c.conns, "newznab")
 	if err != nil {
-		log.Printf("usenetsearch: nzb-password prowlarr err=%v", err)
+		log.Printf("usenetsearch: nzb-password newznab err=%v", err)
 		return usenetsearch.NZBPasswordHit{}, false
-	}
-	if len(indexers) == 0 {
-		return usenetsearch.NZBPasswordHit{}, false
-	}
-	hit, ok := c.client.Lookup(ctx, toNewznab(indexers), filename)
-	return usenetsearch.NZBPasswordHit{Title: hit.Title, Passwords: hit.Passwords, Indexer: hit.Indexer}, ok
-}
-
-func (c *nzbPasswordLookup) indexers(ctx context.Context) ([]prowlarr.NewznabIndexer, error) {
-	c.mu.Lock()
-	if time.Since(c.cachedAt) < nzbPasswordIndexerTTL && c.cached != nil {
-		out := c.cached
-		c.mu.Unlock()
-		return out, nil
-	}
-	c.mu.Unlock()
-	conn, err := optionalConnAPI(ctx, c.conns, "prowlarr")
-	if err != nil {
-		return nil, err
 	}
 	if conn == nil || strings.TrimSpace(conn.URL) == "" || strings.TrimSpace(conn.APIKey) == "" {
-		return nil, nil
+		return usenetsearch.NZBPasswordHit{}, false
 	}
-	pc := prowlarr.New(prowlarr.Config{BaseURL: strings.TrimRight(conn.URL, "/"), APIKey: conn.APIKey}, c.http)
-	list, err := pc.UsenetNewznab(ctx)
-	if err != nil {
-		return nil, err
+	idx := newznab.Indexer{
+		Name:     "newznab",
+		Endpoint: conn.URL,
+		APIKey:   conn.APIKey,
 	}
-	c.mu.Lock()
-	c.cached, c.cachedAt = list, time.Now()
-	c.mu.Unlock()
-	return list, nil
-}
-
-func toNewznab(in []prowlarr.NewznabIndexer) []newznab.Indexer {
-	out := make([]newznab.Indexer, 0, len(in))
-	for _, x := range in {
-		if strings.TrimSpace(x.Endpoint) == "" || strings.TrimSpace(x.APIKey) == "" {
-			continue
-		}
-		name := strings.TrimSpace(x.Name)
-		if name == "" {
-			name = "indexer"
-		}
-		out = append(out, newznab.Indexer{Name: name, Endpoint: x.Endpoint, APIKey: x.APIKey})
-	}
-	return out
+	hit, ok := c.client.Lookup(ctx, []newznab.Indexer{idx}, filename)
+	return usenetsearch.NZBPasswordHit{Title: hit.Title, Passwords: hit.Passwords, Indexer: hit.Indexer}, ok
 }

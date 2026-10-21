@@ -12129,3 +12129,20 @@ status stays active.
 | File | Change |
 |---|---|
 | `internal/usenetsearch/namefix.go` | header-stem lookup before BODY |
+
+## 2026-10-21 — NZB host API setting (replace Prowlarr indexer hop)
+
+**Problem:** Password lookup had no Newznab host setting. It listed indexers from Prowlarr `GET /api/v1/indexer` at runtime.
+**Root cause:** Wrong owner. Prowlarr is grab-search. Name recovery needs an operator-set Newznab URL + API key.
+**Fix:** Singleton `connections` service `newznab` on Settings → Download → Usenet (URL + key, Test via `t=caps`). Namefix lookup uses only that host. Removed `internal/prowlarr/indexers.go`. Kill switch unchanged. No HTML scrape, no password logs.
+**Outcome:** Operator can save a Newznab host. Lookup is a no-op until that row exists.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/nzbpassword.go` | read `newznab` connection, not Prowlarr |
+| `internal/api/connections.go` | `testNewznab` via `t=caps` |
+| `internal/newznab/client.go` | `NormalizeEndpoint`, `Caps` |
+| `internal/prowlarr/indexers.go` | deleted |
+| `frontend/src/screens/settings/Usenet.tsx` | NZB host API card |

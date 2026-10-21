@@ -10,6 +10,7 @@ import (
 	"github.com/labbersanon/sakms/internal/bravesearch"
 	"github.com/labbersanon/sakms/internal/emby"
 	"github.com/labbersanon/sakms/internal/jellyfin"
+	"github.com/labbersanon/sakms/internal/newznab"
 	"github.com/labbersanon/sakms/internal/ollama"
 	"github.com/labbersanon/sakms/internal/omdb"
 	"github.com/labbersanon/sakms/internal/plex"
@@ -31,7 +32,7 @@ type ConnectionTestRequest struct {
 	// Service is a singleton connections service name OR, on the registry test
 	// routes, a serviceconn.Provider — the two vocabularies overlap on
 	// "jellyfin" deliberately (one dispatch, two callers).
-	Service  string `json:"service"` // "ollama" | "stash" | "jellyfin" | "emby" | "plex" | "stashdb" | "fansdb" | "tpdb" | "brave" | "prowlarr" | "nntp" | "tmdb" | "tvdb" | "trakt" | "omdb"
+	Service  string `json:"service"` // "ollama" | "stash" | "jellyfin" | "emby" | "plex" | "stashdb" | "fansdb" | "tpdb" | "brave" | "prowlarr" | "newznab" | "nntp" | "tmdb" | "tvdb" | "trakt" | "omdb"
 	URL      string `json:"url"`
 	Username string `json:"username,omitempty"` // only nntp uses this (testNNTP)
 	APIKey   string `json:"apiKey,omitempty"`
@@ -98,6 +99,8 @@ func TestConnection(ctx context.Context, httpClient *http.Client, req Connection
 		return testSearXNG(ctx, httpClient, req)
 	case "prowlarr":
 		return testProwlarr(ctx, httpClient, req)
+	case "newznab":
+		return testNewznab(ctx, httpClient, req)
 	// No "qbittorrent"/"nzbget" cases: the unified aria2c downloader replaced
 	// both as SAK's download engine (Unified downloader, 2026-07-18), so there
 	// is no external download-client connection to test anymore — same
@@ -249,6 +252,26 @@ func testSearXNG(ctx context.Context, httpClient *http.Client, req ConnectionTes
 func testProwlarr(ctx context.Context, httpClient *http.Client, req ConnectionTestRequest) ConnectionTestResult {
 	c := prowlarr.New(prowlarr.Config{BaseURL: req.URL, APIKey: req.APIKey}, httpClient)
 	if _, err := c.Search(ctx, "", nil); err != nil {
+		return ConnectionTestResult{Error: err.Error()}
+	}
+	return ConnectionTestResult{OK: true}
+}
+
+// Claude 2026-10-21: Test the dedicated Newznab host with t=caps.
+// Reason: namefix password lookup is this connection, not Prowlarr.
+// Troubleshooting: Test fails → wrong URL (need /api) or bad key. HTML
+//
+//	login pages are not a caps response. Review if: an indexer requires
+//	t=tvsearch only and rejects t=caps.
+func testNewznab(ctx context.Context, httpClient *http.Client, req ConnectionTestRequest) ConnectionTestResult {
+	if strings.TrimSpace(req.URL) == "" {
+		return ConnectionTestResult{Error: "url is required"}
+	}
+	if strings.TrimSpace(req.APIKey) == "" {
+		return ConnectionTestResult{Error: "api key is required"}
+	}
+	c := &newznab.Client{HTTP: httpClient}
+	if err := c.Caps(ctx, newznab.Indexer{Endpoint: req.URL, APIKey: req.APIKey}); err != nil {
 		return ConnectionTestResult{Error: err.Error()}
 	}
 	return ConnectionTestResult{OK: true}

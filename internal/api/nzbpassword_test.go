@@ -13,7 +13,7 @@ import (
 	"github.com/labbersanon/sakms/internal/usenetsearch"
 )
 
-func TestNZBPasswordLookup_ProwlarrNewznabNoHTML(t *testing.T) {
+func TestNZBPasswordLookup_ConfiguredHostNoHTML(t *testing.T) {
 	const stem = "o6938TxyzABCDEF"
 	var sawHTML bool
 	var nzbURL string
@@ -23,10 +23,18 @@ func TestNZBPasswordLookup_ProwlarrNewznabNoHTML(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
+		if r.URL.Path == "/api/v1/indexer" {
+			t.Errorf("prowlarr indexer list %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
 		switch {
 		case r.URL.Query().Get("t") == "search":
 			if r.URL.Query().Get("q") != stem {
 				t.Errorf("q=%s", r.URL.Query().Get("q"))
+			}
+			if r.URL.Query().Get("apikey") != "idx-key" {
+				t.Error("missing apikey")
 			}
 			io.WriteString(w, `<?xml version="1.0"?>
 <rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2007/feeds/attributes/">
@@ -52,27 +60,14 @@ func TestNZBPasswordLookup_ProwlarrNewznabNoHTML(t *testing.T) {
 	defer idx.Close()
 	nzbURL = idx.URL + "/getnzb"
 
-	prow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/indexer" {
-			t.Errorf("prowlarr path %s", r.URL.Path)
-		}
-		io.WriteString(w, `[{"id":1,"name":"NZBGeek","enable":true,"protocol":"usenet","fields":[
-			{"name":"baseUrl","value":"`+idx.URL+`"},
-			{"name":"apiPath","value":"/api"},
-			{"name":"apiKey","value":"idx-key"}
-		]}]`)
-	}))
-	defer prow.Close()
-
 	connStore, _, settingsStore, _, _, _, _, _, _, _ := testStores(t)
-	if err := connStore.Upsert(context.Background(), "prowlarr", prow.URL, "prowl-key"); err != nil {
+	if err := connStore.Upsert(context.Background(), "newznab", idx.URL+"/api", "idx-key"); err != nil {
 		t.Fatal(err)
 	}
 	httpClient := &http.Client{Timeout: 5 * time.Second}
 	lookup := &nzbPasswordLookup{
 		conns:    connStore,
 		settings: settingsStore,
-		http:     httpClient,
 		client:   &newznab.Client{HTTP: httpClient, Interval: time.Nanosecond},
 	}
 	hit, ok := lookup.Lookup(context.Background(), stem)
@@ -84,6 +79,38 @@ func TestNZBPasswordLookup_ProwlarrNewznabNoHTML(t *testing.T) {
 	}
 	if sawHTML {
 		t.Fatal("HTML scrape")
+	}
+}
+
+func TestNZBPasswordLookup_NoHost(t *testing.T) {
+	connStore, _, settingsStore, _, _, _, _, _, _, _ := testStores(t)
+	lookup := &nzbPasswordLookup{conns: connStore, settings: settingsStore, client: &newznab.Client{}}
+	if _, ok := lookup.Lookup(context.Background(), "o6938TxyzABCDEF"); ok {
+		t.Fatal("unset newznab host must miss")
+	}
+}
+
+func TestNZBPasswordLookup_IgnoresProwlarr(t *testing.T) {
+	var prowHit bool
+	prow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		prowHit = true
+		http.NotFound(w, r)
+	}))
+	defer prow.Close()
+	connStore, _, settingsStore, _, _, _, _, _, _, _ := testStores(t)
+	if err := connStore.Upsert(context.Background(), "prowlarr", prow.URL, "prowl-key"); err != nil {
+		t.Fatal(err)
+	}
+	lookup := &nzbPasswordLookup{
+		conns:    connStore,
+		settings: settingsStore,
+		client:   &newznab.Client{Interval: time.Nanosecond},
+	}
+	if _, ok := lookup.Lookup(context.Background(), "o6938TxyzABCDEF"); ok {
+		t.Fatal("prowlarr-only must miss")
+	}
+	if prowHit {
+		t.Fatal("must not query Prowlarr indexer list")
 	}
 }
 

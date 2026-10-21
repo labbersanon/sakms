@@ -7,8 +7,8 @@ import (
 
 // Claude 2026-10-21: Newznab password lookup for namefix (API, not HTML).
 // Reason: ngPost passwords are in the NZB; NNTP hash.7z is 7z-aes. Lookup
-//   searches the obfuscated archive stem on Prowlarr-listed Newznab
-//   indexers. Do not scrape indexer sites. Do not brute-force.
+//   searches the obfuscated archive stem on the configured Newznab host.
+//   Do not scrape indexer sites. Do not brute-force.
 // Troubleshooting: o2cli grep "nzb-password"; name_source=nzb|srrdb after
 //   payload=7z-aes. Review if: indexers stop matching q=filename.
 // Related files: internal/newznab/client.go, namefix.go

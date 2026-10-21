@@ -80,10 +80,10 @@ const (
 	//   client nil. Review if: provider rate-limits sakms-srrdb/1.
 	KeySRRDBEnabled = "usenet_nntp_srrdb_enabled"
 	// Claude 2026-10-21: Newznab password lookup kill switch (default on).
-	// Reason: namefix 7z-aes empty miss uses Prowlarr-listed indexer keys
-	//   via t=search/t=get. Off = current skip_7z after first attempt.
-	// Troubleshooting: nzb-password never logs → this key false or Prowlarr
-	//   missing. Review if: a Settings UI toggle ships.
+	// Reason: namefix uses the Settings Newznab host via t=search/t=get.
+	//   Off = skip the lookup. Review if: a Settings UI toggle ships.
+	// Troubleshooting: nzb-password never logs → this key false or the
+	//   newznab connection is unset.
 	KeyNZBPasswordEnabled = "usenet_nntp_nzb_password_enabled"
 	KeyMinCompletenessPct = "usenet_nntp_min_completeness_pct"
 	KeyIncompleteTTLDays  = "usenet_nntp_incomplete_ttl_days"

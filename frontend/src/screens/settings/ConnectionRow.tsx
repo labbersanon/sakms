@@ -48,9 +48,6 @@ const serviceLabel = (service: string): string => {
   return labels[service] ?? service;
 };
 
-const urlPlaceholder = (service: string): string =>
-  service === "newznab" ? "https://api.example.com/api" : "https://...";
-
 // ConnectionRow is one service's controls: URL / Username (if needed) / key or
 // password, plus Test / Save / Delete and, when a netscan finding exists, the
 // LAN-discovery hint buttons. keyTouched tracks whether the operator (or the
@@ -225,7 +222,7 @@ export const ConnectionRow: Component<{
         <input
           type="text"
           class={`${inputClass} !w-72 ${isFailing() ? "border-danger bg-danger/10" : ""}`}
-          placeholder={urlPlaceholder(props.service)}
+          placeholder={props.service === "newznab" ? "https://api.example.com/api" : "https://..."}
           aria-label={`${props.service} URL`}
           value={url()}
           onInput={(e) => {

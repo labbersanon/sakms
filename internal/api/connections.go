@@ -259,10 +259,8 @@ func testProwlarr(ctx context.Context, httpClient *http.Client, req ConnectionTe
 
 // Claude 2026-10-21: Test the dedicated Newznab host with t=caps.
 // Reason: namefix password lookup is this connection, not Prowlarr.
-// Troubleshooting: Test fails → wrong URL (need /api) or bad key. HTML
-//
-//	login pages are not a caps response. Review if: an indexer requires
-//	t=tvsearch only and rejects t=caps.
+// Troubleshooting: Test fails → wrong URL (need /api) or bad key.
+// Review if: an indexer requires t=tvsearch only and rejects t=caps.
 func testNewznab(ctx context.Context, httpClient *http.Client, req ConnectionTestRequest) ConnectionTestResult {
 	if strings.TrimSpace(req.URL) == "" {
 		return ConnectionTestResult{Error: "url is required"}

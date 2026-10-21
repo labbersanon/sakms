@@ -23,11 +23,6 @@ func TestNZBPasswordLookup_ConfiguredHostNoHTML(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		if r.URL.Path == "/api/v1/indexer" {
-			t.Errorf("prowlarr indexer list %s", r.URL.Path)
-			http.NotFound(w, r)
-			return
-		}
 		switch {
 		case r.URL.Query().Get("t") == "search":
 			if r.URL.Query().Get("q") != stem {

@@ -22,7 +22,7 @@ afterEach(() => {
   destroy.mockClear();
 });
 
-function video(canPlay = ""): HTMLVideoElement {
+function video(canPlay: CanPlayTypeResult = ""): HTMLVideoElement {
   const el = document.createElement("video");
   el.canPlayType = () => canPlay;
   return el;

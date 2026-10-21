@@ -46,10 +46,8 @@ import { SaveStatus, useSaveStatus, useSectionSaveItem } from "./shared";
 // serviceLabel maps a connection service id to its display name. OMDb is the
 // only override — every other singleton service id already reads as its label.
 // Former jellyfin/nntp entries went with those services (migration 0053).
-const serviceLabel = (service: string): string => {
-  const labels: Record<string, string> = { omdb: "OMDb" };
-  return labels[service] ?? service;
-};
+const serviceLabel = (service: string): string =>
+  service === "omdb" ? "OMDb" : service;
 
 // ConnectionRow is one service's stacked controls: URL / key, plus Test /
 // Save / Delete and, when a netscan finding exists, the LAN-discovery hint
@@ -175,8 +173,6 @@ export const ConnectionRow: Component<{
     }
   };
 
-  // host-probe (Jellyfin lives off SAK's docker network) — fills the row's URL
-  // from a discovered finding, same as a known-host finding does.
   const [probeHost, setProbeHost] = createSignal("");
   const [probed, setProbed] = createSignal<NetscanFinding | undefined>();
   const doProbe = async () => {

@@ -12301,3 +12301,16 @@ status stays active.
 | File | Change |
 |---|---|
 | `frontend/src/screens/settings/ConnectionRow.tsx` | inline test status + key placeholder |
+
+## 2026-10-21 — ConnectionRow: flatten OMDb label lookup
+
+**Problem:** One-entry `serviceLabel` map and a stale host-probe comment survived the inline pass.
+**Root cause:** OMDb was still a `Record` with a single key; the probe comment still said Jellyfin lives off SAK's docker network.
+**Fix:** `service === "omdb" ? "OMDb" : service`. Drop the stale probe comment. Keep the OMDb/jellyfin/nntp note.
+**Outcome:** Settings.test 136 passed; `tsc --noEmit` ok.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/settings/ConnectionRow.tsx` | flatten OMDb label; drop stale probe comment |

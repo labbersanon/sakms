@@ -172,6 +172,22 @@ function defaultGet(url: string): Response | undefined {
   if (url.includes("/identify-enabled")) return jsonResponse({ enabled: true });
   if (url.includes("/api/trakt/status"))
     return jsonResponse({ configured: false, linked: false });
+  // Claude 2026-10-21: UI → Discover always mounts Trakt + TMDB/IMDb list
+  // ingest. Those GETs used to fall through to 204 → api() null.
+  // fetchTraktWatchlistIngest then read .enabled and Vitest reported an
+  // unhandled rejection (tests still "passed"). Off is the backend default.
+  // Troubleshooting: Settings.test.tsx fails with trakt.ts:90 enabled.
+  // Review if: ingest defaults on, or these cards leave the Discover screen.
+  if (url.includes("/api/trakt/watchlist-ingest"))
+    return jsonResponse({ enabled: false });
+  if (url.includes("/api/tmdb/list-ingest"))
+    return jsonResponse({
+      enabled: false,
+      listIds: "",
+      hasAccountSession: false,
+    });
+  if (url.includes("/api/imdb/list-ingest"))
+    return jsonResponse({ enabled: false, listIds: "" });
   if (url.includes("/api/discover/sliders")) return jsonResponse([]);
   // AdultRowAdminSection (UI > Discover > Adult) mount GETs. One includes()
   // covers both the row list and the /genres picker (both arrays).

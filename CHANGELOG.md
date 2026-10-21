@@ -12146,3 +12146,16 @@ status stays active.
 | `internal/newznab/client.go` | `NormalizeEndpoint`, `Caps` |
 | `internal/prowlarr/indexers.go` | deleted |
 | `frontend/src/screens/settings/Usenet.tsx` | NZB host API card |
+
+## 2026-10-21 — Settings.test defaultGet stubs Trakt/list ingest
+
+**Problem:** Full `Settings.test.tsx` threw unhandled `fetchTraktWatchlistIngest` rejections (`null.enabled`) while tests still reported pass.
+**Root cause:** UI → Discover always mounts Trakt (and TMDB/IMDb list ingest). `defaultGet` answered `/api/trakt/status` but those GETs fell through to 204 → `api()` null.
+**Fix:** Stub watchlist-ingest `{enabled:false}` (backend default) plus the sibling list-ingest GETs.
+**Outcome:** Full Settings.test file exits 0 with no unhandled rejections.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/Settings.test.tsx` | `defaultGet` stubs for ingest GETs |

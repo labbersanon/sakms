@@ -87,10 +87,15 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # Troubleshooting: compose build wget 404 on BtbN/FFmpeg-Builds — copy tag,
 #   linux64-gpl-8.1 asset name, and checksums.sha256 line. Stay on n8.1, not n9.0.
 # Review if: n8.1 autobuilds stop publishing, or trixie ffmpeg gains libvmaf.
+# Claude 2026-10-21: bump BtbN pin to autobuild-2026-10-20-13-08 / n8.1.3-18.
+# Reason: 2026-09-29 tag 404s; sakms-auto-update failed deploying #238 and
+#   rollback rebuild of 9e5771a also 404'd. Stay on n8.1, not n9.0.
+# Troubleshooting: compose build wget 404 on BtbN/FFmpeg-Builds — copy tag,
+#   linux64-gpl-8.1 asset, checksums.sha256. Review if: n8.1 autobuilds stop.
 FROM debian:trixie-slim AS ffmpeg
-ARG FFMPEG_TAG=autobuild-2026-09-29-13-10
-ARG FFMPEG_ASSET=ffmpeg-n8.1.3-6-gff48edd8b2-linux64-gpl-8.1.tar.xz
-ARG FFMPEG_SHA256=9f96ca3806df5926dc6645a93fab35c2ed3783c9824c319ca99e9dc6dc286875
+ARG FFMPEG_TAG=autobuild-2026-10-20-13-08
+ARG FFMPEG_ASSET=ffmpeg-n8.1.3-18-g46d899d7a0-linux64-gpl-8.1.tar.xz
+ARG FFMPEG_SHA256=e2a70912ed207cf412a28aa83f2efde7f9fb5c65370af5ad007ad60076d704a6
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update \

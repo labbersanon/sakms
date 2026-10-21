@@ -12072,3 +12072,16 @@ status stays active.
 | `internal/usenetsearch/crawler.go` | ingest uses skipAdmissionGate |
 | `internal/usenetsearch/namefix.go` | promote uses skipAdmissionGate |
 | `internal/release/release.go` | pixel WxH → height |
+
+## 2026-10-21 — BtbN ffmpeg pin (autobuild-2026-10-20)
+
+**Problem:** `sakms-auto-update` failed deploying #238. wget 404 on `autobuild-2026-09-29-13-10`. Rollback rebuild of `9e5771a` 404'd too. Live container stayed on `9e5771a`.
+**Root cause:** BtbN deletes dated autobuild assets. The ffmpeg layer was not cached this run.
+**Fix:** Pin `autobuild-2026-10-20-13-08` / `ffmpeg-n8.1.3-18-g46d899d7a0-linux64-gpl-8.1` (checksum from that release). Stay on n8.1, not n9.0.
+**Outcome:** Deploy of #238 unblocked.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `Dockerfile` | FFMPEG_TAG / ASSET / SHA256 |

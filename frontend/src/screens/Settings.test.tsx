@@ -592,6 +592,17 @@ describe("buildConnectionUpsertBody — three-state secret semantics", () => {
 // --- The same guarantee through the rendered UI (graded) -------------------
 
 describe("Connections table — untouched key is never sent (Acceptance Criterion 5)", () => {
+  it("API Connections stacks fields with no horizontal-scroll table", async () => {
+    stubFetch();
+    renderSettings();
+    goToAPIConnections();
+    const apiCard = screen.getByText(/^API Connections/).closest("div")!;
+    expect(await within(apiCard).findByLabelText("prowlarr URL")).toBeInTheDocument();
+    expect(within(apiCard).queryByRole("table")).toBeNull();
+    expect(apiCard.querySelector(".overflow-x-auto")).toBeNull();
+    expect(within(apiCard).queryByText("Username")).toBeNull();
+  });
+
   it("saving after editing ONLY the URL omits apiKey from the PUT body", async () => {
     const calls = stubFetch((url) => {
       if (url.includes("/api/connections") && !url.includes("/test"))
@@ -2839,11 +2850,11 @@ describe("Settings screens", () => {
     goToSection("AI");
     expect(await screen.findByLabelText("Ollama model")).toBeInTheDocument();
     expect(screen.queryByText("Switch to this mode")).toBeNull();
-    // The connection sub-tables live on this tab now — the selected provider's
-    // fields (ollama by default) and the always-visible Brave row (its URL
-    // field hidden, fixed-URL service — API Key is the presence signal).
+    // Stacked connection fields live on this tab — selected provider (ollama
+    // by default) plus Brave (fixed URL; API key is the presence signal).
     expect(await screen.findByLabelText("ollama URL")).toBeInTheDocument();
     expect(screen.getByLabelText("brave API key")).toBeInTheDocument();
+    expect(screen.queryByRole("table")).toBeNull();
   });
 
   it("Library tab shows per-mode panels beside its own mode selector", async () => {
@@ -3222,7 +3233,7 @@ describe("Usenet subscriptions — three-state secret semantics through the UI",
 });
 
 describe("Usenet NZB host API — Newznab connection", () => {
-  it("renders the Newznab URL+key row on Usenet, not on API Connections", async () => {
+  it("renders the Newznab URL+key card on Usenet, not on API Connections", async () => {
     stubFetch();
     renderSettings();
     goToDownloadSubTab("Usenet");

@@ -1,13 +1,19 @@
 // ConnectionRow / ConnectionMiniTable — the shared per-service connection
-// controls (URL / Username / key or password, Test / Save / Delete, plus
-// LAN-discovery hints) and the <table> chrome that wraps one or more rows.
-// Extracted out of Connections.tsx so other Settings sections (e.g. AI.tsx's
-// provider/Brave connection rows) can import these without depending on the
-// whole Connections screen module. Its save path goes through
+// controls (URL / key, Test / Save / Delete, plus LAN-discovery hints) and
+// the stacked chrome that wraps one or more services. Extracted out of
+// Connections.tsx so other Settings sections (e.g. AI.tsx's provider/Brave
+// connection rows) can import these without depending on the whole
+// Connections screen module. Its save path goes through
 // buildConnectionUpsertBody (src/api/settings.ts), which OMITS the apiKey
 // property when the operator didn't touch the key field of an already-configured
 // connection — so an unrelated edit (e.g. changing the URL) never wipes the
 // stored secret. See settings.test.tsx's dedicated assertion.
+//
+// Claude 2026-10-21: stacked labeled fields, not a 6-column overflow-x table.
+// Reason: Settings cards must not horizontal-scroll. The old table (Service /
+//   URL / empty Username / Key / buttons) needed overflow-x-auto.
+// Troubleshooting: NZB host Save scrolled off-screen; operator filled fields
+//   and nothing persisted. Review if: a Settings card still sets overflow-x-auto.
 
 import {
   type Component,
@@ -34,7 +40,7 @@ import {
   upsertConnection,
 } from "../../api/settings";
 import type { ConnectionSummary, NetscanFinding } from "../../api/settings";
-import { Button, ErrorText, inputClass } from "../../components/ui";
+import { Button, ErrorText, inputClass, labelClass } from "../../components/ui";
 import { SaveStatus, useSaveStatus, useSectionSaveItem } from "./shared";
 
 // serviceLabel maps a connection service id to its display name. Every current
@@ -48,12 +54,12 @@ const serviceLabel = (service: string): string => {
   return labels[service] ?? service;
 };
 
-// ConnectionRow is one service's controls: URL / Username (if needed) / key or
-// password, plus Test / Save / Delete and, when a netscan finding exists, the
-// LAN-discovery hint buttons. keyTouched tracks whether the operator (or the
-// Fetch-key button) actually edited the key field — the input for a configured
-// connection is blank (the real key is never sent back), so an untouched blank
-// key must NOT be persisted as "".
+// ConnectionRow is one service's stacked controls: URL / key, plus Test /
+// Save / Delete and, when a netscan finding exists, the LAN-discovery hint
+// buttons. keyTouched tracks whether the operator (or the Fetch-key button)
+// actually edited the key field — the input for a configured connection is
+// blank (the real key is never sent back), so an untouched blank key must NOT
+// be persisted as "".
 export const ConnectionRow: Component<{
   service: string;
   existing: ConnectionSummary | undefined;
@@ -214,40 +220,46 @@ export const ConnectionRow: Component<{
     }
   };
 
+  const failClass = () => (isFailing() ? "border-danger bg-danger/10" : "");
+
   return (
-    <tr class="border-b border-border/60 align-top">
-      <td class="px-2 py-2 text-fg">{serviceLabel(props.service)}</td>
-      <td class="px-2 py-2">
-        <Show when={!needsFixedUrl}>
-        <input
-          type="text"
-          class={`${inputClass} !w-72 ${isFailing() ? "border-danger bg-danger/10" : ""}`}
-          placeholder="https://..."
-          aria-label={`${props.service} URL`}
-          value={url()}
-          onInput={(e) => {
-            setUrl(e.currentTarget.value);
-            setDirty(true);
-          }}
-        />
+    <div class="rounded border border-border p-3">
+      <div class="mb-2 text-sm font-medium text-fg">
+        {serviceLabel(props.service)}
+      </div>
+      <Show when={!needsFixedUrl}>
+        <label class="mb-3 block">
+          <span class={labelClass}>URL</span>
+          <input
+            type="text"
+            class={`${inputClass} mt-1 ${failClass()}`}
+            placeholder="https://..."
+            aria-label={`${props.service} URL`}
+            value={url()}
+            onInput={(e) => {
+              setUrl(e.currentTarget.value);
+              setDirty(true);
+            }}
+          />
+        </label>
         <Show when={props.service === "prowlarr"}>
           <a
             href="https://wiki.servarr.com/en/prowlarr"
             target="_blank"
             rel="noreferrer"
-            class="mt-1 block text-xs text-fg underline decoration-accent underline-offset-2"
+            class="mb-3 block text-xs text-fg underline decoration-accent underline-offset-2"
           >
             wiki.servarr.com/en/prowlarr
           </a>
         </Show>
         <Show when={props.finding || allowHostProbe}>
-          <div class="mt-1 rounded border border-dashed border-border p-2 text-xs text-muted">
+          <div class="mb-3 rounded border border-dashed border-border p-2 text-xs text-muted">
             <Show when={props.finding}>
               <div>
                 Possible {props.service} at {props.finding!.url} — a hint only,
                 verify it's yours.
               </div>
-              <div class="mt-1 flex gap-2">
+              <div class="mt-1 flex flex-wrap gap-2">
                 <Button
                   class="!px-2 !py-1 !text-xs"
                   onClick={() => useURL(props.finding!.url)}
@@ -267,10 +279,10 @@ export const ConnectionRow: Component<{
             <Show when={allowHostProbe}>
               <div class="mt-1">
                 On a different host? Look up by IP or hostname:
-                <div class="mt-1 flex gap-2">
+                <div class="mt-1 flex flex-wrap gap-2">
                   <input
                     type="text"
-                    class={`${inputClass} !w-40 !py-1 !text-xs`}
+                    class={`${inputClass} min-w-0 flex-1 !py-1 !text-xs`}
                     placeholder="e.g. 10.1.10.4"
                     aria-label={`Look up host for ${props.service}`}
                     value={probeHost()}
@@ -284,7 +296,7 @@ export const ConnectionRow: Component<{
                   </Button>
                 </div>
                 <Show when={probed()}>
-                  <div class="mt-1 flex items-center gap-2">
+                  <div class="mt-1 flex flex-wrap items-center gap-2">
                     <span>Found at {probed()!.url}</span>
                     <Button
                       class="!px-2 !py-1 !text-xs"
@@ -301,25 +313,24 @@ export const ConnectionRow: Component<{
             </Show>
           </div>
         </Show>
-        </Show>
-        <Show when={needsFixedUrl}>
+      </Show>
+      <Show when={needsFixedUrl}>
+        <label class="mb-3 block">
+          <span class={labelClass}>URL</span>
           <input
             type="text"
-            class={`${inputClass} !w-72 disabled:opacity-50 disabled:cursor-not-allowed`}
+            class={`${inputClass} mt-1 disabled:cursor-not-allowed disabled:opacity-50`}
             aria-label={`${props.service} fixed URL (read-only)`}
             value={props.existing?.fixedUrl ?? ""}
             disabled
           />
-        </Show>
-      </td>
-      {/* Username column: empty for every singleton service (see the body()
-          comment above), kept so this row's cell count still matches
-          ConnectionMiniTable's 6-column header. */}
-      <td class="px-2 py-2" />
-      <td class="px-2 py-2">
+        </label>
+      </Show>
+      <label class="mb-3 block">
+        <span class={labelClass}>API key</span>
         <input
           type="password"
-          class={`${inputClass} !w-64 ${isFailing() ? "border-danger bg-danger/10" : ""}`}
+          class={`${inputClass} mt-1 ${failClass()}`}
           placeholder={keyPlaceholder()}
           aria-label={`${props.service} API key`}
           value={key()}
@@ -331,57 +342,49 @@ export const ConnectionRow: Component<{
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               e.preventDefault();
-              // Enter saves just this row; swallow so a rejection (surfaced
-              // inline already) doesn't become an unhandled promise rejection.
               void save().catch(() => {});
             }
           }}
         />
-        <Show when={API_KEY_HELP_URLS[props.service]}>
-          <a
-            href={API_KEY_HELP_URLS[props.service]}
-            target="_blank"
-            rel="noreferrer"
-            class="mt-1 block text-xs text-fg underline decoration-accent underline-offset-2"
-          >
-            Get API key →
-          </a>
-        </Show>
-        <Show when={props.service === "stash"}>
-          <div class="mt-1 text-xs text-muted">
-            Get your key: Stash → Settings → Security
-          </div>
-        </Show>
-      </td>
-      <td class="px-2 py-2">
-        <div class="flex gap-1">
-          <Button class="!px-2 !py-1 !text-xs" onClick={() => void test()}>
-            Test
-          </Button>
-          {/* Own Save button only when standalone; inside a SectionSave the
-              section's one button drives this row. Test/Delete stay per-row. */}
-          <Show when={!batched()}>
-            <Button
-              variant="primary"
-              class="!px-2 !py-1 !text-xs"
-              onClick={() => void save().catch(() => {})}
-            >
-              Save
-            </Button>
-          </Show>
-          <Button
-            class="!px-2 !py-1 !text-xs"
-            disabled={!props.existing}
-            onClick={() => void remove()}
-          >
-            Delete
-          </Button>
+      </label>
+      <Show when={API_KEY_HELP_URLS[props.service]}>
+        <a
+          href={API_KEY_HELP_URLS[props.service]}
+          target="_blank"
+          rel="noreferrer"
+          class="mb-3 block text-xs text-fg underline decoration-accent underline-offset-2"
+        >
+          Get API key →
+        </a>
+      </Show>
+      <Show when={props.service === "stash"}>
+        <div class="mb-3 text-xs text-muted">
+          Get your key: Stash → Settings → Security
         </div>
-      </td>
-      <td class="px-2 py-2">
+      </Show>
+      <div class="mt-3 flex flex-wrap items-center gap-2">
+        <Button class="!px-2 !py-1 !text-xs" onClick={() => void test()}>
+          Test
+        </Button>
+        <Show when={!batched()}>
+          <Button
+            variant="primary"
+            class="!px-2 !py-1 !text-xs"
+            onClick={() => void save().catch(() => {})}
+          >
+            Save
+          </Button>
+        </Show>
+        <Button
+          class="!px-2 !py-1 !text-xs"
+          disabled={!props.existing}
+          onClick={() => void remove()}
+        >
+          Delete
+        </Button>
         <SaveStatus text={status.status().text} error={status.status().error} />
-      </td>
-    </tr>
+      </div>
+    </div>
   );
 };
 
@@ -481,27 +484,9 @@ export const ConnectionServiceTable: Component<{
   );
 };
 
-// ConnectionMiniTable is the shared <table> chrome (the overflow wrapper +
-// the Service/URL/Username/API-Key header row) that wraps one or more
-// ConnectionRows. The big Connections table renders this shape inline; the AI
-// tab reuses it for its per-provider and Brave single-row tables so the column
-// layout stays identical without duplicating the markup.
+// ConnectionMiniTable stacks one or more ConnectionRows. Name kept so AI /
+// Library / API Connections callers stay unchanged. It is not a table and
+// must not set overflow-x-auto.
 export const ConnectionMiniTable: Component<{ children: JSX.Element }> = (
   props,
-) => (
-  <div class="overflow-x-auto">
-    <table class="w-full text-left text-sm">
-      <thead>
-        <tr class="border-b border-border text-xs uppercase tracking-wide text-muted">
-          <th class="px-2 py-2 font-medium">Service</th>
-          <th class="px-2 py-2 font-medium">URL</th>
-          <th class="px-2 py-2 font-medium">Username</th>
-          <th class="px-2 py-2 font-medium">API Key / Password</th>
-          <th class="px-2 py-2 font-medium" />
-          <th class="px-2 py-2 font-medium" />
-        </tr>
-      </thead>
-      <tbody>{props.children}</tbody>
-    </table>
-  </div>
-);
+) => <div class="space-y-3">{props.children}</div>;

@@ -289,6 +289,12 @@ func TestLookup_BrowseGroupSizeMatchesNZBStem(t *testing.T) {
 	nzbURL := srv.URL + "/getnzb"
 	when := time.Now().UTC().Format(time.RFC1123Z)
 	mux.HandleFunc("/api", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("t") == "caps" {
+			io.WriteString(w, `<?xml version="1.0"?><caps><groups>
+<group name="alt.binaries.teevee"/>
+</groups></caps>`)
+			return
+		}
 		if r.URL.Query().Get("t") != "search" {
 			http.NotFound(w, r)
 			return
@@ -349,6 +355,70 @@ func TestLookup_BrowseGroupSizeMatchesNZBStem(t *testing.T) {
 	}
 	if sawHTML > 0 {
 		t.Fatal("HTML scrape")
+	}
+}
+
+func TestLookup_SkipBrowseWhenGroupNotInCaps(t *testing.T) {
+	var browse, gets int
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "login") || strings.Contains(r.URL.Path, "geekseek") {
+			t.Errorf("HTML scrape path %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	mux.HandleFunc("/api", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("t") {
+		case "caps":
+			io.WriteString(w, `<?xml version="1.0"?><caps><groups>
+<group name="alt.binaries.usenet"/>
+</groups></caps>`)
+		case "search":
+			if r.URL.Query().Get("group") != "" && r.URL.Query().Get("q") == "" && r.URL.Query().Get("poster") == "" {
+				browse++
+			}
+			io.WriteString(w, `<?xml version="1.0"?><rss version="2.0"><channel></channel></rss>`)
+		case "get":
+			gets++
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	c := &Client{HTTP: srv.Client(), Interval: time.Nanosecond}
+	_, ok := c.Lookup(context.Background(), []Indexer{{
+		Name: "NZBGeek", Endpoint: srv.URL + "/api", APIKey: "idx-key",
+	}}, Query{
+		Filename:  "o6938TxyzABCDEF",
+		Poster:    "AbCdEfGhIjKlM@ngPost.com",
+		Group:     "alt.binaries.x264",
+		PostedAt:  time.Now().Unix() - 3600,
+		SizeBytes: 15_000_000_000,
+	})
+	if ok {
+		t.Fatal("unlisted group must miss")
+	}
+	if browse != 0 {
+		t.Fatalf("browse=%d want 0 (caps omits alt.binaries.x264)", browse)
+	}
+	if gets != 0 {
+		t.Fatalf("gets=%d want 0", gets)
+	}
+}
+
+func TestGroupInCaps(t *testing.T) {
+	listed := capsInfo{Groups: []string{"alt.binaries.usenet"}}
+	if groupInCaps(listed, "alt.binaries.x264") {
+		t.Fatal("x264 not listed")
+	}
+	if !groupInCaps(listed, "alt.binaries.usenet") {
+		t.Fatal("usenet listed")
+	}
+	if !groupInCaps(capsInfo{}, "alt.binaries.x264") {
+		t.Fatal("empty caps groups still allow browse")
 	}
 }
 

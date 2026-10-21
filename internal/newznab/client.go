@@ -24,9 +24,10 @@ import (
 // Reason: ngPost title/password live in NZB meta. Stem q= and poster= miss on
 //   NZBGeek (caps q,group; RSS 2010 attrs have size/usenetdate, not poster).
 //   Browse group+maxage, t=get, require the hash in NZB subjects. No HTML.
-// Troubleshooting: o2cli grep "nzb-password"; browse cands=0 → size/group;
-//   nzb=N hit=0 → subjects lack the stem. Review if: NZBGeek adds poster
-//   to caps or RSS.
+// Troubleshooting: o2cli grep "nzb-password"; browse skip group_not_listed →
+//   caps groups omit the NNTP group (NZBGeek lists only alt.binaries.usenet);
+//   browse cands=0 → size/group; nzb=N hit=0 → subjects lack the stem.
+//   Review if: NZBGeek adds alt.binaries.x264 (or poster) to caps.
 // Related files: internal/api/nzbpassword.go, namefix.go, nzbpw.go
 
 const (
@@ -59,8 +60,10 @@ type Client struct {
 	HTTP     *http.Client
 	Interval time.Duration
 
-	mu   sync.Mutex
-	last time.Time
+	mu     sync.Mutex
+	last   time.Time
+	capsMu sync.Mutex
+	caps   map[string]capsInfo
 }
 
 func (c *Client) httpClient() *http.Client {
@@ -192,11 +195,22 @@ func (c *Client) lookupOne(ctx context.Context, idx Indexer, q Query) (Hit, bool
 
 // Claude 2026-10-21: NZBGeek cannot search poster or the hash filename.
 // Reason: caps q,group so poster= is latest-N; browse group+maxage, t=get, NZB stem. No HTML.
-// Troubleshooting: browse cands=0 → size/group mismatch; nzb=N hit=0 → no hash.
-// Review if: NZBGeek adds poster to caps or RSS.
+// Troubleshooting: browse skip group_not_listed → caps omits the NNTP group;
+//   cands=0 → size/group mismatch; nzb=N hit=0 → no hash.
+// Review if: NZBGeek adds alt.binaries.x264 or poster to caps.
 func (c *Client) lookupBrowse(ctx context.Context, idx Indexer, q Query, needles []string) (Hit, bool) {
 	group := strings.TrimSpace(q.Group)
 	if group == "" || q.SizeBytes <= 0 || len(needles) == 0 {
+		return Hit{}, false
+	}
+	info, err := c.capsInfo(ctx, idx)
+	if err != nil {
+		log.Printf("usenetsearch: nzb-password indexer=%s browse skip group=%s reason=caps err=%v", idx.Name, group, err)
+		return Hit{}, false
+	}
+	if !groupInCaps(info, group) {
+		log.Printf("usenetsearch: nzb-password indexer=%s browse skip group=%s reason=group_not_listed n=%d",
+			idx.Name, group, len(info.Groups))
 		return Hit{}, false
 	}
 	maxage := browseMaxAgeDays(q.PostedAt)
@@ -560,29 +574,103 @@ func parseAPIError(body []byte) error {
 	return fmt.Errorf("newznab: %s", desc)
 }
 
-// Caps is the Test-connection ping: t=caps, never HTML login/details.
-func (c *Client) Caps(ctx context.Context, idx Indexer) error {
+type capsInfo struct {
+	Groups []string
+}
+
+type capsDoc struct {
+	XMLName xml.Name `xml:"caps"`
+	Groups  []struct {
+		Name string `xml:"name,attr"`
+	} `xml:"groups>group"`
+}
+
+func parseCaps(body []byte) (capsInfo, error) {
+	if err := parseAPIError(body); err != nil {
+		return capsInfo{}, err
+	}
+	if !bytes.Contains(body, []byte("<caps")) {
+		return capsInfo{}, fmt.Errorf("not a Newznab caps response")
+	}
+	var doc capsDoc
+	if err := xml.Unmarshal(body, &doc); err != nil {
+		return capsInfo{}, fmt.Errorf("caps xml")
+	}
+	info := capsInfo{}
+	for _, g := range doc.Groups {
+		n := strings.TrimSpace(g.Name)
+		if n != "" {
+			info.Groups = append(info.Groups, n)
+		}
+	}
+	return info, nil
+}
+
+func groupInCaps(info capsInfo, group string) bool {
+	group = strings.ToLower(strings.TrimSpace(group))
+	if group == "" {
+		return false
+	}
+	if len(info.Groups) == 0 {
+		return true
+	}
+	for _, g := range info.Groups {
+		if strings.ToLower(strings.TrimSpace(g)) == group {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Client) capsInfo(ctx context.Context, idx Indexer) (capsInfo, error) {
+	ep := NormalizeEndpoint(idx.Endpoint)
+	c.capsMu.Lock()
+	if c.caps != nil {
+		if info, ok := c.caps[ep]; ok {
+			c.capsMu.Unlock()
+			return info, nil
+		}
+	}
+	c.capsMu.Unlock()
+	body, err := c.getCaps(ctx, idx)
+	if err != nil {
+		return capsInfo{}, err
+	}
+	info, err := parseCaps(body)
+	if err != nil {
+		return capsInfo{}, err
+	}
+	c.capsMu.Lock()
+	if c.caps == nil {
+		c.caps = map[string]capsInfo{}
+	}
+	c.caps[ep] = info
+	c.capsMu.Unlock()
+	return info, nil
+}
+
+func (c *Client) getCaps(ctx context.Context, idx Indexer) ([]byte, error) {
 	idx.Endpoint = NormalizeEndpoint(idx.Endpoint)
 	u, err := url.Parse(idx.Endpoint)
 	if err != nil || u.Host == "" {
-		return fmt.Errorf("indexer endpoint")
+		return nil, fmt.Errorf("indexer endpoint")
 	}
 	vals := u.Query()
 	vals.Set("t", "caps")
 	vals.Set("apikey", idx.APIKey)
 	vals.Set("o", "xml")
 	u.RawQuery = vals.Encode()
-	body, err := c.get(ctx, u)
+	return c.get(ctx, u)
+}
+
+// Caps is the Test-connection ping: t=caps, never HTML login/details.
+func (c *Client) Caps(ctx context.Context, idx Indexer) error {
+	body, err := c.getCaps(ctx, idx)
 	if err != nil {
 		return err
 	}
-	if err := parseAPIError(body); err != nil {
-		return err
-	}
-	if !bytes.Contains(body, []byte("<caps")) {
-		return fmt.Errorf("not a Newznab caps response")
-	}
-	return nil
+	_, err = parseCaps(body)
+	return err
 }
 
 func (c *Client) get(ctx context.Context, u *url.URL) ([]byte, error) {

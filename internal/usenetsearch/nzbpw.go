@@ -10,9 +10,9 @@ import (
 // Reason: ngPost passwords are in the NZB; NNTP hash.7z is 7z-aes. Lookup
 //   searches the archive stem then the NNTP From (poster) on the configured
 //   Newznab host. Do not scrape indexer sites. Do not brute-force.
-// Troubleshooting: o2cli grep "nzb-password"; browse cands=0 → size/group;
-//   name_source=nzb|srrdb after payload=7z-aes. Review if: NZBGeek adds
-//   poster to caps or RSS.
+// Troubleshooting: o2cli grep "nzb-password"; browse skip group_not_listed →
+//   caps omits the NNTP group; cands=0 → size/group; name_source=nzb|srrdb
+//   after payload=7z-aes. Review if: NZBGeek adds x264 or poster to caps.
 // Related files: internal/newznab/client.go, namefix.go
 
 const namefixNZBPasswordPerPass = 6

@@ -12344,3 +12344,18 @@ status stays active.
 | File | Change |
 |---|---|
 | `internal/newznab/client.go` | flatten browse return; reuse limit |
+
+## 2026-10-21 — Newznab: skip group browse unless caps lists the group
+
+**Problem:** Live NZBGeek browse was `items=500 cands=0` on every hash.7z lookup and ate the 20s namefix BODY budget (`leftover=41`).
+**Root cause:** NZBGeek `t=caps` groups are only `alt.binaries.usenet`. `group=alt.binaries.x264` is ignored, so empty-q browse is site-wide latest-N TV. Stem `q=` is 0. Prowlarr has no other Usenet indexer. ngPost posts have no NFO/NZB file.
+**Fix:** Cache `t=caps` groups; skip empty-q browse when the NNTP group is not listed. Indexers that advertise the group still size-match + `t=get`.
+**Outcome:** unit tests cover listed-group browse and skip for `alt.binaries.usenet`-only caps.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/newznab/client.go` | caps group cache; skip unlisted browse |
+| `internal/newznab/client_test.go` | skip-unlisted + groupInCaps |
+| `docs/usenet-nntp-native.md` | caps-gated browse |

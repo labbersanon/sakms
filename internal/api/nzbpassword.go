@@ -19,8 +19,8 @@ import (
 //   host URL + API key the operator sets. HTML scrape is not used.
 // Troubleshooting: nzb-password never logs → newznab connection missing,
 //   kill switch off, or t=search miss. poster= is nZEDb fromname after
-//   stem miss. NZBGeek browse is group+maxage+size then t=get. Review if:
-//   NZBGeek adds poster to caps or RSS.
+//   stem miss. Browse is group+maxage+size then t=get only when caps lists
+//   the NNTP group. Review if: NZBGeek adds x264 or poster to caps.
 // Related files: internal/newznab/client.go, frontend Usenet.tsx
 
 type nzbPasswordLookup struct {

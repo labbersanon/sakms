@@ -197,9 +197,12 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   obfuscated archive stem (`t=search&q=`) then the NNTP From
   (`t=search&poster=`, nZEDb advanced fromname) on the Settings → Download →
   Usenet NZB host (`connections` service `newznab`). NZBGeek caps are
-  `q,group` and its RSS has size/usenetdate but not poster, so a miss then
-  browses `t=search&group=&maxage=` and `t=get`s size-close rows whose NZB
-  file subjects contain the stem. Passwords come from `X-DNZB-Password` /
+  `q,group` and its RSS has size/usenetdate but not poster. A miss then
+  browses `t=search&group=&maxage=` only when `t=caps` lists that NNTP
+  group; NZBGeek lists only `alt.binaries.usenet`, so `group=alt.binaries.x264`
+  is skipped (empty-q browse was latest-N TV, `cands=0`). Indexers that list
+  the group still `t=get` size-close rows whose NZB file subjects contain the
+  stem. Passwords come from `X-DNZB-Password` /
   `<meta type="password">`. Unmatched poster results are dropped so an
   ignored `poster=` cannot become a latest-N grab. sakms does not scrape
   indexer HTML and does not brute-force. Decrypt + CRC can still become

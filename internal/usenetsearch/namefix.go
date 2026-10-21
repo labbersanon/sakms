@@ -190,7 +190,7 @@ type NameFixer struct {
 	// SRRDB resolves RAR/ZIP/SFV inner-file CRC32 (nil disables it).
 	SRRDB ArchiveCRCLookup
 	// NZBPassword is an optional Newznab supplement after a local 7z-aes miss
-	// (nil disables it). Native PAR2/PreDB/srrdb stay the name path.
+	// (nil disables it).
 	NZBPassword NZBPasswordLookup
 	Groups      []string
 	Budget      *bodyBudget
@@ -569,7 +569,7 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		// Troubleshooting: nzb-password on skip_7z ngPost → this block
 		//   must not run (no 7z BODY). Review if: an indexer lists x264.
 		if kind == "7z-aes" && len(crcs) == 0 {
-			if !nzbGot && n.NZBPassword != nil && n.nzbPWUsed < namefixNZBPasswordPerPass {
+			if !nzbGot {
 				nzbHit, nzbGot = n.fetchNZBPassword(work, set, rows)
 			}
 			if nzbGot {
@@ -944,7 +944,7 @@ func (n *NameFixer) lookupPreDB(ctx context.Context, set PendingSet, rows []Head
 }
 
 func (n *NameFixer) fetchNZBPassword(ctx context.Context, set PendingSet, rows []HeaderRow) (NZBPasswordHit, bool) {
-	if n.NZBPassword == nil {
+	if n.NZBPassword == nil || n.nzbPWUsed >= namefixNZBPasswordPerPass {
 		return NZBPasswordHit{}, false
 	}
 	stem := archiveSearchStem(rows)

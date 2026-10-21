@@ -193,13 +193,12 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   7z end-header CRC / SFV CRC32 is looked up on srrdb
   `archive-crc:` when that CRC is unique
   (`resultsCount==1`, size ±15%); srrdb ToS is use-don't-scrape (no catalog
-  paging).   Native namefix (PAR2 / PreDB / srrdb / SFV) is the path.
-  After a local empty-password `7z-aes` BODY miss, an optional Newznab
+  paging). After a local empty-password `7z-aes` BODY miss, an optional Newznab
   host (`connections` service `newznab`) may `t=search` the stem then
   `poster=` (nZEDb fromname). A miss then browses `group+maxage` only when
   `t=caps` lists that NNTP group; NZBGeek lists only `alt.binaries.usenet`,
   so `alt.binaries.x264` is skipped. ngPost `skip_7z` sets do not query
-  Newznab (those NZBs are not on the indexer). A miss does not hold
+  Newznab (those NZBs are not on the indexer). A miss bumps
   `name_attempts`. Passwords come from `X-DNZB-Password` /
   `<meta type="password">`. Unmatched poster results are dropped. sakms
   does not scrape indexer HTML and does not brute-force. Decrypt + CRC can

@@ -4,7 +4,8 @@
 // It has its own page precisely because a Usenet subscription's field set is
 // richer than the URL + API-key shape ConnectionRow renders: label, host, port,
 // TLS, username, password, max-connections. NNTP rows do not reuse
-// ConnectionRow. The NZB host API card does (one Newznab URL + key).
+// ConnectionRow. NZB host API is a stacked URL+key card on this page, not a
+// ConnectionMiniTable.
 //
 // Two things this page must never grow:
 //   - Priority / fallback ordering between subscriptions. When a download needs
@@ -22,11 +23,21 @@ import {
   type Component,
   For,
   Show,
+  createEffect,
   createMemo,
   createResource,
   createSignal,
   onMount,
+  untrack,
 } from "solid-js";
+import {
+  buildConnectionUpsertBody,
+  deleteConnection,
+  fetchConnections,
+  testConnection,
+  upsertConnection,
+  type ConnectionSummary,
+} from "../../api/settings";
 import {
   DEFAULT_MAX_CONNS,
   NNTP_DEFAULT_PORT,
@@ -63,12 +74,10 @@ import {
   inputClass,
   labelClass,
 } from "../../components/ui";
-import { ConnectionServiceTable } from "./ConnectionRow";
 import {
   AutoGrabSlotFields,
   Card,
   SaveStatus,
-  SectionSave,
   autoGrabSlotsValid,
   useSaveStatus,
   useSectionSaveItem,
@@ -89,24 +98,181 @@ export const UsenetSection: Component = () => (
   </div>
 );
 
-// Claude 2026-10-21: dedicated Newznab host + card-level SectionSave.
+// Claude 2026-10-21: stacked URL+key card for Newznab namefix lookup.
 // Reason: Prowlarr is grab-search; this URL+key is t=search/t=get only.
-//   Per-row Save sat in a 6-column table and scrolled off-screen; fields do not autosave.
+//   ConnectionMiniTable is the metadata/API-connections layout (Service/URL/
+//   Username/Key). Usenet cards are labeled fields + Save at the bottom.
 // Troubleshooting: operator filled URL+key, no Save visible, live connections had 0 newznab rows.
-// Review if: a second Newznab host is required, or ConnectionMiniTable drops unused columns.
+// Review if: a second Newznab host is required.
 // Related files: internal/api/nzbpassword.go
-const NewznabHostCard: Component = () => (
-  <Card title="NZB host API">
-    <Muted class="mb-3">
-      Newznab API URL and key used only to recover names and archive passwords
-      for obfuscated NNTP sets. Not used for grabbing. Example:
-      https://api.nzbgeek.info/api
-    </Muted>
-    <SectionSave>
-      <ConnectionServiceTable services={() => ["newznab"]} />
-    </SectionSave>
-  </Card>
-);
+const NewznabHostCard: Component = () => {
+  const [conns, { refetch }] = createResource(fetchConnections);
+  const existing = () =>
+    (conns() ?? []).find((c) => c.service === "newznab");
+
+  return (
+    <Card title="NZB host API">
+      <Muted class="mb-3">
+        Newznab API URL and key used only to recover names and archive passwords
+        for obfuscated NNTP sets. Not used for grabbing. Example:
+        https://api.nzbgeek.info/api
+      </Muted>
+      <Show when={conns.error}>
+        <ErrorText>{(conns.error as Error)?.message}</ErrorText>
+      </Show>
+      {/* Seed URL/hasApiKey only after GET /api/connections resolves — same
+          Guardrail #5 gate as ConnectionRow: mounting on undefined would treat
+          an existing key as missing and a Save would send apiKey:"". */}
+      <Show when={!conns.error && conns() !== undefined}>
+        <NewznabHostFields existing={existing()} onChanged={() => void refetch()} />
+      </Show>
+    </Card>
+  );
+};
+
+const NewznabHostFields: Component<{
+  existing: ConnectionSummary | undefined;
+  onChanged: () => void;
+}> = (props) => {
+  const [url, setUrl] = createSignal(props.existing?.url ?? "");
+  const [key, setKey] = createSignal("");
+  const [keyTouched, setKeyTouched] = createSignal(false);
+  const [dirty, setDirty] = createSignal(false);
+  const status = useSaveStatus();
+
+  createEffect(() => {
+    const next = props.existing;
+    if (untrack(dirty)) return;
+    setUrl(next?.url ?? "");
+  });
+
+  const hasExistingKey = () => !!props.existing?.hasApiKey;
+  const body = () =>
+    buildConnectionUpsertBody({
+      url: url(),
+      needsUsername: false,
+      keyTouched: keyTouched(),
+      keyValue: key(),
+      hasExistingKey: hasExistingKey(),
+    });
+
+  const save = async () => {
+    if (!url().trim()) {
+      status.failed(new Error("url is required"));
+      throw new Error("url is required");
+    }
+    try {
+      await upsertConnection("newznab", body());
+      status.set("✓ saved");
+      setKey("");
+      setKeyTouched(false);
+      setDirty(false);
+      props.onChanged();
+    } catch (e) {
+      status.failed(e);
+      throw e;
+    }
+  };
+
+  const batched = useSectionSaveItem({
+    id: "usenet-newznab",
+    label: "NZB host API",
+    dirty,
+    save,
+  });
+
+  const test = async () => {
+    status.set("testing…");
+    try {
+      const b = body();
+      const r = await testConnection({
+        service: "newznab",
+        url: b.url,
+        username: b.username,
+        apiKey: b.apiKey,
+      });
+      if (r.ok) status.set("✓ ok");
+      else status.failed(new Error(r.error || "connection failed"));
+    } catch (e) {
+      status.failed(e);
+    }
+  };
+
+  const remove = async () => {
+    if (!confirm("Remove the NZB host API connection?")) return;
+    try {
+      await deleteConnection("newznab");
+      setUrl("");
+      setKey("");
+      setKeyTouched(false);
+      setDirty(false);
+      props.onChanged();
+    } catch (e) {
+      status.failed(e);
+    }
+  };
+
+  return (
+    <div>
+      <label class="mb-3 block">
+        <span class={labelClass}>URL</span>
+        <input
+          type="text"
+          class={`${inputClass} mt-1`}
+          placeholder="https://api.example.com/api"
+          aria-label="newznab URL"
+          value={url()}
+          onInput={(e) => {
+            setUrl(e.currentTarget.value);
+            setDirty(true);
+          }}
+        />
+      </label>
+      <label class="mb-3 block">
+        <span class={labelClass}>API key</span>
+        <input
+          type="password"
+          class={`${inputClass} mt-1`}
+          placeholder={
+            hasExistingKey()
+              ? `unchanged (••••${props.existing?.keySuffix ?? ""})`
+              : "api key"
+          }
+          aria-label="newznab API key"
+          value={key()}
+          onInput={(e) => {
+            setKey(e.currentTarget.value);
+            setKeyTouched(true);
+            setDirty(true);
+          }}
+        />
+      </label>
+      <div class="mt-3 flex items-center gap-2">
+        <Button class="!px-2 !py-1 !text-xs" onClick={() => void test()}>
+          Test
+        </Button>
+        <Show when={!batched()}>
+          <Button
+            variant="primary"
+            class="!px-2 !py-1 !text-xs"
+            disabled={!dirty()}
+            onClick={() => void save().catch(() => {})}
+          >
+            Save
+          </Button>
+        </Show>
+        <Button
+          class="!px-2 !py-1 !text-xs"
+          disabled={!props.existing}
+          onClick={() => void remove()}
+        >
+          Delete
+        </Button>
+        <SaveStatus text={status.status().text} error={status.status().error} />
+      </div>
+    </div>
+  );
+};
 
 // SubscriptionDraft is one subscription's editable field set — the shape both
 // the per-row editor and the Add form bind to. No priority/sortOrder field:

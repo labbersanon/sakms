@@ -12215,3 +12215,32 @@ status stays active.
 | `frontend/src/screens/Library.test.tsx` | Quality heading `<p>` |
 | `frontend/src/screens/Organize.test.tsx` | discs empty-state copy |
 | `frontend/src/screens/SearchTakeover.test.tsx` | Lighthouse PIN copy |
+
+## 2026-10-21 — NZB host API card-level Save
+
+**Problem:** Settings → Download → Usenet → NZB host API had no obvious Save. Filling URL and key did not persist. Live `connections` had 0 `newznab` rows.
+**Root cause:** ConnectionRow's Save sits in a 6-column table (empty Username + wide URL/key) and scrolled off-screen. Fields do not autosave. Test does not persist.
+**Fix:** Wrap the table in `SectionSave` inside the card, same as metadata sources / API Connections. Card-level Save at the bottom; Test/Delete stay on the row. Disabled until dirty.
+**Outcome:** Settings.test 135 passed, including NZB host PUT.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/settings/Usenet.tsx` | `SectionSave` around Newznab table |
+| `frontend/src/screens/Settings.test.tsx` | card Save disabled until dirty |
+
+## 2026-10-21 — NZB host API stacked fields (not a connection table)
+
+**Problem:** Card-level Save still sat next to a 6-column ConnectionMiniTable. Nothing else on Usenet (or most Settings cards) uses that layout.
+**Root cause:** Newznab reused ConnectionRow because it is a singleton URL+key connection. That table is for metadata/API Connections rows, not this page.
+**Fix:** Stacked labeled URL + API key + Test/Save/Delete, same shape as Subscriptions/Downloads. Three-state apiKey omit via `buildConnectionUpsertBody`. ConnectionRow no longer special-cases newznab.
+**Outcome:** Fields and Save are visible without horizontal scroll.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/settings/Usenet.tsx` | stacked NewznabHostFields |
+| `frontend/src/screens/settings/ConnectionRow.tsx` | drop newznab table special-case |
+| `frontend/src/screens/Settings.test.tsx` | assert stacked labels, no Service column |

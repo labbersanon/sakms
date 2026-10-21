@@ -44,7 +44,7 @@ import { SaveStatus, useSaveStatus, useSectionSaveItem } from "./shared";
 // media players and Usenet subscriptions moved to the multi-connection registry
 // (migration 0053) and are no longer ConnectionRows.
 const serviceLabel = (service: string): string => {
-  const labels: Record<string, string> = { omdb: "OMDb", newznab: "NZB host" };
+  const labels: Record<string, string> = { omdb: "OMDb" };
   return labels[service] ?? service;
 };
 
@@ -222,7 +222,7 @@ export const ConnectionRow: Component<{
         <input
           type="text"
           class={`${inputClass} !w-72 ${isFailing() ? "border-danger bg-danger/10" : ""}`}
-          placeholder={props.service === "newznab" ? "https://api.example.com/api" : "https://..."}
+          placeholder="https://..."
           aria-label={`${props.service} URL`}
           value={url()}
           onInput={(e) => {

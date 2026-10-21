@@ -12159,3 +12159,23 @@ status stays active.
 | File | Change |
 |---|---|
 | `frontend/src/screens/Settings.test.tsx` | `defaultGet` stubs for ingest GETs |
+
+## 2026-10-21 — Local full-suite tests, local merge/deploy, nightly GitHub sync
+
+**Problem:** GitHub `go-test` gated every merge (~9–10 min) and a later `origin/main` push started `sakms-auto-update`, which would recreate the live container — or roll it backward if GitHub still lagged local main.
+**Root cause:** Deploy source was `git ls-remote` of GitHub `main`. Local tests had no CI-matching entrypoint. Agent rule was push-then-deploy.
+**Fix:** `make test-ci` mirrors GitHub (podman Postgres 5433, pnpm build, `go test ./...`). Ship merges to local main and pushes a server1 bare repo; updater `--deploy-local` builds from `/var/lib/sakms-updater/src` and no-ops on the same SHA. 05:00 `sakms-nightly-sync.timer` fast-forwards `origin/main`, never deploys, ntfy `status-5808` on failure.
+**Outcome:** Live follows local main after tests. Nightly GitHub catch-up cannot redeploy or roll back.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `scripts/ci-local.sh` | local GitHub-matching suite |
+| `scripts/sakms-ship-local.sh` | ff-merge to local main + deploy |
+| `scripts/sakms-deploy-local.sh` | push to server1 `sakms.git`, start `--deploy-local` |
+| `scripts/sakms-nightly-sync.sh` | origin/main ff-push + go-test watch; no deploy |
+| `scripts/sakms-ntfy.sh` | systemd-creds publisher → status-5808 |
+| `deploy/sakms/sakms-auto-update.py` | `--deploy-local` / `--from-github`; skip if GitHub behind live |
+| `Makefile` | `test-ci` `deploy-local` `ship-local` `nightly-sync` |
+| `AGENTS.md` | local merge/deploy rule |

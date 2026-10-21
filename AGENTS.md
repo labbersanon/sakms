@@ -55,5 +55,11 @@ the notes below are only the non-obvious caveats.
   `SAKMS_DEV_BACKEND`). Run `go run ./cmd/sakms` alongside it.
 
 - **Tests:** frontend `pnpm -C frontend test` (Vitest); backend
-  `go test ./cmd/sakms/... ./internal/...`. Regenerate the Go→TS DTOs with
-  `make dto` (`go run ./cmd/gendto`) if you change `internal/apidto`.
+  `go test ./cmd/sakms/... ./internal/...`. The full GitHub-matching suite
+  is `make test-ci` (`scripts/ci-local.sh`: podman Postgres on 5433,
+  `pnpm build`, `go test -count=1 -timeout 45m -p 4 ./...`). Merge to
+  **local** `main` and `make deploy-local` after that passes — do not wait
+  for GitHub CI, and do not `git push origin main` from an agent session
+  (the 05:00 `sakms-nightly-sync.timer` does that, with no redeploy).
+  Regenerate the Go→TS DTOs with `make dto` (`go run ./cmd/gendto`) if you
+  change `internal/apidto`.

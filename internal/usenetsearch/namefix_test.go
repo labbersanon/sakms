@@ -1761,6 +1761,24 @@ func TestNameFix_QuotedFansubTitleSurvivesStrictAdmission(t *testing.T) {
 	}
 }
 
+func TestNameFix_Quoted480pDoesNotSkipMinRes(t *testing.T) {
+	const title = "[WhyNot] Saint Young Men OVA [DVD 480p AAC]"
+	rows := []usenet.MessageOverview{
+		{Number: 1, Subject: `[01/2] - "` + title + `.mkv" yEnc (1/2)`, From: "poster@obf", MessageID: "sd1@t", Bytes: 80_000_000, DateUnix: 1700000000},
+		{Number: 2, Subject: `[01/2] - "` + title + `.mkv" yEnc (2/2)`, From: "poster@obf", MessageID: "sd2@t", Bytes: 80_000_000, DateUnix: 1700000000},
+	}
+	snap := &PolicySnapshot{Modes: map[string]Standard{"movies": movieModeStd([]quality.Tier{quality.High}, 720, 0)}}
+	f := newNFFixture(t, rows, snap)
+	f.crawlAndRecompute(t)
+	var n int
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases WHERE display_name=?`, title).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("480p quoted title must not ingest under MinRes=720, got %d", n)
+	}
+}
+
 func TestNameFix_QuotedHashFilenameDoesNotRename(t *testing.T) {
 	f := newNFFixture(t, obfuscatedSet("qh", "uzmv2D5wxtEsPRJRjBN30g", 1, 45), nil)
 	f.crawlAndRecompute(t)

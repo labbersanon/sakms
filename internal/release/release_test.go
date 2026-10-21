@@ -56,6 +56,16 @@ func TestParse_TableDriven(t *testing.T) {
 			title: "Some.Show.S01E01.720p.WEBRip.DDP5.1.x264-GROUP",
 			want:  Info{Resolution: 720, Source: "webrip", Codec: "x264", Group: "GROUP", Channels: Channels51},
 		},
+		{
+			name:  "pixel 1920x1080 without p token",
+			title: "[PSXJowie] Plastic Nee-san OAD [BD 1920x1080]",
+			want:  Info{Resolution: 1080},
+		},
+		{
+			name:  "pixel 1280x720",
+			title: "Some Show [1280x720]",
+			want:  Info{Resolution: 720},
+		},
 	}
 
 	for _, tc := range cases {

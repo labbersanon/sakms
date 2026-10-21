@@ -51,8 +51,14 @@ func ChannelsFromCount(n int) int {
 
 var (
 	resolutionPattern = regexp.MustCompile(`(?i)\b(480|540|576|720|1080|2160)p?\b`)
-	uhd4kPattern      = regexp.MustCompile(`(?i)\b(4k|uhd)\b`)
-	codecPattern      = regexp.MustCompile(`(?i)\b(x264|x265|h\.?264|h\.?265|hevc|xvid|av1)\b`)
+	// Claude 2026-10-20: pixel WxH matches identNameSQL (1920x1080, 1280x720).
+	// Reason: live `[BD 1920x1080]` parsed res=0 so skipGate treated it as
+	//   unknown; `\b1080\b` does not fire inside `x1080`.
+	// Troubleshooting: admit res=0 on a 1920x1080 title → this pattern missed.
+	// Review if: Parse grows a full WxH table (720x480, 3840x1600).
+	pixelResPattern = regexp.MustCompile(`(?i)\b(1280x720|1920x[0-9]+|3840x2160)\b`)
+	uhd4kPattern    = regexp.MustCompile(`(?i)\b(4k|uhd)\b`)
+	codecPattern    = regexp.MustCompile(`(?i)\b(x264|x265|h\.?264|h\.?265|hevc|xvid|av1)\b`)
 	// groupPattern matches the scene-naming convention of a trailing
 	// "-GROUPNAME" at the very end of a release title.
 	// Claude 2026-10-11: optional " 1" (or " N") suffix after the group.
@@ -100,6 +106,8 @@ func Parse(title string) Info {
 		if n, err := strconv.Atoi(m[1]); err == nil {
 			info.Resolution = n
 		}
+	} else if m := pixelResPattern.FindStringSubmatch(title); m != nil {
+		info.Resolution = pixelToHeight(m[1])
 	} else if uhd4kPattern.MatchString(title) {
 		info.Resolution = 2160
 	}
@@ -136,6 +144,20 @@ func Parse(title string) Info {
 	}
 
 	return info
+}
+
+func pixelToHeight(token string) int {
+	s := strings.ToLower(token)
+	switch {
+	case strings.HasPrefix(s, "1280x"):
+		return 720
+	case strings.HasPrefix(s, "3840x"):
+		return 2160
+	case strings.HasPrefix(s, "1920x"):
+		return 1080
+	default:
+		return 0
+	}
 }
 
 var obfuscationSuffix = map[string]bool{

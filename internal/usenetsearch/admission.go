@@ -45,11 +45,11 @@ const statSamplePerRelease = 3
 // statSkipMissing is the missing-of-sample count that skips (does not index)
 // an otherwise quality-matching release.
 // Claude 2026-10-15: 2-of-3 chosen over 1-of-3 because a skip is irreversible
-//   (the watermark advances past it) and STAT alone is known to lie on some
-//   providers; a real DMCA takedown removes the whole release, so 2-of-3
-//   still catches it while tolerating one provider's false 430.
+// (the watermark advances past it) and STAT alone is known to lie on some
+// providers; a real DMCA takedown removes the whole release, so 2-of-3
+// still catches it while tolerating one provider's false 430.
 // Review if: a false-skip is confirmed in `admit-skip-stat` logs plus a later
-//   successful grab of the same release from a different provider.
+// successful grab of the same release from a different provider.
 const statSkipMissing = 2
 
 // Standard is one quality bar to check a parsed release against — either a
@@ -435,6 +435,27 @@ func gate(name string, info release.Info, std Standard) (bool, string) {
 	// Unknown source (ok==false): neutral pass, matching autograb's own
 	// "unknown is neutral" convention (plan step 3).
 	return true, ""
+}
+
+// skipAdmissionGate lets spaced HD ident titles ingest under a 2160p movies
+// floor (quoted 1080p fansubs). SD ident still faces MinRes.
+// Claude 2026-10-20: HD-only (snapped >= 720).
+// Reason: live `[WhyNot] … [DVD 480p AAC]` was admitted with min_res=720
+// because any quotedReleaseName with ` _[` skipped the floor.
+// Troubleshooting: admit res=480 min_res=720 → this returned true.
+// Review if: 576p PAL ident should skip a 720 floor (today: no).
+func skipAdmissionGate(name string) bool {
+	if !quotedReleaseName(name) || !strings.ContainsAny(name, " _[") {
+		return false
+	}
+	info := release.Parse(name)
+	snapped := autograb.SnapFloorResolution(autograb.Candidate{
+		Title:      name,
+		Resolution: info.Resolution,
+		Source:     info.Source,
+		Codec:      info.Codec,
+	})
+	return snapped >= 720
 }
 
 func tierAllowed(t quality.Tier, allowed []quality.Tier) bool {

@@ -183,6 +183,37 @@ func TestCrawlGroup_LanguageFilterSkipsGermanTitle(t *testing.T) {
 	}
 }
 
+func TestCrawlGroup_QuotedSDBelowMinResNeverUpserted(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+
+	const group = "alt.binaries.multimedia.anime.highspeed"
+	const title = "[WhyNot] Saint Young Men OVA [DVD 480p AAC]"
+	rows := releaseRows(1, title, "sd", 3)
+	src := &crawlStub{gr: usenet.GroupRange{Low: 1, High: len(rows)}, rows: rows}
+	snap := &PolicySnapshot{Modes: map[string]Standard{"movies": movieModeStd([]quality.Tier{quality.High}, 720, 0)}}
+	c := &Crawler{Src: src, Index: idx, Groups: []string{group}, AdmissionEnabled: true,
+		GroupModesFn: func(string) []string { return []string{"movies"} },
+		Admitter:     newAdmitter(&fakePolicy{snap: snap})}
+	logs := captureLog(t, func() {
+		if _, err := c.CrawlOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+	})
+	n, err := idx.CountHeaders(ctx)
+	if err != nil || n != 0 {
+		t.Fatalf("count=%d err=%v, want 0 (480p quoted must not skip MinRes=720)", n, err)
+	}
+	if strings.Contains(logs, "usenetsearch: admit ") {
+		t.Fatalf("480p quoted title must not admit:\n%s", logs)
+	}
+}
+
 func TestCrawlGroup_NonMatchingReleaseNeverUpserted(t *testing.T) {
 	sqlDB := dbtest.New(t)
 	idx, err := OpenIndex(sqlDB)

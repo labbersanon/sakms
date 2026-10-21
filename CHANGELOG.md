@@ -12056,3 +12056,19 @@ status stays active.
 | `internal/usenetsearch/subject.go` | ObfKey omits group for `@ngPost.com` From |
 | `internal/usenetsearch/namefix.go` | HeadOnly on split .7z.001; skip_7z after first miss |
 | `docs/usenet-nntp-native.md` | ngPost operating note |
+
+## 2026-10-20 — NNTP admission: SD ident no longer skips MinRes
+
+**Problem:** Live crawl admitted `[WhyNot] Saint Young Men OVA [DVD 480p AAC]` with `res=480 min_res=720 stat=ok`.
+**Root cause:** Spaced/bracketed `quotedReleaseName` skipped the quality gate so 1080p fansubs could ingest under a 2160p movies floor. That bypass also covered SD ident and unknown-res pixel titles (`1920x1080` parsed as 0).
+**Fix:** skipGate only when snapped resolution is ≥720. Parse `1920x1080` / `1280x720` / `3840x2160`. 1080p fansubs under a 2160p floor still skip.
+**Outcome:** 480p quoted titles face MinRes. Do not lower the 95% grab gate.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/admission.go` | skipAdmissionGate HD-only |
+| `internal/usenetsearch/crawler.go` | ingest uses skipAdmissionGate |
+| `internal/usenetsearch/namefix.go` | promote uses skipAdmissionGate |
+| `internal/release/release.go` | pixel WxH → height |

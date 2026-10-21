@@ -625,18 +625,16 @@ func groupInCaps(info capsInfo, group string) bool {
 func (c *Client) capsInfo(ctx context.Context, idx Indexer) (capsInfo, error) {
 	ep := NormalizeEndpoint(idx.Endpoint)
 	c.capsMu.Lock()
-	if c.caps != nil {
-		if info, ok := c.caps[ep]; ok {
-			c.capsMu.Unlock()
-			return info, nil
-		}
-	}
+	info, ok := c.caps[ep]
 	c.capsMu.Unlock()
+	if ok {
+		return info, nil
+	}
 	body, err := c.getCaps(ctx, idx)
 	if err != nil {
 		return capsInfo{}, err
 	}
-	info, err := parseCaps(body)
+	info, err = parseCaps(body)
 	if err != nil {
 		return capsInfo{}, err
 	}

@@ -110,31 +110,20 @@ func TestPickItems_RequiresStemOrSingleHit(t *testing.T) {
 
 func TestPickItems_PosterAttr(t *testing.T) {
 	const poster = "AbCdEfGhIjKlM@ngPost.com"
-	items := []rssItem{
-		{Title: "Latest.Show.2026.1080p-GRP"},
-		{
-			Title: "Wanted.Show.S01E01.1080p.WEB-DL.x264-GRP",
-			Attrs: []rssAttr{{Name: "poster", Value: poster}},
-		},
+	const want = "Wanted.Show.S01E01.1080p.WEB-DL.x264-GRP"
+	latest := rssItem{Title: "Latest.Show.2026.1080p-GRP"}
+	cases := []struct {
+		name string
+		item rssItem
+	}{
+		{"2007", rssItem{Title: want, Attrs: []rssAttr{{Name: "poster", Value: poster}}}},
+		{"2010", rssItem{Title: want, Attrs2010: []rssAttr{{Name: "poster", Value: poster}}}},
 	}
-	got := pickItems(items, []string{"hashstem", poster}, false)
-	if len(got) != 1 || got[0].Title != "Wanted.Show.S01E01.1080p.WEB-DL.x264-GRP" {
-		t.Fatalf("poster attr: %+v", got)
-	}
-}
-
-func TestPickItems_PosterAttr2010(t *testing.T) {
-	const poster = "AbCdEfGhIjKlM@ngPost.com"
-	items := []rssItem{
-		{Title: "Latest.Show.2026.1080p-GRP"},
-		{
-			Title:     "Wanted.Show.S01E01.1080p.WEB-DL.x264-GRP",
-			Attrs2010: []rssAttr{{Name: "poster", Value: poster}},
-		},
-	}
-	got := pickItems(items, []string{"hashstem", poster}, false)
-	if len(got) != 1 || got[0].Title != "Wanted.Show.S01E01.1080p.WEB-DL.x264-GRP" {
-		t.Fatalf("2010 poster attr: %+v", got)
+	for _, tc := range cases {
+		got := pickItems([]rssItem{latest, tc.item}, []string{"hashstem", poster}, false)
+		if len(got) != 1 || got[0].Title != want {
+			t.Fatalf("%s: %+v", tc.name, got)
+		}
 	}
 }
 

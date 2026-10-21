@@ -72,9 +72,6 @@ export const ConnectionRow: Component<{
   failing?: () => boolean;
   onManualTestResult?: (ok: boolean) => void;
 }> = (props) => {
-  // isFailing is the local red-tint accessor: true when the parent marked this
-  // service's saved-connection test (or last manual Test) as failing.
-  const isFailing = () => props.failing?.() ?? false;
   // needsFixedUrl services have a hardcoded server-side base URL — the row shows
   // no URL input, and save/test skip the "url is required" guard for them.
   const needsFixedUrl = SERVICES_WITH_FIXED_URL.includes(props.service);
@@ -141,7 +138,7 @@ export const ConnectionRow: Component<{
   // again (the connection is now configured; the real key is never sent back).
   const save = async () => {
     try {
-      await upsertBody();
+      await upsertConnection(props.service, body());
       status.set("✓ saved");
       setKey("");
       setKeyTouched(false);
@@ -161,9 +158,6 @@ export const ConnectionRow: Component<{
     dirty,
     save,
   });
-  const upsertBody = async () => {
-    await upsertConnection(props.service, body());
-  };
 
   const remove = async () => {
     if (!confirm(`Remove the ${props.service} connection?`)) return;
@@ -220,7 +214,7 @@ export const ConnectionRow: Component<{
     }
   };
 
-  const failClass = () => (isFailing() ? "border-danger bg-danger/10" : "");
+  const failClass = () => (props.failing?.() ? "border-danger bg-danger/10" : "");
 
   return (
     <div class="rounded border border-border p-3" data-connection-service={props.service}>

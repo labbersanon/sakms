@@ -12275,3 +12275,16 @@ status stays active.
 | `internal/usenetsearch/namefix.go` | pass stem+poster into lookup |
 | `internal/api/nzbpassword.go` | Lookup takes NZBPasswordQuery |
 | `docs/usenet-nntp-native.md` | poster= From after stem |
+
+## 2026-10-21 — ConnectionRow: drop isFailing pass-through
+
+**Problem:** Leftover Settings deslop sat uncommitted after the no-hscroll ship.
+**Root cause:** `failClass` went through a local `isFailing` wrapper; `save` called a one-line `upsertBody`.
+**Fix:** `failClass` reads `props.failing` directly; `save` calls `upsertConnection` inline.
+**Outcome:** Settings.test 136 passed; `tsc --noEmit` ok.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/settings/ConnectionRow.tsx` | drop isFailing; inline upsert |

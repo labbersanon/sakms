@@ -18,8 +18,8 @@ import (
 // Reason: Prowlarr is grab-search; password/title recovery needs a Newznab
 //   host URL + API key the operator sets. HTML scrape is not used.
 // Troubleshooting: nzb-password never logs → newznab connection missing,
-//   kill switch off, or t=search miss. Review if: a second Newznab host
-//   is required.
+//   kill switch off, or t=search miss. poster= is nZEDb fromname after
+//   stem miss. Review if: a second Newznab host is required.
 // Related files: internal/newznab/client.go, frontend Usenet.tsx
 
 type nzbPasswordLookup struct {
@@ -43,12 +43,13 @@ func AttachNZBPasswordLookup(svc *usenetsearch.Service, connStore *connections.S
 	})
 }
 
-func (c *nzbPasswordLookup) Lookup(ctx context.Context, filename string) (usenetsearch.NZBPasswordHit, bool) {
+func (c *nzbPasswordLookup) Lookup(ctx context.Context, q usenetsearch.NZBPasswordQuery) (usenetsearch.NZBPasswordHit, bool) {
 	if c == nil {
 		return usenetsearch.NZBPasswordHit{}, false
 	}
-	filename = strings.TrimSpace(filename)
-	if filename == "" {
+	q.Filename = strings.TrimSpace(q.Filename)
+	q.Poster = strings.TrimSpace(q.Poster)
+	if q.Filename == "" && q.Poster == "" {
 		return usenetsearch.NZBPasswordHit{}, false
 	}
 	if c.settings != nil {
@@ -70,6 +71,6 @@ func (c *nzbPasswordLookup) Lookup(ctx context.Context, filename string) (usenet
 		Endpoint: conn.URL,
 		APIKey:   conn.APIKey,
 	}
-	hit, ok := c.client.Lookup(ctx, []newznab.Indexer{idx}, filename)
+	hit, ok := c.client.Lookup(ctx, []newznab.Indexer{idx}, newznab.Query{Filename: q.Filename, Poster: q.Poster})
 	return usenetsearch.NZBPasswordHit{Title: hit.Title, Passwords: hit.Passwords, Indexer: hit.Indexer}, ok
 }

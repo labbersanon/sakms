@@ -2515,8 +2515,11 @@ type fakeNZBPW struct {
 	calls []string
 }
 
-func (f *fakeNZBPW) Lookup(_ context.Context, filename string) (NZBPasswordHit, bool) {
-	f.calls = append(f.calls, filename)
+func (f *fakeNZBPW) Lookup(_ context.Context, q NZBPasswordQuery) (NZBPasswordHit, bool) {
+	f.calls = append(f.calls, q.Filename)
+	if q.Poster != "" {
+		f.calls = append(f.calls, q.Poster)
+	}
 	return f.hit, f.ok
 }
 
@@ -2625,5 +2628,14 @@ func TestNameFix_NZBPasswordHeaderLookupDespiteSkip7z(t *testing.T) {
 	}
 	if named != 1 || src != sourceNZB || res.BySource[sourceNZB] != 1 || len(lookup.calls) == 0 {
 		t.Fatalf("named=%d src=%q res=%+v calls=%v", named, src, res, lookup.calls)
+	}
+	var sawPoster bool
+	for _, c := range lookup.calls {
+		if c == "AbCdEfGhIjKlM@ngPost.com" {
+			sawPoster = true
+		}
+	}
+	if !sawPoster {
+		t.Fatalf("poster not queried: %v", lookup.calls)
 	}
 }

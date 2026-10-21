@@ -16,6 +16,27 @@ func TestNZBSearchStem_StripsSplit7z(t *testing.T) {
 	}
 }
 
+func TestNZBSearchPoster_ParsesFrom(t *testing.T) {
+	got := nzbSearchPoster(`AbCdEfGhIjKlM@ngPost.com`)
+	if got != "AbCdEfGhIjKlM@ngPost.com" {
+		t.Fatalf("bare: %q", got)
+	}
+	got = nzbSearchPoster(`ngPost <AbCdEfGhIjKlM@ngPost.com>`)
+	if got != "AbCdEfGhIjKlM@ngPost.com" {
+		t.Fatalf("angle: %q", got)
+	}
+}
+
+func TestArchiveSearchPoster_PrefersNgPost(t *testing.T) {
+	rows := []HeaderRow{
+		{From: "other@example.com"},
+		{From: "AbCdEfGhIjKlM@ngPost.com"},
+	}
+	if got := archiveSearchPoster(rows); got != "AbCdEfGhIjKlM@ngPost.com" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestArchiveSearchStem_Prefers7z(t *testing.T) {
 	rows := []HeaderRow{
 		{Filename: "aaaaaaaa.par2", Subject: `"aaaaaaaa.par2"`},

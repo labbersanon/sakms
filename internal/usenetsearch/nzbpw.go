@@ -2,15 +2,16 @@ package usenetsearch
 
 import (
 	"context"
+	"net/mail"
 	"strings"
 )
 
 // Claude 2026-10-21: Newznab password lookup for namefix (API, not HTML).
 // Reason: ngPost passwords are in the NZB; NNTP hash.7z is 7z-aes. Lookup
-//   searches the obfuscated archive stem on the configured Newznab host.
-//   Do not scrape indexer sites. Do not brute-force.
+//   searches the archive stem then the NNTP From (poster) on the configured
+//   Newznab host. Do not scrape indexer sites. Do not brute-force.
 // Troubleshooting: o2cli grep "nzb-password"; name_source=nzb|srrdb after
-//   payload=7z-aes. Review if: indexers stop matching q=filename.
+//   payload=7z-aes. Review if: indexers stop matching q=filename / poster=.
 // Related files: internal/newznab/client.go, namefix.go
 
 const namefixNZBPasswordPerPass = 6
@@ -22,9 +23,15 @@ type NZBPasswordHit struct {
 	Indexer   string
 }
 
-// NZBPasswordLookup finds an NZB by obfuscated archive filename.
+// NZBPasswordQuery is one namefix indexer lookup (stem and/or NNTP From).
+type NZBPasswordQuery struct {
+	Filename string
+	Poster   string
+}
+
+// NZBPasswordLookup finds an NZB by obfuscated archive filename and/or poster.
 type NZBPasswordLookup interface {
-	Lookup(ctx context.Context, filename string) (NZBPasswordHit, bool)
+	Lookup(ctx context.Context, q NZBPasswordQuery) (NZBPasswordHit, bool)
 }
 
 func nzbSearchStem(name string) string {
@@ -73,6 +80,49 @@ func archiveSearchStem(rows []HeaderRow) string {
 		}
 		if fallback == "" {
 			fallback = stem
+		}
+	}
+	return fallback
+}
+
+func nzbSearchPoster(from string) string {
+	from = strings.TrimSpace(from)
+	if from == "" {
+		return ""
+	}
+	if a, err := mail.ParseAddress(from); err == nil {
+		addr := strings.TrimSpace(a.Address)
+		if strings.Contains(addr, "@") {
+			return addr
+		}
+	}
+	if i := strings.Index(from, "<"); i >= 0 {
+		rest := from[i+1:]
+		if j := strings.Index(rest, ">"); j > 0 {
+			cand := strings.TrimSpace(rest[:j])
+			if strings.Contains(cand, "@") {
+				return cand
+			}
+		}
+	}
+	if strings.Contains(from, "@") && !strings.ContainsAny(from, " <>") {
+		return from
+	}
+	return ""
+}
+
+func archiveSearchPoster(rows []HeaderRow) string {
+	var fallback string
+	for _, r := range rows {
+		p := nzbSearchPoster(r.From)
+		if p == "" {
+			continue
+		}
+		if looksLikeNgPostFrom(p) {
+			return p
+		}
+		if fallback == "" {
+			fallback = p
 		}
 	}
 	return fallback

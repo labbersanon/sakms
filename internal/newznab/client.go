@@ -19,12 +19,13 @@ import (
 	"github.com/labbersanon/sakms/internal/usenet"
 )
 
-// Claude 2026-10-21: Newznab filename search + NZB password (no HTML scrape).
-// Reason: ngPost title/password live in NZB meta. The operator-configured
-//   `newznab` connection is t=search / t=get. Do not GET /details or login.
+// Claude 2026-10-21: Newznab filename + poster search, NZB password (no HTML).
+// Reason: ngPost title/password live in NZB meta. Stem q= misses when the
+//   indexer stores the real title. Poster is nZEDb advanced fromname
+//   (t=search&poster=), then q=From. Do not GET /details or geekseek.
 // Troubleshooting: o2cli grep "nzb-password"; pw=true without crcs → decrypt
-//   miss, not a scrape gap. Review if: an indexer requires t=tvsearch only.
-// Related files: internal/api/nzbpassword.go, namefix.go
+//   miss. Review if: NZBGeek adds poster to caps supportedParams.
+// Related files: internal/api/nzbpassword.go, namefix.go, nzbpw.go
 
 const (
 	maxSearchItems    = 5
@@ -96,18 +97,32 @@ func (c *Client) mark() {
 	c.mu.Unlock()
 }
 
-// Lookup searches q=filename on each indexer and returns the first NZB that
-// carries a password or a non-empty title. HTML paths are never requested.
-func (c *Client) Lookup(ctx context.Context, indexers []Indexer, filename string) (Hit, bool) {
-	filename = strings.TrimSpace(filename)
-	if filename == "" || len(indexers) == 0 {
+// Query is one Newznab password/title lookup. Filename is the obfuscated
+// archive stem (t=search&q=). Poster is the NNTP From (t=search&poster=).
+type Query struct {
+	Filename string
+	Poster   string
+}
+
+type searchReq struct {
+	q           string
+	poster      string
+	allowSingle bool
+}
+
+// Lookup searches each indexer and returns the first NZB that carries a
+// password or a non-empty title. HTML paths are never requested.
+func (c *Client) Lookup(ctx context.Context, indexers []Indexer, q Query) (Hit, bool) {
+	q.Filename = strings.TrimSpace(q.Filename)
+	q.Poster = strings.TrimSpace(q.Poster)
+	if (q.Filename == "" && q.Poster == "") || len(indexers) == 0 {
 		return Hit{}, false
 	}
 	if len(indexers) > maxIndexers {
 		indexers = indexers[:maxIndexers]
 	}
 	for _, idx := range indexers {
-		hit, ok := c.lookupOne(ctx, idx, filename)
+		hit, ok := c.lookupOne(ctx, idx, q)
 		if ok {
 			return hit, true
 		}
@@ -115,21 +130,41 @@ func (c *Client) Lookup(ctx context.Context, indexers []Indexer, filename string
 	return Hit{}, false
 }
 
-func (c *Client) lookupOne(ctx context.Context, idx Indexer, filename string) (Hit, bool) {
+func (c *Client) lookupOne(ctx context.Context, idx Indexer, q Query) (Hit, bool) {
 	idx.Endpoint = NormalizeEndpoint(idx.Endpoint)
-	items, err := c.search(ctx, idx, filename)
-	if err != nil {
-		log.Printf("usenetsearch: nzb-password indexer=%s search err=%v", idx.Name, err)
-		return Hit{}, false
+	needles := []string{q.Filename, q.Poster}
+	// Claude 2026-10-21: poster after stem miss; never browse unfiltered.
+	// Reason: ngPost title/password are on the NZB keyed by From
+	//   (nZEDb searchadvposter / fromname). NZBGeek caps list q,group
+	//   only, so poster= may be ignored and empty-q would be latest-N.
+	//   pickItems then requires the From or stem in the RSS blob.
+	// Troubleshooting: nzb-password q= miss poster= hit → stem not
+	//   indexed. Review if: an indexer documents a different poster key.
+	attempts := make([]searchReq, 0, 3)
+	if q.Filename != "" {
+		attempts = append(attempts, searchReq{q: q.Filename, allowSingle: true})
 	}
-	picked := pickItems(items, filename)
-	for i, it := range picked {
-		if i >= maxNZBsPerIndexer {
-			break
+	if q.Poster != "" {
+		attempts = append(attempts, searchReq{poster: q.Poster})
+		if q.Poster != q.Filename {
+			attempts = append(attempts, searchReq{q: q.Poster})
 		}
-		hit, ok := c.fetchHit(ctx, idx, it)
-		if ok {
-			return hit, true
+	}
+	for _, req := range attempts {
+		items, err := c.search(ctx, idx, req)
+		if err != nil {
+			log.Printf("usenetsearch: nzb-password indexer=%s search err=%v", idx.Name, err)
+			continue
+		}
+		picked := pickItems(items, needles, req.allowSingle)
+		for i, it := range picked {
+			if i >= maxNZBsPerIndexer {
+				break
+			}
+			hit, ok := c.fetchHit(ctx, idx, it)
+			if ok {
+				return hit, true
+			}
 		}
 	}
 	return Hit{}, false
@@ -178,14 +213,17 @@ func (it rssItem) matches(stem string) bool {
 	return strings.Contains(blob, stem)
 }
 
-func pickItems(items []rssItem, stem string) []rssItem {
+func pickItems(items []rssItem, needles []string, allowSingle bool) []rssItem {
 	if len(items) == 0 {
 		return nil
 	}
 	var matched []rssItem
 	for _, it := range items {
-		if it.matches(stem) {
-			matched = append(matched, it)
+		for _, n := range needles {
+			if it.matches(n) {
+				matched = append(matched, it)
+				break
+			}
 		}
 	}
 	if len(matched) > 0 {
@@ -194,27 +232,40 @@ func pickItems(items []rssItem, stem string) []rssItem {
 		}
 		return matched
 	}
-	if len(items) == 1 {
+	if allowSingle && len(items) == 1 {
 		return items
 	}
 	return nil
 }
 
-func (c *Client) search(ctx context.Context, idx Indexer, q string) ([]rssItem, error) {
+func (c *Client) search(ctx context.Context, idx Indexer, req searchReq) ([]rssItem, error) {
 	u, err := url.Parse(idx.Endpoint)
 	if err != nil || u.Host == "" {
 		return nil, fmt.Errorf("indexer endpoint")
 	}
+	q := strings.TrimSpace(req.q)
+	poster := strings.TrimSpace(req.poster)
+	if q == "" && poster == "" {
+		return nil, fmt.Errorf("empty search")
+	}
 	vals := u.Query()
 	vals.Set("t", "search")
 	vals.Set("apikey", idx.APIKey)
-	vals.Set("q", q)
+	if q != "" {
+		vals.Set("q", q)
+	}
+	if poster != "" {
+		vals.Set("poster", poster)
+	}
 	vals.Set("o", "xml")
 	vals.Set("extended", "1")
 	vals.Set("limit", fmt.Sprintf("%d", maxSearchItems))
 	u.RawQuery = vals.Encode()
 	body, err := c.get(ctx, u)
 	if err != nil {
+		return nil, err
+	}
+	if err := parseAPIError(body); err != nil {
 		return nil, err
 	}
 	var feed rssFeed
@@ -308,10 +359,25 @@ func NormalizeEndpoint(raw string) string {
 	return strings.TrimRight(u.String(), "/")
 }
 
-type capsError struct {
+type apiError struct {
 	XMLName     xml.Name `xml:"error"`
 	Code        string   `xml:"code,attr"`
 	Description string   `xml:"description,attr"`
+}
+
+func parseAPIError(body []byte) error {
+	var e apiError
+	if err := xml.Unmarshal(body, &e); err != nil || e.XMLName.Local != "error" {
+		return nil
+	}
+	desc := strings.TrimSpace(e.Description)
+	if desc == "" {
+		desc = strings.TrimSpace(e.Code)
+	}
+	if desc == "" {
+		desc = "error"
+	}
+	return fmt.Errorf("newznab: %s", desc)
 }
 
 // Caps is the Test-connection ping: t=caps, never HTML login/details.
@@ -330,16 +396,8 @@ func (c *Client) Caps(ctx context.Context, idx Indexer) error {
 	if err != nil {
 		return err
 	}
-	var capErr capsError
-	if err := xml.Unmarshal(body, &capErr); err == nil && capErr.XMLName.Local == "error" {
-		desc := strings.TrimSpace(capErr.Description)
-		if desc == "" {
-			desc = strings.TrimSpace(capErr.Code)
-		}
-		if desc == "" {
-			desc = "error"
-		}
-		return fmt.Errorf("newznab: %s", desc)
+	if err := parseAPIError(body); err != nil {
+		return err
 	}
 	if !bytes.Contains(body, []byte("<caps")) {
 		return fmt.Errorf("not a Newznab caps response")

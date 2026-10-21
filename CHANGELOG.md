@@ -12258,3 +12258,20 @@ status stays active.
 |---|---|
 | `frontend/src/screens/settings/ConnectionRow.tsx` | stacked fields; MiniTable is `space-y-3` |
 | `frontend/src/screens/Settings.test.tsx` | no table/h-scroll; row queries use data-connection-service |
+
+## 2026-10-21 — Newznab password lookup by NNTP poster
+
+**Problem:** After the NZB host was saved, namefix `t=search&q=<hash.7z stem>` still logged `miss`. ngPost titles/passwords live on the NZB under the real release name, keyed by From.
+**Root cause:** Lookup only searched the obfuscated archive stem. nZEDb advanced search filters `fromname` (`poster=`); NZBGeek caps list `q,group` so an empty-q poster call could browse latest-N.
+**Fix:** After stem miss, `t=search&poster=<From>` then `t=search&q=<From>`. Keep only RSS items whose blob contains the From or stem. Do not scrape geekseek. Log `poster=` on miss/hit (never the password).
+**Outcome:** `go test` newznab, usenetsearch, api `-run NZBPassword` passed.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/newznab/client.go` | Query Filename+Poster; poster= after q=; reject unmatched browse |
+| `internal/usenetsearch/nzbpw.go` | parse NNTP From; prefer @ngPost.com |
+| `internal/usenetsearch/namefix.go` | pass stem+poster into lookup |
+| `internal/api/nzbpassword.go` | Lookup takes NZBPasswordQuery |
+| `docs/usenet-nntp-native.md` | poster= From after stem |

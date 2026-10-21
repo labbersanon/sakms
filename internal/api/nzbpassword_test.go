@@ -65,7 +65,7 @@ func TestNZBPasswordLookup_ConfiguredHostNoHTML(t *testing.T) {
 		settings: settingsStore,
 		client:   &newznab.Client{HTTP: httpClient, Interval: time.Nanosecond},
 	}
-	hit, ok := lookup.Lookup(context.Background(), stem)
+	hit, ok := lookup.Lookup(context.Background(), usenetsearch.NZBPasswordQuery{Filename: stem})
 	if !ok {
 		t.Fatal("lookup miss")
 	}
@@ -77,10 +77,62 @@ func TestNZBPasswordLookup_ConfiguredHostNoHTML(t *testing.T) {
 	}
 }
 
+func TestNZBPasswordLookup_PosterAfterStemMiss(t *testing.T) {
+	const stem = "o6938TxyzABCDEF"
+	const poster = "AbCdEfGhIjKlM@ngPost.com"
+	var nzbURL string
+	idx := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "login") || strings.Contains(r.URL.Path, "geekseek") {
+			t.Errorf("HTML scrape path %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		switch {
+		case r.URL.Query().Get("poster") == poster:
+			io.WriteString(w, `<?xml version="1.0"?>
+<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2007/feeds/attributes/">
+<channel><item>
+<title>Adapter.Show.S01E01.1080p.WEB-DL.x264-GRP</title>
+<link>`+nzbURL+`</link>
+<enclosure url="`+nzbURL+`" length="10" type="application/x-nzb"/>
+<newznab:attr name="poster" value="`+poster+`"/>
+<newznab:attr name="password" value="from-attr"/>
+</item></channel></rss>`)
+		case r.URL.Query().Get("t") == "search":
+			io.WriteString(w, `<?xml version="1.0"?><rss version="2.0"><channel></channel></rss>`)
+		case r.URL.Path == "/getnzb":
+			w.Header().Set("X-DNZB-Password", "from-header")
+			io.WriteString(w, `<?xml version="1.0"?><nzb><head>
+<meta type="password">from-header</meta></head></nzb>`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer idx.Close()
+	nzbURL = idx.URL + "/getnzb"
+
+	connStore, _, settingsStore, _, _, _, _, _, _, _ := testStores(t)
+	if err := connStore.Upsert(context.Background(), "newznab", idx.URL+"/api", "idx-key"); err != nil {
+		t.Fatal(err)
+	}
+	lookup := &nzbPasswordLookup{
+		conns:    connStore,
+		settings: settingsStore,
+		client:   &newznab.Client{HTTP: idx.Client(), Interval: time.Nanosecond},
+	}
+	hit, ok := lookup.Lookup(context.Background(), usenetsearch.NZBPasswordQuery{Filename: stem, Poster: poster})
+	if !ok {
+		t.Fatal("poster lookup miss")
+	}
+	if hit.Title == "" || len(hit.Passwords) == 0 {
+		t.Fatalf("hit=%+v", hit)
+	}
+}
+
 func TestNZBPasswordLookup_NoHost(t *testing.T) {
 	connStore, _, settingsStore, _, _, _, _, _, _, _ := testStores(t)
 	lookup := &nzbPasswordLookup{conns: connStore, settings: settingsStore, client: &newznab.Client{}}
-	if _, ok := lookup.Lookup(context.Background(), "o6938TxyzABCDEF"); ok {
+	if _, ok := lookup.Lookup(context.Background(), usenetsearch.NZBPasswordQuery{Filename: "o6938TxyzABCDEF"}); ok {
 		t.Fatal("unset newznab host must miss")
 	}
 }
@@ -101,7 +153,7 @@ func TestNZBPasswordLookup_IgnoresProwlarr(t *testing.T) {
 		settings: settingsStore,
 		client:   &newznab.Client{Interval: time.Nanosecond},
 	}
-	if _, ok := lookup.Lookup(context.Background(), "o6938TxyzABCDEF"); ok {
+	if _, ok := lookup.Lookup(context.Background(), usenetsearch.NZBPasswordQuery{Filename: "o6938TxyzABCDEF"}); ok {
 		t.Fatal("prowlarr-only must miss")
 	}
 	if prowHit {
@@ -115,7 +167,7 @@ func TestNZBPasswordLookup_KillSwitch(t *testing.T) {
 		t.Fatal(err)
 	}
 	lookup := &nzbPasswordLookup{conns: connStore, settings: settingsStore, client: &newznab.Client{}}
-	if _, ok := lookup.Lookup(context.Background(), "o6938TxyzABCDEF"); ok {
+	if _, ok := lookup.Lookup(context.Background(), usenetsearch.NZBPasswordQuery{Filename: "o6938TxyzABCDEF"}); ok {
 		t.Fatal("kill switch must miss")
 	}
 }

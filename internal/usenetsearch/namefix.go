@@ -189,7 +189,7 @@ type NameFixer struct {
 	PreDB   PreDBLookup
 	// SRRDB resolves RAR/ZIP/SFV inner-file CRC32 (nil disables it).
 	SRRDB ArchiveCRCLookup
-	// NZBPassword looks up unpack passwords by obfuscated archive name
+	// NZBPassword looks up unpack passwords by archive stem and NNTP From
 	// (configured Newznab host; nil disables it).
 	NZBPassword NZBPasswordLookup
 	Groups      []string
@@ -418,10 +418,11 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 	work := context.WithoutCancel(ctx)
 	var nzbHit NZBPasswordHit
 	var nzbGot bool
-	// Claude 2026-10-21: Newznab lookup uses the header filename, not BODY.
+	// Claude 2026-10-21: Newznab lookup uses header filename + From, not BODY.
 	// Reason: ngPost skip_7z after Attempts>0 skipped the 7z-aes miss path,
-	//   so live hash.7z never queried indexers. Title can promote without
-	//   a footer; a password clears skip_7z so Tail can decrypt CRC.
+	//   so live hash.7z never queried indexers. Stem q= misses when the
+	//   NZB title is the real name; poster= is nZEDb fromname. A password
+	//   clears skip_7z so Tail can decrypt CRC.
 	// Troubleshooting: skip_7z=true and no nzb-password log → this header
 	//   lookup missing. Review if: password-only hits should persist.
 	if n.NZBPassword != nil && (pat.Pack == "7z-split" || pat.Obf == "hash-7z") {
@@ -976,21 +977,22 @@ func (n *NameFixer) fetchNZBPassword(ctx context.Context, rows []HeaderRow) (NZB
 		return NZBPasswordHit{}, false
 	}
 	stem := archiveSearchStem(rows)
-	if stem == "" {
+	poster := archiveSearchPoster(rows)
+	if stem == "" && poster == "" {
 		return NZBPasswordHit{}, false
 	}
 	n.nzbPWUsed++
-	hit, ok := n.NZBPassword.Lookup(ctx, stem)
+	hit, ok := n.NZBPassword.Lookup(ctx, NZBPasswordQuery{Filename: stem, Poster: poster})
 	if !ok {
-		log.Printf("usenetsearch: namefix nzb-password q=%q miss", stem)
+		log.Printf("usenetsearch: namefix nzb-password q=%q poster=%q miss", stem, poster)
 		return NZBPasswordHit{}, false
 	}
 	shown := hit.Title
 	if len(shown) > 80 {
 		shown = shown[:80]
 	}
-	log.Printf("usenetsearch: namefix nzb-password q=%q indexer=%s pw=%t title=%q",
-		stem, hit.Indexer, len(hit.Passwords) > 0, shown)
+	log.Printf("usenetsearch: namefix nzb-password q=%q poster=%q indexer=%s pw=%t title=%q",
+		stem, poster, hit.Indexer, len(hit.Passwords) > 0, shown)
 	return hit, true
 }
 

@@ -68,7 +68,7 @@ func TestLookup_SearchGetNZBPasswordNoHTML(t *testing.T) {
 	c := &Client{HTTP: srv.Client(), Interval: time.Nanosecond}
 	hit, ok := c.Lookup(context.Background(), []Indexer{{
 		Name: "NZBGeek", Endpoint: srv.URL + "/api", APIKey: "idx-key",
-	}}, stem)
+	}}, Query{Filename: stem})
 	if !ok {
 		t.Fatalf("miss paths=%v", paths)
 	}
@@ -87,27 +87,115 @@ func TestPickItems_RequiresStemOrSingleHit(t *testing.T) {
 		{Title: "Other.Show.2021.1080p-GRP"},
 		{Title: "Another.Show.2022.1080p-GRP"},
 	}
-	if got := pickItems(items, "o6938Txyz"); got != nil {
+	needles := []string{"o6938Txyz"}
+	if got := pickItems(items, needles, true); got != nil {
 		t.Fatalf("unmatched multi-hit must not download: %+v", got)
 	}
 	one := []rssItem{{Title: "Renamed.Show.2021.1080p-GRP"}}
-	if got := pickItems(one, "o6938Txyz"); len(got) != 1 {
+	if got := pickItems(one, needles, true); len(got) != 1 {
 		t.Fatalf("single hit: %+v", got)
+	}
+	if got := pickItems(items, needles, false); got != nil {
+		t.Fatalf("poster browse unmatched must not download: %+v", got)
 	}
 	matched := []rssItem{
 		{Title: "Renamed.Show.2021.1080p-GRP", Description: "o6938Txyz.7z"},
 		{Title: "Unrelated.2020.1080p-GRP"},
 	}
-	got := pickItems(matched, "o6938Txyz")
+	got := pickItems(matched, needles, true)
 	if len(got) != 1 || !strings.Contains(got[0].Description, "o6938Txyz") {
 		t.Fatalf("matched: %+v", got)
 	}
 }
 
+func TestPickItems_PosterAttr(t *testing.T) {
+	const poster = "AbCdEfGhIjKlM@ngPost.com"
+	items := []rssItem{
+		{Title: "Latest.Show.2026.1080p-GRP"},
+		{
+			Title: "Wanted.Show.S01E01.1080p.WEB-DL.x264-GRP",
+			Attrs: []rssAttr{{Name: "poster", Value: poster}},
+		},
+	}
+	got := pickItems(items, []string{"hashstem", poster}, false)
+	if len(got) != 1 || got[0].Title != "Wanted.Show.S01E01.1080p.WEB-DL.x264-GRP" {
+		t.Fatalf("poster attr: %+v", got)
+	}
+}
+
 func TestLookup_EmptyQuery(t *testing.T) {
 	c := &Client{Interval: time.Nanosecond}
-	if _, ok := c.Lookup(context.Background(), []Indexer{{Name: "x", Endpoint: "http://127.0.0.1", APIKey: "k"}}, ""); ok {
-		t.Fatal("empty filename")
+	if _, ok := c.Lookup(context.Background(), []Indexer{{Name: "x", Endpoint: "http://127.0.0.1", APIKey: "k"}}, Query{}); ok {
+		t.Fatal("empty query")
+	}
+}
+
+func TestLookup_PosterAfterStemMissNoHTML(t *testing.T) {
+	const stem = "o6938TxyzABCDEF"
+	const poster = "AbCdEfGhIjKlM@ngPost.com"
+	var qs, posters []string
+	var sawHTML bool
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "login") || strings.Contains(r.URL.Path, "geekseek") || strings.Contains(r.URL.Path, "details") {
+			sawHTML = true
+			http.NotFound(w, r)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	nzbURL := srv.URL + "/getnzb"
+	mux.HandleFunc("/api", func(w http.ResponseWriter, r *http.Request) {
+		qs = append(qs, r.URL.Query().Get("q"))
+		posters = append(posters, r.URL.Query().Get("poster"))
+		switch {
+		case r.URL.Query().Get("poster") == poster:
+			io.WriteString(w, `<?xml version="1.0"?>
+<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2007/feeds/attributes/">
+<channel><item>
+<title>Adapter.Show.S01E01.1080p.WEB-DL.x264-GRP</title>
+<link>`+nzbURL+`</link>
+<enclosure url="`+nzbURL+`" length="10" type="application/x-nzb"/>
+<newznab:attr name="poster" value="`+poster+`"/>
+<newznab:attr name="password" value="hunter2"/>
+</item></channel></rss>`)
+		case r.URL.Query().Get("t") == "search":
+			io.WriteString(w, `<?xml version="1.0"?><rss version="2.0"><channel></channel></rss>`)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/getnzb", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-DNZB-Password", "hunter2")
+		io.WriteString(w, `<?xml version="1.0"?><nzb><head>
+<meta type="password">hunter2</meta></head>
+<file poster="p" date="1" subject="`+stem+`.7z.001">
+<groups><group>a</group></groups>
+<segments><segment bytes="1" number="1">m@t</segment></segments>
+</file></nzb>`)
+	})
+	c := &Client{HTTP: srv.Client(), Interval: time.Nanosecond}
+	hit, ok := c.Lookup(context.Background(), []Indexer{{
+		Name: "NZBGeek", Endpoint: srv.URL + "/api", APIKey: "idx-key",
+	}}, Query{Filename: stem, Poster: poster})
+	if !ok {
+		t.Fatalf("miss q=%v poster=%v", qs, posters)
+	}
+	if hit.Title == "" || len(hit.Passwords) == 0 {
+		t.Fatalf("hit=%+v", hit)
+	}
+	if sawHTML {
+		t.Fatal("HTML scrape")
+	}
+	var sawPoster bool
+	for _, p := range posters {
+		if p == poster {
+			sawPoster = true
+		}
+	}
+	if !sawPoster {
+		t.Fatalf("poster= not sent: %v", posters)
 	}
 }
 

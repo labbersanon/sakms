@@ -12085,3 +12085,17 @@ status stays active.
 | File | Change |
 |---|---|
 | `Dockerfile` | FFMPEG_TAG / ASSET / SHA256 |
+
+## 2026-10-21 — sakms-node pathmap debounce: ignore stale AfterFunc
+
+**Problem:** CI `TestPathMap_DebounceCoalescesRapidEdits` flaked (`second push fired`) on #237 and #238.
+**Root cause:** 80ms quiet window was shorter than three HTTP set round-trips under load, so the first timer fired mid-burst. `Timer.Stop` is also false once AfterFunc is queued, so a late Stop still ran fire().
+**Fix:** Per-key generation so stale callbacks no-op. Test quiet window 80ms → 500ms. Tight-loop schedule coalesces without HTTP gaps.
+**Outcome:** One push per burst.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `cmd/sakms-node/pathmap_push.go` | gen token on schedule/fire |
+| `cmd/sakms-node/control_pathmap_test.go` | 500ms quiet window; ScheduleCoalescesWithoutHTTPGap |

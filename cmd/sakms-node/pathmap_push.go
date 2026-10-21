@@ -51,7 +51,8 @@ type pathmapPusher struct {
 	mu      sync.Mutex
 	pending map[string]pathmapOp
 	timers  map[string]*time.Timer
-	lastErr string // most recent push failure, surfaced (read-only) via GET /pathmap for Stage 3
+	gen     map[string]uint64 // AfterFunc generation; stale callbacks no-op
+	lastErr string            // most recent push failure, surfaced (read-only) via GET /pathmap for Stage 3
 
 	// pushHook, when non-nil, is invoked after every push attempt with the key
 	// and the resulting error (nil on success). Test observability seam only —
@@ -72,6 +73,7 @@ func newPathmapPusher(cfg *NodeConfig, sess *nodeSession, client *http.Client, d
 		debounce: debounce,
 		pending:  make(map[string]pathmapOp),
 		timers:   make(map[string]*time.Timer),
+		gen:      make(map[string]uint64),
 	}
 }
 
@@ -81,10 +83,18 @@ func (p *pathmapPusher) schedule(key string, op pathmapOp) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.pending[key] = op
+	// Claude 2026-10-21: generation so a fired AfterFunc cannot push twice.
+	// Reason: Timer.Stop is false once the callback is queued; CI then saw
+	//   TestPathMap_DebounceCoalescesRapidEdits "second push fired" when an
+	//   80ms quiet window elapsed between HTTP sets AND when Stop lost the race.
+	// Troubleshooting: a second push for one burst → gen mismatch not checked.
+	// Review if: pathmapPushDebounce is driven by a fake clock in tests.
+	p.gen[key]++
+	g := p.gen[key]
 	if t, ok := p.timers[key]; ok {
 		t.Stop()
 	}
-	p.timers[key] = time.AfterFunc(p.debounce, func() { p.fire(key) })
+	p.timers[key] = time.AfterFunc(p.debounce, func() { p.fire(key, g) })
 }
 
 // lastError returns the most recent push failure message (empty when the last
@@ -102,8 +112,12 @@ func (p *pathmapPusher) lastError() string {
 // or failure. A failed push NEVER mutates cfg — the last-known-good local
 // AuthoredPaths/PathMap persisted at set/clear time stays intact; only lastErr
 // is updated for later surfacing.
-func (p *pathmapPusher) fire(key string) {
+func (p *pathmapPusher) fire(key string, g uint64) {
 	p.mu.Lock()
+	if p.gen[key] != g {
+		p.mu.Unlock()
+		return
+	}
 	op, ok := p.pending[key]
 	delete(p.pending, key)
 	delete(p.timers, key)

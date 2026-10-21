@@ -12359,3 +12359,17 @@ status stays active.
 | `internal/newznab/client.go` | caps group cache; skip unlisted browse |
 | `internal/newznab/client_test.go` | skip-unlisted + groupInCaps |
 | `docs/usenet-nntp-native.md` | caps-gated browse |
+
+## 2026-10-21 — Newznab caps browse deslop
+
+**Problem:** Post-ship cleanup on the caps-gated browse skip.
+**Root cause:** nil-map guard on cache lookup; duplicated 2007/2010 poster-attr tests.
+**Fix:** Read the cache map directly; table-driven poster xmlns test.
+**Outcome:** `go test ./internal/newznab` ok.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/newznab/client.go` | drop nil caps map guard |
+| `internal/newznab/client_test.go` | merge poster-attr tests |

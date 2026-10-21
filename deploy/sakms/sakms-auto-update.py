@@ -149,7 +149,6 @@ def github_is_behind(deployed_sha, remote_sha):
 
 
 def checkout_local(sha):
-    os.makedirs(LOCAL_SRC, exist_ok=True)
     git_dir = os.path.join(LOCAL_SRC, ".git")
     if not os.path.isdir(git_dir):
         run(["git", "clone", LOCAL_BARE, LOCAL_SRC])
@@ -176,7 +175,6 @@ def backup_compose():
         content = f.read()
     with open(COMPOSE_BACKUP, "w") as f:
         f.write(content)
-    return content
 
 
 def restore_compose():
@@ -190,17 +188,9 @@ def restore_compose():
 def pin_context(sha, local=False):
     with open(COMPOSE_FILE) as f:
         content = f.read()
-    # Rebuilds the whole context value from REPO_URL rather than preserving
-    # whatever domain/username the regex happened to match — a prior version
-    # of this function reused the matched text verbatim (\1 back-reference),
-    # which meant compose.yml's pinned URL could never actually migrate to a
-    # new REPO_URL even once the code was updated: it would just keep
-    # re-stamping whatever was already on disk with a new SHA forever. This
-    # caused a real deploy failure + unwanted rollback-wipe on 2026-07-14 when
-    # REPO_URL was updated after Wade's GitHub username rename but compose.yml
-    # still had the previous username pinned from the last successful deploy.
-    # 2026-10-21: local deploy pins the server1 checkout path so docker build
-    # does not fetch GitHub (SHA may not be on origin/main yet).
+    # Pin from LOCAL_SRC or REPO_URL, not the matched username (see header
+    # 2026-07-14). Local checkout so docker does not fetch GitHub; SHA may
+    # not be on origin/main yet.
     value = LOCAL_SRC if local else f"{REPO_URL}#{sha}"
     new_content, count = CONTEXT_RE.subn(f"context: {value}", content)
     if count != 1:
@@ -210,7 +200,6 @@ def pin_context(sha, local=False):
 
 
 def confirm_wipe(prompt):
-    """Require an exact YES before destructive wipe. Returns False if declined."""
     log(prompt)
     try:
         answer = input("Type YES to proceed (anything else aborts): ").strip()
@@ -254,8 +243,6 @@ def wipe_db():
 
 
 def wipe_data():
-    # opt-in only (deploy() no longer calls this automatically) — see header comment.
-    # rollback() must never call this (2026-08-04).
     if not confirm_wipe(
         f"WILL WIPE BOTH: filesystem {DATA_DIR} AND Postgres database "
         f"{PG_DATABASE} in container {PG_CONTAINER}."
@@ -282,8 +269,8 @@ def wipe_db_only():
     wipe_db()
 
 
-def compose(*args, check=True):
-    return run(["docker", "compose", *args], cwd=COMPOSE_DIR, check=check)
+def compose(*args):
+    return run(["docker", "compose", *args], cwd=COMPOSE_DIR)
 
 
 def curl_container(url, extra_args):
@@ -308,11 +295,6 @@ def health_ok():
 
 
 def app_boot_ok():
-    """Verify the deployed frontend shell + auth-boot API respond correctly —
-    not just the bare /healthz, which returns "ok" unconditionally and never
-    touches the frontend or auth sequence at all. A build that compiles and
-    passes health_ok() but ships a runtime-broken embedded SPA would
-    otherwise be marked "succeeded" here with no rollback."""
     shell = curl_container(APP_URL, [])
     if APP_MARKER not in shell.stdout:
         log(f"app boot check: served shell missing expected marker {APP_MARKER!r}")
@@ -352,8 +334,7 @@ def main(wipe=False, wipe_fs_flag=False, wipe_db_flag=False, deploy_local=False,
 
     state = read_state()
     deployed_sha = state.get("deployed_sha")
-    local = deploy_local
-    if local:
+    if deploy_local:
         target_sha = get_local_sha()
     else:
         target_sha = get_remote_sha()
@@ -368,14 +349,14 @@ def main(wipe=False, wipe_fs_flag=False, wipe_db_flag=False, deploy_local=False,
         log(f"up to date at {target_sha}, nothing to do")
         return 0
 
-    log(f"update detected: {deployed_sha or '(none)'} -> {target_sha} (local={local})")
+    log(f"update detected: {deployed_sha or '(none)'} -> {target_sha} (local={deploy_local})")
     backup_compose()
     try:
         if wipe_fs_flag:
             wipe_fs_only()
         elif wipe_db_flag:
             wipe_db_only()
-        deploy(target_sha, wipe=wipe, local=local)
+        deploy(target_sha, wipe=wipe, local=deploy_local)
     except RuntimeError as e:
         if "declined" in str(e):
             log(str(e))

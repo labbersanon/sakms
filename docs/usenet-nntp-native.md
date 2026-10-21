@@ -196,12 +196,14 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   paging).   After an empty-password `7z-aes` miss, namefix searches the
   obfuscated archive stem (`t=search&q=`) then the NNTP From
   (`t=search&poster=`, nZEDb advanced fromname) on the Settings → Download →
-  Usenet NZB host (`connections` service `newznab`) and downloads the NZB
-  (`t=get` / enclosure) for `X-DNZB-Password` / `<meta type="password">`.
-  Unmatched poster results are dropped so an ignored `poster=` cannot
-  become a latest-N browse. sakms does not scrape indexer HTML and does not
-  brute-force. Decrypt + CRC can still become `name_source=srrdb`; an
-  ident-shaped NZB title is `name_source=nzb`.
+  Usenet NZB host (`connections` service `newznab`). NZBGeek caps are
+  `q,group` and its RSS has size/usenetdate but not poster, so a miss then
+  browses `t=search&group=&maxage=` and `t=get`s size-close rows whose NZB
+  file subjects contain the stem. Passwords come from `X-DNZB-Password` /
+  `<meta type="password">`. Unmatched poster results are dropped so an
+  ignored `poster=` cannot become a latest-N grab. sakms does not scrape
+  indexer HTML and does not brute-force. Decrypt + CRC can still become
+  `name_source=srrdb`; an ident-shaped NZB title is `name_source=nzb`.
   An `.sfv` whose payload filename already parses as a scene title is
   accepted as `name_source=sfv` without HTTP.
   Yield-group BODY is 40/pass at 95% plus 20/pass at ≥80% when PAR2 is present.
@@ -256,7 +258,7 @@ are dropped again and completeness is still recorded.
 | `predb_irc_password_enc` | — | NickServ password, `secrets.Store` ciphertext; set via `PUT /api/settings/usenet-nntp-native/predb-irc-password` `{"password":"…"}` (empty clears) |
 | `predb_dump_path` | empty | nZEDb PreDB dump file, directory, or http(s) dump *file* URL (`\t\t` TSV, optional `.gz`; quoted MySQL fields and `\N` are stripped). PUT `predbDumpPath` reloads the importer; SQL still needs a restart. Imported on boot/reload and every 15 minutes when mtime/size (or URL ETag) changes. Search APIs (`api.predb.net`, `?type=pre`) are rejected. Live file: `/data/predb/predb.tsv.gz` (host `/mnt/iscsi/sakms/predb/predb.tsv.gz`, nZEDb dailies through 2024-05-02). |
 | `srrdb_enabled` | true | CRC-only lookup at `https://api.srrdb.com/v1/search/archive-crc:XXXXXXXX` (2s spacing). Unique hit + size ±15% → `name_source=srrdb`. Kill switch; do not scrape the catalog. |
-| `nzb_password_enabled` | true | After empty 7zAES miss, Newznab `t=search` (`q=` stem, then `poster=` From) / `t=get` on the Settings → Download → Usenet NZB host (`connections` service `newznab`). Kill switch; do not scrape HTML. |
+| `nzb_password_enabled` | true | After empty 7zAES miss, Newznab `t=search` (`q=` stem, then `poster=` From, then group+maxage size browse) / `t=get` on the Settings → Download → Usenet NZB host (`connections` service `newznab`). Kill switch; do not scrape HTML. |
 | `min_completeness_pct` / `incomplete_ttl_days` | 95 / 3 | Completeness gate / reap |
 | `repair_enabled` | true | Gap capture + repair |
 | `backfill_enabled` / `backfill_days` / `backfill_budget_pct` | true / 0 (retention) / 90 | Backfill |

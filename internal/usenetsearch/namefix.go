@@ -428,7 +428,7 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 	if n.NZBPassword != nil && (pat.Pack == "7z-split" || pat.Obf == "hash-7z") {
 		if n.nzbPWUsed >= namefixNZBPasswordPerPass {
 			heldPW = true
-		} else if hit, ok := n.fetchNZBPassword(work, rows); ok {
+		} else if hit, ok := n.fetchNZBPassword(work, set, rows); ok {
 			nzbHit, nzbGot = hit, true
 			if name, source, conf, predb, ok := n.accept(work, hit.Title, sourceNZB, set.PayloadBytes); ok {
 				return n.promote(work, set, rows, name, source, conf, predb, res, statBudget)
@@ -595,7 +595,7 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 				if n.NZBPassword != nil && n.nzbPWUsed >= namefixNZBPasswordPerPass {
 					heldPW = true
 				} else {
-					nzbHit, nzbGot = n.fetchNZBPassword(work, rows)
+					nzbHit, nzbGot = n.fetchNZBPassword(work, set, rows)
 				}
 			}
 			if nzbGot {
@@ -972,7 +972,7 @@ func (n *NameFixer) lookupPreDB(ctx context.Context, set PendingSet, rows []Head
 	return PreDBHit{}, false
 }
 
-func (n *NameFixer) fetchNZBPassword(ctx context.Context, rows []HeaderRow) (NZBPasswordHit, bool) {
+func (n *NameFixer) fetchNZBPassword(ctx context.Context, set PendingSet, rows []HeaderRow) (NZBPasswordHit, bool) {
 	if n.NZBPassword == nil {
 		return NZBPasswordHit{}, false
 	}
@@ -982,7 +982,13 @@ func (n *NameFixer) fetchNZBPassword(ctx context.Context, rows []HeaderRow) (NZB
 		return NZBPasswordHit{}, false
 	}
 	n.nzbPWUsed++
-	hit, ok := n.NZBPassword.Lookup(ctx, NZBPasswordQuery{Filename: stem, Poster: poster})
+	hit, ok := n.NZBPassword.Lookup(ctx, NZBPasswordQuery{
+		Filename:  stem,
+		Poster:    poster,
+		Group:     set.Group,
+		PostedAt:  archiveSearchPosted(rows),
+		SizeBytes: set.PayloadBytes,
+	})
 	if !ok {
 		log.Printf("usenetsearch: namefix nzb-password q=%q poster=%q miss", stem, poster)
 		return NZBPasswordHit{}, false

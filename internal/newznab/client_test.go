@@ -123,6 +123,21 @@ func TestPickItems_PosterAttr(t *testing.T) {
 	}
 }
 
+func TestPickItems_PosterAttr2010(t *testing.T) {
+	const poster = "AbCdEfGhIjKlM@ngPost.com"
+	items := []rssItem{
+		{Title: "Latest.Show.2026.1080p-GRP"},
+		{
+			Title:     "Wanted.Show.S01E01.1080p.WEB-DL.x264-GRP",
+			Attrs2010: []rssAttr{{Name: "poster", Value: poster}},
+		},
+	}
+	got := pickItems(items, []string{"hashstem", poster}, false)
+	if len(got) != 1 || got[0].Title != "Wanted.Show.S01E01.1080p.WEB-DL.x264-GRP" {
+		t.Fatalf("2010 poster attr: %+v", got)
+	}
+}
+
 func TestLookup_EmptyQuery(t *testing.T) {
 	c := &Client{Interval: time.Nanosecond}
 	if _, ok := c.Lookup(context.Background(), []Indexer{{Name: "x", Endpoint: "http://127.0.0.1", APIKey: "k"}}, Query{}); ok {
@@ -250,5 +265,98 @@ func TestCaps_SuccessAndErrorXML(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "bad") {
 		t.Fatalf("leaked key: %v", err)
+	}
+}
+
+func TestLookup_BrowseGroupSizeMatchesNZBStem(t *testing.T) {
+	const stem = "o6938TxyzABCDEF"
+	const poster = "AbCdEfGhIjKlM@ngPost.com"
+	const group = "alt.binaries.teevee"
+	const payload int64 = 1_000_000
+	posted := time.Now().Unix() - 3600
+	var gets, browseN, sawHTML int
+	var sawGroup, sawMaxage bool
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "login") || strings.Contains(r.URL.Path, "geekseek") || strings.Contains(r.URL.Path, "details") {
+			sawHTML++
+			http.NotFound(w, r)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	nzbURL := srv.URL + "/getnzb"
+	when := time.Now().UTC().Format(time.RFC1123Z)
+	mux.HandleFunc("/api", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("t") != "search" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Query().Get("group") == group && r.URL.Query().Get("maxage") != "" && r.URL.Query().Get("q") == "" {
+			sawGroup, sawMaxage = true, true
+			browseN++
+			io.WriteString(w, `<?xml version="1.0"?>
+<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">
+<channel>
+<item>
+<title>Wrong.Size.Show.2026.1080p-GRP</title>
+<link>`+nzbURL+`?id=wrong</link>
+<enclosure url="`+nzbURL+`?id=wrong" length="10" type="application/x-nzb"/>
+<newznab:attr name="size" value="5000000"/>
+<newznab:attr name="usenetdate" value="`+when+`"/>
+<newznab:attr name="password" value="0"/>
+</item>
+<item>
+<title>Wanted.Show.S01E01.1080p.WEB-DL.x264-GRP</title>
+<link>`+nzbURL+`?id=want</link>
+<enclosure url="`+nzbURL+`?id=want" length="10" type="application/x-nzb"/>
+<newznab:attr name="size" value="1000000"/>
+<newznab:attr name="usenetdate" value="`+when+`"/>
+<newznab:attr name="password" value="0"/>
+</item>
+</channel></rss>`)
+			return
+		}
+		io.WriteString(w, `<?xml version="1.0"?><rss version="2.0"><channel></channel></rss>`)
+	})
+	mux.HandleFunc("/getnzb", func(w http.ResponseWriter, r *http.Request) {
+		gets++
+		if r.URL.Query().Get("id") != "want" {
+			t.Errorf("fetched non-candidate NZB id=%s", r.URL.Query().Get("id"))
+		}
+		w.Header().Set("X-DNZB-Password", "hunter2")
+		w.Header().Set("X-DNZB-Name", "Wanted.Show.S01E01.1080p.WEB-DL.x264-GRP")
+		io.WriteString(w, `<?xml version="1.0"?><nzb><head>
+<meta type="password">hunter2</meta></head>
+<file poster="p" date="1" subject="`+stem+`.7z.001 yEnc (1/1)">
+<groups><group>`+group+`</group></groups>
+<segments><segment bytes="1" number="1">m@t</segment></segments>
+</file></nzb>`)
+	})
+	c := &Client{HTTP: srv.Client(), Interval: time.Nanosecond}
+	hit, ok := c.Lookup(context.Background(), []Indexer{{
+		Name: "NZBGeek", Endpoint: srv.URL + "/api", APIKey: "idx-key",
+	}}, Query{Filename: stem, Poster: poster, Group: group, PostedAt: posted, SizeBytes: payload})
+	if !ok {
+		t.Fatalf("browse miss gets=%d browseN=%d group=%t maxage=%t", gets, browseN, sawGroup, sawMaxage)
+	}
+	if hit.Title == "" || len(hit.Passwords) == 0 || hit.Passwords[0] != "hunter2" {
+		t.Fatalf("hit=%+v", hit)
+	}
+	if gets != 1 {
+		t.Fatalf("gets=%d want 1 (size filter)", gets)
+	}
+	if sawHTML > 0 {
+		t.Fatal("HTML scrape")
+	}
+}
+
+func TestUnpackPasswordAttr_FlagsIgnored(t *testing.T) {
+	if unpackPasswordAttr("0") != "" || unpackPasswordAttr("-1") != "" || unpackPasswordAttr("1") != "" {
+		t.Fatal("flags")
+	}
+	if unpackPasswordAttr("hunter2") != "hunter2" {
+		t.Fatal("real")
 	}
 }

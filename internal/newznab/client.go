@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,18 +20,23 @@ import (
 	"github.com/labbersanon/sakms/internal/usenet"
 )
 
-// Claude 2026-10-21: Newznab filename + poster search, NZB password (no HTML).
-// Reason: ngPost title/password live in NZB meta. Stem q= misses when the
-//   indexer stores the real title. Poster is nZEDb advanced fromname
-//   (t=search&poster=), then q=From. Do not GET /details or geekseek.
-// Troubleshooting: o2cli grep "nzb-password"; pw=true without crcs → decrypt
-//   miss. Review if: NZBGeek adds poster to caps supportedParams.
+// Claude 2026-10-21: Newznab filename + poster, then group/size NZB browse.
+// Reason: ngPost title/password live in NZB meta. Stem q= and poster= miss on
+//   NZBGeek (caps q,group; RSS 2010 attrs have size/usenetdate, not poster).
+//   Browse group+maxage, t=get, require the hash in NZB subjects. No HTML.
+// Troubleshooting: o2cli grep "nzb-password"; browse cands=0 → size/group;
+//   nzb=N hit=0 → subjects lack the stem. Review if: NZBGeek adds poster
+//   to caps or RSS.
 // Related files: internal/api/nzbpassword.go, namefix.go, nzbpw.go
 
 const (
 	maxSearchItems    = 5
 	maxNZBsPerIndexer = 2
 	maxIndexers       = 3
+	maxBrowsePages    = 5
+	maxBrowseLimit    = 100
+	maxBrowseNZBs     = 4
+	browseSizeTol     = 0.15
 	userAgent         = "sakms-newznab/1"
 	minInterval       = time.Second
 )
@@ -99,14 +105,23 @@ func (c *Client) mark() {
 
 // Query is one Newznab password/title lookup. Filename is the obfuscated
 // archive stem (t=search&q=). Poster is the NNTP From (t=search&poster=).
+// Group/PostedAt/SizeBytes drive a bounded recent-index browse when q= and
+// poster= miss (NZBGeek caps are q,group only and omit poster from RSS).
 type Query struct {
-	Filename string
-	Poster   string
+	Filename  string
+	Poster    string
+	Group     string
+	PostedAt  int64
+	SizeBytes int64
 }
 
 type searchReq struct {
 	q           string
 	poster      string
+	group       string
+	maxage      int
+	offset      int
+	limit       int
 	allowSingle bool
 }
 
@@ -167,11 +182,82 @@ func (c *Client) lookupOne(ctx context.Context, idx Indexer, q Query) (Hit, bool
 			picked = picked[:maxNZBsPerIndexer]
 		}
 		for _, it := range picked {
-			if hit, ok := c.fetchHit(ctx, idx, it); ok {
+			if hit, ok := c.fetchHit(ctx, idx, it, nil); ok {
 				return hit, true
 			}
 		}
 	}
+	if hit, ok := c.lookupBrowse(ctx, idx, q, needles); ok {
+		return hit, true
+	}
+	return Hit{}, false
+}
+
+// Claude 2026-10-21: NZBGeek cannot search poster or the hash filename.
+// Reason: caps supportedParams=q,group; q=stem/From return 0; poster= is
+//
+//	ignored (latest-N). RSS uses the 2010 attr xmlns and has size/usenetdate
+//	but not poster. HTML geekseek is not used. Browse group+maxage, keep
+//	size-close rows, t=get, require the stem/From in the NZB file subjects.
+//
+// Troubleshooting: nzb-password browse cands=0 → size/group mismatch;
+//
+//	nzb=N hit=0 → NZB subjects lack the hash. Review if: NZBGeek adds poster
+//	to caps or RSS.
+func (c *Client) lookupBrowse(ctx context.Context, idx Indexer, q Query, needles []string) (Hit, bool) {
+	group := strings.TrimSpace(q.Group)
+	if group == "" || q.SizeBytes <= 0 || len(needles) == 0 {
+		return Hit{}, false
+	}
+	maxage := browseMaxAgeDays(q.PostedAt)
+	var nzbTried, seenItems, cands int
+	for page := 0; page < maxBrowsePages; page++ {
+		items, err := c.search(ctx, idx, searchReq{
+			group:  group,
+			maxage: maxage,
+			offset: page * maxBrowseLimit,
+			limit:  maxBrowseLimit,
+		})
+		if err != nil {
+			log.Printf("usenetsearch: nzb-password indexer=%s browse err=%v", idx.Name, err)
+			break
+		}
+		if len(items) == 0 {
+			break
+		}
+		seenItems += len(items)
+		for _, it := range items {
+			if !sizeClose(it.attr("size"), q.SizeBytes) {
+				continue
+			}
+			if q.PostedAt > 0 {
+				if ts := usenetDateUnix(it.attr("usenetdate")); ts > 0 {
+					delta := ts - q.PostedAt
+					if delta < 0 {
+						delta = -delta
+					}
+					if delta > 48*3600 {
+						continue
+					}
+				}
+			}
+			cands++
+			if nzbTried >= maxBrowseNZBs {
+				continue
+			}
+			nzbTried++
+			if hit, ok := c.fetchHit(ctx, idx, it, needles); ok {
+				log.Printf("usenetsearch: nzb-password indexer=%s browse group=%s maxage=%d pages=%d items=%d cands=%d nzb=%d hit=1",
+					idx.Name, group, maxage, page+1, seenItems, cands, nzbTried)
+				return hit, true
+			}
+		}
+		if len(items) < maxBrowseLimit {
+			break
+		}
+	}
+	log.Printf("usenetsearch: nzb-password indexer=%s browse group=%s maxage=%d items=%d cands=%d nzb=%d hit=0",
+		idx.Name, group, maxage, seenItems, cands, nzbTried)
 	return Hit{}, false
 }
 
@@ -186,6 +272,7 @@ type rssItem struct {
 	GUID        string    `xml:"guid"`
 	Enclosure   rssEnc    `xml:"enclosure"`
 	Attrs       []rssAttr `xml:"http://www.newznab.com/DTD/2007/feeds/attributes/ attr"`
+	Attrs2010   []rssAttr `xml:"http://www.newznab.com/DTD/2010/feeds/attributes/ attr"`
 }
 
 type rssEnc struct {
@@ -197,8 +284,15 @@ type rssAttr struct {
 	Value string `xml:"value,attr"`
 }
 
+func (it rssItem) allAttrs() []rssAttr {
+	out := make([]rssAttr, 0, len(it.Attrs)+len(it.Attrs2010))
+	out = append(out, it.Attrs...)
+	out = append(out, it.Attrs2010...)
+	return out
+}
+
 func (it rssItem) attr(name string) string {
-	for _, a := range it.Attrs {
+	for _, a := range it.allAttrs() {
 		if strings.EqualFold(a.Name, name) {
 			return strings.TrimSpace(a.Value)
 		}
@@ -212,7 +306,7 @@ func (it rssItem) matches(stem string) bool {
 		return false
 	}
 	blob := strings.ToLower(it.Title + " " + it.Description + " " + it.GUID + " " + it.Link)
-	for _, a := range it.Attrs {
+	for _, a := range it.allAttrs() {
 		blob += " " + strings.ToLower(a.Value)
 	}
 	return strings.Contains(blob, stem)
@@ -250,7 +344,8 @@ func (c *Client) search(ctx context.Context, idx Indexer, req searchReq) ([]rssI
 	}
 	q := strings.TrimSpace(req.q)
 	poster := strings.TrimSpace(req.poster)
-	if q == "" && poster == "" {
+	group := strings.TrimSpace(req.group)
+	if q == "" && poster == "" && (group == "" || req.maxage <= 0) {
 		return nil, fmt.Errorf("empty search")
 	}
 	vals := u.Query()
@@ -262,9 +357,22 @@ func (c *Client) search(ctx context.Context, idx Indexer, req searchReq) ([]rssI
 	if poster != "" {
 		vals.Set("poster", poster)
 	}
+	if group != "" {
+		vals.Set("group", group)
+	}
+	if req.maxage > 0 {
+		vals.Set("maxage", strconv.Itoa(req.maxage))
+	}
+	if req.offset > 0 {
+		vals.Set("offset", strconv.Itoa(req.offset))
+	}
+	limit := req.limit
+	if limit <= 0 {
+		limit = maxSearchItems
+	}
 	vals.Set("o", "xml")
 	vals.Set("extended", "1")
-	vals.Set("limit", fmt.Sprintf("%d", maxSearchItems))
+	vals.Set("limit", strconv.Itoa(limit))
 	u.RawQuery = vals.Encode()
 	body, err := c.get(ctx, u)
 	if err != nil {
@@ -277,14 +385,18 @@ func (c *Client) search(ctx context.Context, idx Indexer, req searchReq) ([]rssI
 	if err := xml.Unmarshal(body, &feed); err != nil {
 		return nil, fmt.Errorf("search xml")
 	}
-	if len(feed.Items) > maxSearchItems {
-		feed.Items = feed.Items[:maxSearchItems]
+	capN := req.limit
+	if capN <= 0 {
+		capN = maxSearchItems
+	}
+	if len(feed.Items) > capN {
+		feed.Items = feed.Items[:capN]
 	}
 	return feed.Items, nil
 }
 
-func (c *Client) fetchHit(ctx context.Context, idx Indexer, it rssItem) (Hit, bool) {
-	pws := mergeUnique(usenet.PasswordsFromTitles([]string{it.Title}), []string{it.attr("password")})
+func (c *Client) fetchHit(ctx context.Context, idx Indexer, it rssItem, needles []string) (Hit, bool) {
+	pws := mergeUnique(usenet.PasswordsFromTitles([]string{it.Title}), []string{unpackPasswordAttr(it.attr("password"))})
 	title := strings.TrimSpace(it.Title)
 	nzbURL := strings.TrimSpace(it.Enclosure.URL)
 	if nzbURL == "" {
@@ -295,8 +407,11 @@ func (c *Client) fetchHit(ctx context.Context, idx Indexer, it rssItem) (Hit, bo
 			nzbURL = getURL(idx, id)
 		}
 	}
+	var nzb *usenet.NZB
+	var dnzb usenet.DNZBHeaders
 	if nzbURL != "" {
-		nzb, dnzb, err := usenet.FetchNZB(ctx, c.httpClient(), nzbURL)
+		var err error
+		nzb, dnzb, err = usenet.FetchNZB(ctx, c.httpClient(), nzbURL)
 		if err != nil {
 			log.Printf("usenetsearch: nzb-password indexer=%s nzb err=%v", idx.Name, err)
 		} else {
@@ -306,10 +421,87 @@ func (c *Client) fetchHit(ctx context.Context, idx Indexer, it rssItem) (Hit, bo
 			}
 		}
 	}
+	if len(needles) > 0 && !nzbMatchesNeedles(title, dnzb, nzb, needles) {
+		return Hit{}, false
+	}
 	if title == "" && len(pws) == 0 {
 		return Hit{}, false
 	}
 	return Hit{Title: title, Passwords: pws, Indexer: idx.Name}, true
+}
+
+func nzbMatchesNeedles(title string, dnzb usenet.DNZBHeaders, nzb *usenet.NZB, needles []string) bool {
+	var b strings.Builder
+	b.WriteString(title)
+	b.WriteByte(' ')
+	b.WriteString(dnzb.Name)
+	if nzb != nil {
+		for _, m := range nzb.Meta {
+			b.WriteByte(' ')
+			b.WriteString(m.Value)
+		}
+		for _, f := range nzb.Files {
+			b.WriteByte(' ')
+			b.WriteString(f.Subject)
+		}
+	}
+	blob := strings.ToLower(b.String())
+	for _, n := range needles {
+		n = strings.ToLower(strings.TrimSpace(n))
+		if n != "" && strings.Contains(blob, n) {
+			return true
+		}
+	}
+	return false
+}
+
+func sizeClose(attr string, payload int64) bool {
+	n, err := strconv.ParseInt(strings.TrimSpace(attr), 10, 64)
+	if err != nil || n <= 0 || payload <= 0 {
+		return false
+	}
+	diff := n - payload
+	if diff < 0 {
+		diff = -diff
+	}
+	return float64(diff)/float64(n) <= browseSizeTol
+}
+
+func browseMaxAgeDays(postedAt int64) int {
+	now := time.Now().Unix()
+	if postedAt <= 0 || postedAt > now {
+		return 2
+	}
+	d := int((now-postedAt)/86400) + 1
+	if d < 1 {
+		d = 1
+	}
+	if d > 7 {
+		d = 7
+	}
+	return d
+}
+
+func unpackPasswordAttr(v string) string {
+	v = strings.TrimSpace(v)
+	switch v {
+	case "", "0", "1", "2", "-1":
+		return ""
+	}
+	return v
+}
+
+func usenetDateUnix(s string) int64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	for _, layout := range []string{time.RFC1123Z, time.RFC1123, time.RFC822Z, time.RFC822} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.Unix()
+		}
+	}
+	return 0
 }
 
 func getURL(idx Indexer, id string) string {

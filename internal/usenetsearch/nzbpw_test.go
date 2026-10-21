@@ -27,6 +27,17 @@ func TestNZBSearchPoster_ParsesFrom(t *testing.T) {
 	}
 }
 
+func TestArchiveSearchPosted_MinPositive(t *testing.T) {
+	rows := []HeaderRow{
+		{PostedAt: 200},
+		{PostedAt: 0},
+		{PostedAt: 150},
+	}
+	if got := archiveSearchPosted(rows); got != 150 {
+		t.Fatalf("got %d", got)
+	}
+}
+
 func TestArchiveSearchPoster_PrefersNgPost(t *testing.T) {
 	rows := []HeaderRow{
 		{From: "other@example.com"},

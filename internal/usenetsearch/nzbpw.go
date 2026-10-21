@@ -10,8 +10,9 @@ import (
 // Reason: ngPost passwords are in the NZB; NNTP hash.7z is 7z-aes. Lookup
 //   searches the archive stem then the NNTP From (poster) on the configured
 //   Newznab host. Do not scrape indexer sites. Do not brute-force.
-// Troubleshooting: o2cli grep "nzb-password"; name_source=nzb|srrdb after
-//   payload=7z-aes. Review if: indexers stop matching q=filename / poster=.
+// Troubleshooting: o2cli grep "nzb-password"; browse cands=0 → size/group;
+//   name_source=nzb|srrdb after payload=7z-aes. Review if: NZBGeek adds
+//   poster to caps or RSS.
 // Related files: internal/newznab/client.go, namefix.go
 
 const namefixNZBPasswordPerPass = 6
@@ -24,9 +25,14 @@ type NZBPasswordHit struct {
 }
 
 // NZBPasswordQuery is one namefix indexer lookup (stem and/or NNTP From).
+// Group/PostedAt/SizeBytes are for the NZBGeek group+maxage browse after
+// q= and poster= miss.
 type NZBPasswordQuery struct {
-	Filename string
-	Poster   string
+	Filename  string
+	Poster    string
+	Group     string
+	PostedAt  int64
+	SizeBytes int64
 }
 
 // NZBPasswordLookup finds an NZB by obfuscated archive filename and/or poster.
@@ -109,6 +115,19 @@ func nzbSearchPoster(from string) string {
 		return from
 	}
 	return ""
+}
+
+func archiveSearchPosted(rows []HeaderRow) int64 {
+	var t int64
+	for _, r := range rows {
+		if r.PostedAt <= 0 {
+			continue
+		}
+		if t == 0 || r.PostedAt < t {
+			t = r.PostedAt
+		}
+	}
+	return t
 }
 
 func archiveSearchPoster(rows []HeaderRow) string {

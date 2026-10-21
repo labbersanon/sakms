@@ -12314,3 +12314,20 @@ status stays active.
 | File | Change |
 |---|---|
 | `frontend/src/screens/settings/ConnectionRow.tsx` | flatten OMDb label; drop stale probe comment |
+
+## 2026-10-21 — Newznab: browse group+size when poster search misses
+
+**Problem:** NZB host lookups ran (`poster=@ngPost.com`) but every `nzb-password` line was `miss`; no `pw=true`.
+**Root cause:** NZBGeek caps are `q,group`. `q=` does not search the hash filename or From. `poster=` is ignored (latest-N). RSS uses the 2010 attr xmlns and has size/usenetdate, not poster. HTML geekseek is not used.
+**Fix:** After stem/poster miss, `t=search&group=&maxage=` then `t=get` size-close rows whose NZB file subjects contain the stem. Parse 2010 attrs. Ignore password flags `0/1/2/-1`.
+**Outcome:** unit tests cover 2010 poster attr + browse size filter. Live `pw=true` still needs a hash-7z pass after deploy.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/newznab/client.go` | 2010 attrs; group/size browse; NZB subject match |
+| `internal/usenetsearch/nzbpw.go` | Query Group/PostedAt/SizeBytes |
+| `internal/usenetsearch/namefix.go` | pass set group/payload into lookup |
+| `internal/api/nzbpassword.go` | pass browse fields to Newznab |
+| `docs/usenet-nntp-native.md` | group+maxage browse |

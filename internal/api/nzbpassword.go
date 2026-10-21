@@ -19,7 +19,8 @@ import (
 //   host URL + API key the operator sets. HTML scrape is not used.
 // Troubleshooting: nzb-password never logs → newznab connection missing,
 //   kill switch off, or t=search miss. poster= is nZEDb fromname after
-//   stem miss. Review if: a second Newznab host is required.
+//   stem miss. NZBGeek browse is group+maxage+size then t=get. Review if:
+//   NZBGeek adds poster to caps or RSS.
 // Related files: internal/newznab/client.go, frontend Usenet.tsx
 
 type nzbPasswordLookup struct {
@@ -71,6 +72,12 @@ func (c *nzbPasswordLookup) Lookup(ctx context.Context, q usenetsearch.NZBPasswo
 		Endpoint: conn.URL,
 		APIKey:   conn.APIKey,
 	}
-	hit, ok := c.client.Lookup(ctx, []newznab.Indexer{idx}, newznab.Query{Filename: q.Filename, Poster: q.Poster})
+	hit, ok := c.client.Lookup(ctx, []newznab.Indexer{idx}, newznab.Query{
+		Filename:  q.Filename,
+		Poster:    q.Poster,
+		Group:     q.Group,
+		PostedAt:  q.PostedAt,
+		SizeBytes: q.SizeBytes,
+	})
 	return usenetsearch.NZBPasswordHit{Title: hit.Title, Passwords: hit.Passwords, Indexer: hit.Indexer}, ok
 }

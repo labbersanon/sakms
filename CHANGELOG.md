@@ -12331,3 +12331,16 @@ status stays active.
 | `internal/usenetsearch/namefix.go` | pass set group/payload into lookup |
 | `internal/api/nzbpassword.go` | pass browse fields to Newznab |
 | `docs/usenet-nntp-native.md` | group+maxage browse |
+
+## 2026-10-21 — Newznab browse: flatten lookupBrowse return
+
+**Problem:** Post-ship deslop on the NZBGeek browse path.
+**Root cause:** `lookupOne` wrapped `lookupBrowse`; search truncated with a second limit var; unreachable `d < 1` clamp.
+**Fix:** Return browse directly; reuse search `limit`; drop the dead clamp.
+**Outcome:** `go test ./internal/newznab` ok.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/newznab/client.go` | flatten browse return; reuse limit |

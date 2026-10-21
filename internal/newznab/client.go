@@ -187,23 +187,13 @@ func (c *Client) lookupOne(ctx context.Context, idx Indexer, q Query) (Hit, bool
 			}
 		}
 	}
-	if hit, ok := c.lookupBrowse(ctx, idx, q, needles); ok {
-		return hit, true
-	}
-	return Hit{}, false
+	return c.lookupBrowse(ctx, idx, q, needles)
 }
 
 // Claude 2026-10-21: NZBGeek cannot search poster or the hash filename.
-// Reason: caps supportedParams=q,group; q=stem/From return 0; poster= is
-//
-//	ignored (latest-N). RSS uses the 2010 attr xmlns and has size/usenetdate
-//	but not poster. HTML geekseek is not used. Browse group+maxage, keep
-//	size-close rows, t=get, require the stem/From in the NZB file subjects.
-//
-// Troubleshooting: nzb-password browse cands=0 → size/group mismatch;
-//
-//	nzb=N hit=0 → NZB subjects lack the hash. Review if: NZBGeek adds poster
-//	to caps or RSS.
+// Reason: caps q,group so poster= is latest-N; browse group+maxage, t=get, NZB stem. No HTML.
+// Troubleshooting: browse cands=0 → size/group mismatch; nzb=N hit=0 → no hash.
+// Review if: NZBGeek adds poster to caps or RSS.
 func (c *Client) lookupBrowse(ctx context.Context, idx Indexer, q Query, needles []string) (Hit, bool) {
 	group := strings.TrimSpace(q.Group)
 	if group == "" || q.SizeBytes <= 0 || len(needles) == 0 {
@@ -385,12 +375,8 @@ func (c *Client) search(ctx context.Context, idx Indexer, req searchReq) ([]rssI
 	if err := xml.Unmarshal(body, &feed); err != nil {
 		return nil, fmt.Errorf("search xml")
 	}
-	capN := req.limit
-	if capN <= 0 {
-		capN = maxSearchItems
-	}
-	if len(feed.Items) > capN {
-		feed.Items = feed.Items[:capN]
+	if len(feed.Items) > limit {
+		feed.Items = feed.Items[:limit]
 	}
 	return feed.Items, nil
 }
@@ -473,9 +459,6 @@ func browseMaxAgeDays(postedAt int64) int {
 		return 2
 	}
 	d := int((now-postedAt)/86400) + 1
-	if d < 1 {
-		d = 1
-	}
 	if d > 7 {
 		d = 7
 	}

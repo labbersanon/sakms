@@ -602,8 +602,7 @@ func TestImportDump_AnalyzesTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	var tuples float64
-	err := s.db.QueryRowContext(ctx, `SELECT reltuples FROM pg_class WHERE oid='usenet_nntp_predb'::regclass`).Scan(&tuples)
-	if err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT reltuples FROM pg_class WHERE oid='usenet_nntp_predb'::regclass`).Scan(&tuples); err != nil {
 		t.Fatal(err)
 	}
 	if tuples < 1 {

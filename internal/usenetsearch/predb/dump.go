@@ -224,15 +224,15 @@ func (s *Store) ImportDump(ctx context.Context, r io.Reader) (DumpStats, error) 
 	if err := flush(); err != nil {
 		return stats, err
 	}
+	// Claude 2026-10-22: ANALYZE after a dump so planner stats match the table.
+	// Reason: live usenet_nntp_predb never had last_analyze. Autovacuum's
+	//   threshold is 0.1*reltuples (~694k mods); n_mod_since_analyze was
+	//   4.5k after a stats-resetting restart, so autoanalyze never fired.
+	//   n_live_tup showed ~2.6k against 6.9M reltuples.
+	// Troubleshooting: pg_stat_user_tables last_analyze empty with
+	//   reltuples in the millions → this skipped.
+	// Review if: autovacuum_analyze_scale_factor is lowered on this table.
 	if stats.Upserted > 0 {
-		// Claude 2026-10-22: ANALYZE after a dump so planner stats match the table.
-		// Reason: live usenet_nntp_predb never had last_analyze. Autovacuum's
-		//   threshold is 0.1*reltuples (~694k mods); n_mod_since_analyze was
-		//   4.5k after a stats-resetting restart, so autoanalyze never fired.
-		//   n_live_tup showed ~2.6k against 6.9M reltuples.
-		// Troubleshooting: pg_stat_user_tables last_analyze empty with
-		//   reltuples in the millions → this skipped. Review if:
-		//   autovacuum_analyze_scale_factor is lowered on this table.
 		if _, err := s.db.ExecContext(ctx, `ANALYZE usenet_nntp_predb`); err != nil {
 			return stats, err
 		}
@@ -298,14 +298,11 @@ func entryFromDump(fields, cols []string) (Entry, bool) {
 
 // Claude 2026-10-19: nZEDb daily dumps quote every field and use \N for NULL.
 // Reason: github.com/nZEDb/nZEDbPre_Dumps csv.gz is MySQL-style ('Title'\t\t\N).
-//
-//	Leaving the quotes in title makes md5(title) miss every obfuscated hash.
-//
+//   Leaving the quotes in title makes md5(title) miss every obfuscated hash.
 // Troubleshooting: dump imported with titles that start with a quote → this
-//
-//	helper was skipped; o2cli grep "predb dump imported".
-//
+//   helper was skipped; o2cli grep "predb dump imported".
 // Review if: dumps are emitted as unquoted TSV (then this is a no-op).
+
 func unquoteDumpField(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" || s == `\N` || strings.EqualFold(s, "null") {

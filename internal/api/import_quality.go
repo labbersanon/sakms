@@ -29,9 +29,9 @@ import (
 const contentBelowFloorReason = "the downloaded video is below the quality floor — trying a different release"
 
 // grabOriginSearchPick is grabs.origin for POST /api/modes/{mode}/search/grab.
-// A release the operator clicked is imported even when it misses the floor.
-// Upgrade-watch still replaces it: the library tier is the one the file
-// actually meets, and that pass already includes the HDR/channel switch.
+// A clicked release that misses the bitrate floor is kept (same as stopgap).
+// Mislabeled bait on the on-disk file still rejects — the file post-check
+// stays on for every origin. Upgrade-watch still replaces a kept miss.
 const grabOriginSearchPick = "search-pick"
 
 // grabOriginQualityStopgap is grabs.origin for an unattended Movies/Series
@@ -46,15 +46,6 @@ func keepBelowFloorOrigin(origin string) bool {
 
 func refuseImportBelowFloor(ctx context.Context, libStore *library.Store, settingsStore *settings.Store, sess *mode.Session, g *grabs.Grab, videoPath string, prober dedup.Prober) error {
 	if g == nil || g.Mode == mode.Adult {
-		return nil
-	}
-	// Claude 2026-10-18: Search-screen picks skip the import floor.
-	// Reason: a clicked release was downloaded, then deleted for missing
-	//   the bitrate floor, and the alternate search never kept the file.
-	// Troubleshooting: journal "import: search-pick kept"; origin stays
-	//   empty on drain/auto-grab, which still returns ErrBelowQualityFloor.
-	// Related files: internal/api/search.go grabHandler; searchPickLibraryTier.
-	if g.Origin == grabOriginSearchPick {
 		return nil
 	}
 	c, ok := importQualityCandidate(ctx, libStore, sess, g, videoPath, prober)
@@ -93,11 +84,20 @@ func refuseImportBelowFloor(ctx context.Context, libStore *library.Store, settin
 	// Related files: grabOriginQualityStopgap; enableUpgradeWatchAfterStopgap;
 	//   drainAlternateReleaseRetries.
 	if gr.Status == autograb.StatusBelowFloor {
-		g.Origin = grabOriginQualityStopgap
+		if !keepBelowFloorOrigin(g.Origin) {
+			g.Origin = grabOriginQualityStopgap
+		}
 		log.Printf("import: quality-stopgap kept file=%q title=%q status=%s score=%.2fMbps floor=%.2fMbps",
 			filepath.Base(videoPath), g.Title, gr.Status, gr.Score, gr.FloorMbps)
 		return nil
 	}
+	// Claude 2026-10-22: mislabel still rejects every origin, including search-pick.
+	// Reason: search-pick used to return before grading the on-disk file, so a
+	//   clicked 1 MiB "2160p" bait skipped the security check. Quality floor
+	//   misses stay kept; fake labels are not a preference miss.
+	// Troubleshooting: journal "import: search-pick kept" on a sample/bait
+	//   size → this early return came back. Review if: operator override
+	//   to keep a mislabeled click (then stamp Low, do not skip the probe).
 	if gr.Status == autograb.StatusMislabeled {
 		log.Printf("import: below quality floor file=%q title=%q status=%s score=%.2fMbps floor=%.2fMbps implied=%.2fMbps runtime=%.0fs size=%d codec=%s res=%d",
 			filepath.Base(videoPath), g.Title, gr.Status, gr.Score, gr.FloorMbps, gr.ImpliedMbps,

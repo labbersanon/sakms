@@ -12605,3 +12605,18 @@ status stays active.
 | `internal/autograb/autograb_test.go` | import 11 Mbps High/1080 qualifies; grab still misses |
 | `internal/api/import_quality.go` | import and stamp use `GradeImportedFile` |
 | `internal/api/import_quality_test.go` | Furious HDR 5.1 WEB-DL kept as qualified |
+
+## 2026-10-22 — Import still grades the on-disk file for mislabeled bait
+
+**Problem:** Search-pick skipped `refuseImportBelowFloor` entirely, so a clicked 1 MiB "2160p" sample never hit the file post-check.
+**Root cause:** origin=search-pick returned before probing size×runtime. That skip was meant to keep under-floor clicks, not to bypass the mislabel security line.
+**Fix:** Every Movies/Series origin grades the on-disk file. Mislabeled still rejects. Honest below-floor still keeps (search-pick origin is not overwritten). Unpadded import grade is unchanged.
+**Outcome:** `TestRefuseImportBelowFloor_SearchPickMislabeledRejected`. `TestRefuseImportBelowFloor_SearchPickKeptAndStamped` uses an honest below-floor file.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/import_quality.go` | no search-pick skip; mislabel rejects every origin |
+| `internal/api/import_quality_test.go` | bait search-pick rejects; below-floor search-pick keeps |
+| `internal/api/search.go` | comment: file post-check still runs |

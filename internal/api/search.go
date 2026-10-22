@@ -477,8 +477,8 @@ func grabHandler(httpClient *http.Client, connStore *connections.Store, scStore 
 		}
 		// Claude 2026-10-18: stamp Search-screen picks before import.
 		// Reason: import keeps origin=search-pick when the file misses the
-		//   quality floor. Precheck parks stay unmarked so an alternate NZB
-		//   is still graded.
+		//   quality floor. Mislabeled bait on the on-disk file still rejects.
+		//   Precheck parks stay unmarked so an alternate NZB is still graded.
 		// Troubleshooting: a clicked release deleted after "below quality floor".
 		// Review if: Discover one-click Grab should use the same origin.
 		// Related files: internal/api/import_quality.go grabOriginSearchPick.

@@ -119,7 +119,7 @@ const (
 //
 //	One hung BODY/dial returned DeadlineExceeded and aborted all 40 due sets.
 //
-// Troubleshooting: o2cli grep "namefix body"; remain_ms=0 + leftover=body →
+// Troubleshooting: o2cli grep "namefix body"; elapsed_ms=0 + leftover=body →
 //
 //	article timeout not applied or parent ctx already dead before BodyHead.
 //
@@ -199,6 +199,39 @@ type NameFixResult struct {
 // Advanced reports whether the pass made progress (drives catchUpPause).
 func (r NameFixResult) Advanced() bool {
 	return r.Renamed+r.RejectGate+r.RejectStat+r.Unresolved+r.Finalized+r.BodyLeftover > 0
+}
+
+// namefixTiming is per-set wall time in milliseconds. One log line after
+// fixSet so leftover vs rename can be attributed to a stage, not guessed.
+//
+// Claude 2026-10-22: instrument only; no prefetch.
+// Reason: critic rejected BODY cache — live FileDesc returns in the same
+//
+//	second as namefix starting; renamed lands ~19s later. remain_ms was the
+//	8s constant so BodyHead latency was invisible.
+//
+// Troubleshooting: o2cli grep "namefix timing"; body_ms dominates → NNTP;
+//
+//	snapshot/stat/rename/siblings dominate → that stage is the next fix.
+//
+// Review if: a stage is identified and fixed (then drop or sample this log).
+type namefixTiming struct {
+	setrows, predb, body, donor, predbnames, accept, crc, snapshot, stat, rename, siblings int64
+}
+
+func (t *namefixTiming) add(dst *int64, start time.Time) {
+	if t == nil || dst == nil {
+		return
+	}
+	*dst += time.Since(start).Milliseconds()
+}
+
+func (t *namefixTiming) log(set PendingSet) {
+	if t == nil {
+		return
+	}
+	log.Printf("usenetsearch: namefix timing group=%s key=%s setrows_ms=%d predb_ms=%d body_ms=%d donor_ms=%d predbnames_ms=%d accept_ms=%d crc_ms=%d snapshot_ms=%d stat_ms=%d rename_ms=%d siblings_ms=%d",
+		set.Group, set.Key, t.setrows, t.predb, t.body, t.donor, t.predbnames, t.accept, t.crc, t.snapshot, t.stat, t.rename, t.siblings)
 }
 
 // NameFixer runs the bounded name-recovery pass over staged sets.
@@ -511,6 +544,8 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 	if set.AlreadyNamed {
 		return n.seedParHashes(ctx, set, res, statBudget)
 	}
+	tm := &namefixTiming{}
+	defer tm.log(set)
 	// Claude 2026-10-20: setRows must not inherit leftover phase crumbs.
 	// Reason: CI ExpiredPhase failed `setRows` with 15ms ctx (91 header rows)
 	//   before BodyHead's WithoutCancel could fetch part01. Live 20s phase
@@ -519,12 +554,14 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 	//   rar set → this WithoutCancel missing. Review if: setRows grows past
 	//   a few hundred ms (then cap it, still fetch part01).
 	work := context.WithoutCancel(ctx)
+	tRows := time.Now()
 	var rows []HeaderRow
 	if set.PreDBOnly {
 		rows, err = n.Index.setRows(work, set.Group, set.Key, namefixPreDBHeaderSample)
 	} else {
 		rows, err = n.Index.setRowsBodyTargets(work, set.Group, set.Key)
 	}
+	tm.add(&tm.setrows, tRows)
 	if err != nil {
 		return false, err
 	}
@@ -535,9 +572,11 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 	res.Sets++
 
 	for _, cand := range headerNameCandidates(rows) {
+		tAccept := time.Now()
 		name, source, conf, predb, ok := n.accept(ctx, cand.name, cand.source, set.PayloadBytes)
+		tm.add(&tm.accept, tAccept)
 		if ok {
-			return n.promote(ctx, set, rows, name, source, conf, predb, res, statBudget)
+			return n.promote(ctx, set, rows, name, source, conf, predb, res, statBudget, tm)
 		}
 	}
 	// Claude 2026-10-22: dump/IRC hash hits persist after leftover phase crumbs.
@@ -549,9 +588,12 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 	// Troubleshooting: namefix deadline phase=predb leftover=1 hash_hits>0
 	//   renamed=0 → this still on phase ctx. Review if: ByName HTTP should
 	//   also ignore crumbs (accept() stays on ctx so HTTP can still die).
-	if hit, ok := n.lookupPreDB(work, set, rows); ok {
+	tPre := time.Now()
+	hit, ok := n.lookupPreDB(work, set, rows)
+	tm.add(&tm.predb, tPre)
+	if ok {
 		res.HashHits++
-		return n.promote(work, set, rows, hit.Title, sourcePreDB, confPreDB, "hit", res, statBudget)
+		return n.promote(work, set, rows, hit.Title, sourcePreDB, confPreDB, "hit", res, statBudget, tm)
 	}
 	// Claude 2026-10-21: password packs never BODY; PreDB miss shelves them.
 	// Reason: live skip_7z still charged 7z Tail on attempts=0 and ranked
@@ -620,8 +662,11 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		// Troubleshooting: o2cli grep "namefix body skip" → this WithoutCancel
 		//   missing. Review if: one overtime BODY delays crawl (>30s/pass).
 		bodyCtx, cancel := context.WithTimeout(work, namefixBodyArticleTimeout)
+		tBody := time.Now()
 		sample, berr := n.Src.BodyHead(bodyCtx, pick.MsgID, headCap)
 		cancel()
+		elapsedMs := time.Since(tBody).Milliseconds()
+		tm.add(&tm.body, tBody)
 		if errors.Is(berr, usenet.ErrBusy) {
 			res.Busy = true
 			return true, nil
@@ -629,8 +674,8 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		res.BodyFetches++
 		triedBody = true
 		if berr != nil {
-			log.Printf("usenetsearch: namefix body msgid=%s bytes=%d remain_ms=%d wire=0 yenc=0 cands=0 par2=false err=%v",
-				pick.MsgID, pick.Bytes, namefixBodyArticleTimeout.Milliseconds(), berr)
+			log.Printf("usenetsearch: namefix body msgid=%s bytes=%d elapsed_ms=%d wire=0 yenc=0 cands=0 par2=false err=%v",
+				pick.MsgID, pick.Bytes, elapsedMs, berr)
 			continue
 		}
 		sampled = true
@@ -663,8 +708,8 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 				cand0 = cand0[:80]
 			}
 		}
-		log.Printf("usenetsearch: namefix body msgid=%s bytes=%d remain_ms=%d wire=%d yenc=%d cands=%d par2=%t cand=%q err=<nil>",
-			pick.MsgID, pick.Bytes, namefixBodyArticleTimeout.Milliseconds(), sample.WireBytes, len(sample.YencName), len(cands), isPar2, cand0)
+		log.Printf("usenetsearch: namefix body msgid=%s bytes=%d elapsed_ms=%d wire=%d yenc=%d cands=%d par2=%t cand=%q err=<nil>",
+			pick.MsgID, pick.Bytes, elapsedMs, sample.WireBytes, len(sample.YencName), len(cands), isPar2, cand0)
 		kind := payloadKind(sample.Data, zstart, zsize)
 		if pick.CRC {
 			if len(crcs) > 0 {
@@ -687,12 +732,14 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 				pick.MsgID, len(crcs), magic, kind, inner)
 		}
 		if isPar2 {
+			tDonor := time.Now()
 			n.rememberParHashes(work, set, sample.Data)
 			name, ok, err := n.Index.LookupParHashDonor(work, set.Group, set.Key, set.PayloadBytes)
+			tm.add(&tm.donor, tDonor)
 			if err != nil {
 				log.Printf("usenetsearch: parhash lookup group=%s err=%v", set.Group, err)
 			} else if ok {
-				return n.promote(work, set, rows, name, sourceParHash, confMedium, "parhash", res, statBudget)
+				return n.promote(work, set, rows, name, sourceParHash, confMedium, "parhash", res, statBudget, tm)
 			}
 		}
 		allHash := true
@@ -703,18 +750,23 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 			// Troubleshooting: body_bytes>0 par2=true hash_hits=0 → this
 			//   ByHash/ByFilename on sample names not called. Review if:
 			//   FileDesc is a non-hex random token (then IRC FN only).
-			if hit, ok := n.lookupPreDBNames(work, set, cands); ok {
+			tNames := time.Now()
+			hit, ok := n.lookupPreDBNames(work, set, cands)
+			tm.add(&tm.predbnames, tNames)
+			if ok {
 				res.HashHits++
-				return n.promote(work, set, rows, hit.Title, sourcePreDB, confPreDB, "hit", res, statBudget)
+				return n.promote(work, set, rows, hit.Title, sourcePreDB, confPreDB, "hit", res, statBudget, tm)
 			}
 			for _, cand := range cands {
 				if recoveredUnusable(cand.name) {
 					continue
 				}
 				allHash = false
+				tAccept := time.Now()
 				name, source, conf, predb, ok := n.accept(work, cand.name, cand.source, set.PayloadBytes)
+				tm.add(&tm.accept, tAccept)
 				if ok {
-					return n.promote(work, set, rows, name, source, conf, predb, res, statBudget)
+					return n.promote(work, set, rows, name, source, conf, predb, res, statBudget, tm)
 				}
 			}
 		}
@@ -726,8 +778,11 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		if isPar2 && allHash {
 			hashOnly = true
 		}
-		if hit, ok := n.lookupCRCs(work, set, crcs); ok {
-			return n.promote(work, set, rows, hit.Title, sourceSRRDB, confMedium, "srrdb", res, statBudget)
+		tCRC := time.Now()
+		hit, ok := n.lookupCRCs(work, set, crcs)
+		tm.add(&tm.crc, tCRC)
+		if ok {
+			return n.promote(work, set, rows, hit.Title, sourceSRRDB, confMedium, "srrdb", res, statBudget, tm)
 		}
 		// Claude 2026-10-21: rar5-enc is a password pack; NNTP has no title.
 		// Reason: live hash-rar after PAR2 still had leftover=41 with
@@ -753,7 +808,7 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 				nzbHit, nzbGot = n.fetchNZBPassword(work, set, rows)
 			}
 			if nzbGot {
-				stop, done, err := n.applyNZBHit(work, set, rows, sample, zstart, nzbHit, res, statBudget)
+				stop, done, err := n.applyNZBHit(work, set, rows, sample, zstart, nzbHit, res, statBudget, tm)
 				if done || err != nil {
 					return stop, err
 				}
@@ -823,8 +878,10 @@ func (n *NameFixer) seedParHashes(ctx context.Context, set PendingSet, res *Name
 			return true, nil
 		}
 		bodyCtx, cancel := context.WithTimeout(work, namefixBodyArticleTimeout)
+		tBody := time.Now()
 		sample, berr := n.Src.BodyHead(bodyCtx, pick.MsgID, namefixHeadBytes)
 		cancel()
+		elapsedMs := time.Since(tBody).Milliseconds()
 		if errors.Is(berr, usenet.ErrBusy) {
 			res.Busy = true
 			return true, nil
@@ -832,15 +889,15 @@ func (n *NameFixer) seedParHashes(ctx context.Context, set PendingSet, res *Name
 		res.BodyFetches++
 		tried = true
 		if berr != nil {
-			log.Printf("usenetsearch: namefix body msgid=%s bytes=%d remain_ms=%d wire=0 yenc=0 cands=0 par2=false err=%v",
-				pick.MsgID, pick.Bytes, namefixBodyArticleTimeout.Milliseconds(), berr)
+			log.Printf("usenetsearch: namefix body msgid=%s bytes=%d elapsed_ms=%d wire=0 yenc=0 cands=0 par2=false err=%v",
+				pick.MsgID, pick.Bytes, elapsedMs, berr)
 			continue
 		}
 		n.Budget.add(sample.WireBytes)
 		res.BodyBytes += sample.WireBytes
 		isPar2 := bytes.HasPrefix(sample.Data, par2Magic)
-		log.Printf("usenetsearch: namefix body msgid=%s bytes=%d remain_ms=%d wire=%d yenc=%d cands=0 par2=%t err=<nil>",
-			pick.MsgID, pick.Bytes, namefixBodyArticleTimeout.Milliseconds(), sample.WireBytes, len(sample.YencName), isPar2)
+		log.Printf("usenetsearch: namefix body msgid=%s bytes=%d elapsed_ms=%d wire=%d yenc=%d cands=0 par2=%t err=<nil>",
+			pick.MsgID, pick.Bytes, elapsedMs, sample.WireBytes, len(sample.YencName), isPar2)
 		if isPar2 {
 			n.rememberParHashes(work, set, sample.Data)
 			break
@@ -894,7 +951,7 @@ func (n *NameFixer) promoteParHashSiblings(ctx context.Context, set PendingSet, 
 		if err != nil || len(rows) == 0 {
 			continue
 		}
-		_, _ = n.promote(ctx, sib, rows, name, sourceParHash, confMedium, "parhash", res, statBudget)
+		_, _ = n.promote(ctx, sib, rows, name, sourceParHash, confMedium, "parhash", res, statBudget, nil)
 	}
 }
 
@@ -1044,7 +1101,10 @@ func letterCount(s string) int {
 // promote runs an accepted name through the admission gate and STAT (when
 // admission is on), then renames the set. A gate reject or confirmed-missing
 // STAT deletes the set (same irreversibility as crawl admission).
-func (n *NameFixer) promote(ctx context.Context, set PendingSet, rows []HeaderRow, name, source, conf, predb string, res *NameFixResult, statBudget *int) (bool, error) {
+func (n *NameFixer) promote(ctx context.Context, set PendingSet, rows []HeaderRow, name, source, conf, predb string, res *NameFixResult, statBudget *int, tm *namefixTiming) (bool, error) {
+	if tm == nil {
+		tm = &namefixTiming{}
+	}
 	reject := func(counter *int) (bool, error) {
 		*counter++
 		n.markRejected(set)
@@ -1057,7 +1117,9 @@ func (n *NameFixer) promote(ctx context.Context, set PendingSet, rows []HeaderRo
 		return reject(&res.RejectGate)
 	}
 	if c != nil && c.AdmissionEnabled && c.Admitter != nil {
+		tSnap := time.Now()
 		snap, err := c.Admitter.Snapshot(ctx)
+		tm.add(&tm.snapshot, tSnap)
 		if err != nil {
 			return false, err
 		}
@@ -1087,20 +1149,26 @@ func (n *NameFixer) promote(ctx context.Context, set PendingSet, rows []HeaderRo
 				}
 			}
 			var st chunkStats
+			tStat := time.Now()
 			keep, _, _ := c.statVerdict(ctx, set.Group, name, rows, false, statBudget, &busy, &st)
+			tm.add(&tm.stat, tStat)
 			if !keep {
 				return reject(&res.RejectStat)
 			}
 		}
 	}
+	tRename := time.Now()
 	if err := n.Index.RenameRelease(ctx, set.Group, set.Key, name, source, conf); err != nil {
 		return false, err
 	}
+	tm.add(&tm.rename, tRename)
 	res.Renamed++
 	res.BySource[source]++
 	log.Printf("usenetsearch: renamed group=%s key=%s name=%s source=%s confidence=%s predb=%s pct=%.1f",
 		set.Group, set.Key, name, source, conf, predb, float64(set.CompletenessBP)/100)
+	tSib := time.Now()
 	n.promoteParHashSiblings(ctx, set, name, res, statBudget)
+	tm.add(&tm.siblings, tSib)
 	if busy {
 		res.Busy = true
 	}
@@ -1182,9 +1250,9 @@ func (n *NameFixer) fetchNZBPassword(ctx context.Context, set PendingSet, rows [
 	return hit, true
 }
 
-func (n *NameFixer) applyNZBHit(ctx context.Context, set PendingSet, rows []HeaderRow, sample usenet.BodySample, zstart []byte, hit NZBPasswordHit, res *NameFixResult, statBudget *int) (stop bool, done bool, err error) {
+func (n *NameFixer) applyNZBHit(ctx context.Context, set PendingSet, rows []HeaderRow, sample usenet.BodySample, zstart []byte, hit NZBPasswordHit, res *NameFixResult, statBudget *int, tm *namefixTiming) (stop bool, done bool, err error) {
 	try := func(name, source, conf, predb string) (bool, bool, error) {
-		stop, err := n.promote(ctx, set, rows, name, source, conf, predb, res, statBudget)
+		stop, err := n.promote(ctx, set, rows, name, source, conf, predb, res, statBudget, tm)
 		return stop, true, err
 	}
 	if len(hit.Passwords) > 0 && len(zstart) == 32 {

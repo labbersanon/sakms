@@ -12741,3 +12741,17 @@ status stays active.
 | `internal/usenetsearch/service.go` | sweep uncomputed scraps before `recomputeDirtyBounded` |
 | `internal/usenetsearch/releases_test.go` | 1-header scrap, 1/1 keep, in-window/repair, last_msg>0 handoff |
 | `docs/usenet-nntp-native.md` | uncomputed scrap sweep |
+
+## 2026-10-22 — Namefix per-set stage timing; BODY elapsed_ms
+
+**Problem:** Prefetch was proposed to hide 8s BodyHead. Live FileDesc returns in the same second as `namefix starting`; `renamed` lands ~19s later. `remain_ms` logged the 8s constant, so BodyHead latency was invisible.
+**Root cause:** No per-stage timers in `fixSet`/`promote`. The 4-worker BODY pool already overlapped fetch.
+**Fix:** One `namefix timing` line per set (`setrows_ms` `predb_ms` `body_ms` `donor_ms` `predbnames_ms` `accept_ms` `crc_ms` `snapshot_ms` `stat_ms` `rename_ms` `siblings_ms`). `namefix body` logs `elapsed_ms` (wall time of that BodyHead). No prefetch. Behavior unchanged.
+**Outcome:** Next live pass shows which stage holds the ~19s. Attack that stage, not BODY cache.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix.go` | `namefixTiming`; `elapsed_ms` on BODY logs |
+| `docs/usenet-nntp-native.md` | `namefix timing` / `elapsed_ms` notes |

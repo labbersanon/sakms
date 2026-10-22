@@ -283,8 +283,10 @@ counters under `gapFillStatus` (`releasesSearchable`, `releasesBelowGate`,
 
 ### Operating notes
 
-- O2 queries: `o2cli grep "collection rewrite"`, `"collection drift"`, `"namefix pass"`, `"nzb-password"`, `"repair pass"`,
+- O2 queries: `o2cli grep "collection rewrite"`, `"collection drift"`, `"namefix pass"`, `"namefix timing"`, `"nzb-password"`, `"repair pass"`,
   `"backfill group="`, `"completeness recompute"`, `"predb"`.
+  `namefix timing` is per-set stage ms (`body_ms`, `stat_ms`, `rename_ms`, …).
+  `namefix body elapsed_ms` is BodyHead wall time (not the 8s cap).
   `backfill ... state=paused reason=budget` means the index is at the budget.
 - Re-run a finished backfill (e.g. after raising `backfill_days`):
   `UPDATE usenet_nntp_watermarks SET backfill_done=FALSE, backfill_reason='' WHERE group_name='…';`

@@ -12480,3 +12480,17 @@ status stays active.
 | `internal/usenetsearch/namefix.go` | PAR2 before archive volumes |
 | `internal/usenetsearch/namefix_test.go` | par2-first pick order |
 | `docs/usenet-nntp-native.md` | BODY pick order |
+
+## 2026-10-21 — Skip RAR volumes when PAR2 is present
+
+**Problem:** PAR2-first still fetched two 716KB `rar5-enc` parts after a hash FileDesc (`leftover=41`, `crcs=0`).
+**Root cause:** first-volume / last-volume RAR stayed in the 3-slot pick list beside main PAR2.
+**Fix:** If a main `.par2` exists, do not BODY RAR/ZIP volumes. 7z HeadOnly/Tail still runs for srrdb CRC.
+**Outcome:** `TestPickBodyTargets_PrefersPar2ThenFirstVolume` asserts no RAR beside PAR2.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix.go` | skip RAR volumes when PAR2 present |
+| `internal/usenetsearch/namefix_test.go` | no RAR pick beside PAR2 |

@@ -101,8 +101,11 @@ an http(s) dump *file* URL). Do not scrape `api.predb.net` to populate that
 table. nZEDbPre_Dumps stopped publishing new daily files in
 2024-05; historical `dumps/*/*_predb_dump.csv.gz` are still on GitHub and
 import as quoted MySQL TSV (`\N` nulls). There is no default dump URL.
-A dump that upserts any row `ANALYZE`s `usenet_nntp_predb` so the planner
-keeps filename/hash index stats (autovacuum will not, at 0.1 of 6.9M rows).
+A dump that upserts any row runs `VACUUM (PARALLEL 0, ANALYZE)` on
+`usenet_nntp_predb` so the planner keeps filename/hash index stats and dump
+`ON CONFLICT` dead rows are reclaimed (autovacuum will not, at 0.2 of 6.9M
+rows). `PARALLEL 0` because sakms-db `/dev/shm` is 64MiB (SQLSTATE 53100).
+Do not `VACUUM FULL`.
 Default IRC is on: synIRC `#PreNNTmux`, TLS 6697, a random unregistered
 nick, client PING heartbeat, plus a second client on Corrupt-net `#pre`
 (`irc.corrupt-net.org:6697` TLS). NickServ is optional and unused by default

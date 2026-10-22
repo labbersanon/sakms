@@ -224,16 +224,18 @@ func (s *Store) ImportDump(ctx context.Context, r io.Reader) (DumpStats, error) 
 	if err := flush(); err != nil {
 		return stats, err
 	}
-	// Claude 2026-10-22: ANALYZE after a dump so planner stats match the table.
-	// Reason: live usenet_nntp_predb never had last_analyze. Autovacuum's
-	//   threshold is 0.1*reltuples (~694k mods); n_mod_since_analyze was
-	//   4.5k after a stats-resetting restart, so autoanalyze never fired.
-	//   n_live_tup showed ~2.6k against 6.9M reltuples.
-	// Troubleshooting: pg_stat_user_tables last_analyze empty with
-	//   reltuples in the millions → this skipped.
-	// Review if: autovacuum_analyze_scale_factor is lowered on this table.
+	// Claude 2026-10-22: VACUUM (PARALLEL 0, ANALYZE) after a dump.
+	// Reason: dump upserts ON CONFLICT, so each re-import leaves dead rows.
+	//   Autovacuum vacuum threshold is 0.2*reltuples (~1.4M dead); live had
+	//   185k dead and last_vacuum empty. ANALYZE does not reclaim them.
+	//   Default parallel VACUUM needs ~64MB DSM and fails SQLSTATE 53100 on
+	//   sakms-db's 64MiB /dev/shm. Do not VACUUM FULL (exclusive lock).
+	// Troubleshooting: n_dead_tup tens of thousands with last_vacuum empty
+	//   → this still ANALYZE-only. 53100 on dump import → PARALLEL 0 missing.
+	//   57014 statement timeout mid-index → dump ctx must not cap at 15min.
+	// Review if: sakms-db compose shm is raised above 64MiB.
 	if stats.Upserted > 0 {
-		if _, err := s.db.ExecContext(ctx, `ANALYZE usenet_nntp_predb`); err != nil {
+		if _, err := s.db.ExecContext(ctx, `VACUUM (PARALLEL 0, ANALYZE) usenet_nntp_predb`); err != nil {
 			return stats, err
 		}
 	}

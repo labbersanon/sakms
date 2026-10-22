@@ -12785,3 +12785,18 @@ status stays active.
 | `internal/usenetsearch/predb/dump.go` | `ANALYZE` after dump upserts |
 | `internal/usenetsearch/predb/predb_test.go` | dump import updates `reltuples` |
 | `docs/usenet-nntp-native.md` | dump ANALYZE note |
+
+## 2026-10-22 — VACUUM ANALYZE PreDB after dump import
+
+**Problem:** `usenet_nntp_predb` had ~185k dead rows, `last_vacuum` empty, heap 2.2GB. ANALYZE after dump did not reclaim them.
+**Root cause:** Dump upserts `ON CONFLICT` leave dead tuples. Autovacuum vacuum threshold is `50+0.2*reltuples` (~1.4M dead), so 185k never triggered a vacuum.
+**Fix:** Live `VACUUM (PARALLEL 0)` (not `VACUUM FULL`; default parallel VACUUM hit SQLSTATE 53100 on sakms-db 64MiB shm). `ImportDump` runs `VACUUM (PARALLEL 0, ANALYZE)` after upserts, replacing ANALYZE-only. ByFilename `filename <> ''` / BODY 90s unchanged. No new index.
+**Outcome:** `TestImportDump_VacuumAnalyzesTable`. Live `n_dead_tup` ~0 and `last_vacuum` set.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/predb/dump.go` | `VACUUM ANALYZE` after dump upserts |
+| `internal/usenetsearch/predb/predb_test.go` | re-import leaves `n_dead_tup=0` |
+| `docs/usenet-nntp-native.md` | dump VACUUM ANALYZE note |

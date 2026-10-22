@@ -594,10 +594,13 @@ func TestImportDump_NZEdbQuotedMySQLExport(t *testing.T) {
 	}
 }
 
-func TestImportDump_AnalyzesTable(t *testing.T) {
+func TestImportDump_VacuumAnalyzesTable(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 	tsv := "Analyze.Dump.2021.1080p.WEB.h264-GRP\t\tnfo\t\t1\t\t1\t\tfile.rar\t\t0\t\t\t\tX\t\t1\t\tsrrdb\t\t0\t\tg\n"
+	if _, err := s.ImportDump(ctx, strings.NewReader(tsv)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.ImportDump(ctx, strings.NewReader(tsv)); err != nil {
 		t.Fatal(err)
 	}
@@ -606,7 +609,14 @@ func TestImportDump_AnalyzesTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	if tuples < 1 {
-		t.Fatalf("reltuples=%v after dump import; ANALYZE did not run", tuples)
+		t.Fatalf("reltuples=%v after dump import; VACUUM (PARALLEL 0, ANALYZE) did not run", tuples)
+	}
+	var dead int64
+	if err := s.db.QueryRowContext(ctx, `SELECT n_dead_tup FROM pg_stat_user_tables WHERE relname='usenet_nntp_predb'`).Scan(&dead); err != nil {
+		t.Fatal(err)
+	}
+	if dead != 0 {
+		t.Fatalf("n_dead_tup=%d after dump re-import; VACUUM did not run", dead)
 	}
 }
 

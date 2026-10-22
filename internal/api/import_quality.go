@@ -74,19 +74,26 @@ func refuseImportBelowFloor(ctx context.Context, libStore *library.Store, settin
 	if !gr.BitrateKnown {
 		return nil
 	}
-	// Claude 2026-10-21: keep an honest below-floor stopgap.
-	// Reason: redownload deleted the only available NZB for missing the
-	//   bitrate floor; preferred is hunted later via upgrade-watch.
-	// Troubleshooting: journal "import: quality-stopgap kept"; origin is
-	//   quality-stopgap from RunAutoGrab. Min/max resolution still reject.
-	// Review if: stopgap should also keep StatusMislabeled (it must not).
-	// Related files: grabOriginQualityStopgap; enableUpgradeWatchAfterStopgap.
-	if gr.Status == autograb.StatusBelowFloor && g.Origin == grabOriginQualityStopgap {
+	// Claude 2026-10-21: keep an honest below-floor file and stop alternate NZBs.
+	// Reason: Furious S01E04 grabbed as Qualified (NZB size/runtime), then
+	//   import re-graded 26.24 vs 27.50 Mbps and ParkForAlternateRelease
+	//   walked CHDWEB → playWEB → TURG → ETHEL → Normal1406. Grab-time
+	//   stopgap only stamped origin when SelectBest found nothing Qualified,
+	//   so this path never kept the replacement it had already downloaded.
+	// Troubleshooting: journal "import: quality-stopgap kept"; grab origin
+	//   becomes quality-stopgap so upgrade-watch hunts preferred later.
+	// Review if: StatusMislabeled should also keep (it must not — bait NZBs).
+	// Related files: grabOriginQualityStopgap; enableUpgradeWatchAfterStopgap;
+	//   drainAlternateReleaseRetries.
+	if gr.Status == autograb.StatusBelowFloor {
+		if g.Origin != grabOriginSearchPick {
+			g.Origin = grabOriginQualityStopgap
+		}
 		log.Printf("import: quality-stopgap kept file=%q title=%q status=%s score=%.2fMbps floor=%.2fMbps",
 			filepath.Base(videoPath), g.Title, gr.Status, gr.Score, gr.FloorMbps)
 		return nil
 	}
-	if gr.Status == autograb.StatusBelowFloor || gr.Status == autograb.StatusMislabeled {
+	if gr.Status == autograb.StatusMislabeled {
 		log.Printf("import: below quality floor file=%q title=%q status=%s score=%.2fMbps floor=%.2fMbps implied=%.2fMbps runtime=%.0fs size=%d codec=%s res=%d",
 			filepath.Base(videoPath), g.Title, gr.Status, gr.Score, gr.FloorMbps, gr.ImpliedMbps,
 			c.RuntimeSeconds, c.SizeBytes, c.Codec, c.Resolution)

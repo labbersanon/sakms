@@ -535,8 +535,5 @@ func IsMetaSubject(subj, filename string) bool {
 // skipPayload reports files that must not count toward completeness or
 // payload_bytes: PAR2/NFO/SFV and trailer/sample names.
 func skipPayload(subj, filename string, storedMeta bool) bool {
-	if storedMeta || IsMetaSubject(subj, filename) {
-		return true
-	}
-	return usenet.IsSampleName(subj) || usenet.IsSampleName(filename)
+	return storedMeta || IsMetaSubject(subj, filename) || usenet.IsSampleName(subj) || usenet.IsSampleName(filename)
 }

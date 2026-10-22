@@ -38,7 +38,7 @@ func TestFilterGrabReleases_Prefix1080(t *testing.T) {
 		{Title: "Movie.2021.720p.BluRay.x264-GRP", Size: 2, DownloadURL: "http://b/nzb"},
 	}
 	got := FilterGrabReleases("Movie 2021 1080", rels)
-	if len(got) != 1 || !containsTitle(got, "Movie.2021.1080p.BluRay.x264-GRP") {
+	if len(got) != 1 || got[0].Title != "Movie.2021.1080p.BluRay.x264-GRP" {
 		t.Fatalf("1080 must prefix-match 1080p: %+v", got)
 	}
 }
@@ -58,13 +58,4 @@ func TestSanitizeGrabQuery(t *testing.T) {
 	if got := sanitizeGrabQuery("Grab Movie 2021"); got != "grab.movie.2021" {
 		t.Fatalf("got %q", got)
 	}
-}
-
-func containsTitle(rels []Release, title string) bool {
-	for _, r := range rels {
-		if r.Title == title {
-			return true
-		}
-	}
-	return false
 }

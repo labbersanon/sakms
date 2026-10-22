@@ -2,7 +2,6 @@ package newznab
 
 import (
 	"regexp"
-	"sort"
 	"strings"
 	"unicode"
 )
@@ -30,41 +29,26 @@ func FilterGrabReleases(query string, rels []Release) []Release {
 		return rels
 	}
 	inc, exc, core := parseGrabLogic(query)
-	qTok := tokenSet(sanitizeGrabQuery(core))
-	items := make([]scoredGrab, 0, len(rels))
-	kept := 0
+	coreSan := sanitizeGrabQuery(core)
+	qTok := tokenSet(coreSan)
+	var exact, rest, fallback []Release
 	for _, r := range rels {
 		title := sanitizeGrabQuery(r.Title)
 		tTok := tokenSet(title)
-		if !grabLogicOK(tTok, inc, exc) {
-			items = append(items, scoredGrab{rel: r})
+		if !grabLogicOK(tTok, inc, exc) || (len(qTok) > 0 && !titleMatchesQuery(qTok, tTok)) {
+			fallback = append(fallback, r)
 			continue
 		}
-		if len(qTok) > 0 && !titleMatchesQuery(qTok, tTok) {
-			items = append(items, scoredGrab{rel: r})
-			continue
+		if title != "" && title == coreSan {
+			exact = append(exact, r)
+		} else {
+			rest = append(rest, r)
 		}
-		exact := title != "" && title == sanitizeGrabQuery(core)
-		items = append(items, scoredGrab{rel: r, exact: exact, keep: true})
-		kept++
 	}
-	use := items
-	if kept > 0 {
-		filtered := make([]scoredGrab, 0, kept)
-		for _, it := range items {
-			if it.keep {
-				filtered = append(filtered, it)
-			}
-		}
-		use = filtered
+	if len(exact)+len(rest) == 0 {
+		return dedupGrab(fallback)
 	}
-	sort.SliceStable(use, func(i, j int) bool {
-		if use[i].exact != use[j].exact {
-			return use[i].exact
-		}
-		return false
-	})
-	return dedupGrab(use)
+	return dedupGrab(append(exact, rest...))
 }
 
 func parseGrabLogic(query string) (include, exclude map[string]bool, core string) {
@@ -115,10 +99,6 @@ func titleHasTerm(title map[string]bool, tok string) bool {
 }
 
 func titleMatchesQuery(qTok, tTok map[string]bool) bool {
-	if len(qTok) == 0 {
-		return true
-	}
-	unmatched := 0
 	for tok := range qTok {
 		if tTok[tok] {
 			continue
@@ -131,10 +111,10 @@ func titleMatchesQuery(qTok, tTok map[string]bool) bool {
 			}
 		}
 		if !hit {
-			unmatched++
+			return false
 		}
 	}
-	return unmatched == 0
+	return true
 }
 
 func sanitizeGrabQuery(s string) string {
@@ -155,9 +135,6 @@ func sanitizeGrabQuery(s string) string {
 
 func tokenSet(s string) map[string]bool {
 	out := map[string]bool{}
-	if s == "" {
-		return out
-	}
 	for _, t := range strings.Split(s, ".") {
 		if t != "" {
 			out[t] = true
@@ -166,16 +143,16 @@ func tokenSet(s string) map[string]bool {
 	return out
 }
 
-func dedupGrab(items []scoredGrab) []Release {
-	out := make([]Release, 0, len(items))
-	for _, it := range items {
+func dedupGrab(rels []Release) []Release {
+	out := make([]Release, 0, len(rels))
+	for _, r := range rels {
+		st := sanitizeGrabQuery(r.Title)
 		dup := false
-		st := sanitizeGrabQuery(it.rel.Title)
 		for _, have := range out {
 			if sanitizeGrabQuery(have.Title) != st {
 				continue
 			}
-			d := have.Size - it.rel.Size
+			d := have.Size - r.Size
 			if d < 0 {
 				d = -d
 			}
@@ -185,14 +162,8 @@ func dedupGrab(items []scoredGrab) []Release {
 			}
 		}
 		if !dup {
-			out = append(out, it.rel)
+			out = append(out, r)
 		}
 	}
 	return out
-}
-
-type scoredGrab struct {
-	rel   Release
-	exact bool
-	keep  bool
 }

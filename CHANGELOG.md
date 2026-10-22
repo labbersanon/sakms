@@ -12561,3 +12561,17 @@ status stays active.
 | `frontend/src/screens/downloadEta.test.ts` | hold-until-calc; rolling 60s rate |
 | `frontend/src/screens/Downloads.tsx` | remaining comment: 60s average, not EMA tick |
 | `internal/ratesmooth/window.go` | comment: client holds leftover / 60s avg |
+
+## 2026-10-21 — Keep an honest episode replacement instead of walking alternate NZBs
+
+**Problem:** After Replace obtained Furious S01E04, the downloader kept pulling CHDWEB → playWEB → TURG → ETHEL → Normal1406.
+**Root cause:** Grab-time SelectBest marked the NZB Qualified (advertised size/runtime). Import re-graded the real file (26.24 vs 27.50 Mbps) as `StatusBelowFloor` and, because origin was not already `quality-stopgap`, wrapped `ErrContentUnusable` so `ParkForAlternateRelease` walked every next NZB. Grab-time stopgap only stamps that origin when nothing Qualified.
+**Fix:** Import keeps an honest `StatusBelowFloor` Movies/Series file, stamps `origin=quality-stopgap`, and turns upgrade-watch on. Preferred is the daily watch pass, not an immediate alternate download. `StatusMislabeled` still parks an alternate. Min/max resolution still reject.
+**Outcome:** `TestRefuseImportBelowFloor_HonestReplacementDoesNotParkAlternate`. Elite-sized bait NZBs still reject as mislabeled.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/import_quality.go` | keep honest below-floor; stamp stopgap origin |
+| `internal/api/import_quality_test.go` | Furious-shaped keep; live-action 480p is stopgap |

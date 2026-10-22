@@ -12663,3 +12663,19 @@ status stays active.
 | `internal/usenetsearch/namefix.go` | BODY skips ByFilename LIKE; body-target header load |
 | `internal/usenetsearch/namefix_index.go` | `setRowsBodyTargets`; `declared_segs ASC` |
 | `internal/usenetsearch/namefix_test.go` | vol PAR2 not loaded; filename PreDB is SkipBody |
+
+## 2026-10-22 — Namefix before OVER; skip crawl while BODY leftover
+
+**Problem:** Searchable still waited on OVER of hundreds of groups between 90s BODY passes. After FileDesc-target load, first BODY was 1s and leftover=38, then crawl catch-up sat minutes before the next namefix.
+**Root cause:** The loop ran Probe+CrawlOnce+repair before recompute/namefix. Namefix cadence was the crawl loop, not the 90s BODY budget. Uncapped skip would starve HIGH (DuePendingNames=40, live ~5 BODY sets/90s, leftover stays >0).
+**Fix:** Recompute + namefix run first. `NameFixResult.BodyLeftover` is the BODY-queue remainder at the 90s deadline. OVER/repair/backfill skip while leftover>0, capped at 4 consecutive skips so HIGH still moves. ErrBusy still skips crawl. Do not skip forever after leftover=0. 90s BODY / 8s article / BODY-before-PreDB unchanged.
+**Outcome:** `TestNameFix_BodyLeftoverOnDeadline`. `TestSkipForwardCrawl`. Live: `skip crawl leftover=` between namefix passes; crawl chunks still appear at least every 4 leftover skips.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix.go` | `BodyLeftover`; leftover in pass log; Advanced includes leftover |
+| `internal/usenetsearch/service.go` | namefix before OVER; `skipForwardCrawl`; `makeCrawler`/`runCrawl` |
+| `internal/usenetsearch/namefix_test.go` | leftover on deadline; skip cap |
+| `docs/usenet-nntp-native.md` | namefix before OVER; leftover skip cap 4 |

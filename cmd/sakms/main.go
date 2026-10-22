@@ -251,7 +251,7 @@ func run() error {
 	})
 	// Claude 2026-10-15: crawl-time quality admission policy (Step 4 of
 	// .omc/plans/nntp-crawl-quality-admission.md).
-	// Reason: Service.runProbeAndCrawl gates on cfg.AdmissionEnabled && s.admit
+	// Reason: Service.makeCrawler gates on cfg.AdmissionEnabled && s.admit
 	//   != nil; without this wiring the kill switch default-true setting is
 	//   moot because there is no policy to admit against (legacy upsert-all).
 	// Troubleshooting: crawl indexes non-matching releases → admit is nil → check this line ran.

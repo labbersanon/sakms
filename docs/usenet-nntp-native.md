@@ -173,7 +173,9 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   Each pass runs quoted ident-shaped header names first (no BODY; ignores
   `next_name_at`), then 95% BODY, then ident BODY, then a one-shot hash_16K
   seed of named/shelved PAR2, then PreDB-only keys. BODY has a 90s phase
-  budget; header/parhash/predb stay 20s.
+  budget; header/parhash/predb stay 20s. Namefix runs before OVER. While
+  BODY leftover>0, OVER/repair/backfill skip (cap 4 consecutive skips so
+  HIGH cannot starve). ErrBusy from downloads still skips crawl.
   Each BODY article is capped at 8s (dial included) and does not inherit leftover
   phase crumbs, so setRows eating the phase still fetches one PAR2. A hung fetch
   logs `namefix body msgid=` and continues to the next PAR2/NFO pick unless the

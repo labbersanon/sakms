@@ -1870,6 +1870,39 @@ func TestNameFixPhaseBudget_BodyIs90s(t *testing.T) {
 	}
 }
 
+func TestNameFix_BodyLeftoverOnDeadline(t *testing.T) {
+	a := obfuscatedSet("la", nfHash, 1, 5)
+	b := obfuscatedSet("lb", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", len(a)+1, 5)
+	f := newNFFixture(t, append(a, b...), nil)
+	f.nf.PassBudget = 50 * time.Millisecond
+	f.src.bodyDelay = 200 * time.Millisecond
+	f.src.bodies["lapar2"] = par2Body(nfHash + ".part01.rar")
+	f.src.bodies["lbpar2"] = par2Body("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.part01.rar")
+	f.crawlAndRecompute(t)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.BodyLeftover < 1 {
+		t.Fatalf("overtime BODY must report leftover: %+v bodyCalls=%v", res, f.src.bodyCalls)
+	}
+	if !res.Advanced() {
+		t.Fatalf("leftover must count as advanced: %+v", res)
+	}
+}
+
+func TestSkipForwardCrawl(t *testing.T) {
+	if skipForwardCrawl(0, 0) || skipForwardCrawl(0, 99) {
+		t.Fatal("leftover=0 must crawl")
+	}
+	if !skipForwardCrawl(38, 0) || !skipForwardCrawl(1, namefixSkipCrawlMax-1) {
+		t.Fatal("leftover>0 must skip until the cap")
+	}
+	if skipForwardCrawl(38, namefixSkipCrawlMax) {
+		t.Fatal("cap must force one OVER so HIGH cannot starve")
+	}
+}
+
 func TestNameFix_PreDBOnlyBeforeSlowBODY(t *testing.T) {
 	// Claude 2026-10-22: same-pass dump/IRC rename after overtime BODY.
 	// Reason: Run() is header → BODY → parhash → preOnly (2026-10-21).

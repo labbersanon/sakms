@@ -174,11 +174,15 @@ type NameFixResult struct {
 	BySource    map[string]int
 	Busy        bool
 	BudgetStop  bool
+	// BodyLeftover is BODY-queue sets not started when the 90s phase ended.
+	// Zero means the queued BODY sets finished (or SkipBody). The loop skips
+	// OVER while this is >0 so namefix does not wait on crawl catch-up.
+	BodyLeftover int
 }
 
 // Advanced reports whether the pass made progress (drives catchUpPause).
 func (r NameFixResult) Advanced() bool {
-	return r.Renamed+r.RejectGate+r.RejectStat+r.Unresolved+r.Finalized > 0
+	return r.Renamed+r.RejectGate+r.RejectStat+r.Unresolved+r.Finalized+r.BodyLeftover > 0
 }
 
 // NameFixer runs the bounded name-recovery pass over staged sets.
@@ -288,7 +292,11 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 		phaseCtx, cancel := context.WithTimeout(ctx, n.phaseBudget(phase))
 		defer cancel()
 		deadline := func(i int) error {
-			log.Printf("usenetsearch: namefix deadline phase=%s leftover=%d", phase, len(in)-i)
+			left := len(in) - i
+			log.Printf("usenetsearch: namefix deadline phase=%s leftover=%d", phase, left)
+			if phase == "body" {
+				res.BodyLeftover = left
+			}
 			return nil
 		}
 		for i, set := range in {
@@ -351,9 +359,9 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 		return res, err
 	}
 	if res.Sets > 0 || res.Finalized > 0 || res.BodyFetches > 0 || res.Renamed > 0 {
-		log.Printf("usenetsearch: namefix pass sets=%d hash_hits=%d body_fetches=%d body_bytes=%d renamed=%d by_source=%s reject_gate=%d reject_stat=%d unresolved=%d finalized=%d busy=%t",
+		log.Printf("usenetsearch: namefix pass sets=%d hash_hits=%d body_fetches=%d body_bytes=%d renamed=%d by_source=%s reject_gate=%d reject_stat=%d unresolved=%d finalized=%d leftover=%d busy=%t",
 			res.Sets, res.HashHits, res.BodyFetches, res.BodyBytes, res.Renamed, formatBySource(res.BySource),
-			res.RejectGate, res.RejectStat, res.Unresolved, res.Finalized, res.Busy)
+			res.RejectGate, res.RejectStat, res.Unresolved, res.Finalized, res.BodyLeftover, res.Busy)
 	}
 	return res, nil
 }

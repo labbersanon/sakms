@@ -9,7 +9,7 @@ import (
 
 // Claude 2026-10-15: admitter — the Service-owned state admission.go's pure
 // functions need across the per-pass Crawler rebuild.
-// Reason: Service.runProbeAndCrawl builds a fresh *Crawler every pass
+// Reason: Service.makeCrawler builds a fresh *Crawler every pass
 //   (service.go), so a cached PolicySnapshot or a per-release STAT verdict
 //   stored on Crawler would never survive past one pass. admitter lives on
 //   Service instead (SetAdmissionPolicy), and the Crawler for one pass just

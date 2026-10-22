@@ -290,7 +290,20 @@ const (
 	defaultIdleBackoff = 60 * time.Second
 	busyBackoff        = 5 * time.Second
 	catchUpPause       = 500 * time.Millisecond
+	// Claude 2026-10-22: force one OVER after this many leftover skips.
+	// Reason: DuePendingNames is 40; live BODY does ~5/90s so leftover stays
+	//   >0 for hours. Uncapped skip would starve HIGH catch-up.
+	// Troubleshooting: skip crawl leftover with skips stuck below this →
+	//   crawl after leftover never logs. Review if: HIGH lag >1d with
+	//   leftover always >0.
+	namefixSkipCrawlMax = 4
 )
+
+// skipForwardCrawl holds OVER/repair/backfill while BODY leftover remains,
+// then forces a crawl after namefixSkipCrawlMax consecutive skips.
+func skipForwardCrawl(bodyLeftover, consecutiveSkips int) bool {
+	return bodyLeftover > 0 && consecutiveSkips < namefixSkipCrawlMax
+}
 
 // ProtectedGroupsFn returns newsgroup names that must not have their index
 // deleted (in-flight native grabs still need ResolveLocator).
@@ -483,38 +496,24 @@ func (s *Service) loop(ctx context.Context) {
 	coreStart := 0
 	backfillSkipLogged := false
 	backfillFilterLogged := false
+	namefixCrawlSkips := 0
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 		s.runCollectionRewrite(ctx)
 		s.refreshMembershipFromList(ctx)
-		// Claude 2026-10-16: D7 pass order — one-shot collection rewrite, then
-		// forward crawl, repair, recompute, (name-fix), (backfill), sweeps,
-		// liveness, (idle collection-drift). Any NNTP pass reporting busy
-		// short-circuits the remaining NNTP passes and waits busyBackoff.
-		// Reason: one goroutine, existing constants, never starve downloads.
-		// Troubleshooting: a pass starving others → check which log line stops
-		//   appearing (repair pass / namefix pass / backfill group=).
-		// Review if: a pass needs its own cadence.
-		cres, crawler := s.runProbeAndCrawl(ctx, crawlStart, coreStart)
-		if crawler != nil {
-			s.mu.Lock()
-			s.ranges = crawler.ranges
-			s.lastPass = cres
-			s.mu.Unlock()
-			crawlStart = cres.NextStart
-			coreStart = cres.NextCoreStart
-		}
-		busy, advanced := cres.Busy, cres.Advanced
-		if crawler != nil && !busy && crawler.RepairEnabled {
-			rr, err := crawler.RepairOnce(ctx)
-			if err != nil {
-				log.Printf("usenetsearch: repair: %v", err)
-			}
-			busy = busy || rr.Busy
-			advanced = advanced || rr.Advanced
-		}
+		// Claude 2026-10-22: recompute + namefix before OVER.
+		// Reason: live OVER of hundreds of groups sat minutes between 90s
+		//   BODY passes (leftover=38 after FileDesc-target load). Namefix
+		//   cadence is independent of crawl catch-up. Skip OVER/repair/
+		//   backfill while BodyLeftover>0, cap consecutive skips so HIGH
+		//   cannot starve. ErrBusy still skips crawl (downloads win).
+		// Troubleshooting: o2cli grep "skip crawl leftover"; no crawl
+		//   chunks for >10min → skip cap not firing. leftover=0 every
+		//   pass and OVER still first → this order reversed.
+		// Review if: BODY leftover stays 0 and searchable still waits on OVER.
+		crawler := s.makeCrawler(ctx)
 		// Claude 2026-10-16: recompute before namefix, and drain extra dirty
 		// batches when the queue is huge.
 		// Reason: DuePendingNames requires dirty=FALSE; a 314k FIFO backlog
@@ -524,36 +523,62 @@ func (s *Service) loop(ctx context.Context) {
 		// Review if: crawl should pause while dirty pending_name exceeds a knob.
 		s.runRecompute(ctx)
 		s.refreshIdentified(ctx)
-		// Claude 2026-10-19: namefix even when the OVER pass was busy.
-		// Reason: PreDB lookups are local DB; skipping the whole pass while
-		//   crawl is busy left 2k due pending unnamed (hash_hits≈1 / 2h).
-		//   BODY still waits (SkipBody) so namefix does not fight downloads.
-		// Troubleshooting: namefix pass absent in o2cli → NameFixEnabled off.
-		// Review if: BODY during download-busy is safe on a dedicated conn.
+		busy, advanced := false, false
+		bodyLeftover := 0
 		if crawler != nil && crawler.NameFixEnabled {
-			nr := s.runNameFix(ctx, crawler, budget, busy)
-			busy = busy || nr.Busy
-			advanced = advanced || nr.Advanced()
+			nr := s.runNameFix(ctx, crawler, budget)
+			busy = nr.Busy
+			advanced = nr.Advanced()
+			bodyLeftover = nr.BodyLeftover
 		}
-		// Claude 2026-10-16: backfill still runs while SkipListTail; dvd/bloaf
-		// are filtered in backfillWanted so yield-core history keeps moving.
-		if crawler != nil && !busy && crawler.shouldBackfill() {
-			crawler.BackfillStart = backfillStart
-			br, err := crawler.BackfillOnce(ctx)
-			if err != nil {
-				log.Printf("usenetsearch: backfill: %v", err)
+		holdCrawl := skipForwardCrawl(bodyLeftover, namefixCrawlSkips)
+		if crawler != nil {
+			if holdCrawl || busy {
+				if holdCrawl {
+					namefixCrawlSkips++
+				}
+				log.Printf("usenetsearch: skip crawl leftover=%d skips=%d busy=%t",
+					bodyLeftover, namefixCrawlSkips, busy)
+			} else {
+				if namefixCrawlSkips > 0 {
+					log.Printf("usenetsearch: crawl after leftover skips=%d leftover=%d",
+						namefixCrawlSkips, bodyLeftover)
+				}
+				namefixCrawlSkips = 0
+				cres := s.runCrawl(ctx, crawler, crawlStart, coreStart)
+				crawlStart = cres.NextStart
+				coreStart = cres.NextCoreStart
+				busy = busy || cres.Busy
+				advanced = advanced || cres.Advanced
+				if !busy && crawler.RepairEnabled {
+					rr, err := crawler.RepairOnce(ctx)
+					if err != nil {
+						log.Printf("usenetsearch: repair: %v", err)
+					}
+					busy = busy || rr.Busy
+					advanced = advanced || rr.Advanced
+				}
+				// Claude 2026-10-16: backfill still runs while SkipListTail; dvd/bloaf
+				// are filtered in backfillWanted so yield-core history keeps moving.
+				if !busy && crawler.shouldBackfill() {
+					crawler.BackfillStart = backfillStart
+					br, err := crawler.BackfillOnce(ctx)
+					if err != nil {
+						log.Printf("usenetsearch: backfill: %v", err)
+					}
+					if br.Filtered > 0 && !backfillFilterLogged {
+						log.Printf("usenetsearch: backfill skipping %d groups (not a package core and no named index)", br.Filtered)
+						backfillFilterLogged = true
+					}
+					backfillStart = br.NextStart
+					if br.Skipped != "" && !backfillSkipLogged {
+						log.Printf("usenetsearch: backfill skipped reason=%s", br.Skipped)
+					}
+					backfillSkipLogged = br.Skipped != ""
+					busy = busy || br.Busy
+					advanced = advanced || br.Advanced || br.HasWork
+				}
 			}
-			if br.Filtered > 0 && !backfillFilterLogged {
-				log.Printf("usenetsearch: backfill skipping %d groups (not a package core and no named index)", br.Filtered)
-				backfillFilterLogged = true
-			}
-			backfillStart = br.NextStart
-			if br.Skipped != "" && !backfillSkipLogged {
-				log.Printf("usenetsearch: backfill skipped reason=%s", br.Skipped)
-			}
-			backfillSkipLogged = br.Skipped != ""
-			busy = busy || br.Busy
-			advanced = advanced || br.Advanced || br.HasWork
 		}
 		s.runSweeps(ctx)
 		s.runLiveness(ctx)
@@ -595,7 +620,9 @@ func (s *Service) idleBackoff() time.Duration {
 	return d
 }
 
-func (s *Service) runProbeAndCrawl(ctx context.Context, crawlStart, coreStart int) (CrawlResult, *Crawler) {
+// makeCrawler probes NNTP and builds the per-pass Crawler without OVER.
+// The loop runs namefix first, then runCrawl unless BODY leftover holds it.
+func (s *Service) makeCrawler(ctx context.Context) *Crawler {
 	s.mu.Lock()
 	src := s.src
 	cfg := s.cfg
@@ -615,7 +642,7 @@ func (s *Service) runProbeAndCrawl(ctx context.Context, crawlStart, coreStart in
 	s.probe = r
 	s.mu.Unlock()
 	if !r.Ready || idx == nil || src == nil {
-		return CrawlResult{}, nil
+		return nil
 	}
 	_ = s.PruneBeyondCeilings(ctx)
 	window := time.Duration(cfg.WindowDays) * 24 * time.Hour
@@ -647,8 +674,6 @@ func (s *Service) runProbeAndCrawl(ctx context.Context, crawlStart, coreStart in
 		BackfillBudgetPct:  cfg.BackfillBudgetPct,
 		LanguageFilter:     langFilter,
 		PreferredLanguages: langs,
-		CrawlStart:         crawlStart,
-		CoreStart:          coreStart,
 		// Claude 2026-10-16: publish last OVER chunk as it lands, not after the pass.
 		// Reason: LIST membership is hundreds of groups; a Dashboard poll mid-pass
 		// should show the current chunk, not the previous pass.
@@ -660,11 +685,21 @@ func (s *Service) runProbeAndCrawl(ctx context.Context, crawlStart, coreStart in
 			s.mu.Unlock()
 		},
 	}
+	return c
+}
+
+func (s *Service) runCrawl(ctx context.Context, c *Crawler, crawlStart, coreStart int) CrawlResult {
+	c.CrawlStart = crawlStart
+	c.CoreStart = coreStart
 	cres, err := c.CrawlOnce(ctx)
 	if err != nil {
 		log.Printf("usenetsearch: crawl: %v", err)
 	}
-	return cres, c
+	s.mu.Lock()
+	s.ranges = c.ranges
+	s.lastPass = cres
+	s.mu.Unlock()
+	return cres
 }
 
 // pruneNonMatchingOnce runs the one-shot prune of already-indexed rows that
@@ -960,7 +995,7 @@ func (s *Service) SearchGroupsForMode(ctx context.Context, mode string) []string
 }
 
 // runNameFix runs one name-recovery pass over staged obfuscated sets.
-func (s *Service) runNameFix(ctx context.Context, c *Crawler, budget *bodyBudget, skipBody bool) NameFixResult {
+func (s *Service) runNameFix(ctx context.Context, c *Crawler, budget *bodyBudget) NameFixResult {
 	s.mu.Lock()
 	cfg := s.cfg
 	predb := s.predb
@@ -971,7 +1006,7 @@ func (s *Service) runNameFix(ctx context.Context, c *Crawler, budget *bodyBudget
 	nf := &NameFixer{
 		Src: c.Src, Index: c.Index, Crawler: c, PreDB: predb, SRRDB: srrdb,
 		NZBPassword: nzbpw,
-		Groups:      c.Groups, Budget: budget, SkipBody: skipBody,
+		Groups:      c.Groups, Budget: budget,
 		UnnamedTTL: time.Duration(cfg.UnnamedTTLDays) * 24 * time.Hour,
 	}
 	res, err := nf.Run(ctx)

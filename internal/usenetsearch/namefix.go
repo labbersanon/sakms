@@ -219,17 +219,13 @@ type namefixTiming struct {
 	setrows, predb, body, donor, predbnames, accept, crc, snapshot, stat, rename, siblings int64
 }
 
-func (t *namefixTiming) add(dst *int64, start time.Time) {
-	if t == nil || dst == nil {
-		return
-	}
-	*dst += time.Since(start).Milliseconds()
+func (t *namefixTiming) add(dst *int64, start time.Time) int64 {
+	ms := time.Since(start).Milliseconds()
+	*dst += ms
+	return ms
 }
 
 func (t *namefixTiming) log(set PendingSet) {
-	if t == nil {
-		return
-	}
 	log.Printf("usenetsearch: namefix timing group=%s key=%s setrows_ms=%d predb_ms=%d body_ms=%d donor_ms=%d predbnames_ms=%d accept_ms=%d crc_ms=%d snapshot_ms=%d stat_ms=%d rename_ms=%d siblings_ms=%d",
 		set.Group, set.Key, t.setrows, t.predb, t.body, t.donor, t.predbnames, t.accept, t.crc, t.snapshot, t.stat, t.rename, t.siblings)
 }
@@ -665,8 +661,7 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		tBody := time.Now()
 		sample, berr := n.Src.BodyHead(bodyCtx, pick.MsgID, headCap)
 		cancel()
-		elapsedMs := time.Since(tBody).Milliseconds()
-		tm.add(&tm.body, tBody)
+		elapsedMs := tm.add(&tm.body, tBody)
 		if errors.Is(berr, usenet.ErrBusy) {
 			res.Busy = true
 			return true, nil

@@ -101,6 +101,8 @@ an http(s) dump *file* URL). Do not scrape `api.predb.net` to populate that
 table. nZEDbPre_Dumps stopped publishing new daily files in
 2024-05; historical `dumps/*/*_predb_dump.csv.gz` are still on GitHub and
 import as quoted MySQL TSV (`\N` nulls). There is no default dump URL.
+A dump that upserts any row `ANALYZE`s `usenet_nntp_predb` so the planner
+keeps filename/hash index stats (autovacuum will not, at 0.1 of 6.9M rows).
 Default IRC is on: synIRC `#PreNNTmux`, TLS 6697, a random unregistered
 nick, client PING heartbeat, plus a second client on Corrupt-net `#pre`
 (`irc.corrupt-net.org:6697` TLS). NickServ is optional and unused by default

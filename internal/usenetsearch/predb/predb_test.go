@@ -594,6 +594,23 @@ func TestImportDump_NZEdbQuotedMySQLExport(t *testing.T) {
 	}
 }
 
+func TestImportDump_AnalyzesTable(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	tsv := "Analyze.Dump.2021.1080p.WEB.h264-GRP\t\tnfo\t\t1\t\t1\t\tfile.rar\t\t0\t\t\t\tX\t\t1\t\tsrrdb\t\t0\t\tg\n"
+	if _, err := s.ImportDump(ctx, strings.NewReader(tsv)); err != nil {
+		t.Fatal(err)
+	}
+	var tuples float64
+	err := s.db.QueryRowContext(ctx, `SELECT reltuples FROM pg_class WHERE oid='usenet_nntp_predb'::regclass`).Scan(&tuples)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tuples < 1 {
+		t.Fatalf("reltuples=%v after dump import; ANALYZE did not run", tuples)
+	}
+}
+
 func TestImportDump_RequestIDAndGroup(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()

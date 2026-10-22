@@ -12770,3 +12770,18 @@ status stays active.
 | `internal/usenetsearch/predb/store.go` | exact+stem SQL include `filename <> ''` |
 | `internal/usenetsearch/predb/predb_test.go` | SQL matches partial-index predicate |
 | `docs/usenet-nntp-native.md` | partial-index predicate note |
+
+## 2026-10-22 — ANALYZE usenet_nntp_predb after dump import
+
+**Problem:** `pg_stat_user_tables` showed `last_analyze` empty, `n_live_tup` ~2.6k, `reltuples` 6.9M. Autovacuum never analyzed the table.
+**Root cause:** Autoanalyze threshold is `50 + 0.1*reltuples` (~694k mods). After a stats-resetting restart, `n_mod_since_analyze` was ~4.5k. Dump import upserted millions and never `ANALYZE`d.
+**Fix:** `ImportDump` runs `ANALYZE usenet_nntp_predb` when it upserted any row. Live table is `ANALYZE`d in this session. ByFilename `filename <> ''` / BODY 90s / leftover park unchanged. No new index.
+**Outcome:** `TestImportDump_AnalyzesTable`. Live `last_analyze` set and `n_live_tup` ~row count.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/predb/dump.go` | `ANALYZE` after dump upserts |
+| `internal/usenetsearch/predb/predb_test.go` | dump import updates `reltuples` |
+| `docs/usenet-nntp-native.md` | dump ANALYZE note |

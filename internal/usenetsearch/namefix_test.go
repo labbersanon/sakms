@@ -578,8 +578,11 @@ func TestPickBodyTargets_PrefersPar2ThenFirstVolume(t *testing.T) {
 	}
 	picks := pickBodyTargets(rows)
 	ids := pickIDs(picks)
-	if !ids["huge@t"] || !ids["par2@t"] {
-		t.Fatalf("picks = %+v, want first-volume rar and main par2", picks)
+	if !ids["par2@t"] {
+		t.Fatalf("picks = %+v, want main par2", picks)
+	}
+	if ids["huge@t"] {
+		t.Fatalf("picks = %+v, RAR volume must not BODY when PAR2 is present", picks)
 	}
 	if picks[0].MsgID != "par2@t" {
 		t.Fatalf("picks[0] = %+v, want main par2 first (FileDesc)", picks[0])
@@ -606,8 +609,11 @@ func TestPickBodyTargets_SkipsVolPar2IncludesLastRar(t *testing.T) {
 	}
 	picks := pickBodyTargets(rows)
 	ids := pickIDs(picks)
-	if !ids["sfv@t"] || !ids["par2@t"] || !ids["first@t"] {
-		t.Fatalf("picks=%+v, want sfv + main par2 + part01", picks)
+	if !ids["sfv@t"] || !ids["par2@t"] {
+		t.Fatalf("picks=%+v, want sfv + main par2", picks)
+	}
+	if ids["first@t"] || ids["last@t"] {
+		t.Fatalf("picks=%+v, RAR volumes must not fill slots when PAR2 is present", picks)
 	}
 	if ids["vol@t"] || ids["vol2@t"] {
 		t.Fatalf("picks=%+v, vol par2 must not fill BODY slots", picks)

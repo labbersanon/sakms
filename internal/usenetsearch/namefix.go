@@ -1390,14 +1390,26 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 			break
 		}
 	}
+	par2Present := false
 	for _, f := range sorted {
 		if anyName(f, isMainPar2Name) {
 			addFirst(f)
+			par2Present = true
 			break
 		}
 	}
 	for _, f := range sorted {
 		if anyName(f, isFirstArchiveVolume) {
+			// Claude 2026-10-21: skip 716KB RAR when PAR2 is present.
+			// Reason: live hash-rar FileDesc was a hash then two rar5-enc
+			//   part01 fetches (wire=716800, crcs=0) leftover=41.
+			// Troubleshooting: namefix crc payload=rar5-enc after par2=true
+			//   → this still adding first-volume RAR beside main PAR2.
+			// Review if: unencrypted hash-rar needs FILE_CRC after a hash
+			//   FileDesc (then pick last volume only, not part01).
+			if par2Present && !anyName(f, is7zName) {
+				continue
+			}
 			addFirst(f)
 			break
 		}
@@ -1418,7 +1430,7 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 	if last != nil && lastN >= 1 {
 		if anyName(last, is7zName) {
 			addRow(last.last, last.nfo, true, true, false)
-		} else if lastN > 1 {
+		} else if lastN > 1 && !par2Present {
 			addRow(last.first, last.nfo, true, false, false)
 		}
 	}

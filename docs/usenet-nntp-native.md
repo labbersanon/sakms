@@ -172,10 +172,10 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   (including boneless), 200 per pass, even when OVER is busy (BODY waits).
   Each pass runs quoted ident-shaped header names first (no BODY; ignores
   `next_name_at`), then 95% BODY, then ident BODY, then a one-shot hash_16K
-  seed of named/shelved PAR2, then PreDB-only keys. Each phase still has its
-  own 20s budget.
+  seed of named/shelved PAR2, then PreDB-only keys. BODY has a 90s phase
+  budget; header/parhash/predb stay 20s.
   Each BODY article is capped at 8s (dial included) and does not inherit leftover
-  phase crumbs, so setRows eating the 20s still fetches one PAR2. A hung fetch
+  phase crumbs, so setRows eating the phase still fetches one PAR2. A hung fetch
   logs `namefix body msgid=` and continues to the next PAR2/NFO pick unless the
   phase is already gone. PAR2 FileDesc / yEnc names that are md5/sha1 tokens
   are reverse-looked up in the local PreDB (they are not in the header rows).
@@ -294,7 +294,7 @@ counters under `gapFillStatus` (`releasesSearchable`, `releasesBelowGate`,
   716800 bytes, last article is a remainder. From is `N@ngPost.com`; msgid
   `uuid@ngPost`. ObfKey omits group so GROUP_POLICY ALL does not split the
   set. ngPost hash.7z is not BODY-fetched (password locked); PreDB miss
-  shelves BODY attempts so hash.mkv+PAR2 sets get the 20s budget.
+  shelves BODY attempts so hash.mkv+PAR2 sets get the BODY phase budget.
   Title and password are in the NZB, not on NNTP; native namefix does not
   query Newznab (passwords are not recoverable from NZB indexers). `-x` UUID subjects have no
   filename in OVERVIEW and stay skip_unparsed.

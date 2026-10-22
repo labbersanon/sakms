@@ -66,14 +66,14 @@ const (
 	//   DueParHashSeed / parhash_sampled. Review if: seed starves BODY.
 	namefixParHashSeedPerPass = 20
 	namefixBodiesPerSet       = 3
-	// namefixMaxDuration: stop mid-pass so a hung BODY cannot freeze crawl.
-	// Claude 2026-10-19: 20s wall clock like recompute.
-	// Reason: after #204 the loop went silent 14 min in namefix BODY
-	//   (60s articleIOTimeout × dozens of sets, log only at pass end).
-	// Troubleshooting: "namefix starting" with no "namefix pass" for >90s
-	//   → this deadline missing or BodyHead ignoring articleIOTimeout.
-	// Review if: 20s leaves 95% yield unnamed (raise, do not remove).
-	namefixMaxDuration = 20 * time.Second
+	namefixMaxDuration        = 20 * time.Second
+	// Claude 2026-10-22: BODY phase 90s; header/parhash/predb stay 20s.
+	// Reason: live leftover=42 after one PAR2 FileDesc; setRows+PreDB miss+
+	//   8s BodyHead already exceeded 20s so searchable moved at 1 rename/loop.
+	// Troubleshooting: deadline phase=body leftover=40 with 90s and
+	//   body_fetches=1 → lookupPreDB still eating the phase. Review if:
+	//   namefix pass >2min starves OVER, or BudgetStop starts hitting.
+	namefixBodyPhaseDuration = 90 * time.Second
 	// Claude 2026-10-19: namefixMinBodyRemain skipped BodyHead when the 20s
 	//   phase was already gone (live remain_ms=-1 on a 43KB par2). Replaced
 	//   by WithoutCancel+8s so one overtime article still runs.
@@ -106,7 +106,7 @@ const (
 
 // namefixBodyArticleTimeout caps one BodyHead (dial + BODY). Tests shrink it.
 //
-// Claude 2026-10-19: 8s per article, independent of the 20s phase.
+// Claude 2026-10-19: 8s per article, independent of the BODY phase cap.
 // Reason: live every pass was body leftover=40 fetches=1 bytes=0 unresolved=0.
 //
 //	One hung BODY/dial returned DeadlineExceeded and aborted all 40 due sets.
@@ -196,12 +196,22 @@ type NameFixer struct {
 	Budget      *bodyBudget
 	// SkipBody runs PreDB-only (OVER/download busy). PAR2 BODY waits.
 	SkipBody bool
-	// PassBudget caps one Run; zero uses namefixMaxDuration. Tests shorten it.
+	// PassBudget caps every phase; zero uses 90s BODY / 20s other. Tests shorten it.
 	PassBudget time.Duration
 
 	UnnamedTTL time.Duration
 
 	nzbPWUsed int
+}
+
+func (n *NameFixer) phaseBudget(phase string) time.Duration {
+	if n.PassBudget > 0 {
+		return n.PassBudget
+	}
+	if phase == "body" {
+		return namefixBodyPhaseDuration
+	}
+	return namefixMaxDuration
 }
 
 // Run does one pass: TTL/attempt sweep, then up to namefixSetsPerPass due sets.
@@ -242,7 +252,7 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 			return res, err
 		}
 	}
-	// Claude 2026-10-21: BODY before PreDB/parhash (each phase still 20s).
+	// Claude 2026-10-21: BODY before PreDB/parhash.
 	// Reason: live leftover predb=197 then parhash=1 then body leftover=41
 	//   with renamed=0. Hash.mkv+PAR2 waited behind 200 PreDB LIKE scans
 	//   and named-PAR2 seed BODYs. BODY keys still lookupPreDB before
@@ -267,19 +277,15 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 		log.Printf("usenetsearch: namefix starting header=%d body=%d ident=%d predb=%d parhash=%d skip_body=%t",
 			len(headerSets), len(sets), len(ident), len(predbSets), len(parSeed), n.SkipBody)
 	}
-	budget := n.PassBudget
-	if budget <= 0 {
-		budget = namefixMaxDuration
-	}
 	done := map[string]bool{}
-	// Claude 2026-10-19: each phase's 20s context is passed into BodyHead.
+	// Claude 2026-10-19: each phase's context is passed into BodyHead.
 	// Reason: live namefix starting body=2 sat 3.5 min; the budget only
 	//   ran between sets while BodyHead used a 60s socket timeout.
-	// Troubleshooting: namefix starting with no pass for >90s → BodyHead
+	// Troubleshooting: namefix starting with no pass for >3min → BodyHead
 	//   still ignoring ctx (fetchSegmentUntil / armNNTPDeadlineUntil).
 	// Review if: articleIOTimeout becomes a settings knob.
 	run := func(in []PendingSet, phase string) error {
-		phaseCtx, cancel := context.WithTimeout(ctx, budget)
+		phaseCtx, cancel := context.WithTimeout(ctx, n.phaseBudget(phase))
 		defer cancel()
 		deadline := func(i int) error {
 			log.Printf("usenetsearch: namefix deadline phase=%s leftover=%d", phase, len(in)-i)

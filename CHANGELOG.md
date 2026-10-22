@@ -12633,3 +12633,18 @@ status stays active.
 | File | Change |
 |---|---|
 | `internal/dbtest/dbtest.go` | shared `ddlSem` for CREATE+DROP; 3× clone ping retry |
+
+## 2026-10-22 — Namefix BODY phase is 90s
+
+**Problem:** Searchable moved at ~1 PAR2 FileDesc rename per crawl loop (~6–7 min). `namefix deadline phase=body leftover=42`.
+**Root cause:** Each phase shared a 20s cap. One setRows + PreDB miss + 8s BodyHead already exceeded 20s, so the other 39 BODY candidates never started. Per-article hang cap (8s) was not the limiter.
+**Fix:** BODY phase 90s. Header/parhash/predb stay 20s. PassBudget still overrides every phase in tests. 8s per-article BodyHead unchanged. Do not put PreDB before BODY.
+**Outcome:** `TestNameFixPhaseBudget_BodyIs90s`. Live leftover/renamed rate after deploy.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix.go` | `namefixBodyPhaseDuration=90s`; `phaseBudget("body")` |
+| `internal/usenetsearch/namefix_test.go` | default BODY 90s; other phases 20s; PassBudget override |
+| `docs/usenet-nntp-native.md` | BODY 90s / other 20s |

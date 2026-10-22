@@ -1815,6 +1815,22 @@ func TestNameFix_SkipBodyStillHitsPreDB(t *testing.T) {
 	}
 }
 
+func TestNameFixPhaseBudget_BodyIs90s(t *testing.T) {
+	n := &NameFixer{}
+	if got := n.phaseBudget("body"); got != 90*time.Second {
+		t.Fatalf("body default=%s", got)
+	}
+	for _, phase := range []string{"header", "parhash", "predb"} {
+		if got := n.phaseBudget(phase); got != 20*time.Second {
+			t.Fatalf("%s default=%s", phase, got)
+		}
+	}
+	n.PassBudget = 50 * time.Millisecond
+	if got := n.phaseBudget("body"); got != 50*time.Millisecond {
+		t.Fatalf("PassBudget override body=%s", got)
+	}
+}
+
 func TestNameFix_PreDBOnlyBeforeSlowBODY(t *testing.T) {
 	// Claude 2026-10-22: same-pass dump/IRC rename after overtime BODY.
 	// Reason: Run() is header → BODY → parhash → preOnly (2026-10-21).

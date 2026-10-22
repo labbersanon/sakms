@@ -1288,9 +1288,22 @@ type bodyPick struct {
 }
 
 // pickBodyTargets chooses up to namefixBodiesPerSet articles:
-// SFV, first-volume RAR/ZIP/7z (part01 / .7z.001 / bare .rar), last volume
-// (RAR first segment; 7z last segment), main non-vol PAR2, then NFO.
+// SFV, main non-vol PAR2, first-volume RAR/ZIP/7z (part01 / .7z.001 / bare
+// .rar), last volume (RAR first segment; 7z last segment), then NFO.
 // Volume PAR2 never fills a slot. Encrypted .7z.enc is skipped.
+// Claude 2026-10-21: PAR2 before archive volumes.
+// Reason: live after 7z dequeue, hash-rar still fetched two 716KB part01
+//
+//	articles first (leftover=41, FileDesc never ran). Small PAR2 FileDesc /
+//	hash_16K is the title path for non-password sets.
+//
+// Troubleshooting: namefix body wire=716800 then leftover with par2 unused
+//
+//	→ this still adding first-volume before isMainPar2Name.
+//
+// Review if: RAR5 last-volume CRC must share the 3-slot cap with PAR2
+//
+//	(today last volume is 4th and dropped).
 func pickBodyTargets(rows []HeaderRow) []bodyPick {
 	type file struct {
 		key   string
@@ -1378,6 +1391,12 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 		}
 	}
 	for _, f := range sorted {
+		if anyName(f, isMainPar2Name) {
+			addFirst(f)
+			break
+		}
+	}
+	for _, f := range sorted {
 		if anyName(f, isFirstArchiveVolume) {
 			addFirst(f)
 			break
@@ -1401,12 +1420,6 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 			addRow(last.last, last.nfo, true, true, false)
 		} else if lastN > 1 {
 			addRow(last.first, last.nfo, true, false, false)
-		}
-	}
-	for _, f := range sorted {
-		if anyName(f, isMainPar2Name) {
-			addFirst(f)
-			break
 		}
 	}
 	for _, f := range sorted {

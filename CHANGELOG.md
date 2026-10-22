@@ -12465,3 +12465,18 @@ status stays active.
 | `internal/usenetsearch/name_pattern_test.go` | passwordLockedPack cases |
 | `internal/usenetsearch/releases_test.go` | restage does not dirty |
 | `docs/usenet-nntp-native.md` | due-queue and ngPost BODY notes |
+
+## 2026-10-21 — Namefix BODY fetches PAR2 FileDesc before RAR volumes
+
+**Problem:** After dequeuing password 7z, live BODY still `renamed=0` with `wire=716800` on hash.part.rar then leftover=41.
+**Root cause:** pickBodyTargets ranked first-volume RAR ahead of main PAR2, so two 716KB articles ate the 20s before FileDesc.
+**Fix:** SFV, then main `.par2`, then first-volume archive, then last volume.
+**Outcome:** `TestPickBodyTargets_PrefersPar2ThenFirstVolume`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix.go` | PAR2 before archive volumes |
+| `internal/usenetsearch/namefix_test.go` | par2-first pick order |
+| `docs/usenet-nntp-native.md` | BODY pick order |

@@ -188,10 +188,10 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   then RAR/ZIP, then `has_par2` (hash.mkv+PAR2). Split 7z is not a prefer
   rank. ngPost hash.7z and UUID `.7z.enc` are dropped from BODY queues
   (password is only in the NZB); PreDB may hash-lookup then shelve.
-  BODY picks SFV, then the
+  BODY picks SFV, then the main `.par2` (FileDesc / hash_16K), then the
   first-volume RAR/7z (`part01` / `.7z.001` / bare `.rar`), then the last
   volume (RAR5 first segment; 7z last segment of `.7z.NNN` for the end
-  header — never `.vol*.par2` or `.7z.enc`), then the main `.par2`. 95% complete
+  header — never `.vol*.par2` or `.7z.enc`). 95% complete
   sets run before 80% ident BODY. RAR4 `FILE_CRC` / RAR5 Data CRC32 / ZIP CRC /
   7z end-header CRC / SFV CRC32 is looked up on srrdb
   `archive-crc:` when that CRC is unique

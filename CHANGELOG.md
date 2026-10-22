@@ -12648,3 +12648,18 @@ status stays active.
 | `internal/usenetsearch/namefix.go` | `namefixBodyPhaseDuration=90s`; `phaseBudget("body")` |
 | `internal/usenetsearch/namefix_test.go` | default BODY 90s; other phases 20s; PassBudget override |
 | `docs/usenet-nntp-native.md` | BODY 90s / other 20s |
+
+## 2026-10-22 — Namefix BODY loads FileDesc targets, not every yEnc part
+
+**Problem:** After the 90s BODY cap, searchable was still ~2 PAR2 names per loop with `leftover=41`. First BodyHead waited ~45s.
+**Root cause:** `setRows` loaded every header of the due set. Live 95% has_par2 included a 508k-header hdtv pack (37k vol PAR2). ByFilename LIKE also ran on the BODY path despite hours of `hash_hits=0`.
+**Fix:** BODY/parhash use `setRowsBodyTargets` (main `.par2`, sfv/nfo, first+last archive volume; skip `.vol`). Due queue prefers small `declared_segs`. BODY path PreDB is ByHash+request-id only; ByFilename LIKE stays PreDB-only. FileDesc still `lookupPreDBNames` after BODY. 90s phase / 8s article unchanged.
+**Outcome:** `TestSetRows_BodyTargetsSkipVolPar2`. `TestNameFix_PreDBFilenameResolvesRandomArchiveName` uses SkipBody.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix.go` | BODY skips ByFilename LIKE; body-target header load |
+| `internal/usenetsearch/namefix_index.go` | `setRowsBodyTargets`; `declared_segs ASC` |
+| `internal/usenetsearch/namefix_test.go` | vol PAR2 not loaded; filename PreDB is SkipBody |

@@ -376,10 +376,6 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 	if set.AlreadyNamed {
 		return n.seedParHashes(ctx, set, res, statBudget)
 	}
-	limit := 0
-	if set.PreDBOnly {
-		limit = namefixPreDBHeaderSample
-	}
 	// Claude 2026-10-20: setRows must not inherit leftover phase crumbs.
 	// Reason: CI ExpiredPhase failed `setRows` with 15ms ctx (91 header rows)
 	//   before BodyHead's WithoutCancel could fetch part01. Live 20s phase
@@ -388,7 +384,12 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 	//   rar set → this WithoutCancel missing. Review if: setRows grows past
 	//   a few hundred ms (then cap it, still fetch part01).
 	work := context.WithoutCancel(ctx)
-	rows, err := n.Index.setRows(work, set.Group, set.Key, limit)
+	var rows []HeaderRow
+	if set.PreDBOnly {
+		rows, err = n.Index.setRows(work, set.Group, set.Key, namefixPreDBHeaderSample)
+	} else {
+		rows, err = n.Index.setRowsBodyTargets(work, set.Group, set.Key)
+	}
 	if err != nil {
 		return false, err
 	}
@@ -672,7 +673,7 @@ func (n *NameFixer) seedParHashes(ctx context.Context, set PendingSet, res *Name
 	if n.Src == nil || n.Index == nil {
 		return false, nil
 	}
-	rows, err := n.Index.setRows(ctx, set.Group, set.Key, 0)
+	rows, err := n.Index.setRowsBodyTargets(ctx, set.Group, set.Key)
 	if err != nil {
 		return false, err
 	}
@@ -754,7 +755,7 @@ func (n *NameFixer) promoteParHashSiblings(ctx context.Context, set PendingSet, 
 		if i >= 8 {
 			break
 		}
-		rows, err := n.Index.setRows(ctx, sib.Group, sib.Key, 0)
+		rows, err := n.Index.setRowsBodyTargets(ctx, sib.Group, sib.Key)
 		if err != nil || len(rows) == 0 {
 			continue
 		}
@@ -972,8 +973,8 @@ func (n *NameFixer) promote(ctx context.Context, set PendingSet, rows []HeaderRo
 }
 
 // lookupPreDB tries nZEDb-style reverse lookups: md5/sha1/md5md5 tokens from
-// every header's subject and filename, then PreDB.filename / IRC [FN:], then
-// dump/IRC request ids from EFNet/Bin-Req wrappers.
+// every header's subject and filename, then dump/IRC request ids from
+// EFNet/Bin-Req wrappers. PreDB.filename / IRC [FN:] is PreDB-only.
 func preDBHitOK(hit PreDBHit, ok bool, payload int64) bool {
 	return ok && hit.Title != "" && sizeWithin(hit.SizeBytes, payload)
 }
@@ -987,13 +988,23 @@ func (n *NameFixer) lookupPreDB(ctx context.Context, set PendingSet, rows []Head
 			return hit, true
 		}
 	}
-	for _, fn := range filenameCandidates(rows) {
-		if hit, ok := n.PreDB.ByFilename(ctx, fn); preDBHitOK(hit, ok, set.PayloadBytes) {
+	for _, id := range requestIDCandidates(rows) {
+		if hit, ok := n.PreDB.ByRequestID(ctx, id, set.Group); preDBHitOK(hit, ok, set.PayloadBytes) {
 			return hit, true
 		}
 	}
-	for _, id := range requestIDCandidates(rows) {
-		if hit, ok := n.PreDB.ByRequestID(ctx, id, set.Group); preDBHitOK(hit, ok, set.PayloadBytes) {
+	// Claude 2026-10-22: BODY path skips ByFilename LIKE.
+	// Reason: live leftover=41 after 90s with ~45s before the first BodyHead.
+	//   Dump hash_hits=0 for hours; FileDesc still lookupPreDBNames after BODY.
+	//   LIKE stem+".%" on 6.9M rows belongs on PreDB-only, not in front of NNTP.
+	// Troubleshooting: TestNameFix_PreDBFilenameResolvesRandomArchiveName
+	//   BodyFetches>0 → this still on the BODY path. Review if: IRC [FN:]
+	//   titles never reach preOnly (then exact ByFilename on BODY is enough).
+	if !set.PreDBOnly {
+		return PreDBHit{}, false
+	}
+	for _, fn := range filenameCandidates(rows) {
+		if hit, ok := n.PreDB.ByFilename(ctx, fn); preDBHitOK(hit, ok, set.PayloadBytes) {
 			return hit, true
 		}
 	}

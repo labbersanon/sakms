@@ -1499,6 +1499,8 @@ func TestNameFix_PreDBFilenameResolvesRandomArchiveName(t *testing.T) {
 	f.nf.PreDB = &fakePreDB{filenames: map[string]PreDBHit{
 		"v1aaqzdh11lfeaan9yuztj.part01.rar": {Title: title},
 	}}
+	// Claude 2026-10-22: ByFilename LIKE is PreDB-only (not in front of BODY).
+	f.nf.SkipBody = true
 	f.crawlAndRecompute(t)
 	res, err := f.nf.Run(context.Background())
 	if err != nil {
@@ -1812,6 +1814,43 @@ func TestNameFix_SkipBodyStillHitsPreDB(t *testing.T) {
 	}
 	if _, _, display, _ := f.release(t); display != title {
 		t.Fatalf("display=%q", display)
+	}
+}
+
+func TestSetRows_BodyTargetsSkipVolPar2(t *testing.T) {
+	rows := obfuscatedSet("v", nfHash, 1, 3)
+	for i := 0; i < 40; i++ {
+		rows = append(rows, usenet.MessageOverview{
+			Number:    2000 + i,
+			Subject:   fmt.Sprintf(`"%s.vol%03d+01.par2" yEnc (1/1)`, nfHash, i),
+			From:      "poster@obf",
+			MessageID: fmt.Sprintf("vol%d@t", i),
+			Bytes:     5000,
+			DateUnix:  1700000000,
+		})
+	}
+	f := newNFFixture(t, rows, nil)
+	f.crawlAndRecompute(t)
+	key, _, _, _ := f.release(t)
+	got, err := f.idx.setRowsBodyTargets(context.Background(), nfGroup, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawPar2 := false
+	for _, r := range got {
+		low := strings.ToLower(r.Filename)
+		if strings.Contains(low, ".vol") {
+			t.Fatalf("vol header loaded: %+v", r)
+		}
+		if strings.HasSuffix(low, ".par2") {
+			sawPar2 = true
+		}
+	}
+	if len(got) > 20 {
+		t.Fatalf("loaded %d body-target rows", len(got))
+	}
+	if !sawPar2 {
+		t.Fatal("main par2 missing from body targets")
 	}
 }
 

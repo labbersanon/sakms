@@ -110,12 +110,16 @@ func (idx *Index) duePendingNamesIn(ctx context.Context, groups []string, limit 
 	//   BODY slots with newest mkv-first posts; 77 rar_unsampled waited.
 	// Troubleshooting: namefix crc=0 while pending95_par2 has rar → this
 	//   CASE missing. Review if: crc_sampled column replaces the prefer.
+	// Claude 2026-10-22: small complete sets before 471k-header mega packs.
+	// Reason: ingested_at DESC put a 508k-header hdtv blob first; setRows
+	//   ate ~45s of the 90s BODY budget. Review if: tiny 95% scraps starve
+	//   real 2k-seg episodes (then a declared_segs floor).
 	rows, err := idx.db.QueryContext(ctx, `
 SELECT group_name, release_key, payload_bytes, name_attempts, completeness_bp, has_par2 FROM usenet_nntp_releases
 WHERE state='pending_name' AND dirty=FALSE AND declared_segs>0 AND completeness_bp>=?
   AND next_name_at<=? AND name_attempts < ? AND group_name IN (`+in+`)
   AND NOT (`+passwordLockedSQL+`)
-ORDER BY `+crcPreferOrderSQL+`, ingested_at DESC LIMIT ?`, args...)
+ORDER BY `+crcPreferOrderSQL+`, declared_segs ASC, ingested_at DESC LIMIT ?`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +154,7 @@ SELECT group_name, release_key, payload_bytes, name_attempts, completeness_bp, h
 WHERE state='pending_name' AND dirty=FALSE AND declared_segs>0 AND completeness_bp>=? AND completeness_bp<?
   AND has_par2 AND next_name_at<=? AND name_attempts < ? AND group_name IN (`+in+`)
   AND NOT (`+passwordLockedSQL+`)
-ORDER BY `+crcPreferOrderSQL+`, completeness_bp DESC, ingested_at DESC LIMIT ?`, args...)
+ORDER BY `+crcPreferOrderSQL+`, declared_segs ASC, completeness_bp DESC, ingested_at DESC LIMIT ?`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -359,6 +363,35 @@ FROM usenet_nntp_headers WHERE group_name=? AND release_name=? ORDER BY filename
 		q += ` LIMIT ?`
 		args = append(args, limit)
 	}
+	return idx.scanHeaderRows(ctx, group, key, q, args...)
+}
+
+// setRowsBodyTargets loads only articles pickBodyTargets needs (main PAR2,
+// sfv/nfo, first+last archive volume). Full setRows of a 471k-header pack
+// ate ~45s before BodyHead.
+func (idx *Index) setRowsBodyTargets(ctx context.Context, group, key string) ([]HeaderRow, error) {
+	// Claude 2026-10-22: BODY/parhash skip vol PAR2 and middle yEnc parts.
+	// Reason: live 95% pending has_par2 included a 508k-header hdtv set
+	//   (37k vol PAR2). 90s BODY still leftover=41. Review if: empty
+	//   filename posts (then subject LIKE, still exclude %.vol%).
+	q := `
+SELECT msg_num, msgid, subject, from_addr, posted_at, bytes, part_n, part_m, filename, yenc_size, is_meta, file_n, file_m
+FROM usenet_nntp_headers WHERE group_name=? AND release_name=?
+ AND (
+  (LOWER(namefix_fn) LIKE '%.par2' AND LOWER(namefix_fn) NOT LIKE '%.vol%')
+  OR LOWER(namefix_fn) LIKE '%.sfv%'
+  OR LOWER(namefix_fn) LIKE '%.nfo%'
+  OR (
+    (LOWER(namefix_fn) LIKE '%.rar%' OR LOWER(namefix_fn) LIKE '%.zip%' OR LOWER(namefix_fn) LIKE '%.7z%')
+    AND (part_n <= 1 OR (part_m > 0 AND part_n = part_m))
+  )
+ )
+ ORDER BY filename, part_n, msg_num`
+	q = strings.ReplaceAll(q, "namefix_fn", "CASE WHEN filename<>'' THEN filename ELSE subject END")
+	return idx.scanHeaderRows(ctx, group, key, q, group, key)
+}
+
+func (idx *Index) scanHeaderRows(ctx context.Context, group, key, q string, args ...any) ([]HeaderRow, error) {
 	rows, err := idx.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err

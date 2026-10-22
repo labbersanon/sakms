@@ -86,9 +86,7 @@ func refuseImportBelowFloor(ctx context.Context, libStore *library.Store, settin
 	// Related files: grabOriginQualityStopgap; enableUpgradeWatchAfterStopgap;
 	//   drainAlternateReleaseRetries.
 	if gr.Status == autograb.StatusBelowFloor {
-		if g.Origin != grabOriginSearchPick {
-			g.Origin = grabOriginQualityStopgap
-		}
+		g.Origin = grabOriginQualityStopgap
 		log.Printf("import: quality-stopgap kept file=%q title=%q status=%s score=%.2fMbps floor=%.2fMbps",
 			filepath.Base(videoPath), g.Title, gr.Status, gr.Score, gr.FloorMbps)
 		return nil

@@ -157,7 +157,7 @@ func TestRefuseImportBelowFloor_Animation480TVDBAnthology(t *testing.T) {
 	}
 }
 
-func TestRefuseImportBelowFloor_LiveAction480FailsMedium(t *testing.T) {
+func TestRefuseImportBelowFloor_LiveAction480KeptAsStopgap(t *testing.T) {
 	clearAnimationGenreCache(t)
 	ctx := context.Background()
 	_, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
@@ -278,25 +278,18 @@ func TestRefuseImportBelowFloor_HonestReplacementDoesNotParkAlternate(t *testing
 	// Sparse so the test does not write 6 GiB. Must keep the file — not wrap
 	// ErrContentUnusable for alternate NZBs.
 	path := filepath.Join(t.TempDir(), "Furious.S01E04.2160p.WEB-DL.mkv")
-	f, err := os.Create(path)
-	if err != nil {
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.Truncate(6_422_230_977); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Close(); err != nil {
+	if err := os.Truncate(path, 6_422_230_977); err != nil {
 		t.Fatal(err)
 	}
 	g := &grabs.Grab{Mode: mode.Series, Title: "Furious", TMDBID: 1, SeasonNumber: 1, EpisodeNumber: 4, Protocol: "usenet"}
-	err = refuseImportBelowFloor(ctx, libStore, settingsStore, nil, g, path, importQualityProber{
+	err := refuseImportBelowFloor(ctx, libStore, settingsStore, nil, g, path, importQualityProber{
 		height: 2160, codec: "hevc", duration: 3262,
 	})
 	if err != nil {
 		t.Fatalf("replacement must be kept, got %v", err)
-	}
-	if errors.Is(err, usenet.ErrContentUnusable) || contentUnusableFailure(err) {
-		t.Fatal("kept replacement must not park an alternate-release retry")
 	}
 	if g.Origin != grabOriginQualityStopgap {
 		t.Fatalf("origin = %q, want %q", g.Origin, grabOriginQualityStopgap)

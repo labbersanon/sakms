@@ -167,8 +167,14 @@ func (s *Store) ByFilename(ctx context.Context, filename string) (Entry, bool, e
 	if len(stem) < 16 {
 		return Entry{}, false, nil
 	}
+	// Claude 2026-10-22: prefix range, not LIKE, so idx_usenet_nntp_predb_filename
+	// can be used. Default btree ops do not serve LIKE (needs text_pattern_ops).
+	// Reason: live leftover=0 PreDB pass still `deadline phase=predb leftover=182`
+	//   in 20s; stem+".%" seq-scanned 6.9M rows. Do not CREATE INDEX CONCURRENTLY
+	//   on deploy (lock). Review if: a text_pattern_ops index is added off-hours.
 	return scanEntry(s.db.QueryRowContext(ctx,
-		selectEntry+` WHERE lower(filename) LIKE ? AND source<>? LIMIT 1`, stem+".%", SourceMiss))
+		selectEntry+` WHERE lower(filename) >= ? AND lower(filename) < ? AND source<>? LIMIT 1`,
+		stem+".", stem+"/", SourceMiss))
 }
 
 // RecentMiss reports whether title has a cached negative lookup newer than ttl.

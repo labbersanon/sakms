@@ -194,8 +194,10 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   then `has_par2` without rar/zip/7z (hash.mkv+PAR2), then RAR/ZIP, then other
   PAR2. Split 7z is not a prefer rank. ngPost hash.7z and UUID `.7z.enc`
   are dropped from BODY queues (password is only in the NZB); PreDB may
-  hash-lookup then shelve. Hex-hash filenames skip PreDB `ByFilename` LIKE
-  (those are `ByHash`).
+  hash-lookup then shelve.   Hex-hash filenames skip PreDB `ByFilename` LIKE
+  (those are `ByHash`). Stem matches (`hash.mkv` → `hash.part1.rar`) use a
+  btree range on `lower(filename)`, not `LIKE` (the equality index cannot
+  serve LIKE without `text_pattern_ops`).
   BODY picks SFV, then the main `.par2` (FileDesc / hash_16K), then the
   first-volume RAR/7z (`part01` / `.7z.001` / bare `.rar`) for srrdb CRC
   after a hash FileDesc. Last-volume RAR is skipped when a main PAR2

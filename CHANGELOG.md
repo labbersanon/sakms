@@ -12710,3 +12710,17 @@ status stays active.
 | `internal/usenetsearch/namefix.go` | park parhash/predb when BodyLeftover>0 |
 | `internal/usenetsearch/namefix_test.go` | leftover parks PreDB-only hash hit |
 | `docs/usenet-nntp-native.md` | park parhash/predb on BODY leftover |
+
+## 2026-10-22 — PreDB filename stem uses btree range, not LIKE
+
+**Problem:** When BODY leftover drained to 0, PreDB-only still `deadline phase=predb leftover=182` in 20s. `idx_usenet_nntp_predb_filename` on `lower(filename)` already existed.
+**Root cause:** Stem lookup was `lower(filename) LIKE stem||'.%'`. Default btree operator class does not serve LIKE (needs `text_pattern_ops`). Planner seq-scanned ~6.9M rows. A CONCURRENTLY index on deploy would lock.
+**Fix:** Prefix range `>= stem||'.' AND < stem||'/'` so the existing equality index can be used. Exact `lower(filename)=` unchanged. Do not add a new index in this deploy.
+**Outcome:** `TestStore_ByFilenameStemMatchesPartRar`. Live: leftover=0 PreDB pass leftover dropping or finishing inside 20s.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/predb/store.go` | stem match is btree range, not LIKE |
+| `docs/usenet-nntp-native.md` | filename stem range note |

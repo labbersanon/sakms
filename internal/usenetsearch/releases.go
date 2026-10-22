@@ -31,7 +31,7 @@ const obfKeyPrefix = "obf:"
 // recomputeBatch is the max dirty releases recomputed per loop iteration.
 const recomputeBatch = 500
 
-// markDirtyChunk bounds the (group, key) tuples per UPDATE statement.
+// markDirtyChunk bounds (group, key) tuples per IN-list statement.
 const markDirtyChunk = 200
 
 type releaseKey struct{ group, key string }
@@ -100,15 +100,10 @@ func (idx *Index) markDirty(ctx context.Context, keys []releaseKey) error {
 		}
 		chunk := keys[:n]
 		keys = keys[n:]
-		ph := make([]string, n)
-		args := make([]any, 0, n*2+1)
-		args = append(args, now)
-		for i, k := range chunk {
-			ph[i] = "(?,?)"
-			args = append(args, k.group, k.key)
-		}
+		ph, keyArgs := releaseKeyTuples(chunk)
+		args := append([]any{now}, keyArgs...)
 		if _, err := idx.db.ExecContext(ctx,
-			`UPDATE usenet_nntp_releases SET dirty=TRUE, updated_at=? WHERE (group_name, release_key) IN (`+strings.Join(ph, ",")+`)`,
+			`UPDATE usenet_nntp_releases SET dirty=TRUE, updated_at=? WHERE (group_name, release_key) IN (`+ph+`)`,
 			args...); err != nil {
 			return err
 		}
@@ -192,14 +187,10 @@ const uncomputedSweepBatch = 2000
 //
 // Claude 2026-10-22: drain last_msg=0 scraps without recomputeOne.
 // Reason: live dirty=2.36M was all pending_name declared_segs=0, 1 header,
-//
-//	part_m>20, HIGH+50k past; each 20s pass recomputed ~700 then swept them.
-//
+// part_m>20, HIGH+50k past; each 20s pass recomputed ~700 then swept them.
 // Troubleshooting: completeness recompute searchable=0 backlog still millions
-//
-//	with last_msg=0 pending → this query's HIGH/part_m predicate or it is
-//	not called before recomputeDirtyBounded.
-//
+// with last_msg=0 pending → this query's HIGH/part_m predicate or it is
+// not called before recomputeDirtyBounded.
 // Review if: dirty last_msg=0 pending is gone (then this is a cheap no-op).
 func (idx *Index) SweepUncomputedIncomplete(ctx context.Context, limit int) (int, error) {
 	if limit <= 0 {
@@ -224,7 +215,7 @@ WHERE r.searchable = FALSE
   AND w.high > h.last_msg + ?
   AND (
     h.part_m <= 0 OR h.part_m > ?
-    OR (h.part_m > 0 AND h.n * 10000 < ?::bigint * h.part_m)
+    OR h.n * 10000 < ?::bigint * h.part_m
   )
   AND NOT EXISTS (
     SELECT 1 FROM usenet_nntp_missed_ranges m

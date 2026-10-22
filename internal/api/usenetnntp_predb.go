@@ -179,30 +179,24 @@ const dumpPoll = 15 * time.Minute
 
 // Claude 2026-10-22: daily 05:15 America/New_York PreDB vacuum (planner consensus).
 // Reason: autovacuum defaults wait for ~1.44M dead; pg_stat resets on sakms-db
-//
-//	restart so a timer must not key off n_dead_tup. SKIP_LOCKED so this never
-//	queues behind dump-import VACUUM. statement_timeout=0 is set inside
-//	VacuumAnalyze. Do not VACUUM FULL. Do not raise shm here.
-//
+//   restart so a timer must not key off n_dead_tup. SKIP_LOCKED so this never
+//   queues behind dump-import VACUUM. statement_timeout=0 is set inside
+//   VacuumAnalyze. Do not VACUUM FULL. Do not raise shm here.
 // Troubleshooting: o2cli grep "predb vacuum"; missing next= → this goroutine
-//
-//	not started. Review if: stop_grace_period on sakms-db is raised and
-//	pg_stat survives deploy (then weekly is enough).
+//   not started.
+// Review if: stop_grace_period on sakms-db is raised and pg_stat survives
+//   deploy (then weekly is enough).
+
 const (
 	preDBVacuumHour = 5
 	preDBVacuumMin  = 15
 )
 
-func preDBVacuumLocation() *time.Location {
+func nextPreDBVacuum(now time.Time) time.Time {
 	loc, err := time.LoadLocation("America/New_York")
 	if err != nil {
-		return time.Local
+		loc = time.Local
 	}
-	return loc
-}
-
-func nextPreDBVacuum(now time.Time) time.Time {
-	loc := preDBVacuumLocation()
 	local := now.In(loc)
 	next := time.Date(local.Year(), local.Month(), local.Day(), preDBVacuumHour, preDBVacuumMin, 0, 0, loc)
 	if !local.Before(next) {
@@ -226,13 +220,11 @@ func (p *NNTPPreDB) vacuumLoop(ctx context.Context) {
 			return
 		case <-timer.C:
 			t0 := time.Now()
-			err := store.VacuumAnalyze(ctx, true)
-			elapsed := time.Since(t0).Milliseconds()
-			if err != nil {
-				log.Printf("usenetsearch: predb vacuum elapsed_ms=%d err=%v", elapsed, err)
+			if err := store.VacuumAnalyze(ctx, true); err != nil {
+				log.Printf("usenetsearch: predb vacuum elapsed_ms=%d err=%v", time.Since(t0).Milliseconds(), err)
 				continue
 			}
-			log.Printf("usenetsearch: predb vacuum done elapsed_ms=%d skip_locked=true", elapsed)
+			log.Printf("usenetsearch: predb vacuum done elapsed_ms=%d skip_locked=true", time.Since(t0).Milliseconds())
 		}
 	}
 }

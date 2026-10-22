@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  BYTE_DELTA_MIN_MS,
   ETA_FREEZE_MS,
   HARDWARE_REPAIR_BPS,
   HARDWARE_UNPACK_BPS,
@@ -99,34 +98,28 @@ describe("60s average download speed", () => {
   });
 
   it("arms ETA from the byte window when wire speed stays 0 but bytes advanced", () => {
+    const idle = item({
+      downloadSpeed: 0,
+      completedLength: 0,
+      totalLength: 1_000_000,
+    });
+    const progressed = item({
+      downloadSpeed: 0,
+      completedLength: 200_000,
+      totalLength: 1_000_000,
+    });
     const trackers = new Map<string, EtaTracker>();
-    updateEtaTrackers(
-      trackers,
-      [item({ downloadSpeed: 0, completedLength: 0, totalLength: 1_000_000 })],
-      0,
+    updateEtaTrackers(trackers, [idle], 0);
+    expect(resolveEtaView(idle, trackers.get("g1"), 0, false).kind).toBe(
+      "calculating",
     );
-    expect(resolveEtaView(
-      item({ downloadSpeed: 0, completedLength: 0, totalLength: 1_000_000 }),
-      trackers.get("g1"),
-      0,
-      false,
-    ).kind).toBe("calculating");
 
-    updateEtaTrackers(
-      trackers,
-      [item({ downloadSpeed: 0, completedLength: 200_000, totalLength: 1_000_000 })],
-      OVERALL_AVG_MIN_MS,
-    );
+    updateEtaTrackers(trackers, [progressed], OVERALL_AVG_MIN_MS);
     const t = trackers.get("g1")!;
     expect(t.smoothedBps).toBeCloseTo(100_000);
     expect(t.lastGoodEtaSec).not.toBeNull();
     expect(
-      resolveEtaView(
-        item({ downloadSpeed: 0, completedLength: 200_000, totalLength: 1_000_000 }),
-        t,
-        OVERALL_AVG_MIN_MS,
-        false,
-      ).kind,
+      resolveEtaView(progressed, t, OVERALL_AVG_MIN_MS, false).kind,
     ).toBe("eta");
   });
 
@@ -325,7 +318,6 @@ describe("freeze / calculating / hidden", () => {
       ).kind,
     ).toBe("eta");
     expect(t.rateSamples.length).toBeGreaterThan(1);
-    expect(BYTE_DELTA_MIN_MS).toBe(400);
   });
 
   it("freezes last good ETA for 30s of zero speed, then dashes", () => {

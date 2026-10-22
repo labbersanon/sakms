@@ -55,7 +55,7 @@ export type EtaInput = {
   addedAt?: string;
 };
 
-export type RateSample = { at: number; n: number };
+type RateSample = { at: number; n: number };
 
 export type EtaTracker = {
   lastGoodEtaSec: number | null;
@@ -65,7 +65,6 @@ export type EtaTracker = {
   firstSeenAt: number;
   /** completedLength when the tracker was created (session-average baseline). */
   originCompleted: number;
-  lastCompleted: number;
   lastCompletedAt: number;
   rateSamples: RateSample[];
 };
@@ -238,9 +237,7 @@ function addRateSample(t: EtaTracker, at: number, n: number): number {
   t.rateSamples.push({ at, n });
   const cutoff = at - RATE_WINDOW_MS;
   let i = 0;
-  while (i < t.rateSamples.length) {
-    const sample = t.rateSamples[i];
-    if (sample === undefined || sample.at >= cutoff) break;
+  while (i < t.rateSamples.length && t.rateSamples[i]!.at < cutoff) {
     i++;
   }
   if (i > 0 && t.rateSamples.length - i < 2 && t.rateSamples.length >= 2) {
@@ -248,21 +245,14 @@ function addRateSample(t: EtaTracker, at: number, n: number): number {
   }
   if (i > 0) t.rateSamples = t.rateSamples.slice(i);
   t.samples = t.rateSamples.length;
-  const first = t.rateSamples[0];
-  const last = t.rateSamples[t.rateSamples.length - 1];
-  if (first === undefined || last === undefined || t.rateSamples.length < 2) {
-    return 0;
-  }
+  if (t.rateSamples.length < 2) return 0;
+  const first = t.rateSamples[0]!;
+  const last = t.rateSamples[t.rateSamples.length - 1]!;
   const dtSec = (last.at - first.at) / 1000;
   if (!(dtSec > 0)) return 0;
   const delta = last.n - first.n;
   if (!(delta > 0)) return 0;
   return delta / dtSec;
-}
-
-function applyRate(t: EtaTracker, bps: number): void {
-  if (!(bps > 0)) return;
-  t.smoothedBps = bps;
 }
 
 export function updateEtaTrackers(
@@ -284,7 +274,6 @@ export function updateEtaTrackers(
         samples: 1,
         firstSeenAt: now,
         originCompleted: d.completedLength,
-        lastCompleted: d.completedLength,
         lastCompletedAt: now,
         rateSamples: [{ at: now, n: d.completedLength }],
       };
@@ -304,19 +293,17 @@ export function updateEtaTrackers(
       const dtMs = now - t.lastCompletedAt;
       if (dtMs >= BYTE_DELTA_MIN_MS) {
         const windowBps = addRateSample(t, now, d.completedLength);
-        t.lastCompleted = d.completedLength;
         t.lastCompletedAt = now;
         if (d.downloadSpeed > 0) {
-          applyRate(t, d.downloadSpeed);
+          t.smoothedBps = d.downloadSpeed;
           sampled = true;
         } else if (windowBps > 0) {
-          applyRate(t, windowBps);
+          t.smoothedBps = windowBps;
           sampled = true;
         }
       } else if (d.downloadSpeed > 0 && t.smoothedBps <= 0) {
-        applyRate(t, d.downloadSpeed);
+        t.smoothedBps = d.downloadSpeed;
         sampled = true;
-        t.lastCompleted = d.completedLength;
         t.lastCompletedAt = now;
       } else if (
         t.smoothedBps <= 0 &&
@@ -325,7 +312,7 @@ export function updateEtaTrackers(
         const sessionBytes = d.completedLength - t.originCompleted;
         const elapsedSec = (now - t.firstSeenAt) / 1000;
         if (sessionBytes > 0 && elapsedSec > 0) {
-          applyRate(t, sessionBytes / elapsedSec);
+          t.smoothedBps = sessionBytes / elapsedSec;
           sampled = true;
         }
       }

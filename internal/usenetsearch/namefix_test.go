@@ -890,6 +890,28 @@ func TestDuePendingNames_SkipsNgPost7z(t *testing.T) {
 	}
 }
 
+func TestNameFix_HashPar2FileDescShelvesWithoutRarBody(t *testing.T) {
+	f := newNFFixture(t, obfuscatedSet("hp", nfHash, 1, 45), nil)
+	f.src.bodies["hppar2"] = par2Body(nfHash + ".part01.rar")
+	f.crawlAndRecompute(t)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range f.src.bodyCalls {
+		if strings.Contains(id, "hp1_") || strings.Contains(id, ".rar") {
+			t.Fatalf("must not BODY RAR beside hash PAR2, calls=%v res=%+v", f.src.bodyCalls, res)
+		}
+	}
+	var attempts int
+	if err := f.idx.db.QueryRow(`SELECT name_attempts FROM usenet_nntp_releases`).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts < maxNameAttempts {
+		t.Fatalf("hash FileDesc must shelve, attempts=%d calls=%v", attempts, f.src.bodyCalls)
+	}
+}
+
 func TestNameFix_NgPost7zShelvesWithoutBody(t *testing.T) {
 	rows := obfuscated7zSet("pw", nfHash, 1, 2)
 	for i := range rows {

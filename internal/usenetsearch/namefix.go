@@ -614,7 +614,20 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		// Troubleshooting: pending95 rar still attempts>=max with no
 		//   namefix crc log → this crcTried gate missing. Review if:
 		//   crc_sampled column replaces the gate.
-		if crcTried || !hasCRCCapableTarget(rows) {
+		// Claude 2026-10-21: also shelve when main PAR2 was sampled.
+		// Reason: RAR volumes are no longer picked beside PAR2, so crcTried
+		//   stayed false and the same hash-rar filled BODY every pass.
+		// Troubleshooting: namefix pass sets=4 unresolved=1 on hash-rar
+		//   forever → hasMainPar2Name missing here.
+		// Review if: unencrypted hash-rar CRC is picked again.
+		par2Sampled := false
+		for _, r := range rows {
+			if isMainPar2Name(r.Filename) || isMainPar2Name(r.Subject) {
+				par2Sampled = true
+				break
+			}
+		}
+		if crcTried || !hasCRCCapableTarget(rows) || par2Sampled {
 			return false, n.Index.ShelveBodyAttempts(work, set.Group, set.Key)
 		}
 	}

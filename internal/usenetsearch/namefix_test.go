@@ -1874,6 +1874,7 @@ func TestNameFix_BodyLeftoverOnDeadline(t *testing.T) {
 	a := obfuscatedSet("la", nfHash, 1, 5)
 	b := obfuscatedSet("lb", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", len(a)+1, 5)
 	f := newNFFixture(t, append(a, b...), nil)
+	f.nf.BodyWorkers = 1
 	f.nf.PassBudget = 50 * time.Millisecond
 	f.src.bodyDelay = 200 * time.Millisecond
 	f.src.bodies["lapar2"] = par2Body(nfHash + ".part01.rar")
@@ -1888,6 +1889,37 @@ func TestNameFix_BodyLeftoverOnDeadline(t *testing.T) {
 	}
 	if !res.Advanced() {
 		t.Fatalf("leftover must count as advanced: %+v", res)
+	}
+}
+
+func TestNameFix_ParallelBodyFetchesFourSets(t *testing.T) {
+	h := []string{
+		nfHash,
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"cccccccccccccccccccccccccccccccc",
+	}
+	pfx := []string{"p0", "p1", "p2", "p3"}
+	var rows []usenet.MessageOverview
+	n := 1
+	for i := range h {
+		set := obfuscatedSet(pfx[i], h[i], n, 5)
+		n += len(set)
+		rows = append(rows, set...)
+	}
+	f := newNFFixture(t, rows, nil)
+	f.nf.PassBudget = 150 * time.Millisecond
+	f.src.bodyDelay = 80 * time.Millisecond
+	for i := range h {
+		f.src.bodies[pfx[i]+"par2"] = par2Body(h[i] + ".part01.rar")
+	}
+	f.crawlAndRecompute(t)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.BodyFetches < 4 {
+		t.Fatalf("parallel BODY must fetch all 4 sets inside 150ms: %+v calls=%v", res, f.src.bodyCalls)
 	}
 }
 

@@ -12679,3 +12679,19 @@ status stays active.
 | `internal/usenetsearch/service.go` | namefix before OVER; `skipForwardCrawl`; `makeCrawler`/`runCrawl` |
 | `internal/usenetsearch/namefix_test.go` | leftover on deadline; skip cap |
 | `docs/usenet-nntp-native.md` | namefix before OVER; leftover skip cap 4 |
+
+## 2026-10-22 — Namefix BODY pool of 4, ErrBusy yields
+
+**Problem:** After namefix-before-OVER, live still did ~5 sequential FileDesc fetches / 90s (`leftover=38 renamed=5` every ~4 min). Idle NNTP slots were unused.
+**Root cause:** `run()` processed BODY sets one goroutine at a time. Each 8s BodyHead serialized the 90s phase. tryGet is already non-blocking.
+**Fix:** BODY phase runs up to 4 `fixSet` workers. ErrBusy or BudgetStop cancels the phase (downloads win). Header/parhash/predb stay sequential. 8s article / 90s BODY / BODY-before-PreDB unchanged. Tests may set `BodyWorkers=1`.
+**Outcome:** `TestNameFix_ParallelBodyFetchesFourSets` (4 fetches inside 150ms). `-race` on `TestNameFix_`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix.go` | `runBodyPhase` workers=4; budget mutex; leftover of unsent sets |
+| `internal/usenetsearch/namefix_test.go` | parallel 4-set fetch; leftover test sequential |
+| `internal/usenetsearch/crawler_admission_test.go` | BodyHead mutex |
+| `docs/usenet-nntp-native.md` | BODY pool 4; ErrBusy yields |

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 // statCalls records every msgid actually STATed, in call order, so tests can
 // assert "STATed once" across chunk/pass boundaries.
 type crawlStub struct {
+	mu        sync.Mutex
 	gr        usenet.GroupRange
 	rows      []usenet.MessageOverview
 	stat      map[string]usenet.StatVerdict
@@ -44,6 +46,8 @@ func (c *crawlStub) BodyHead(ctx context.Context, msgID string, maxBytes int) (u
 		case <-timer.C:
 		}
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.bodyCalls = append(c.bodyCalls, msgID)
 	if c.bodyFailFirst > 0 {
 		c.bodyFailFirst--

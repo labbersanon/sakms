@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/labbersanon/sakms/internal/release"
@@ -74,6 +75,13 @@ const (
 	//   body_fetches=1 → lookupPreDB still eating the phase. Review if:
 	//   namefix pass >2min starves OVER, or BudgetStop starts hitting.
 	namefixBodyPhaseDuration = 90 * time.Second
+	// Claude 2026-10-22: BODY sets in parallel; ErrBusy still yields.
+	// Reason: live leftover=38 with 5 sequential 8s FileDesc fetches / 90s
+	//   (~4 min/pass after skip-crawl). Idle NNTP slots were unused.
+	// Troubleshooting: body_fetches still ~5/pass with leftover>0 → workers
+	//   not running or Src serializes BodyHead. Review if: downloads starve
+	//   (then drop to 2; do not block on get()).
+	namefixBodyWorkers = 4
 	// Claude 2026-10-19: namefixMinBodyRemain skipped BodyHead when the 20s
 	//   phase was already gone (live remain_ms=-1 on a 43KB par2). Replaced
 	//   by WithoutCancel+8s so one overtime article still runs.
@@ -134,9 +142,9 @@ const (
 	verdictNamed  = "namefix"
 )
 
-// bodyBudget is a rolling one-hour BODY byte budget. It lives in the service
-// loop (one goroutine), so it needs no locking.
+// bodyBudget is a rolling one-hour BODY byte budget. BODY workers share it.
 type bodyBudget struct {
+	mu          sync.Mutex
 	capBytes    int64
 	windowStart time.Time
 	used        int64
@@ -146,11 +154,15 @@ func (b *bodyBudget) setCapMB(mb int) {
 	if mb <= 0 {
 		mb = DefaultNameFixBodyMBPerHour
 	}
+	b.mu.Lock()
 	b.capBytes = int64(mb) << 20
+	b.mu.Unlock()
 }
 
 // fits reports whether est more bytes stay within the hourly cap.
 func (b *bodyBudget) fits(est int64) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	now := time.Now()
 	if b.windowStart.IsZero() || now.Sub(b.windowStart) >= time.Hour {
 		b.windowStart, b.used = now, 0
@@ -158,7 +170,11 @@ func (b *bodyBudget) fits(est int64) bool {
 	return b.used+est <= b.capBytes
 }
 
-func (b *bodyBudget) add(n int64) { b.used += n }
+func (b *bodyBudget) add(n int64) {
+	b.mu.Lock()
+	b.used += n
+	b.mu.Unlock()
+}
 
 // NameFixResult is one name-fix pass's aggregate counters.
 type NameFixResult struct {
@@ -202,9 +218,13 @@ type NameFixer struct {
 	SkipBody bool
 	// PassBudget caps every phase; zero uses 90s BODY / 20s other. Tests shorten it.
 	PassBudget time.Duration
+	// BodyWorkers is BODY-phase parallelism. Zero uses namefixBodyWorkers.
+	// Tests set 1 to keep leftover-deadline sequential.
+	BodyWorkers int
 
 	UnnamedTTL time.Duration
 
+	mu        sync.Mutex
 	nzbPWUsed int
 }
 
@@ -292,11 +312,7 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 		phaseCtx, cancel := context.WithTimeout(ctx, n.phaseBudget(phase))
 		defer cancel()
 		deadline := func(i int) error {
-			left := len(in) - i
-			log.Printf("usenetsearch: namefix deadline phase=%s leftover=%d", phase, left)
-			if phase == "body" {
-				res.BodyLeftover = left
-			}
+			log.Printf("usenetsearch: namefix deadline phase=%s leftover=%d", phase, len(in)-i)
 			return nil
 		}
 		for i, set := range in {
@@ -348,7 +364,7 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 	//   → this order reversed. Review if: ident FileDesc titles stall.
 	body = append(body, sets...)
 	body = append(body, ident...)
-	if err := run(body, "body"); err != nil {
+	if err := n.runBodyPhase(ctx, body, &res, done, keyOf); err != nil {
 		return res, err
 	}
 	// Named PAR2 donors after pending BODY so hash.mkv FileDesc runs first.
@@ -377,6 +393,108 @@ func formatBySource(m map[string]int) string {
 		parts = append(parts, fmt.Sprintf("%s:%d", k, m[k]))
 	}
 	return strings.Join(parts, ",")
+}
+
+func mergeNameFixResult(dst *NameFixResult, src NameFixResult) {
+	dst.Sets += src.Sets
+	dst.HashHits += src.HashHits
+	dst.BodyFetches += src.BodyFetches
+	dst.BodyBytes += src.BodyBytes
+	dst.Renamed += src.Renamed
+	dst.RejectGate += src.RejectGate
+	dst.RejectStat += src.RejectStat
+	dst.Unresolved += src.Unresolved
+	dst.Finalized += src.Finalized
+	dst.Busy = dst.Busy || src.Busy
+	dst.BudgetStop = dst.BudgetStop || src.BudgetStop
+	if dst.BySource == nil {
+		dst.BySource = map[string]int{}
+	}
+	for k, v := range src.BySource {
+		dst.BySource[k] += v
+	}
+}
+
+func (n *NameFixer) runBodyPhase(ctx context.Context, in []PendingSet, res *NameFixResult, done map[string]bool, keyOf func(PendingSet) string) error {
+	if len(in) == 0 {
+		return nil
+	}
+	phaseCtx, cancel := context.WithTimeout(ctx, n.phaseBudget("body"))
+	defer cancel()
+	workers := n.BodyWorkers
+	if workers <= 0 {
+		workers = namefixBodyWorkers
+	}
+	if workers > len(in) {
+		workers = len(in)
+	}
+	skip := make(map[string]bool, len(done))
+	for k, v := range done {
+		skip[k] = v
+	}
+	statEach := statReleasesPerChunk / workers
+	if statEach < 1 {
+		statEach = 1
+	}
+	jobs := make(chan PendingSet)
+	var mu sync.Mutex
+	var firstErr error
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			localStat := statEach
+			for set := range jobs {
+				local := NameFixResult{BySource: map[string]int{}}
+				stop, err := n.fixSet(phaseCtx, set, &local, &localStat)
+				mu.Lock()
+				mergeNameFixResult(res, local)
+				if local.Renamed > 0 {
+					done[keyOf(set)] = true
+				}
+				if err != nil && firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+				if stop || err != nil {
+					cancel()
+				}
+			}
+		}()
+	}
+	leftover := 0
+	for i, set := range in {
+		if skip[keyOf(set)] {
+			continue
+		}
+		if i == 0 {
+			jobs <- set
+			continue
+		}
+		if phaseCtx.Err() != nil {
+			leftover = len(in) - i
+			break
+		}
+		select {
+		case jobs <- set:
+		case <-phaseCtx.Done():
+			leftover = len(in) - i
+		}
+		if leftover > 0 {
+			break
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	if leftover > 0 {
+		res.BodyLeftover = leftover
+		log.Printf("usenetsearch: namefix deadline phase=body leftover=%d", leftover)
+	}
+	if firstErr != nil && !errors.Is(firstErr, context.DeadlineExceeded) && !errors.Is(firstErr, context.Canceled) {
+		return firstErr
+	}
+	return nil
 }
 
 // fixSet attempts one staged set. stop=true ends the pass (busy / budget).
@@ -1020,7 +1138,7 @@ func (n *NameFixer) lookupPreDB(ctx context.Context, set PendingSet, rows []Head
 }
 
 func (n *NameFixer) fetchNZBPassword(ctx context.Context, set PendingSet, rows []HeaderRow) (NZBPasswordHit, bool) {
-	if n.NZBPassword == nil || n.nzbPWUsed >= namefixNZBPasswordPerPass {
+	if n.NZBPassword == nil {
 		return NZBPasswordHit{}, false
 	}
 	stem := archiveSearchStem(rows)
@@ -1028,7 +1146,13 @@ func (n *NameFixer) fetchNZBPassword(ctx context.Context, set PendingSet, rows [
 	if stem == "" && poster == "" {
 		return NZBPasswordHit{}, false
 	}
+	n.mu.Lock()
+	if n.nzbPWUsed >= namefixNZBPasswordPerPass {
+		n.mu.Unlock()
+		return NZBPasswordHit{}, false
+	}
 	n.nzbPWUsed++
+	n.mu.Unlock()
 	hit, ok := n.NZBPassword.Lookup(ctx, NZBPasswordQuery{
 		Filename:  stem,
 		Poster:    poster,

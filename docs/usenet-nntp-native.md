@@ -176,6 +176,8 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   budget; header/parhash/predb stay 20s. Namefix runs before OVER. While
   BODY leftover>0, OVER/repair/backfill skip (cap 4 consecutive skips so
   HIGH cannot starve). ErrBusy from downloads still skips crawl.
+  BODY fetches up to 4 sets in parallel (tryOnly borrow; ErrBusy yields the
+  rest of the phase). Header/parhash/predb stay sequential.
   Each BODY article is capped at 8s (dial included) and does not inherit leftover
   phase crumbs, so setRows eating the phase still fetches one PAR2. A hung fetch
   logs `namefix body msgid=` and continues to the next PAR2/NFO pick unless the

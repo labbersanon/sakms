@@ -334,7 +334,16 @@ func (c *Crawler) ingestRange(ctx context.Context, opts ingestOpts, group string
 	return len(rows), nil
 }
 
-const ingestRecomputeMaxKeys = 32
+// ingestRecomputeMaxKeys = 32
+// Claude 2026-10-21: 64, named keys first.
+// Reason: a 2000-row x264 obf chunk filled the 32-key cap so ident-named
+//
+//	titles in the same ingest waited on the 1.98M dirty FIFO.
+//
+// Troubleshooting: admitted named still dirty next loop → this still
+//
+//	sorting by header count only. Review if: dirty backlog is tiny.
+const ingestRecomputeMaxKeys = 64
 
 // recomputeIngested refreshes completeness for keys that gained the most
 // parts in this chunk so namefix/searchable can see them this loop.
@@ -363,7 +372,13 @@ func (c *Crawler) recomputeIngested(ctx context.Context, group string, rows []He
 		}
 		n[h.ReleaseName]++
 	}
-	sort.Slice(keys, func(i, j int) bool { return n[keys[i]] > n[keys[j]] })
+	sort.Slice(keys, func(i, j int) bool {
+		oi, oj := isObfKey(keys[i]), isObfKey(keys[j])
+		if oi != oj {
+			return !oi
+		}
+		return n[keys[i]] > n[keys[j]]
+	})
 	if len(keys) > ingestRecomputeMaxKeys {
 		keys = keys[:ingestRecomputeMaxKeys]
 	}

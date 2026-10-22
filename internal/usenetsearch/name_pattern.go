@@ -114,6 +114,25 @@ func detectNamePattern(rows []HeaderRow) namePattern {
 	return p
 }
 
+// passwordLockedPack is true when NNTP cannot recover a title: ngPost hash.7z
+// (password only in the NZB) or UUID .7z.enc. PAR2 FileDesc is the archive
+// name. These must not take BODY slots from hash.mkv+PAR2 sets.
+//
+// Claude 2026-10-21: detect from headers before BODY.
+// Reason: skip_7z required Attempts>0 so the first pass still fetched 7z
+//
+//	Tail (2MiB) and leftover=41; Searchable stayed at 3111.
+//
+// Troubleshooting: namefix body on hash.7z / .7z.enc → this false.
+// Review if: a non-ngPost scene 7z should still BODY for srrdb CRC.
+func passwordLockedPack(rows []HeaderRow) bool {
+	p := detectNamePattern(rows)
+	if p.Pack == "7z-enc" {
+		return true
+	}
+	return looksLikeNgPost(rows) && p.Pack == "7z-split" && (p.Obf == "hash-7z" || p.Obf == "hash")
+}
+
 func payloadKind(data, zstart []byte, zsize uint64) string {
 	kind := usenet.PayloadKind(data)
 	if zsize == 0 || zsize > uint64(len(data)) {

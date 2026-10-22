@@ -396,6 +396,17 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		res.HashHits++
 		return n.promote(ctx, set, rows, hit.Title, sourcePreDB, confPreDB, "hit", res, statBudget)
 	}
+	// Claude 2026-10-21: password packs never BODY; PreDB miss shelves them.
+	// Reason: live skip_7z still charged 7z Tail on attempts=0 and ranked
+	//   ahead of 434 anime hash.mkv+PAR2. Titles are not on NNTP.
+	// Troubleshooting: body_fetches>0 on ngPost hash.7z / .7z.enc → this
+	//   return missing. Review if: a non-ngPost 7z still needs srrdb CRC.
+	if passwordLockedPack(rows) {
+		if err := n.Index.ShelveBodyAttempts(ctx, set.Group, set.Key); err != nil {
+			return false, err
+		}
+		return false, n.Index.ScheduleNameRetry(ctx, set.Group, set.Key, exhaustedPreDBRetry)
+	}
 	if set.PreDBOnly {
 		return false, n.Index.ScheduleNameRetry(ctx, set.Group, set.Key, exhaustedPreDBRetry)
 	}

@@ -114,6 +114,7 @@ func (idx *Index) duePendingNamesIn(ctx context.Context, groups []string, limit 
 SELECT group_name, release_key, payload_bytes, name_attempts, completeness_bp, has_par2 FROM usenet_nntp_releases
 WHERE state='pending_name' AND dirty=FALSE AND declared_segs>0 AND completeness_bp>=?
   AND next_name_at<=? AND name_attempts < ? AND group_name IN (`+in+`)
+  AND NOT (`+passwordLockedSQL+`)
 ORDER BY `+crcPreferOrderSQL+`, ingested_at DESC LIMIT ?`, args...)
 	if err != nil {
 		return nil, err
@@ -148,6 +149,7 @@ func (idx *Index) duePendingIdentBodyIn(ctx context.Context, groups []string, li
 SELECT group_name, release_key, payload_bytes, name_attempts, completeness_bp, has_par2 FROM usenet_nntp_releases
 WHERE state='pending_name' AND dirty=FALSE AND declared_segs>0 AND completeness_bp>=? AND completeness_bp<?
   AND has_par2 AND next_name_at<=? AND name_attempts < ? AND group_name IN (`+in+`)
+  AND NOT (`+passwordLockedSQL+`)
 ORDER BY `+crcPreferOrderSQL+`, completeness_bp DESC, ingested_at DESC LIMIT ?`, args...)
 	if err != nil {
 		return nil, err
@@ -197,6 +199,18 @@ func scanPendingSets(rows *sql.Rows, preDBOnly bool) ([]PendingSet, error) {
 // Troubleshooting: namefix crc magic=52617221 with 32 pending95_7z → this
 //
 //	CASE. Review if: crc_sampled column replaces this CASE.
+//
+// Claude 2026-10-21: SFV, RAR/ZIP, has_par2; 7z is not a prefer rank.
+// Reason: live BODY=40 leftover=41 was ngPost hash.7z / skip_7z while 434
+//
+//	anime hash.mkv+PAR2 sat attempts=0. Ranking 7z ahead of rar filled
+//	every slot; password packs cannot become Searchable.
+//
+// Troubleshooting: namefix pattern skip_7z=true and searchable flat with
+//
+//	pending95 has_par2 → this CASE still ranks 7z ahead of has_par2.
+//
+// Review if: a non-password scene 7z needs a prefer rank (then after rar).
 const crcPreferOrderSQL = `CASE WHEN EXISTS (
   SELECT 1 FROM usenet_nntp_headers h
   WHERE h.group_name=usenet_nntp_releases.group_name AND h.release_name=usenet_nntp_releases.release_key
@@ -204,14 +218,33 @@ const crcPreferOrderSQL = `CASE WHEN EXISTS (
 ) THEN 0 WHEN EXISTS (
   SELECT 1 FROM usenet_nntp_headers h
   WHERE h.group_name=usenet_nntp_releases.group_name AND h.release_name=usenet_nntp_releases.release_key
-    AND (LOWER(h.filename) LIKE '%.7z%' OR LOWER(h.subject) LIKE '%.7z%')
-    AND LOWER(COALESCE(h.filename,'')) NOT LIKE '%.7z.enc%'
-    AND LOWER(COALESCE(h.subject,'')) NOT LIKE '%.7z.enc%'
-) THEN 1 WHEN EXISTS (
+    AND (LOWER(h.filename) LIKE '%.rar%' OR LOWER(h.filename) LIKE '%.zip%' OR LOWER(h.subject) LIKE '%.rar%' OR LOWER(h.subject) LIKE '%.zip%')
+) THEN 1 WHEN has_par2 THEN 2 ELSE 3 END`
+
+// passwordLockedSQL is true when headers are ngPost hash.7z or UUID .7z.enc.
+// Those need an NZB password; BODY cannot recover a title. Dropped from the
+// BODY due queues; PreDB may still hash-lookup then shelve.
+// Claude 2026-10-21: keep password packs off DuePendingNames.
+// Reason: live 1157 pending95 included .7z.enc + ngPost 7z with has_par2;
+//
+//	they ranked with anime mkv+PAR2 and burned the 20s BODY budget.
+//
+// Troubleshooting: body leftover=40 skip_7z=true with hash.mkv due → this
+//
+//	EXISTS missing from DuePendingNames. Review if: a poster uses 7z without
+//	ngPost FROM/msgid (then pack=7z-split still BODYs for srrdb CRC).
+const passwordLockedSQL = `EXISTS (
   SELECT 1 FROM usenet_nntp_headers h
   WHERE h.group_name=usenet_nntp_releases.group_name AND h.release_name=usenet_nntp_releases.release_key
-    AND (LOWER(h.filename) LIKE '%.rar%' OR LOWER(h.filename) LIKE '%.zip%' OR LOWER(h.subject) LIKE '%.rar%' OR LOWER(h.subject) LIKE '%.zip%')
-) THEN 2 ELSE 3 END`
+    AND (
+      LOWER(COALESCE(h.filename,'')) LIKE '%.7z.enc%' OR LOWER(h.subject) LIKE '%.7z.enc%'
+      OR (
+        (h.from_addr ~* '@ngPost\.com$' OR h.msgid ~* '@ngPost')
+        AND (LOWER(COALESCE(h.filename,'')) LIKE '%.7z%' OR LOWER(h.subject) LIKE '%.7z%')
+        AND LOWER(COALESCE(h.filename,'')) NOT LIKE '%.7z.enc%'
+      )
+    )
+)`
 
 // quotedIdentSubjectSQL matches a quoted payload name that is already a title:
 // resolution in the quotes, a spacey or underscore-separated name, or a

@@ -12444,3 +12444,24 @@ status stays active.
 | `internal/api/search_catalog.go` | Newznab then Prowlarr |
 | `internal/api/discover_availability.go` | Newznab then Prowlarr |
 | `internal/api/autograb_batch.go` | Newznab then Prowlarr |
+
+## 2026-10-21 — Searchable: identify non-password titles, stop 7z BODY starvation
+
+**Problem:** Dashboard Searchable stuck at ~3111. Completeness recompute `searchable=0` on ~500 keys with a 1.98M dirty backlog; namefix `renamed=0 hash_hits=0` with BODY leftover=41 and PreDB leftover=199.
+**Root cause:** (1) Due queue ranked split 7z ahead of RAR/`has_par2`, so ngPost hash.7z and `.7z.enc` burned the 20s BODY budget while 434 anime hash.mkv+PAR2 sat at attempts=0. (2) skip_7z required Attempts>0 so the first pass still fetched 7z Tail. (3) PreDB `ByFilename` LIKE on obfuscated tokens seq-scanned the dump. (4) Identical OVER restage always set `dirty=TRUE`.
+**Fix:** BODY due queue is SFV, RAR/ZIP, then `has_par2`. ngPost hash.7z and `.7z.enc` are excluded from BODY, PreDB-miss shelved. `ByFilename` skips unusable names. Upsert dirties only on insert or grouping-field change. Ingest recomputes named keys first (cap 64).
+**Outcome:** `TestDuePendingNames_PrefersRarOverSevenZ`, `TestDuePendingNames_SkipsNgPost7z`, `TestNameFix_NgPost7zShelvesWithoutBody`, `TestUpsert_RestageDoesNotDirty`, `TestPasswordLockedPack_*`. Non-ngPost 7z still BODYs for srrdb CRC.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix_index.go` | crc prefer SFV/RAR/has_par2; passwordLockedSQL off BODY queues |
+| `internal/usenetsearch/namefix.go` | shelve password packs; skip obfuscated ByFilename |
+| `internal/usenetsearch/name_pattern.go` | passwordLockedPack |
+| `internal/usenetsearch/index.go` | Upsert dirty only on new/changed headers |
+| `internal/usenetsearch/ingest.go` | named-first ingest recompute, cap 64 |
+| `internal/usenetsearch/namefix_test.go` | rar over 7z; skip ngPost 7z; shelve without BODY |
+| `internal/usenetsearch/name_pattern_test.go` | passwordLockedPack cases |
+| `internal/usenetsearch/releases_test.go` | restage does not dirty |
+| `docs/usenet-nntp-native.md` | due-queue and ngPost BODY notes |

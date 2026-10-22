@@ -50,6 +50,36 @@ func TestDetectNamePattern_Quoted(t *testing.T) {
 	}
 }
 
+func TestPasswordLockedPack_NgPost7z(t *testing.T) {
+	rows := []HeaderRow{
+		{Filename: "AbCdEfGhIjKlMnOpQrStUv.7z.001", From: "AbCdEfGhIjKlM@ngPost.com", MsgID: "x@ngPost"},
+		{Filename: "AbCdEfGhIjKlMnOpQrStUv.par2", From: "AbCdEfGhIjKlM@ngPost.com", MsgID: "y@ngPost"},
+	}
+	if !passwordLockedPack(rows) {
+		t.Fatal("ngPost hash.7z must be password-locked")
+	}
+}
+
+func TestPasswordLockedPack_Scene7zNotLocked(t *testing.T) {
+	rows := []HeaderRow{
+		{Filename: nfHash + ".7z.001", From: "poster@obf"},
+		{Filename: nfHash + ".par2", From: "poster@obf"},
+	}
+	if passwordLockedPack(rows) {
+		t.Fatal("non-ngPost 7z must still BODY for CRC")
+	}
+}
+
+func TestPasswordLockedPack_7zEnc(t *testing.T) {
+	rows := []HeaderRow{
+		{Filename: "c31ac6d5-af36-4618-9d31-7fa53ea9db87.7z.enc"},
+		{Filename: "c31ac6d5-af36-4618-9d31-7fa53ea9db87.par2"},
+	}
+	if !passwordLockedPack(rows) {
+		t.Fatal(".7z.enc must be password-locked")
+	}
+}
+
 func TestPayloadKind_7zAESFooter(t *testing.T) {
 	const live = "1706f7a0e97fe7010980e000070b0100022406f107010a530734cdd1c5f369ebc523030101055d0010000001000c80da821e0a01fc3137330000"
 	hdr := mustHex(t, live)

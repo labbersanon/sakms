@@ -456,3 +456,49 @@ func TestRecomputeDirty_StopsAtDeadline(t *testing.T) {
 		t.Fatalf("backlog=%d, want 2 still dirty", st.Backlog)
 	}
 }
+
+func TestUpsert_RestageDoesNotDirty(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	const g = "alt.binaries.movies"
+	rows := fileRows(g, "obf:aaaaaaaaaaaaaaaa", "a.rar", "a", 0, 10, 10, 0)
+	if err := idx.Upsert(ctx, rows); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.RecomputeDirty(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	var dirty bool
+	if err := sqlDB.QueryRowContext(ctx, `SELECT dirty FROM usenet_nntp_releases`).Scan(&dirty); err != nil {
+		t.Fatal(err)
+	}
+	if dirty {
+		t.Fatal("want clean after recompute")
+	}
+	if err := idx.Upsert(ctx, rows); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlDB.QueryRowContext(ctx, `SELECT dirty FROM usenet_nntp_releases`).Scan(&dirty); err != nil {
+		t.Fatal(err)
+	}
+	if dirty {
+		t.Fatal("identical restage must not re-dirty")
+	}
+	extra := fileRows(g, "obf:aaaaaaaaaaaaaaaa", "a.rar", "b", 10, 10, 1, 0)
+	extra[0].PartN = 11
+	extra[0].PartM = 10
+	if err := idx.Upsert(ctx, extra); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlDB.QueryRowContext(ctx, `SELECT dirty FROM usenet_nntp_releases`).Scan(&dirty); err != nil {
+		t.Fatal(err)
+	}
+	if !dirty {
+		t.Fatal("new msgid must dirty")
+	}
+}

@@ -185,7 +185,10 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   a hash.par2 sibling whose FileDesc names are also hashes. Seed BODYs only the
   main (non-vol) `.par2` and reserves half of each seed pass for shelved
   pending so named donors cannot starve hash.par2. The due queue ranks SFV,
-  then split 7z (not `.7z.enc`), then RAR/ZIP. BODY picks SFV, then the
+  then RAR/ZIP, then `has_par2` (hash.mkv+PAR2). Split 7z is not a prefer
+  rank. ngPost hash.7z and UUID `.7z.enc` are dropped from BODY queues
+  (password is only in the NZB); PreDB may hash-lookup then shelve.
+  BODY picks SFV, then the
   first-volume RAR/7z (`part01` / `.7z.001` / bare `.rar`), then the last
   volume (RAR5 first segment; 7z last segment of `.7z.NNN` for the end
   header — never `.vol*.par2` or `.7z.enc`), then the main `.par2`. 95% complete
@@ -287,8 +290,8 @@ counters under `gapFillStatus` (`releasesSearchable`, `releasesBelowGate`,
   `[001/136] "random.7z.001" (10/732)` — no `yEnc` token, default article
   716800 bytes, last article is a remainder. From is `N@ngPost.com`; msgid
   `uuid@ngPost`. ObfKey omits group so GROUP_POLICY ALL does not split the
-  set. First `.7z.001` BODY is 64 bytes (signature). After the first charged
-  namefix attempt, further 7z HeadOnly/Tail BODY is skipped; PAR2 still runs.
+  set. ngPost hash.7z is not BODY-fetched (password locked); PreDB miss
+  shelves BODY attempts so hash.mkv+PAR2 sets get the 20s budget.
   Title and password are in the NZB, not on NNTP; native namefix does not
   query Newznab (passwords are not recoverable from NZB indexers). `-x` UUID subjects have no
   filename in OVERVIEW and stay skip_unparsed.

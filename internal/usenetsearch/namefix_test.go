@@ -829,7 +829,7 @@ func TestDuePendingNames_PrefersSfvOverRar(t *testing.T) {
 	assertPendingHeaderHas(t, f.idx, sets[0], ".sfv", "sfv (ahead of newer rar)")
 }
 
-func TestDuePendingNames_PrefersSevenZOverRar(t *testing.T) {
+func TestDuePendingNames_PrefersRarOverSevenZ(t *testing.T) {
 	rarHash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	zHash := "cccccccccccccccccccccccccccccccc"
 	rows := obfuscatedSet("r", rarHash, 1, 2)
@@ -839,8 +839,8 @@ func TestDuePendingNames_PrefersSevenZOverRar(t *testing.T) {
 	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET completeness_bp=10000, declared_segs=10, seen_segs=10, dirty=FALSE, next_name_at=0`); err != nil {
 		t.Fatal(err)
 	}
-	rarKey := ObfKey(nfGroup, "poster@obf", rows[0].Subject)
-	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET ingested_at=? WHERE release_key=?`, time.Now().Unix()+3600, rarKey); err != nil {
+	zKey := ObfKey(nfGroup, "poster@obf", rows[len(rows)-1].Subject)
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET ingested_at=? WHERE release_key=?`, time.Now().Unix()+3600, zKey); err != nil {
 		t.Fatal(err)
 	}
 	sets, err := f.idx.DuePendingNames(context.Background(), []string{nfGroup}, 1)
@@ -850,7 +850,63 @@ func TestDuePendingNames_PrefersSevenZOverRar(t *testing.T) {
 	if len(sets) != 1 {
 		t.Fatalf("due=%d, want 1", len(sets))
 	}
-	assertPendingHeaderHas(t, f.idx, sets[0], ".7z.", "7z (ahead of newer rar)")
+	assertPendingHeaderHas(t, f.idx, sets[0], ".rar", "rar (ahead of newer 7z)")
+}
+
+func TestDuePendingNames_SkipsNgPost7z(t *testing.T) {
+	rows := obfuscated7zSet("ng", nfHash, 1, 2)
+	for i := range rows {
+		rows[i].From = "AbCdEfGhIjKlM@ngPost.com"
+		rows[i].MessageID = strings.TrimSuffix(rows[i].MessageID, "@t") + "@ngPost"
+	}
+	mkv := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	n := rows[len(rows)-1].Number
+	rows = append(rows,
+		usenet.MessageOverview{Number: n + 1, Subject: fmt.Sprintf(`[01/2] - "%s.mkv" yEnc (1/1)`, mkv),
+			From: "poster@obf", MessageID: "mkv1", Bytes: 2_000_000, DateUnix: 1700000000},
+		usenet.MessageOverview{Number: n + 2, Subject: fmt.Sprintf(`[02/2] - "%s.par2" yEnc (1/1)`, mkv),
+			From: "poster@obf", MessageID: "mkvpar2", Bytes: 40_000, DateUnix: 1700000000},
+	)
+	f := newNFFixture(t, rows, nil)
+	f.crawlAndRecompute(t)
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET completeness_bp=10000, declared_segs=10, seen_segs=10, dirty=FALSE, next_name_at=0`); err != nil {
+		t.Fatal(err)
+	}
+	sets, err := f.idx.DuePendingNames(context.Background(), []string{nfGroup}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sets) == 0 {
+		t.Fatal("want mkv+par2 due")
+	}
+	for _, set := range sets {
+		assertPendingHeaderHas(t, f.idx, set, ".mkv", "non-password due set")
+	}
+}
+
+func TestNameFix_NgPost7zShelvesWithoutBody(t *testing.T) {
+	rows := obfuscated7zSet("pw", nfHash, 1, 2)
+	for i := range rows {
+		rows[i].From = "AbCdEfGhIjKlM@ngPost.com"
+		rows[i].MessageID = strings.TrimSuffix(rows[i].MessageID, "@t") + "@ngPost"
+	}
+	f := newNFFixture(t, rows, nil)
+	f.src.bodies["pwpar2@ngPost"] = par2Body(nfHash + ".7z.001")
+	f.crawlAndRecompute(t)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.src.bodyCalls) != 0 {
+		t.Fatalf("password 7z must not BODY, calls=%v res=%+v", f.src.bodyCalls, res)
+	}
+	var attempts int
+	if err := f.idx.db.QueryRow(`SELECT name_attempts FROM usenet_nntp_releases`).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts < maxNameAttempts {
+		t.Fatalf("password 7z must shelve BODY attempts, got %d", attempts)
+	}
 }
 
 func TestSweepUnnamed_StillDropsFirehoseAfterAttempts(t *testing.T) {

@@ -75,8 +75,8 @@ type HeaderRow struct {
 	FileM       int
 }
 
-// Upsert inserts or replaces overview rows and marks every touched release
-// dirty (usenet_nntp_releases) so the recompute pass re-evaluates it.
+// Upsert inserts overview rows. A new msgid or a grouping-field change marks
+// the release dirty; an identical restage leaves dirty unchanged.
 //
 // Claude 2026-10-15: release rows are created here (plan D1/D4), not by the
 // crawler, so every writer (forward crawl, repair, backfill, tests) keeps the
@@ -85,6 +85,17 @@ type HeaderRow struct {
 // Troubleshooting: release missing from search after upsert → run
 // RecomputeDirty; check usenet_nntp_releases.dirty.
 // Review if: headers gain a surrogate release id.
+// Claude 2026-10-21: dirty only when a header row is inserted or grouping fields change.
+// Reason: forward OVER restages the same msgids and ON CONFLICT always set
+//
+//	ingested_at + dirty; live backlog grew 1.94M→1.98M of 0% pending while
+//	recompute searchable=0 every batch. Identical restage must stay clean.
+//
+// Troubleshooting: completeness recompute backlog climbing with staged_obf
+//
+//	and no new msgids → WHERE IS DISTINCT FROM missing / ingested_at still
+//	updated on conflict. Review if: rewrite regroups via Upsert (then
+//	release_name DISTINCT dirties, which is correct).
 func (idx *Index) Upsert(ctx context.Context, rows []HeaderRow) error {
 	if len(rows) == 0 {
 		return nil
@@ -103,7 +114,15 @@ ON CONFLICT (group_name, msgid) DO UPDATE SET
   posted_at=EXCLUDED.posted_at, bytes=EXCLUDED.bytes, release_name=EXCLUDED.release_name,
   part_n=EXCLUDED.part_n, part_m=EXCLUDED.part_m, filename=EXCLUDED.filename,
   yenc_size=EXCLUDED.yenc_size, obfuscated=EXCLUDED.obfuscated, is_meta=EXCLUDED.is_meta,
-  ingested_at=EXCLUDED.ingested_at, file_n=EXCLUDED.file_n, file_m=EXCLUDED.file_m
+  file_n=EXCLUDED.file_n, file_m=EXCLUDED.file_m
+WHERE usenet_nntp_headers.release_name IS DISTINCT FROM EXCLUDED.release_name
+   OR usenet_nntp_headers.part_n IS DISTINCT FROM EXCLUDED.part_n
+   OR usenet_nntp_headers.part_m IS DISTINCT FROM EXCLUDED.part_m
+   OR usenet_nntp_headers.file_n IS DISTINCT FROM EXCLUDED.file_n
+   OR usenet_nntp_headers.file_m IS DISTINCT FROM EXCLUDED.file_m
+   OR usenet_nntp_headers.filename IS DISTINCT FROM EXCLUDED.filename
+   OR usenet_nntp_headers.subject IS DISTINCT FROM EXCLUDED.subject
+   OR usenet_nntp_headers.bytes IS DISTINCT FROM EXCLUDED.bytes
 `)
 	if err != nil {
 		return err
@@ -113,11 +132,13 @@ ON CONFLICT (group_name, msgid) DO UPDATE SET
 	seen := map[releaseKey]bool{}
 	var keys []releaseKey
 	for _, r := range rows {
-		if _, err := stmt.ExecContext(ctx, r.Group, r.MsgNum, r.MsgID, r.Subject, r.From, r.PostedAt, r.Bytes,
-			r.ReleaseName, r.PartN, r.PartM, r.Filename, r.YencSize, r.Obfuscated, r.IsMeta, now, r.FileN, r.FileM); err != nil {
+		res, err := stmt.ExecContext(ctx, r.Group, r.MsgNum, r.MsgID, r.Subject, r.From, r.PostedAt, r.Bytes,
+			r.ReleaseName, r.PartN, r.PartM, r.Filename, r.YencSize, r.Obfuscated, r.IsMeta, now, r.FileN, r.FileM)
+		if err != nil {
 			return err
 		}
-		if r.ReleaseName == "" {
+		n, _ := res.RowsAffected()
+		if n == 0 || r.ReleaseName == "" {
 			continue
 		}
 		k := releaseKey{r.Group, r.ReleaseName}

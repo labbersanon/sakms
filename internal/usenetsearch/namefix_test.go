@@ -569,6 +569,22 @@ func TestNameFix_BodyArticleTimeoutContinuesToNextPick(t *testing.T) {
 	}
 }
 
+func TestPickBodyTargets_SkipsSample(t *testing.T) {
+	rows := []HeaderRow{
+		{MsgID: "sample@t", Filename: "hash.sample.mkv", Bytes: 80_000_000},
+		{MsgID: "par2@t", Filename: "hash.par2", Bytes: 20_000, IsMeta: true},
+		{MsgID: "rar@t", Filename: "hash.part01.rar", Bytes: 2_000_000, FileN: 1},
+	}
+	picks := pickBodyTargets(rows)
+	ids := pickIDs(picks)
+	if ids["sample@t"] {
+		t.Fatalf("picks=%+v, sample mkv must not take a BODY slot", picks)
+	}
+	if !ids["par2@t"] || !ids["rar@t"] {
+		t.Fatalf("picks=%+v, want par2 and first rar", picks)
+	}
+}
+
 func TestPickBodyTargets_PrefersPar2ThenFirstVolume(t *testing.T) {
 	rows := []HeaderRow{
 		{MsgID: "huge@t", Filename: "hash.part01.rar", Bytes: 2_000_000, FileN: 1},

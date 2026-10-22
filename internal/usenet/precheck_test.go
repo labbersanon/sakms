@@ -267,4 +267,7 @@ func TestIsMetaSubject_Par2IsNotDecorative(t *testing.T) {
 	if !isMetaSubject(`"release.nfo" yEnc (1/1)`) {
 		t.Fatal("nfo should stay decorative")
 	}
+	if !isMetaSubject(`"release.sample.mkv" yEnc (1/1)`) {
+		t.Fatal("sample mkv should skip STAT")
+	}
 }

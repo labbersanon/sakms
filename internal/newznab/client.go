@@ -160,7 +160,7 @@ func (c *Client) SearchGrab(ctx context.Context, idx Indexer, query string, cats
 		}
 		out = append(out, rel)
 	}
-	return out, nil
+	return FilterGrabReleases(query, out), nil
 }
 
 // Lookup searches each indexer and returns the first NZB that carries a

@@ -151,7 +151,9 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   headers. The pass no-ops without an AI client (`ai_fallback_enabled`).
 - **Strict completeness gate.** Autograb and `ToNZB` require at least
   `min_completeness_pct` of payload segments (default 95, clamped 80–100).
-  Computed per release into `usenet_nntp_releases` (`searchable`,
+  PAR2/NFO/SFV and trailer names (`Movie.sample.mkv`, `-sample.`) do not
+  count as payload or steal a namefix BODY slot. Computed per release into
+  `usenet_nntp_releases` (`searchable`,
   `completeness_bp`, `gate_reason`). Identification is separate: a PreDB,
   PAR2/RAR/yEnc/NFO, or a title with resolution plus year, season, or a
   multi-word name is searchable at ≥80%; `Query.GrabReady` and `ToNZB` still

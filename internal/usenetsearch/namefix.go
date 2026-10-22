@@ -1595,6 +1595,9 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 	files := map[string]*file{}
 	var order []string
 	for _, r := range rows {
+		if usenet.IsSampleName(r.Filename) || usenet.IsSampleName(r.Subject) {
+			continue
+		}
 		key := r.Filename
 		if key == "" {
 			key = rePartNM.ReplaceAllString(r.Subject, "")
@@ -1759,7 +1762,7 @@ func is7zName(name string) bool {
 
 func isFirstArchiveVolume(name string) bool {
 	low := strings.ToLower(name)
-	if isSFVName(low) || strings.Contains(low, ".par2") || strings.Contains(low, ".nfo") || isEncrypted7zName(low) {
+	if isSFVName(low) || strings.Contains(low, ".par2") || strings.Contains(low, ".nfo") || isEncrypted7zName(low) || usenet.IsSampleName(low) {
 		return false
 	}
 	if reArchivePart.MatchString(low) || reSplitVol.MatchString(low) {

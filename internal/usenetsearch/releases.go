@@ -497,8 +497,8 @@ FROM usenet_nntp_headers WHERE group_name=? AND release_name=?`, k.group, k.key)
 		if postedAt > posted {
 			posted = postedAt
 		}
-		meta := isMeta || IsMetaSubject(subject, filename)
-		if meta {
+		meta := skipPayload(subject, filename, isMeta)
+		if isMeta || IsMetaSubject(subject, filename) {
 			hasPar2 = true
 		}
 		fn := filename

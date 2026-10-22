@@ -56,6 +56,9 @@ func TestComputeCompleteness_Table(t *testing.T) {
 		{"one file of 73 is below gate", completeFiles(1), 73, 95, false, gateReasonBelow},
 		{"implausible yEnc part_m undeclared", []fileAgg{{PartM: 967646, Seen: map[int]bool{730696: true}}}, 0, 95, false, gateReasonUndeclared},
 		{"implausible fileM ignored", []fileAgg{{PartM: 10, Seen: seenN(10)}}, 967646, 95, true, gateReasonOK},
+		{"sample file is meta not payload", []fileAgg{
+			{PartM: 10, Seen: seenN(10)}, {Meta: true, PartM: 1, Seen: seenN(1)},
+		}, 2, 95, true, gateReasonOK},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

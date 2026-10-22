@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/labbersanon/sakms/internal/usenet"
 )
 
 // ParsedSubject is the usable subset of an NNTP subject line.
@@ -528,4 +530,13 @@ func collapseWS(s string) string {
 func IsMetaSubject(subj, filename string) bool {
 	low := strings.ToLower(subj + " " + filename)
 	return strings.Contains(low, ".par2") || strings.Contains(low, ".nfo") || strings.Contains(low, ".sfv")
+}
+
+// skipPayload reports files that must not count toward completeness or
+// payload_bytes: PAR2/NFO/SFV and trailer/sample names.
+func skipPayload(subj, filename string, storedMeta bool) bool {
+	if storedMeta || IsMetaSubject(subj, filename) {
+		return true
+	}
+	return usenet.IsSampleName(subj) || usenet.IsSampleName(filename)
 }

@@ -12820,3 +12820,22 @@ status stays active.
 | `internal/api/usenetnntp_gapfill_test.go` | cancel StartNNTPPreDB so vacuumLoop exits |
 | `internal/usenetsearch/predb/predb_test.go` | reloptions 0.02/1000; VacuumAnalyze skip_locked |
 | `docs/usenet-nntp-native.md` | autovacuum + daily vacuum note |
+
+## 2026-10-22 — Sample files skip payload; Newznab grab token rank
+
+**Problem:** `Movie.sample.mkv` counted as payload (occupancy / BODY) and Newznab grab search returned every RSS hit in indexer order.
+**Root cause:** Completeness only treated PAR2/NFO/SFV as meta. Grab `t=search` had no title-token filter, 5MB dedup, or exact-title rank (NZBmegasearch smartsearch).
+**Fix:** Sample names (`[\.\-]sample` with a separator, not "Sampler") skip payload, STAT, and namefix BODY. Grab search keeps query-token matches (prefix-relax, `+/-` terms), prefers an exact sanitized title, collapses same title within 5MB. Does not fetch NZBs to count PAR2. Does not scrape HTML or predb.me.
+**Outcome:** `TestSkipPayload_SampleNotMetaPar2`, `TestPickBodyTargets_SkipsSample`, `TestIsSampleName`, `TestFilterGrabReleases_*`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/sample.go` | `IsSampleName` |
+| `internal/usenet/precheck.go` | sample files skip STAT |
+| `internal/usenetsearch/subject.go` | `skipPayload` |
+| `internal/usenetsearch/releases.go` / `group.go` | sample not payload, not HasPAR2 |
+| `internal/usenetsearch/namefix.go` | BODY skips sample files |
+| `internal/newznab/grabfilter.go` | token match, exact rank, 5MB dedup |
+| `docs/usenet-nntp-native.md` | sample-not-payload note |

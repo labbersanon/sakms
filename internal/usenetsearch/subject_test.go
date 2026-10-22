@@ -392,3 +392,18 @@ func TestOpenIndexSearch(t *testing.T) {
 		t.Fatalf("got %+v", cs)
 	}
 }
+
+func TestSkipPayload_SampleNotMetaPar2(t *testing.T) {
+	if !skipPayload(`"Movie.2021.1080p.sample.mkv" yEnc (1/1)`, "Movie.2021.1080p.sample.mkv", false) {
+		t.Fatal("sample mkv must skip payload")
+	}
+	if skipPayload(`"Movie.2021.1080p.mkv" yEnc (1/50)`, "Movie.2021.1080p.mkv", false) {
+		t.Fatal("main mkv is payload")
+	}
+	if skipPayload(`"The.Sampler.2021.1080p.mkv" yEnc (1/10)`, "The.Sampler.2021.1080p.mkv", false) {
+		t.Fatal("Sampler in a title is not a trailer file")
+	}
+	if !skipPayload(`"hash.par2" yEnc (1/1)`, "hash.par2", false) {
+		t.Fatal("par2 is meta")
+	}
+}

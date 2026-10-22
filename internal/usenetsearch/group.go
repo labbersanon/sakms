@@ -47,7 +47,7 @@ func assembleFromRows(group, release, display string, rows *sql.Rows, gatePct in
 		if rowFileM > fileM {
 			fileM = rowFileM
 		}
-		meta := isMeta || IsMetaSubject(subject, filename)
+		meta := skipPayload(subject, filename, isMeta)
 		if isMeta {
 			c.HasPAR2 = true
 		}

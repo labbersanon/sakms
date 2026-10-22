@@ -591,6 +591,9 @@ func isMetaSubject(subject string) bool {
 	if name == "" {
 		name = strings.ToLower(subject)
 	}
+	if IsSampleName(name) || IsSampleName(subject) {
+		return true
+	}
 	switch filepath.Ext(name) {
 	case ".nfo", ".sfv", ".srr", ".jpg", ".jpeg", ".png", ".gif", ".txt":
 		return true

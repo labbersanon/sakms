@@ -651,6 +651,13 @@ export interface Grab {
   seasonNumber?: number /* int */;
   episodeNumber?: number /* int */;
   seasonSpecified?: boolean;
+  /**
+   * Claude 2026-10-22: episode name is filled on grab list/download enrich.
+   * Reason: Grab.Title is the show; Activity/Downloads were show-name only.
+   * Troubleshooting: episodeTitle missing — library_episodes.title empty.
+   * Review if: grabs persist the episode name as its own column.
+   */
+  episodeTitle?: string;
   qualityProfileId?: number /* int */;
   indexer: string;
   protocol: string;

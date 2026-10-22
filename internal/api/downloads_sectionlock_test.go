@@ -89,7 +89,7 @@ func TestListDownloadsFiltersAdultWhenLocked(t *testing.T) {
 	seedActive(dl, adultGID)
 	seedActive(dl, movieGID)
 
-	handler := listDownloadsHandler(dl, nil, store)
+	handler := listDownloadsHandler(dl, nil, store, nil)
 
 	t.Run("unlocked shows both", func(t *testing.T) {
 		rows := downloadsVia(t, handler, nil)

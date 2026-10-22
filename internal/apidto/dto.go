@@ -650,14 +650,19 @@ type ServiceConnectionTestResult struct {
 // its metadata and a human might want to eyeball it. The Grabs view must say
 // so in its copy, never present the flag as an error.
 type Grab struct {
-	ID               int64  `json:"id"`
-	Mode             string `json:"mode"`
-	Title            string `json:"title"`
-	TMDBID           int    `json:"tmdbId,omitempty"`
-	TVDBID           int    `json:"tvdbId,omitempty"`
-	SeasonNumber     int    `json:"seasonNumber,omitempty"`
-	EpisodeNumber    int    `json:"episodeNumber,omitempty"`
-	SeasonSpecified  bool   `json:"seasonSpecified,omitempty"`
+	ID              int64  `json:"id"`
+	Mode            string `json:"mode"`
+	Title           string `json:"title"`
+	TMDBID          int    `json:"tmdbId,omitempty"`
+	TVDBID          int    `json:"tvdbId,omitempty"`
+	SeasonNumber    int    `json:"seasonNumber,omitempty"`
+	EpisodeNumber   int    `json:"episodeNumber,omitempty"`
+	SeasonSpecified bool   `json:"seasonSpecified,omitempty"`
+	// Claude 2026-10-22: episode name is filled on grab list/download enrich.
+	// Reason: Grab.Title is the show; Activity/Downloads were show-name only.
+	// Troubleshooting: episodeTitle missing — library_episodes.title empty.
+	// Review if: grabs persist the episode name as its own column.
+	EpisodeTitle     string `json:"episodeTitle,omitempty"`
 	QualityProfileID int    `json:"qualityProfileId,omitempty"`
 	Indexer          string `json:"indexer"`
 	Protocol         string `json:"protocol"`

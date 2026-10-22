@@ -639,7 +639,7 @@ func autoGrabRootFolder(ctx context.Context, settingsStore *settings.Store, m mo
 func toDTOGrab(g grabs.Grab) apidto.Grab {
 	return apidto.Grab{
 		ID: g.ID, Mode: string(g.Mode), Title: g.Title, TMDBID: g.TMDBID, TVDBID: g.TVDBID,
-		SeasonNumber: g.SeasonNumber, EpisodeNumber: g.EpisodeNumber, SeasonSpecified: g.SeasonSpecified,
+		SeasonNumber: g.SeasonNumber, EpisodeNumber: g.EpisodeNumber, SeasonSpecified: g.SeasonSpecified, EpisodeTitle: g.EpisodeTitle,
 		QualityProfileID: g.QualityProfileID, Indexer: g.Indexer, Protocol: g.Protocol,
 		DownloadClient: g.DownloadClient, ClientRef: g.ClientRef, Status: string(g.Status),
 		RootFolderPath: g.RootFolderPath, FlaggedForReview: g.FlaggedForReview, FlagReason: g.FlagReason,

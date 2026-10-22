@@ -125,6 +125,27 @@ describe("Downloads — search", () => {
     fireEvent.input(search, { target: { value: "zzz-nope" } });
     expect(screen.getByText("No downloads match this search.")).toBeInTheDocument();
   });
+
+  it("shows catalogTitle with SxxExx on the card, not only the NZB filename", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/downloads/pause-state"))
+        return jsonResponse({ paused: false });
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => <Downloads />);
+    MockEventSource.last!.emit([
+      dl({
+        gid: "nzb-1",
+        filename: "hash.mkv",
+        catalogTitle: "Furious S01E05 · The Gorgon",
+        protocol: "usenet",
+      }),
+    ]);
+    expect(
+      await screen.findByText("Furious S01E05 · The Gorgon"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("hash.mkv")).not.toBeInTheDocument();
+  });
 });
 
 describe("Downloads — detail popup", () => {
@@ -149,7 +170,7 @@ describe("Downloads — detail popup", () => {
     emitMovie();
     fireEvent.click(await screen.findByText("Details"));
     expect(screen.getByRole("dialog", { name: "Download details" })).toBeInTheDocument();
-    expect(screen.getByText("The Movie")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "The Movie" })).toBeInTheDocument();
   });
 
   it("opens the popup from a card-body click", async () => {
@@ -160,9 +181,9 @@ describe("Downloads — detail popup", () => {
     });
     render(() => <Downloads />);
     emitMovie();
-    fireEvent.click(await screen.findByText("Movie.1080p.mkv"));
+    fireEvent.click(await screen.findByText("The Movie"));
     expect(screen.getByRole("dialog", { name: "Download details" })).toBeInTheDocument();
-    expect(screen.getByText("The Movie")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "The Movie" })).toBeInTheDocument();
   });
 
   it("does not open the popup from Cancel", async () => {
@@ -206,9 +227,9 @@ describe("Downloads — detail popup", () => {
     });
     render(() => <Downloads />);
     emitMovie();
-    fireEvent.click(await screen.findByLabelText("Select Movie.1080p.mkv"));
+    fireEvent.click(await screen.findByLabelText("Select The Movie"));
     expect(screen.queryByRole("dialog", { name: "Download details" })).toBeNull();
-    expect(screen.getByLabelText("Select Movie.1080p.mkv")).toBeChecked();
+    expect(screen.getByLabelText("Select The Movie")).toBeChecked();
   });
 });
 

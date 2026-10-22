@@ -410,8 +410,17 @@ const DownloadRow: Component<{
   //   forgets the engine row and deletes staging files. The grab stays.
   // Troubleshooting: operator dismissed a failed NZB and expected Requests gone.
   // Review if: Cancel/Dismiss grows an "also exclude from Requests" option.
+  const displayName = () =>
+    props.dl.catalogTitle || props.dl.filename || props.dl.gid;
+  const nameTitle = () => {
+    const catalog = props.dl.catalogTitle ?? "";
+    const file = props.dl.filename ?? "";
+    if (catalog && file && catalog !== file) return `${catalog} — ${file}`;
+    return displayName();
+  };
+
   const cancelWithConfirm = (): void => {
-    const name = props.dl.filename || props.dl.gid;
+    const name = displayName();
     const message = isDone()
       ? `Dismiss “${name}” from Downloads and delete its files? The request stays in the queue.`
       : `Cancel “${name}” and delete its downloaded files from disk?`;
@@ -437,14 +446,14 @@ const DownloadRow: Component<{
       <div class="flex items-center gap-3">
         <input
           type="checkbox"
-          aria-label={`Select ${props.dl.filename || props.dl.gid}`}
+          aria-label={`Select ${displayName()}`}
           checked={props.selected}
           onClick={stopCardOpen}
           onChange={props.onToggle}
         />
         <div class="min-w-0 flex-1">
-          <div class="truncate text-sm text-fg" title={props.dl.filename}>
-            {props.dl.filename || props.dl.gid}
+          <div class="truncate text-sm text-fg" title={nameTitle()}>
+            {displayName()}
           </div>
           <Show when={props.dl.errorMessage}>
             <div class="truncate text-xs text-danger">{props.dl.errorMessage}</div>
@@ -697,6 +706,7 @@ export const Downloads: Component = () => {
     downloads().filter((d) =>
       matchesQueueSearch(
         search(),
+        d.catalogTitle,
         d.filename,
         d.status,
         d.protocol,

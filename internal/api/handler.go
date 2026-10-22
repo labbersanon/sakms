@@ -648,7 +648,7 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// one Prowlarr search in flight), capped at MaxBatchGrabItems, skip-and-
 	// continue per item. See autoGrabBatchHandler in autograb_batch.go.
 	mux.HandleFunc("POST /api/autograb-batch", autoGrabBatchHandler(httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore, adultNewestReleaseStore, libStore))
-	mux.HandleFunc("GET /api/modes/{mode}/grabs", listGrabsHandler(grabsStore))
+	mux.HandleFunc("GET /api/modes/{mode}/grabs", listGrabsHandler(grabsStore, libStore))
 	mux.HandleFunc("POST /api/grabs/{id}/check-import", checkImportHandler(httpClient, connStore, scStore, settingsStore, dl, nzb, grabsStore, libStore, prober, videoHasher))
 	// Request-status worklist + its excluded-titles endpoints live on their own
 	// mux (api.NewRequestsMux), mounted in cmd/sakms/main.go — they need an
@@ -672,8 +672,8 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// Download queue: torrent (anacrolix) + usenet (NNTP) merged into one
 	// stream. GID routing: "nzb-" prefix → usenet engine, otherwise torrent.
 	// See downloads.go.
-	mux.HandleFunc("GET /api/downloads", listDownloadsHandler(dl, nzb, grabsStore))
-	mux.HandleFunc("GET /api/downloads/stream", downloadsStreamHandler(dl, nzb, grabsStore))
+	mux.HandleFunc("GET /api/downloads", listDownloadsHandler(dl, nzb, grabsStore, libStore))
+	mux.HandleFunc("GET /api/downloads/stream", downloadsStreamHandler(dl, nzb, grabsStore, libStore))
 	// Live browser-notification stream. Registered on this same authenticated
 	// mux (never the public setup/login mux). This relies on whStore being the
 	// single shared singleton passed to every handler (see handler.go:62,247,

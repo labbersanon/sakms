@@ -64,6 +64,7 @@ import {
   fetchTitleCard,
 } from "../../api/discover";
 import { ErrorText, ModeTabs, Muted } from "../../components/ui";
+import { grabDisplayTitle } from "../grabTitle";
 import { matchesQueueSearch } from "../queueSearch";
 import { monthRange } from "./grid";
 import { MonthGrid } from "./MonthGrid";
@@ -128,7 +129,7 @@ const HistoryPosterCard: Component<{ grab: Grab }> = (props) => {
   };
   return (
     <CalendarPosterCard
-      title={props.grab.title}
+      title={grabDisplayTitle(props.grab)}
       posterSrc={src()}
       hover={card()?.overview}
     >
@@ -169,7 +170,9 @@ export const History: Component<{
         HISTORY_STATUSES.has(g.status) &&
         matchesQueueSearch(
           props.search ?? "",
+          grabDisplayTitle(g),
           g.title,
+          g.episodeTitle,
           g.status,
           g.mode,
           MODE_LABELS[g.mode],
@@ -246,36 +249,39 @@ export const History: Component<{
                 </thead>
                 <tbody>
                   <For each={monthGrabs()}>
-                    {(g) => (
-                      <tr class="border-b border-border/60 align-top">
-                        <td class="px-2 py-2 text-muted">
-                          {(g.createdAt ?? "").slice(0, 10)}
-                        </td>
-                        <td class="px-2 py-2 text-fg">
-                          <div class="truncate" title={g.title}>
-                            {g.title}
-                          </div>
-                          <Show when={g.flaggedForReview}>
-                            <div class="mt-1 flex flex-col gap-1">
-                              <ReviewBadge grab={g} />
-                              <Show when={g.flagReason}>
-                                <span class="text-xs text-muted">
-                                  {g.flagReason}
-                                </span>
-                              </Show>
+                    {(g) => {
+                      const title = grabDisplayTitle(g);
+                      return (
+                        <tr class="border-b border-border/60 align-top">
+                          <td class="px-2 py-2 text-muted">
+                            {(g.createdAt ?? "").slice(0, 10)}
+                          </td>
+                          <td class="px-2 py-2 text-fg">
+                            <div class="truncate" title={title}>
+                              {title}
                             </div>
-                          </Show>
-                        </td>
-                        {/* The row's own mode field, not the selected tab —
-                            the data is the honest source. */}
-                        <td class="px-2 py-2 text-muted">
-                          {MODE_LABELS[g.mode] ?? g.mode}
-                        </td>
-                        <td class="px-2 py-2">
-                          <StatusChip status={g.status} />
-                        </td>
-                      </tr>
-                    )}
+                            <Show when={g.flaggedForReview}>
+                              <div class="mt-1 flex flex-col gap-1">
+                                <ReviewBadge grab={g} />
+                                <Show when={g.flagReason}>
+                                  <span class="text-xs text-muted">
+                                    {g.flagReason}
+                                  </span>
+                                </Show>
+                              </div>
+                            </Show>
+                          </td>
+                          {/* The row's own mode field, not the selected tab —
+                              the data is the honest source. */}
+                          <td class="px-2 py-2 text-muted">
+                            {MODE_LABELS[g.mode] ?? g.mode}
+                          </td>
+                          <td class="px-2 py-2">
+                            <StatusChip status={g.status} />
+                          </td>
+                        </tr>
+                      );
+                    }}
                   </For>
                 </tbody>
               </table>

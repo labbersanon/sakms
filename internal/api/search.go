@@ -602,7 +602,7 @@ func precheckParkReason(err error) string {
 	return articlesUnavailableReason
 }
 
-func listGrabsHandler(grabsStore *grabs.Store) http.HandlerFunc {
+func listGrabsHandler(grabsStore *grabs.Store, libStore *library.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m := mode.Mode(r.PathValue("mode"))
 		list, err := grabsStore.List(r.Context(), m)
@@ -610,6 +610,7 @@ func listGrabsHandler(grabsStore *grabs.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		attachEpisodeTitles(r.Context(), libStore, list)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(list)
 	}

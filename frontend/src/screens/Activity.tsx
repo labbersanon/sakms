@@ -28,6 +28,7 @@ import {
   useAdultEnabled,
 } from "../components/ui";
 import { formatLocalStamp } from "../lib/localStamp";
+import { grabDisplayTitle } from "./grabTitle";
 import { matchesQueueSearch, QueueSearchField } from "./queueSearch";
 
 export type ActivityBucket = "all" | "downloaded" | "attempted" | "failed";
@@ -110,7 +111,9 @@ export const Activity: Component = () => {
         grabInBucket(g.status, b) &&
         matchesQueueSearch(
           q,
+          grabDisplayTitle(g),
           g.title,
+          g.episodeTitle,
           g.status,
           activityStatus(g),
           g.mode,
@@ -165,7 +168,7 @@ export const Activity: Component = () => {
                       <span class="w-[9.5rem] shrink-0 text-muted">
                         {activityStamp(g.createdAt)}
                       </span>
-                      <span class="shrink-0 text-fg">{g.title}</span>
+                      <span class="shrink-0 text-fg">{grabDisplayTitle(g)}</span>
                       <span class="shrink-0 text-fg">{activityStatus(g)}</span>
                       <Show when={reason}>
                         <span class="shrink-0 text-muted" title={g.retryReason}>

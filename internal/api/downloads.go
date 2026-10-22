@@ -19,6 +19,7 @@ import (
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/downloader"
 	"github.com/labbersanon/sakms/internal/grabs"
+	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/sectionlock"
 	"github.com/labbersanon/sakms/internal/settings"
@@ -353,7 +354,7 @@ func filterAdultDownloads(ctx context.Context, grabsStore *grabs.Store, rows []a
 }
 
 // listDownloadsHandler returns the current download queue.
-func listDownloadsHandler(dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store) http.HandlerFunc {
+func listDownloadsHandler(dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store, libStore *library.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if dl == nil && nzb == nil {
 			http.Error(w, "the download engine isn't running", http.StatusServiceUnavailable)
@@ -363,7 +364,7 @@ func listDownloadsHandler(dl *downloader.Manager, nzb *usenet.Manager, grabsStor
 		if adultLocked(r.Context()) {
 			rows = filterAdultDownloads(r.Context(), grabsStore, rows)
 		}
-		enrichDownloadDetails(r.Context(), grabsStore, rows)
+		enrichDownloadDetails(r.Context(), grabsStore, libStore, rows)
 		writeJSON(w, rows)
 	}
 }
@@ -397,7 +398,7 @@ func adultHiddenNow(r *http.Request) bool {
 	return sectionlock.StreamRevoked(r, sectionlock.NewSet(sectionlock.SectionAdultContent))
 }
 
-func downloadsStreamHandler(dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store, recheckInterval ...time.Duration) http.HandlerFunc {
+func downloadsStreamHandler(dl *downloader.Manager, nzb *usenet.Manager, grabsStore *grabs.Store, libStore *library.Store, recheckInterval ...time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if dl == nil && nzb == nil {
 			http.Error(w, "the download engine isn't running", http.StatusServiceUnavailable)
@@ -428,7 +429,7 @@ func downloadsStreamHandler(dl *downloader.Manager, nzb *usenet.Manager, grabsSt
 			if adultHiddenNow(r) {
 				rows = filterAdultDownloads(ctx, grabsStore, rows)
 			}
-			enrichDownloadDetails(ctx, grabsStore, rows)
+			enrichDownloadDetails(ctx, grabsStore, libStore, rows)
 			return rows
 		}
 

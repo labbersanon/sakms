@@ -12839,3 +12839,20 @@ status stays active.
 | `internal/usenetsearch/namefix.go` | BODY skips sample files |
 | `internal/newznab/grabfilter.go` | token match, exact rank, 5MB dedup |
 | `docs/usenet-nntp-native.md` | sample-not-payload note |
+
+## 2026-10-22 — Series grab Activity/Downloads show SxxExx and episode title
+
+**Problem:** After Newznab episode grabs, Downloads and Activity showed only the show name (e.g. "Furious") with no season, episode number, or episode title.
+**Root cause:** `Grab.Title` is the show name; season/episode live in sibling fields. Activity rendered `g.title` only. Downloads listed the NZB `filename`, not `catalogTitle`.
+**Fix:** Format `Show SxxExx · Episode` from `seasonSpecified` plus `library_episodes.title`. Activity/History use that label. Downloads cards use `catalogTitle`. Specials are `S00Exx`. Empty library episode titles stay omitted (Furious S01E04–E06).
+**Outcome:** `TestCatalogTitleFromGrab`, `TestAttachEpisodeTitles`, `grabDisplayTitle` tests.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/grab_title.go` | format + library episode-title attach |
+| `internal/api/download_details.go` | catalogTitle includes S00 and episode name |
+| `internal/grabs/grabs.go` / `internal/apidto/dto.go` | `episodeTitle` on grab JSON (read-time) |
+| `frontend/src/screens/grabTitle.ts` | Activity/History label |
+| `frontend/src/screens/Activity.tsx` / `Downloads.tsx` / `calendar/History.tsx` | show formatted title |

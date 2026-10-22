@@ -28,6 +28,17 @@ func TestCatalogTitleFromGrab(t *testing.T) {
 	}); got != "Show S02" {
 		t.Fatalf("season title = %q", got)
 	}
+	if got := catalogTitleFromGrab(&grabs.Grab{
+		Title: "Show", SeasonSpecified: true, SeasonNumber: 0, EpisodeNumber: 3,
+	}); got != "Show S00E03" {
+		t.Fatalf("specials title = %q", got)
+	}
+	if got := catalogTitleFromGrab(&grabs.Grab{
+		Title: "Furious", SeasonSpecified: true, SeasonNumber: 1, EpisodeNumber: 1,
+		EpisodeTitle: "The Gorgon",
+	}); got != "Furious S01E01 · The Gorgon" {
+		t.Fatalf("named episode = %q", got)
+	}
 }
 
 func TestTriedReleasesFromGrab(t *testing.T) {

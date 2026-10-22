@@ -123,6 +123,27 @@ describe("Activity screen", () => {
     expect(card?.className).toContain("overflow-auto");
   });
 
+  it("shows season, episode, and episode title for a series grab", async () => {
+    stubGrabs({
+      series: [
+        grab({
+          id: 2,
+          mode: "series",
+          title: "Furious",
+          seasonSpecified: true,
+          seasonNumber: 1,
+          episodeNumber: 1,
+          episodeTitle: "The Gorgon",
+          createdAt: "2026-10-22T22:36:26.116Z",
+        }),
+      ],
+    });
+    render(() => <Activity />);
+    expect(
+      await screen.findByText("Furious S01E01 · The Gorgon"),
+    ).toBeInTheDocument();
+  });
+
   it("search matches title, status, and reason", async () => {
     stubGrabs({
       movies: [

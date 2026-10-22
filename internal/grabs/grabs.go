@@ -111,18 +111,24 @@ func ParseTime(s string) (time.Time, error) {
 // deliberately supplied (including a genuine Season 0), false means they
 // weren't and must not be trusted as real season/episode data.
 type Grab struct {
-	ID               int64     `json:"id"`
-	Mode             mode.Mode `json:"mode"`
-	Title            string    `json:"title"`
-	TMDBID           int       `json:"tmdbId,omitempty"`
-	TVDBID           int       `json:"tvdbId,omitempty"`
-	SeasonNumber     int       `json:"seasonNumber,omitempty"`
-	EpisodeNumber    int       `json:"episodeNumber,omitempty"`
-	SeasonSpecified  bool      `json:"seasonSpecified,omitempty"`
-	QualityProfileID int       `json:"qualityProfileId,omitempty"`
-	Indexer          string    `json:"indexer"`
-	Protocol         string    `json:"protocol"`
-	DownloadClient   string    `json:"downloadClient"`
+	ID              int64     `json:"id"`
+	Mode            mode.Mode `json:"mode"`
+	Title           string    `json:"title"`
+	TMDBID          int       `json:"tmdbId,omitempty"`
+	TVDBID          int       `json:"tvdbId,omitempty"`
+	SeasonNumber    int       `json:"seasonNumber,omitempty"`
+	EpisodeNumber   int       `json:"episodeNumber,omitempty"`
+	SeasonSpecified bool      `json:"seasonSpecified,omitempty"`
+	// Claude 2026-10-22: episode name is filled on read, not stored on grabs.
+	// Reason: Title is the show name; Activity/Downloads need SxxExx plus the
+	//   library episode title (Furious was showing the show name only).
+	// Troubleshooting: empty episodeTitle → library_episodes.title is blank or
+	//   the series is not in library_series. Review if: grabs persist it.
+	EpisodeTitle     string `json:"episodeTitle,omitempty"`
+	QualityProfileID int    `json:"qualityProfileId,omitempty"`
+	Indexer          string `json:"indexer"`
+	Protocol         string `json:"protocol"`
+	DownloadClient   string `json:"downloadClient"`
 	// ClientRef is the download client's own identifier for this
 	// download — qBittorrent's torrent hash, or NZBGet's NZBID (as a
 	// string) — used to poll that client for status.
@@ -646,7 +652,7 @@ func (s *Store) SetPendingRetryWithScope(ctx context.Context, id int64, after ti
 	return dbutil.CheckAffected(res, id, ErrNotFound)
 }
 
-// ClearNextSearchScope resets next_search_scope to '' on a pending_retry row.
+// ClearNextSearchScope resets next_search_scope to ” on a pending_retry row.
 // Called by the retry cycle and drain just before performing the next attempt,
 // so the one-shot escalation marker is consumed regardless of whether the
 // attempt dispatches or misses.
@@ -859,9 +865,9 @@ func (s *Store) RearmHeldRequest(ctx context.Context, id int64, until time.Time,
 // terminal or in-flight" from "not found at all."
 //
 // Clearing retry_after is what moves the row from the retry track to the release
-// track: DueForRetry requires retry_after != '' (its second guard), so a row
+// track: DueForRetry requires retry_after != ” (its second guard), so a row
 // with retry_after cleared is invisible to it; DueForRelease requires
-// retry_after = '' (its third guard), so the same row becomes visible to it.
+// retry_after = ” (its third guard), so the same row becomes visible to it.
 // SetHoldUntil does NOT clear retry_after, which is precisely the asymmetry
 // that makes this method necessary.
 func (s *Store) HoldForRelease(ctx context.Context, id int64, until time.Time, reason string) error {
@@ -955,7 +961,7 @@ func (s *Store) Relaunch(ctx context.Context, id int64, d Dispatch) error {
 // every real timestamp and would otherwise make every unparked row look due.
 //
 // A THIRD guard, added 2026-08-02 with the pre-release hold:
-// (hold_until = '' OR hold_until <= ?). A held Calendar pre-release request is
+// (hold_until = ” OR hold_until <= ?). A held Calendar pre-release request is
 // normally invisible here anyway, because it carries no retry_after — but that
 // is a property of who writes the row, not a structural guarantee, and it was
 // escapable: parkPendingRetry selects its target with FindPendingRetry, which
@@ -965,7 +971,7 @@ func (s *Store) Relaunch(ctx context.Context, id int64, d Dispatch) error {
 // dispatched — before its release date. This conjunct is defence-in-depth
 // against ANY writer of retry_after, present or future, not just that one path.
 //
-// It is deliberately an OR rather than hold_until = '': a PROMOTED row (its
+// It is deliberately an OR rather than hold_until = ”: a PROMOTED row (its
 // hold_until now in the past) must rejoin the ordinary retry track, since
 // hold_until is never cleared and is inert provenance from that point on.
 func (s *Store) DueForRetry(ctx context.Context, now time.Time) ([]Grab, error) {
@@ -1056,7 +1062,7 @@ func (s *Store) FindPendingRetry(ctx context.Context, m mode.Mode, tmdbID int, t
 // duplicate-detection bugs that the status-scoped FindPendingRetry has:
 //
 //   - A held row can never be confused with an unrelated live retry row.
-//     hold_until = '' on every non-held row, so they cannot match at all. There
+//     hold_until = ” on every non-held row, so they cannot match at all. There
 //     is no branch to get wrong and no discriminator to keep honest — which is
 //     the whole point of paying for a column rather than inferring origin from
 //     status + retry_reason + retry_count.
@@ -1106,14 +1112,14 @@ func (s *Store) FindHeldRequest(ctx context.Context, m mode.Mode, tmdbID int) (*
 //
 // FOUR guards, every one of them load-bearing:
 //
-//   - status = pending_retry and download_gid = '' mirror DueForRetry's
+//   - status = pending_retry and download_gid = ” mirror DueForRetry's
 //     reasoning exactly: a row that has dispatched holds a GID and has rejoined
 //     the normal ActiveByDownloadGID-guarded lifecycle, so returning it again
 //     would double-grab.
-//   - hold_until != '' excludes every ordinary row. Like retry_after, the column
+//   - hold_until != ” excludes every ordinary row. Like retry_after, the column
 //     defaults to the empty string, which sorts BELOW every real timestamp and
 //     would otherwise make the whole table look due.
-//   - retry_after = '' IS WHAT MAKES PROMOTION FIRE EXACTLY ONCE, and it is why
+//   - retry_after = ” IS WHAT MAKES PROMOTION FIRE EXACTLY ONCE, and it is why
 //     hold_until never needs clearing. After a promotion attempt the row carries
 //     either a real retry_after (parkPendingRetry on a no-match, reparkFailedRetry
 //     on an error) or a real GID (a successful dispatch), so it can never be
@@ -1239,7 +1245,7 @@ func (s *Store) ParkForShutdownResume(ctx context.Context, id int64, after time.
 
 // DueForResume returns every transport-parked grab whose retry_after has arrived.
 // It is the mirror of DueForRetry for transport-resume rows: it selects on
-// download_gid <> '' (transport parks keep the GID) rather than download_gid = ''
+// download_gid <> ” (transport parks keep the GID) rather than download_gid = ”
 // (normal retry parks clear it), making the two populations structurally disjoint.
 //
 // The hold_until guard mirrors DueForRetry — an operator hold still wins.

@@ -12,6 +12,7 @@ import (
 	"github.com/labbersanon/sakms/internal/apidto"
 	"github.com/labbersanon/sakms/internal/downloader"
 	"github.com/labbersanon/sakms/internal/grabs"
+	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/usenet"
 )
 
@@ -132,23 +133,6 @@ func torrentDetailsEmpty(d *apidto.TorrentDownloadDetails) bool {
 		d.BytesOnDisk == 0
 }
 
-func catalogTitleFromGrab(g *grabs.Grab) string {
-	if g == nil {
-		return ""
-	}
-	title := strings.TrimSpace(g.Title)
-	if title == "" {
-		return ""
-	}
-	if g.SeasonSpecified && g.SeasonNumber > 0 && g.EpisodeNumber > 0 {
-		return fmt.Sprintf("%s S%02dE%02d", title, g.SeasonNumber, g.EpisodeNumber)
-	}
-	if g.SeasonSpecified && g.SeasonNumber > 0 {
-		return fmt.Sprintf("%s S%02d", title, g.SeasonNumber)
-	}
-	return title
-}
-
 func triedReleasesFromGrab(g *grabs.Grab) []apidto.DownloadTriedRelease {
 	if g == nil {
 		return nil
@@ -165,14 +149,18 @@ func triedReleasesFromGrab(g *grabs.Grab) []apidto.DownloadTriedRelease {
 	return []apidto.DownloadTriedRelease{{Label: label, Reason: reason}}
 }
 
-func enrichDownloadDetails(ctx context.Context, grabsStore *grabs.Store, rows []apidto.Download) {
+func enrichDownloadDetails(ctx context.Context, grabsStore *grabs.Store, libStore *library.Store, rows []apidto.Download) {
 	if grabsStore == nil {
 		return
 	}
+	cache := newEpisodeTitleCache(libStore)
 	for i := range rows {
 		g, err := grabsStore.GetByDownloadGID(ctx, rows[i].GID)
 		if err != nil || g == nil {
 			continue
+		}
+		if g.SeasonSpecified && g.EpisodeNumber > 0 {
+			g.EpisodeTitle = cache.title(ctx, g.TMDBID, g.TVDBID, g.SeasonNumber, g.EpisodeNumber)
 		}
 		rows[i].CatalogTitle = catalogTitleFromGrab(g)
 		rows[i].Indexer = strings.TrimSpace(g.Indexer)

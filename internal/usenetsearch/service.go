@@ -1039,8 +1039,19 @@ func (s *Service) runRecompute(ctx context.Context) {
 	if idx == nil {
 		return
 	}
-	idx.dirtyIdentifiableNamed(ctx)
 	deadline := time.Now().Add(recomputeMaxDuration)
+	// Claude 2026-10-22: skip-stub never-recomputed scraps before per-key BP.
+	// Reason: 2.36M dirty pending were last_msg=0 1-header sets behind HIGH;
+	//   recomputeOne + SweepIncomplete drained ~700/20s with searchable=0.
+	// Troubleshooting: backlog still millions of last_msg=0 pending → this
+	//   sweep not running or HIGH/part_m filter too tight.
+	// Review if: dirty last_msg=0 pending is gone (then n=0 every loop).
+	if n, err := idx.sweepUncomputedIncompleteBounded(ctx, deadline); err != nil {
+		log.Printf("usenetsearch: uncomputed incomplete sweep: %v", err)
+	} else if n > 0 {
+		log.Printf("usenetsearch: uncomputed incomplete sweep removed=%d", n)
+	}
+	idx.dirtyIdentifiableNamed(ctx)
 	st, err := idx.recomputeDirtyBounded(ctx, recomputeBatch, deadline)
 	if err != nil {
 		log.Printf("usenetsearch: recompute: %v", err)

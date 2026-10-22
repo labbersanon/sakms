@@ -152,9 +152,12 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   tokens, and junk mega-buckets (`(Els1212)`, description-GB, single tokens)
   stay off search even at 100%. Dashboard **Identified** is binary-group
   (non-`pictures.*`) headers on those names, excluding `(????)` /
-  single-token poster IDs from the denominator. Below-80% named
+  single-token poster IDs from the denominator.   Below-80% named
   releases are reaped after HIGH has passed (`SweepIncomplete`);
-  `incomplete_ttl_days` is unused on that path.
+  never-recomputed scraps (`last_msg=0`) that cannot reach 80% from current
+  headers are skip-stubbed first (`SweepUncomputedIncomplete`) so they do
+  not occupy the per-key recompute budget. `incomplete_ttl_days` is unused
+  on that path.
 - **Gap repair.** OVER chunks record missing article numbers in
   `usenet_nntp_missed_ranges`; a bounded repair pass re-OVERs them (3 attempts
   with backoff, then the range is dropped). The forward watermark never waits

@@ -37,38 +37,58 @@ func (idx *Index) skipAndDelete(ctx context.Context, keys []releaseKey, reason s
 		return 0, err
 	}
 	defer tx.Rollback()
-	ins, err := tx.PrepareContext(ctx, `
-INSERT INTO usenet_nntp_skips (group_name, release_key, reason, first_msg, last_msg, skipped_at)
-SELECT group_name, release_key, ?, first_msg, last_msg, ?
-FROM usenet_nntp_releases WHERE group_name=? AND release_key=?
-ON CONFLICT (group_name, release_key) DO NOTHING`)
-	if err != nil {
-		return 0, err
-	}
-	defer ins.Close()
+	// Claude 2026-10-22: chunked IN-list instead of one statement per key.
+	// Reason: SweepUncomputedIncomplete skip-stubs thousands of 1-header
+	//   scraps per 20s; 4 statements × N keys held WALWrite.
+	// Troubleshooting: skip stub missing after a bulk sweep → IN tuples or
+	//   ON CONFLICT DO NOTHING on a pre-existing skip row.
+	// Review if: releases gain an ON DELETE CASCADE FK (then drop the
+	//   par_hashes / headers deletes).
 	var total int64
-	for _, k := range keys {
-		if _, err := ins.ExecContext(ctx, reason, now, k.group, k.key); err != nil {
+	for len(keys) > 0 {
+		n := len(keys)
+		if n > markDirtyChunk {
+			n = markDirtyChunk
+		}
+		chunk := keys[:n]
+		keys = keys[n:]
+		ph, args := releaseKeyTuples(chunk)
+		insArgs := append([]any{reason, now}, args...)
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO usenet_nntp_skips (group_name, release_key, reason, first_msg, last_msg, skipped_at)
+SELECT r.group_name, r.release_key, ?, r.first_msg, r.last_msg, ?
+FROM usenet_nntp_releases r
+WHERE (r.group_name, r.release_key) IN (`+ph+`)
+ON CONFLICT (group_name, release_key) DO NOTHING`, insArgs...); err != nil {
 			return 0, err
 		}
-		res, err := tx.ExecContext(ctx, `DELETE FROM usenet_nntp_headers WHERE group_name=? AND release_name=?`, k.group, k.key)
+		res, err := tx.ExecContext(ctx,
+			`DELETE FROM usenet_nntp_headers WHERE (group_name, release_name) IN (`+ph+`)`, args...)
 		if err != nil {
 			return 0, err
 		}
-		n, _ := res.RowsAffected()
-		total += n
-		// Claude 2026-10-20: drop hash_16K rows with the release.
-		// Reason: skip stubs must not leave donor hashes pointing at deleted keys.
-		// Troubleshooting: parhash lookup returns a missing release → this DELETE skipped.
-		// Review if: releases gain an ON DELETE CASCADE FK.
-		if _, err := tx.ExecContext(ctx, `DELETE FROM usenet_nntp_par_hashes WHERE group_name=? AND release_key=?`, k.group, k.key); err != nil {
+		deleted, _ := res.RowsAffected()
+		total += deleted
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM usenet_nntp_par_hashes WHERE (group_name, release_key) IN (`+ph+`)`, args...); err != nil {
 			return 0, err
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM usenet_nntp_releases WHERE group_name=? AND release_key=?`, k.group, k.key); err != nil {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM usenet_nntp_releases WHERE (group_name, release_key) IN (`+ph+`)`, args...); err != nil {
 			return 0, err
 		}
 	}
 	return total, tx.Commit()
+}
+
+func releaseKeyTuples(keys []releaseKey) (string, []any) {
+	ph := make([]string, len(keys))
+	args := make([]any, 0, len(keys)*2)
+	for i, k := range keys {
+		ph[i] = "(?,?)"
+		args = append(args, k.group, k.key)
+	}
+	return strings.Join(ph, ","), args
 }
 
 // DropSkipped removes header rows whose release key is already skipped.

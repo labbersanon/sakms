@@ -177,6 +177,102 @@ LIMIT ?`, spanRepairFloorBP, incompleteForwardMargin, incompleteSweepBatch)
 	return len(keys), nil
 }
 
+// uncomputedSweepBatch bounds never-recomputed scraps skip-stubbed per call.
+const uncomputedSweepBatch = 2000
+
+// SweepUncomputedIncomplete skip-stubs named/pending rows that never got a
+// recompute (last_msg=0) but already cannot reach 80% from current headers
+// and sit behind HIGH. SweepIncomplete needs last_msg>0, so these 1-article
+// scraps otherwise wait days in RecomputeDirty (searchable=0 every batch).
+//
+// Optimistic seen is header count vs MAX(part_m): overcount keeps the row
+// for recomputeOne (fileM / ident / per-file accounting). Undeclared or
+// implausible yEnc (part_m<=0 or >maxYencPartM) is BP=0 and is swept.
+// ≥80% optimistic, in-window, and overlapping repair ranges are kept.
+//
+// Claude 2026-10-22: drain last_msg=0 scraps without recomputeOne.
+// Reason: live dirty=2.36M was all pending_name declared_segs=0, 1 header,
+//
+//	part_m>20, HIGH+50k past; each 20s pass recomputed ~700 then swept them.
+//
+// Troubleshooting: completeness recompute searchable=0 backlog still millions
+//
+//	with last_msg=0 pending → this query's HIGH/part_m predicate or it is
+//	not called before recomputeDirtyBounded.
+//
+// Review if: dirty last_msg=0 pending is gone (then this is a cheap no-op).
+func (idx *Index) SweepUncomputedIncomplete(ctx context.Context, limit int) (int, error) {
+	if limit <= 0 {
+		limit = uncomputedSweepBatch
+	}
+	rows, err := idx.db.QueryContext(ctx, `
+SELECT r.group_name, r.release_key
+FROM usenet_nntp_releases r
+JOIN usenet_nntp_watermarks w ON w.group_name = r.group_name
+JOIN LATERAL (
+  SELECT COUNT(*)::bigint AS n,
+         COALESCE(MAX(h.msg_num), 0) AS last_msg,
+         COALESCE(MIN(h.msg_num) FILTER (WHERE h.msg_num > 0), 0) AS first_msg,
+         COALESCE(MAX(h.part_m), 0) AS part_m
+  FROM usenet_nntp_headers h
+  WHERE h.group_name = r.group_name AND h.release_name = r.release_key
+) h ON TRUE
+WHERE r.searchable = FALSE
+  AND r.state IN ('named', 'pending_name')
+  AND r.last_msg = 0
+  AND h.last_msg > 0
+  AND w.high > h.last_msg + ?
+  AND (
+    h.part_m <= 0 OR h.part_m > ?
+    OR (h.part_m > 0 AND h.n * 10000 < ?::bigint * h.part_m)
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM usenet_nntp_missed_ranges m
+    WHERE m.group_name = r.group_name AND m.lo <= h.last_msg + 200 AND m.hi >= h.first_msg - 200)
+LIMIT ?`, incompleteForwardMargin, maxYencPartM, spanRepairFloorBP, limit)
+	if err != nil {
+		return 0, err
+	}
+	var keys []releaseKey
+	for rows.Next() {
+		var k releaseKey
+		if err := rows.Scan(&k.group, &k.key); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		keys = append(keys, k)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if _, err := idx.skipAndDelete(ctx, keys, skipReasonIncomplete); err != nil {
+		return 0, err
+	}
+	return len(keys), nil
+}
+
+func (idx *Index) sweepUncomputedIncompleteBounded(ctx context.Context, deadline time.Time) (int, error) {
+	var removed int
+	for {
+		if err := ctx.Err(); err != nil {
+			return removed, err
+		}
+		if !deadline.IsZero() && time.Now().After(deadline) {
+			break
+		}
+		n, err := idx.SweepUncomputedIncomplete(ctx, uncomputedSweepBatch)
+		if err != nil {
+			return removed, err
+		}
+		removed += n
+		if n == 0 {
+			break
+		}
+	}
+	return removed, nil
+}
+
 // RecomputeStats is one RecomputeDirty pass's aggregate counters.
 type RecomputeStats struct {
 	Releases   int

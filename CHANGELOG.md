@@ -12724,3 +12724,20 @@ status stays active.
 |---|---|
 | `internal/usenetsearch/predb/store.go` | stem match is btree range, not LIKE |
 | `docs/usenet-nntp-native.md` | filename stem range note |
+
+## 2026-10-22 — Skip-stub never-recomputed scraps before per-key recompute
+
+**Problem:** Completeness recompute logged `searchable=0` with a ~2.36M dirty backlog. Namefix due-queue needs `dirty=FALSE`, and each 20s pass only cleared ~700 keys.
+**Root cause:** Every dirty row was `pending_name` with `last_msg=0` / `declared_segs=0` (never recomputed). A 5k sample was 1 header, `part_m>20`, and already 50k past HIGH. `recomputeOne` loaded headers then `SweepIncomplete` skip-stubbed them — but SweepIncomplete requires `last_msg>0`, so scraps waited on the per-key Go path.
+**Fix:** `SweepUncomputedIncomplete` skip-stubs `last_msg=0` named/pending that cannot reach 80% even if every header is a unique payload part (`COUNT(*)` vs `MAX(part_m)`), HIGH is past last article+50k, and no overlapping missed_ranges. ≥80% optimistic (including 1/1), in-window, and repair-overlapped rows stay for `recomputeOne`. Runs at the start of `runRecompute` inside the same 20s cap. `skipAndDelete` uses chunked IN-lists. Do not change BODY 90s / FileDesc targets / leftover park / filename range.
+**Outcome:** `TestSweepUncomputedIncomplete_*`. Live: `uncomputed incomplete sweep removed=` and dirty last_msg=0 pending falling; `searchable=` on remaining recompute batches can still be 0 until namefix renames.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/releases.go` | `SweepUncomputedIncomplete`; time-capped drain |
+| `internal/usenetsearch/skip.go` | chunked IN-list `skipAndDelete` |
+| `internal/usenetsearch/service.go` | sweep uncomputed scraps before `recomputeDirtyBounded` |
+| `internal/usenetsearch/releases_test.go` | 1-header scrap, 1/1 keep, in-window/repair, last_msg>0 handoff |
+| `docs/usenet-nntp-native.md` | uncomputed scrap sweep |

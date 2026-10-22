@@ -230,6 +230,149 @@ INSERT INTO usenet_nntp_watermarks (group_name, high) VALUES (?, ?)`, g, last+in
 	}
 }
 
+func TestSweepUncomputedIncomplete_OneHeaderBehindHigh(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	const g = "alt.binaries.movies"
+	const key = "obf:aaaaaaaaaaaaaaaa"
+	if err := idx.Upsert(ctx, fileRows(g, key, "a.rar", "h", 100, 100, 1, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `
+INSERT INTO usenet_nntp_watermarks (group_name, high) VALUES (?, ?)`, g, 101+incompleteForwardMargin+1); err != nil {
+		t.Fatal(err)
+	}
+	n, err := idx.SweepUncomputedIncomplete(ctx, 10)
+	if err != nil || n != 1 {
+		t.Fatalf("swept %d err=%v, want 1 never-recomputed 1/100 scrap", n, err)
+	}
+	var rel, skips int
+	_ = sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM usenet_nntp_releases WHERE release_key=?`, key).Scan(&rel)
+	_ = sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM usenet_nntp_skips WHERE release_key=? AND reason='incomplete'`, key).Scan(&skips)
+	if rel != 0 || skips != 1 {
+		t.Fatalf("releases=%d skips=%d, want 0/1", rel, skips)
+	}
+	replay := fileRows(g, key, "a.rar", "h", 100, 100, 1, 0)
+	kept, dropped, err := idx.DropSkipped(ctx, g, replay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dropped != len(replay) || len(kept) != 0 {
+		t.Fatalf("DropSkipped kept=%d dropped=%d, want 0/%d", len(kept), dropped, len(replay))
+	}
+}
+
+func TestSweepUncomputedIncomplete_KeepsCompleteOneHeader(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	const g = "alt.binaries.movies"
+	const key = "obf:bbbbbbbbbbbbbbbb"
+	if err := idx.Upsert(ctx, fileRows(g, key, "a.rar", "c", 100, 1, 1, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `
+INSERT INTO usenet_nntp_watermarks (group_name, high) VALUES (?, 999999)`, g); err != nil {
+		t.Fatal(err)
+	}
+	n, err := idx.SweepUncomputedIncomplete(ctx, 10)
+	if err != nil || n != 0 {
+		t.Fatalf("swept %d err=%v, want 0 (1/1 pending stays for recompute/namefix)", n, err)
+	}
+}
+
+func TestSweepUncomputedIncomplete_KeepsInWindowAndRepair(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	const g = "alt.binaries.movies"
+	const inWindow = "obf:cccccccccccccccc"
+	const repairing = "obf:dddddddddddddddd"
+	if err := idx.Upsert(ctx, append(
+		fileRows(g, inWindow, "a.rar", "w", 100, 100, 1, 0),
+		fileRows(g, repairing, "b.rar", "r", 500, 100, 1, 0)...,
+	)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `
+INSERT INTO usenet_nntp_watermarks (group_name, high) VALUES (?, ?)`, g, 101+incompleteForwardMargin-1); err != nil {
+		t.Fatal(err)
+	}
+	n, err := idx.SweepUncomputedIncomplete(ctx, 10)
+	if err != nil || n != 0 {
+		t.Fatalf("in-window swept %d err=%v, want 0", n, err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `
+UPDATE usenet_nntp_watermarks SET high=? WHERE group_name=?`, 501+incompleteForwardMargin+1, g); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqlDB.ExecContext(ctx, `
+INSERT INTO usenet_nntp_missed_ranges (group_name, lo, hi, reason) VALUES (?, 490, 520, 'span')`, g); err != nil {
+		t.Fatal(err)
+	}
+	n, err = idx.SweepUncomputedIncomplete(ctx, 10)
+	if err != nil || n != 1 {
+		t.Fatalf("swept %d err=%v, want 1 (behind-HIGH scrap; repairing overlap kept)", n, err)
+	}
+	var left string
+	if err := sqlDB.QueryRowContext(ctx, `SELECT release_key FROM usenet_nntp_releases WHERE group_name=?`, g).Scan(&left); err != nil {
+		t.Fatal(err)
+	}
+	if left != repairing {
+		t.Fatalf("left=%s, want %s (missed_ranges overlap)", left, repairing)
+	}
+}
+
+func TestSweepUncomputedIncomplete_LeavesRecomputedToSweepIncomplete(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	const g = "alt.binaries.movies"
+	const key = "obf:eeeeeeeeeeeeeeee"
+	if err := idx.Upsert(ctx, fileRows(g, key, "a.rar", "e", 100, 100, 10, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.RecomputeDirty(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	var last int
+	if err := sqlDB.QueryRowContext(ctx, `SELECT last_msg FROM usenet_nntp_releases WHERE release_key=?`, key).Scan(&last); err != nil {
+		t.Fatal(err)
+	}
+	if last == 0 {
+		t.Fatal("recompute must set last_msg")
+	}
+	if _, err := sqlDB.ExecContext(ctx, `
+INSERT INTO usenet_nntp_watermarks (group_name, high) VALUES (?, ?)`, g, last+incompleteForwardMargin+1); err != nil {
+		t.Fatal(err)
+	}
+	n, err := idx.SweepUncomputedIncomplete(ctx, 10)
+	if err != nil || n != 0 {
+		t.Fatalf("uncomputed sweep %d err=%v, want 0 (last_msg>0 is SweepIncomplete)", n, err)
+	}
+	n, err = idx.SweepIncomplete(ctx, time.Hour)
+	if err != nil || n != 1 {
+		t.Fatalf("SweepIncomplete %d err=%v, want 1", n, err)
+	}
+}
+
 func TestRecomputeOne_YencCountedOncePerFile(t *testing.T) {
 	sqlDB := dbtest.New(t)
 	idx, err := OpenIndex(sqlDB)

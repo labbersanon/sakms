@@ -1816,6 +1816,15 @@ func TestNameFix_SkipBodyStillHitsPreDB(t *testing.T) {
 }
 
 func TestNameFix_PreDBOnlyBeforeSlowBODY(t *testing.T) {
+	// Claude 2026-10-22: same-pass dump/IRC rename after overtime BODY.
+	// Reason: Run() is header → BODY → parhash → preOnly (2026-10-21).
+	//   50ms vs 200ms used to mean "PreDB first or a shared 50ms is gone."
+	//   Per-phase budgets still start preOnly after BODY; lookup+promote on
+	//   the phase ctx flaked under go test -p 4 (HashHits=1 Renamed=0
+	//   leftover=1). Persist the hash hit on work ctx instead of reordering.
+	// Troubleshooting: boneless unnamed while bodyCalls has mvpar2 →
+	//   lookupPreDB/promote still on phase ctx. Review if: PassBudget is
+	//   no longer per-phase.
 	const title = "Boneless.Hit.2022.1080p.WEB-DL.x264-GRP"
 	sum := md5.Sum([]byte(title))
 	h := hex.EncodeToString(sum[:])
@@ -1838,8 +1847,8 @@ func TestNameFix_PreDBOnlyBeforeSlowBODY(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.HashHits != 1 || res.Renamed != 1 {
-		t.Fatalf("PreDB-only must run before slow BODY: %+v bodyCalls=%v", res, f.src.bodyCalls)
+	if res.HashHits != 1 || res.Renamed != 1 || len(f.src.bodyCalls) == 0 {
+		t.Fatalf("PreDB-only must finish after overtime BODY: %+v bodyCalls=%v", res, f.src.bodyCalls)
 	}
 	var display, src string
 	if err := f.idx.db.QueryRow(`SELECT display_name, name_source FROM usenet_nntp_releases WHERE release_key=?`, boKey).Scan(&display, &src); err != nil {

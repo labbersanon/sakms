@@ -12575,3 +12575,17 @@ status stays active.
 |---|---|
 | `internal/api/import_quality.go` | keep honest below-floor; stamp stopgap origin |
 | `internal/api/import_quality_test.go` | Furious-shaped keep; live-action 480p is stopgap |
+
+## 2026-10-22 — Persist dump/IRC namefix hits after overtime BODY
+
+**Problem:** `ci-local` `go test -p 4` flaked `TestNameFix_PreDBOnlyBeforeSlowBODY` (`HashHits=1 Renamed=0 leftover=1` at `phase=predb`). Isolation retry passed.
+**Root cause:** Run() is header → BODY → parhash → preOnly, each with its own PassBudget. BODY already promotes on `WithoutCancel`. Dump/IRC `lookupPreDB`+`promote` still used the 50ms phase ctx, so a local hash hit died in `RenameRelease`. A 50ms stall before the first preOnly `fixSet` also logged leftover=1 at i=0.
+**Fix:** Hoist `work := context.WithoutCancel(ctx)` for setRows, hash-hit lookup+promote, and PreDB-only retry. Always start the first set of a phase. `accept()` stays on the phase ctx so HTTP can still die. Do not put unbounded preOnly before BODY (2026-10-21 leftover-predb=197).
+**Outcome:** `TestNameFix_PreDBOnlyBeforeSlowBODY` ×10 under `-p 4`. Boneless still renamed in the same pass as overtime BODY.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix.go` | hash-hit persist on work ctx; first set of a phase always starts |
+| `internal/usenetsearch/namefix_test.go` | same-pass after overtime BODY; require bodyCalls |

@@ -286,7 +286,15 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 			return nil
 		}
 		for i, set := range in {
-			if phaseCtx.Err() != nil {
+			// Claude 2026-10-22: always start the first set of a phase.
+			// Reason: CI leftover=1 at i=0 when 50ms elapsed between
+			//   WithTimeout and this check under go test -p 4. BODY already
+			//   overruns via WithoutCancel; dump/IRC PreDB-only never entered
+			//   fixSet so HashHits stayed 0 or a hit died on crumbs.
+			// Troubleshooting: namefix deadline phase=predb leftover=N at
+			//   the start of a non-empty queue → this i==0 skip restored.
+			// Review if: PassBudget is no longer per-phase.
+			if i > 0 && phaseCtx.Err() != nil {
 				return deadline(i)
 			}
 			if done[keyOf(set)] {
@@ -373,7 +381,8 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 	// Troubleshooting: namefix deadline leftover with no crc log on a due
 	//   rar set → this WithoutCancel missing. Review if: setRows grows past
 	//   a few hundred ms (then cap it, still fetch part01).
-	rows, err := n.Index.setRows(context.WithoutCancel(ctx), set.Group, set.Key, limit)
+	work := context.WithoutCancel(ctx)
+	rows, err := n.Index.setRows(work, set.Group, set.Key, limit)
 	if err != nil {
 		return false, err
 	}
@@ -389,9 +398,18 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 			return n.promote(ctx, set, rows, name, source, conf, predb, res, statBudget)
 		}
 	}
-	if hit, ok := n.lookupPreDB(ctx, set, rows); ok {
+	// Claude 2026-10-22: dump/IRC hash hits persist after leftover phase crumbs.
+	// Reason: TestNameFix_PreDBOnlyBeforeSlowBODY flaked HashHits=1 Renamed=0
+	//   leftover=1 under go test -p 4. BODY already promotes on `work`;
+	//   lookupPreDB+promote still used the 50ms/20s phase ctx, so a local
+	//   hash hit died in RenameRelease. Live next_name_at stayed due, but
+	//   CI 50ms vs 200ms BODY overtime missed the rename in-pass.
+	// Troubleshooting: namefix deadline phase=predb leftover=1 hash_hits>0
+	//   renamed=0 → this still on phase ctx. Review if: ByName HTTP should
+	//   also ignore crumbs (accept() stays on ctx so HTTP can still die).
+	if hit, ok := n.lookupPreDB(work, set, rows); ok {
 		res.HashHits++
-		return n.promote(ctx, set, rows, hit.Title, sourcePreDB, confPreDB, "hit", res, statBudget)
+		return n.promote(work, set, rows, hit.Title, sourcePreDB, confPreDB, "hit", res, statBudget)
 	}
 	// Claude 2026-10-21: password packs never BODY; PreDB miss shelves them.
 	// Reason: live skip_7z still charged 7z Tail on attempts=0 and ranked
@@ -405,7 +423,7 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		return false, n.Index.ScheduleNameRetry(ctx, set.Group, set.Key, exhaustedPreDBRetry)
 	}
 	if set.PreDBOnly {
-		return false, n.Index.ScheduleNameRetry(ctx, set.Group, set.Key, exhaustedPreDBRetry)
+		return false, n.Index.ScheduleNameRetry(work, set.Group, set.Key, exhaustedPreDBRetry)
 	}
 
 	if set.PayloadBytes < namefixMinPayload && !set.HasPar2 {
@@ -422,7 +440,6 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 	pat := detectNamePattern(rows)
 	ngPost := looksLikeNgPost(rows)
 	skip7z := ngPost && pat.Pack == "7z-split" && set.Attempts > 0
-	work := context.WithoutCancel(ctx)
 	var nzbHit NZBPasswordHit
 	var nzbGot bool
 	log.Printf("usenetsearch: namefix pattern obf=%s pack=%s files=%s ngpost=%t skip_7z=%t",

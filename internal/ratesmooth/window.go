@@ -12,7 +12,8 @@ import "time"
 // Review if: ETA becomes sluggish to real speed changes and needs a shorter span.
 
 // DefaultWindow is the wall-clock span used for DownloadSpeed (stability-first
-// for Usenet/NNTP burstiness; client EMA still tracks slower drifts).
+// for Usenet/NNTP burstiness; the Downloads client holds remaining until the
+// next leftover / ~60s-average calculation).
 const DefaultWindow = 60 * time.Second
 
 // Sample is one (time, completed-bytes) point.

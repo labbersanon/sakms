@@ -12545,3 +12545,19 @@ status stays active.
 |---|---|
 | `scripts/ci-local.sh` | `--shm-size=1g`; recreate if ShmSize < 256MiB |
 | `internal/dbtest/dbtest.go` | skip-message docker one-liner matches |
+
+## 2026-10-21 — Download remaining uses a 60s average and holds between calcs
+
+**Problem:** Downloads remaining ticked every second from wall-clock interpolation, then jumped when the next SSE sample arrived. The client also EMAd 400ms byte-deltas on top of the engine's 60s ratesmooth window.
+**Root cause:** `resolveEtaView` subtracted `(now - lastGoodAt)` on the 1s elapsed tick. `feedBps` mixed short deltas with α=0.10 and `clampEtaJump` pulled new estimates toward that fake countdown.
+**Fix:** Remaining is leftover / ~60s average: engine `DownloadSpeed` when it is already ratesmooth, otherwise a client `RATE_WINDOW_MS` completedLength window (same shape as `ratesmooth.Window`). Display holds `lastGoodEtaSec` until that calculation runs again. Elapsed still ticks. Freeze/dash on stall is unchanged.
+**Outcome:** `pnpm typecheck`. `vitest` `downloadEta.test.ts` + `Downloads.test.tsx` (60 passed). Remaining no longer counts down between samples.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/downloadEta.ts` | 60s window; hold remaining; drop EMA/clamp |
+| `frontend/src/screens/downloadEta.test.ts` | hold-until-calc; rolling 60s rate |
+| `frontend/src/screens/Downloads.tsx` | remaining comment: 60s average, not EMA tick |
+| `internal/ratesmooth/window.go` | comment: client holds leftover / 60s avg |

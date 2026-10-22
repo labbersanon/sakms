@@ -493,10 +493,12 @@ const DownloadRow: Component<{
         <span>
           {formatSize(props.dl.completedLength)} / {formatSize(props.dl.totalLength)}
         </span>
-        {/* Claude 2026-09-21: lifecycle ETA countdown + overall elapsed.
-            Reason: remaining time is download-speed EMA + Usenet repair/unpack
-              priors (B+C); phase-elapsed beside NN% was not a remaining estimate.
-            Troubleshooting: Downloads showed speed or NN% with no time left.
+        {/* Claude 2026-10-21: lifecycle ETA remaining + overall elapsed.
+            Reason: remaining is leftover / ~60s average (engine ratesmooth or
+              client byte window), held until the next calc; elapsed still ticks.
+              Phase-elapsed beside NN% was not a remaining estimate.
+            Troubleshooting: Downloads showed speed or NN% with no time left, or
+              a 1s countdown that jumped on the next SSE.
             Review if: the engine emits remaining-time estimates of its own. */}
         <Show when={isActive()}>
           <Show

@@ -12800,3 +12800,23 @@ status stays active.
 | `internal/usenetsearch/predb/dump.go` | `VACUUM ANALYZE` after dump upserts |
 | `internal/usenetsearch/predb/predb_test.go` | re-import leaves `n_dead_tup=0` |
 | `docs/usenet-nntp-native.md` | dump VACUUM ANALYZE note |
+
+## 2026-10-22 — PreDB autovacuum scale 0.02 + daily 05:15 SKIP_LOCKED vacuum
+
+**Problem:** Autovacuum defaults wait for ~1.44M dead rows. Dump import vacuums, but IRC `ON CONFLICT` between dumps and pg_stat resets on sakms-db restart do not.
+**Root cause:** `vacuum_scale_factor=0.2` on a 7M-row table. Time-based vacuum is not built into Postgres. Default parallel VACUUM hits SQLSTATE 53100 on 64MiB shm.
+**Fix:** Migration 0051 sets per-table autovacuum (vacuum 0.02/1000, analyze 0.02/5000, insert 0.05/1000). Daily 05:15 America/New_York `VACUUM (SKIP_LOCKED, PARALLEL 0, ANALYZE)` with `statement_timeout=0` on the same connection. Dump import vacuum stays blocking (no SKIP_LOCKED). No VACUUM FULL, no global autovacuum, no shm change.
+**Outcome:** `TestStore_PreDBAutovacuumReloptions`, `TestNextPreDBVacuum`. Live: reloptions on `usenet_nntp_predb` and `predb vacuum next=` at boot.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/db/migrations/0051_usenet_nntp_predb_autovacuum.sql` | per-table autovacuum storage params |
+| `internal/usenetsearch/predb/store.go` | `VacuumAnalyze` helper |
+| `internal/usenetsearch/predb/dump.go` | dump import uses helper (blocking) |
+| `internal/api/usenetnntp_predb.go` | daily 05:15 SKIP_LOCKED loop |
+| `internal/api/usenetnntp_predb_vacuum_test.go` | next-run clock |
+| `internal/api/usenetnntp_gapfill_test.go` | cancel StartNNTPPreDB so vacuumLoop exits |
+| `internal/usenetsearch/predb/predb_test.go` | reloptions 0.02/1000; VacuumAnalyze skip_locked |
+| `docs/usenet-nntp-native.md` | autovacuum + daily vacuum note |

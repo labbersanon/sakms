@@ -182,6 +182,36 @@ func (s *Store) ByFilename(ctx context.Context, filename string) (Entry, bool, e
 	return scanEntry(s.db.QueryRowContext(ctx, byFilenameStem, stem+".", stem+"/", SourceMiss))
 }
 
+// VacuumAnalyze reclaims dead rows and refreshes planner stats.
+// skipLocked is for the daily timer so it does not queue behind dump import.
+// Dump import calls this with skipLocked=false.
+//
+// Claude 2026-10-22: PARALLEL 0 + statement_timeout=0 on the same Conn.
+// Reason: default parallel VACUUM needs ~64MB DSM (SQLSTATE 53100 on
+//
+//	sakms-db 64MiB shm). A 15min timeout cancelled PARALLEL 0 on
+//	idx_usenet_nntp_predb_filename. SET must share the connection or the
+//	pool ignores it. Do not VACUUM FULL. Review if: compose shm is raised.
+func (s *Store) VacuumAnalyze(ctx context.Context, skipLocked bool) error {
+	if s == nil || s.db == nil {
+		return errors.New("predb: store not configured")
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `SET statement_timeout = 0`); err != nil {
+		return err
+	}
+	q := `VACUUM (PARALLEL 0, ANALYZE) usenet_nntp_predb`
+	if skipLocked {
+		q = `VACUUM (SKIP_LOCKED, PARALLEL 0, ANALYZE) usenet_nntp_predb`
+	}
+	_, err = conn.ExecContext(ctx, q)
+	return err
+}
+
 // RecentMiss reports whether title has a cached negative lookup newer than ttl.
 func (s *Store) RecentMiss(ctx context.Context, title string, ttl time.Duration) (bool, error) {
 	var fetched int64

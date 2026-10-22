@@ -594,6 +594,38 @@ func TestImportDump_NZEdbQuotedMySQLExport(t *testing.T) {
 	}
 }
 
+func TestStore_VacuumAnalyze(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	if err := s.VacuumAnalyze(ctx, false); err != nil {
+		t.Fatalf("blocking: %v", err)
+	}
+	if err := s.VacuumAnalyze(ctx, true); err != nil {
+		t.Fatalf("skip_locked: %v", err)
+	}
+}
+
+func TestStore_PreDBAutovacuumReloptions(t *testing.T) {
+	s := newStore(t)
+	var opts string
+	err := s.db.QueryRow(`SELECT coalesce(array_to_string(reloptions, ','), '') FROM pg_class WHERE relname='usenet_nntp_predb'`).Scan(&opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"autovacuum_vacuum_scale_factor=0.02",
+		"autovacuum_vacuum_threshold=1000",
+		"autovacuum_analyze_scale_factor=0.02",
+		"autovacuum_analyze_threshold=5000",
+		"autovacuum_vacuum_insert_scale_factor=0.05",
+		"autovacuum_vacuum_insert_threshold=1000",
+	} {
+		if !strings.Contains(opts, want) {
+			t.Fatalf("reloptions=%q missing %s", opts, want)
+		}
+	}
+}
+
 func TestImportDump_VacuumAnalyzesTable(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()

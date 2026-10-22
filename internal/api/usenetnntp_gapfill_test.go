@@ -167,7 +167,9 @@ func TestNNTPPreDB_IRCPasswordStoredEncryptedNeverReturned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rt := StartNNTPPreDB(context.Background(), sqlDB, store, sec, usenetsearch.NewService(nil, sqlDB))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	rt := StartNNTPPreDB(ctx, sqlDB, store, sec, usenetsearch.NewService(nil, sqlDB))
 	SetNNTPPreDB(rt)
 	t.Cleanup(func() { SetNNTPPreDB(nil) })
 

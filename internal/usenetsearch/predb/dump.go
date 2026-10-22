@@ -231,7 +231,7 @@ func (s *Store) ImportDump(ctx context.Context, r io.Reader) (DumpStats, error) 
 	//   57014 statement timeout mid-index → dump ctx must not cap at 15min.
 	// Review if: sakms-db compose shm is raised above 64MiB.
 	if stats.Upserted > 0 {
-		if _, err := s.db.ExecContext(ctx, `VACUUM (PARALLEL 0, ANALYZE) usenet_nntp_predb`); err != nil {
+		if err := s.VacuumAnalyze(ctx, false); err != nil {
 			return stats, err
 		}
 	}

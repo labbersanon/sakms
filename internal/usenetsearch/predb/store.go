@@ -103,16 +103,18 @@ func (s *Store) SetNuked(ctx context.Context, title string, nuked bool) error {
 
 const selectEntry = `SELECT title, size_bytes, files, filename, category, pre_at, nuked, request_id, group_name FROM usenet_nntp_predb`
 
-// Claude 2026-10-22: filename <> ” is required for idx_usenet_nntp_predb_filename.
-// Reason: that index is partial (WHERE filename <> ”). Postgres does not infer
-//
-//	the predicate from lower(filename)= or a stem range, so the planner
-//	seq-scanned 6.9M rows (~3s) per FileDesc lookup. Live EXPLAIN with this
-//	clause is Index Scan (~0.05–55ms). Range not LIKE: default btree cannot
-//	serve LIKE (needs text_pattern_ops). Do not CREATE INDEX CONCURRENTLY
-//	on deploy (lock). Review if: a text_pattern_ops index is added off-hours.
-const byFilenameExact = selectEntry + ` WHERE filename <> '' AND lower(filename)=? AND source<>? LIMIT 1`
-const byFilenameStem = selectEntry + ` WHERE filename <> '' AND lower(filename) >= ? AND lower(filename) < ? AND source<>? LIMIT 1`
+const (
+	// Claude 2026-10-22: non-empty filename is required for idx_usenet_nntp_predb_filename.
+	// Reason: that index is partial (filename not empty). Postgres does not infer
+	//   the predicate from lower(filename)= or a stem range. Range not LIKE:
+	//   default btree cannot serve LIKE (needs text_pattern_ops). Do not CREATE
+	//   INDEX CONCURRENTLY on deploy (lock).
+	// Troubleshooting: FileDesc ByFilename seq-scanned 6.9M rows (~3s). Live
+	//   EXPLAIN with this clause is Index Scan (~0.05-55ms).
+	// Review if: a text_pattern_ops index is added off-hours.
+	byFilenameExact = selectEntry + ` WHERE filename <> '' AND lower(filename)=? AND source<>? LIMIT 1`
+	byFilenameStem  = selectEntry + ` WHERE filename <> '' AND lower(filename) >= ? AND lower(filename) < ? AND source<>? LIMIT 1`
+)
 
 func scanEntry(row *sql.Row) (Entry, bool, error) {
 	var e Entry

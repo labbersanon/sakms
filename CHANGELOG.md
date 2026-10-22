@@ -12589,3 +12589,19 @@ status stays active.
 |---|---|
 | `internal/usenetsearch/namefix.go` | hash-hit persist on work ctx; first set of a phase always starts |
 | `internal/usenetsearch/namefix_test.go` | same-pass after overtime BODY; require bodyCalls |
+
+## 2026-10-22 — Import quality check does not apply FileFlows padding
+
+**Problem:** After download, import re-graded Furious S01E04 DoVi 5.1 WEB-DLs at 26.24 vs floor 27.50 and deleted them (`below quality floor`).
+**Root cause:** `refuseImportBelowFloor` used grab-time `GradeCandidate`, including the 25% non-AV1 FileFlows pick margin, plus probed HDR and 5.1 premiums (Medium@2160 × 1.25 × 1.10 = 27.50). Unpadded x264-equivalent was 32.8 and already cleared that floor.
+**Fix:** Import grades with `GradeImportedFile` (unpadded). Search/auto-grab still pads. Honest below-floor stays a stopgap. Mislabeled bait and min/max resolution still reject.
+**Outcome:** `TestGradeImportedFileSkipsNonAV1Padding`. `TestRefuseImportBelowFloor_HDR51ClearsUnpaddedFloor`. Elite-sized bait still rejects.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/autograb/autograb.go` | `GradeImportedFile` skips non-AV1 padding |
+| `internal/autograb/autograb_test.go` | import 11 Mbps High/1080 qualifies; grab still misses |
+| `internal/api/import_quality.go` | import and stamp use `GradeImportedFile` |
+| `internal/api/import_quality_test.go` | Furious HDR 5.1 WEB-DL kept as qualified |

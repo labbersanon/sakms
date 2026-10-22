@@ -70,7 +70,14 @@ func refuseImportBelowFloor(ctx context.Context, libStore *library.Store, settin
 		return fmt.Errorf("%w: %w", usenet.ErrContentUnusable, autograb.ErrBelowQualityFloor)
 	}
 	floor := autograb.FloorForResolution(floors, c)
-	gr := autograb.GradeCandidate(c, floor, 0)
+	// Claude 2026-10-22: import grades the file without FileFlows padding.
+	// Reason: Furious DoVi 5.1 WEB-DL was deleted at 26.24 vs 27.50 after
+	//   the 25% non-AV1 pick margin plus HDR/5.1 premiums. Unpadded 32.8
+	//   clears that floor. Mislabeled bait and min/max resolution stay.
+	// Troubleshooting: journal "import: below quality floor" on a just-
+	//   finished HDR 5.1 encode → GradeImportedFile not used. Review if:
+	//   FileFlows AV1 re-encode is dropped.
+	gr := autograb.GradeImportedFile(c, floor)
 	if !gr.BitrateKnown {
 		return nil
 	}
@@ -115,21 +122,13 @@ func searchPickLibraryTier(ctx context.Context, libStore *library.Store, setting
 	}
 	floors := resolveAutoGrabFloorsForTitle(ctx, libStore, settingsStore, g.Mode, g.TMDBID)
 	floor := autograb.FloorForResolution(floors, c)
-	// Claude 2026-10-18: grade the file, not the swarm.
-	// Reason: import candidates have Seeders 0. GradeCandidate then returns
-	//   low-seeders before the bitrate check, and every torrent Search pick
-	//   stamped Low.
-	// Troubleshooting: a grabbed remux's library tier is "low".
-	// Review if: Candidate gains a probed-bitrate grade that ignores protocol.
-	graded := c
-	graded.Protocol = ""
-	gr := autograb.GradeCandidate(graded, floor, 0)
+	gr := autograb.GradeImportedFile(c, floor)
 	if !gr.BitrateKnown || gr.Qualified {
 		return fallback
 	}
 	met := quality.Low
 	for i := len(quality.AllTiers) - 1; i >= 0; i-- {
-		if autograb.GradeCandidate(graded, quality.AllTiers[i], 0).Qualified {
+		if autograb.GradeImportedFile(c, quality.AllTiers[i]).Qualified {
 			met = quality.AllTiers[i]
 			break
 		}

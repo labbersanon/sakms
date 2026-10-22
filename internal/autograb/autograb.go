@@ -36,8 +36,9 @@ import (
 
 // ErrBelowQualityFloor is a downloaded file whose implied bitrate does not
 // clear the title's quality-tier floor. Import wraps this with
-// usenet.ErrContentUnusable so the alternate-NZB park fires; pre-grab Select
-// never returns it (below-floor is StatusBelowFloor, not an error).
+// usenet.ErrContentUnusable for mislabeled bait and min/max resolution;
+// honest below-floor files are kept as a stopgap. Pre-grab Select never
+// returns it as an error (below-floor is StatusBelowFloor).
 var ErrBelowQualityFloor = errors.New("video is below the title quality floor")
 
 // Tunable defaults. These are the plan's proposed starting points, explicitly
@@ -302,7 +303,7 @@ type Grade struct {
 	BitrateKnown  bool
 	ImpliedMbps   float64 // Size×8/runtime, raw; 0 if unknown
 	X264EquivMbps float64 // implied normalized to x264-equivalent; 0 if unknown
-	Score         float64 // X264EquivMbps after non-AV1 padding; the ranking key
+	Score         float64 // X264EquivMbps; search pads non-AV1 25%, import does not
 	FloorMbps     float64 // the tier×resolution floor applied; 0 if resolution unknown
 	Status        Status
 	Qualified     bool
@@ -338,11 +339,32 @@ func codecMultiplier(codec string) float64 {
 
 func isAV1(codec string) bool { return strings.EqualFold(codec, "av1") }
 
-// GradeCandidate evaluates one candidate against tier's floor. minSeeders <= 0
-// falls back to DefaultMinSeeders. Resolution is snapped onto a floorTable
-// rung first (540/576/dvdrip → 480) so SD encodes are graded, not parked as
+// GradeCandidate evaluates one search result against tier's floor. minSeeders
+// <= 0 falls back to DefaultMinSeeders. Non-AV1 scores are padded for
+// FileFlows re-encode headroom. Resolution is snapped onto a floorTable rung
+// first (540/576/dvdrip → 480) so SD encodes are graded, not parked as
 // StatusUnknownResolution.
 func GradeCandidate(c Candidate, tier quality.Tier, minSeeders int) Grade {
+	return gradeCandidate(c, tier, minSeeders, true)
+}
+
+// GradeImportedFile grades an on-disk video after download. Same floors,
+// HDR/channel premiums, and mislabel line as GradeCandidate, but the 25%
+// non-AV1 padding is a pre-grab pick margin — applying it again at import
+// deleted honest WEB-DLs that already met the real floor.
+//
+// Claude 2026-10-22: import grades unpadded x264-equivalent.
+// Reason: Furious S01E04 DoVi 5.1 WEB-DL scored 26.24 vs floor 27.50
+//   (Medium@2160 × HDR × 5.1) after NonAV1PaddingFactor and was deleted.
+//   Unpadded x264-eq is 32.8, which clears 27.50. Padding stays on search.
+// Troubleshooting: journal "import: below quality floor" status=below-floor
+//   on a just-finished HDR 5.1 encode → this still padded. Review if:
+//   FileFlows AV1 re-encode is dropped (then padding can leave import too).
+func GradeImportedFile(c Candidate, tier quality.Tier) Grade {
+	return gradeCandidate(c, tier, 0, false)
+}
+
+func gradeCandidate(c Candidate, tier quality.Tier, minSeeders int, padNonAV1 bool) Grade {
 	if minSeeders <= 0 {
 		minSeeders = DefaultMinSeeders
 	}
@@ -365,7 +387,7 @@ func GradeCandidate(c Candidate, tier quality.Tier, minSeeders int) Grade {
 	// 25% padding for non-AV1 (dividing the value by 1.25 is equivalent to
 	// requiring it clear the floor by that margin); AV1 graded at face value.
 	g.Score = g.X264EquivMbps
-	if !isAV1(c.Codec) {
+	if padNonAV1 && !isAV1(c.Codec) {
 		g.Score = g.X264EquivMbps / NonAV1PaddingFactor
 	}
 
@@ -384,8 +406,8 @@ func GradeCandidate(c Candidate, tier quality.Tier, minSeeders int) Grade {
 		return g
 	}
 
-	// Minimum seeder/health floor (torrents only).
-	if c.Protocol == "torrent" && c.Seeders < minSeeders {
+	// Minimum seeder/health floor (torrents only). Import has no seeders.
+	if padNonAV1 && c.Protocol == "torrent" && c.Seeders < minSeeders {
 		g.Status = StatusLowSeeders
 		return g
 	}

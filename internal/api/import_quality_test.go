@@ -18,13 +18,18 @@ import (
 )
 
 type importQualityProber struct {
-	height   int
-	codec    string
-	duration float64
+	height        int
+	codec         string
+	duration      float64
+	hdr           bool
+	audioChannels int
 }
 
 func (p importQualityProber) Probe(context.Context, string) (*mediainfo.Probe, error) {
-	return &mediainfo.Probe{Height: p.height, CodecName: p.codec, Duration: p.duration}, nil
+	return &mediainfo.Probe{
+		Height: p.height, CodecName: p.codec, Duration: p.duration,
+		HDR: p.hdr, AudioChannels: p.audioChannels,
+	}, nil
 }
 
 func TestRefuseImportBelowFloor_EliteSized1080p(t *testing.T) {
@@ -243,8 +248,8 @@ func TestRefuseImportBelowFloor_QualityStopgapKeptAndStamped(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "Show.S01E01.1080p.x264.mkv")
-	// 20 MiB / 120s ≈ 1.33 Mbps implied, padded 1.07: above the 0.8 mislabel
-	// line, below Medium/1080 (5).
+	// 20 MiB / 120s ≈ 1.33 Mbps implied: above the 0.8 mislabel line, below
+	// Medium/1080 (5).
 	if err := os.WriteFile(path, make([]byte, 20<<20), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -293,6 +298,34 @@ func TestRefuseImportBelowFloor_HonestReplacementDoesNotParkAlternate(t *testing
 	}
 	if g.Origin != grabOriginQualityStopgap {
 		t.Fatalf("origin = %q, want %q", g.Origin, grabOriginQualityStopgap)
+	}
+}
+
+func TestRefuseImportBelowFloor_HDR51ClearsUnpaddedFloor(t *testing.T) {
+	ctx := context.Background()
+	_, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	if err := settingsStore.Set(ctx, qualityTiersKey(mode.Series), `["medium","high","lossless"]`); err != nil {
+		t.Fatal(err)
+	}
+	// Live Furious S01E04 CHDWEB/playWEB: 2160p DoVi 5.1, 6_688_259_211 bytes
+	// / 3262s. Padded score 26.24 vs Medium@2160 HDR 5.1 floor 27.50 deleted
+	// the file. Unpadded x264-eq 32.8 clears 27.50.
+	path := filepath.Join(t.TempDir(), "Furious.S01E04.2160p.WEB-DL.mkv")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(path, 6_688_259_211); err != nil {
+		t.Fatal(err)
+	}
+	g := &grabs.Grab{Mode: mode.Series, Title: "Furious", TMDBID: 1, SeasonNumber: 1, EpisodeNumber: 4, Protocol: "usenet"}
+	err := refuseImportBelowFloor(ctx, libStore, settingsStore, nil, g, path, importQualityProber{
+		height: 2160, codec: "hevc", duration: 3262, hdr: true, audioChannels: 6,
+	})
+	if err != nil {
+		t.Fatalf("import must not delete an HDR 5.1 WEB-DL that meets the unpadded floor, got %v", err)
+	}
+	if g.Origin == grabOriginQualityStopgap {
+		t.Fatal("file meets the unpadded floor; must not stamp stopgap")
 	}
 }
 

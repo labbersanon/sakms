@@ -109,6 +109,24 @@ func TestNonAV1Padding(t *testing.T) {
 	}
 }
 
+func TestGradeImportedFileSkipsNonAV1Padding(t *testing.T) {
+	c := Candidate{
+		Protocol: "usenet", SizeBytes: bytesForMbps(11, testRuntime), RuntimeSeconds: testRuntime,
+		Resolution: 1080, Codec: "x264",
+	}
+	grab := GradeCandidate(c, quality.High, 0)
+	if grab.Qualified || grab.Status != StatusBelowFloor {
+		t.Fatalf("grab-time padded 11 Mbps must miss High/1080, status=%s qualified=%v", grab.Status, grab.Qualified)
+	}
+	imp := GradeImportedFile(c, quality.High)
+	if !approx(imp.Score, 11.0) {
+		t.Fatalf("import score = %.4f, want unpadded 11.0", imp.Score)
+	}
+	if !imp.Qualified {
+		t.Fatalf("import must accept 11 Mbps vs High/1080 10, status=%s", imp.Status)
+	}
+}
+
 func TestFloorTableIndependentAxes(t *testing.T) {
 	// Spot-check the exact plan numbers via qualify/reject at the boundary.
 	// Medium/2160p floor is 20 Mbps. AV1 (no padding) at exactly 20 qualifies.

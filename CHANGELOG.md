@@ -12755,3 +12755,18 @@ status stays active.
 |---|---|
 | `internal/usenetsearch/namefix.go` | `namefixTiming`; `elapsed_ms` on BODY logs |
 | `docs/usenet-nntp-native.md` | `namefix timing` / `elapsed_ms` notes |
+
+## 2026-10-22 — PreDB ByFilename matches the partial filename index
+
+**Problem:** FileDesc `lookupPreDBNames` logged `predbnames_ms` 6–27s per set. BODY was ~0.5–1.9s; ByHash was ~94ms.
+**Root cause:** `idx_usenet_nntp_predb_filename` is `btree (lower(filename)) WHERE filename <> ''`. Exact `lower(filename)=` and the stem range did not include that predicate, so Postgres would not use the index and seq-scanned ~6.9M rows (~2.7–3.2s each). Two FileDesc names × exact+stem ≈ 12–27s.
+**Fix:** Both ByFilename queries add `filename <> ''`. Live EXPLAIN: Index Scan 0.05–55ms vs Seq Scan ~3s. Stem stays a btree range, not LIKE. No new index, no CONCURRENTLY, no ANALYZE required for the plan change. BODY 90s / leftover park / uncomputed sweep unchanged.
+**Outcome:** `TestByFilenameSQLMatchesPartialIndex`. Live `predbnames_ms` should drop from seconds to tens of milliseconds on FileDesc misses.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/predb/store.go` | exact+stem SQL include `filename <> ''` |
+| `internal/usenetsearch/predb/predb_test.go` | SQL matches partial-index predicate |
+| `docs/usenet-nntp-native.md` | partial-index predicate note |

@@ -200,7 +200,9 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   hash-lookup then shelve.   Hex-hash filenames skip PreDB `ByFilename` LIKE
   (those are `ByHash`). Stem matches (`hash.mkv` → `hash.part1.rar`) use a
   btree range on `lower(filename)`, not `LIKE` (the equality index cannot
-  serve LIKE without `text_pattern_ops`).
+  serve LIKE without `text_pattern_ops`). Both exact and stem SQL include
+  `filename <> ''` so the partial index is eligible; without it the planner
+  seq-scans the table.
   BODY picks SFV, then the main `.par2` (FileDesc / hash_16K), then the
   first-volume RAR/7z (`part01` / `.7z.001` / bare `.rar`) for srrdb CRC
   after a hash FileDesc. Last-volume RAR is skipped when a main PAR2

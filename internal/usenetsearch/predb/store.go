@@ -103,6 +103,17 @@ func (s *Store) SetNuked(ctx context.Context, title string, nuked bool) error {
 
 const selectEntry = `SELECT title, size_bytes, files, filename, category, pre_at, nuked, request_id, group_name FROM usenet_nntp_predb`
 
+// Claude 2026-10-22: filename <> ” is required for idx_usenet_nntp_predb_filename.
+// Reason: that index is partial (WHERE filename <> ”). Postgres does not infer
+//
+//	the predicate from lower(filename)= or a stem range, so the planner
+//	seq-scanned 6.9M rows (~3s) per FileDesc lookup. Live EXPLAIN with this
+//	clause is Index Scan (~0.05–55ms). Range not LIKE: default btree cannot
+//	serve LIKE (needs text_pattern_ops). Do not CREATE INDEX CONCURRENTLY
+//	on deploy (lock). Review if: a text_pattern_ops index is added off-hours.
+const byFilenameExact = selectEntry + ` WHERE filename <> '' AND lower(filename)=? AND source<>? LIMIT 1`
+const byFilenameStem = selectEntry + ` WHERE filename <> '' AND lower(filename) >= ? AND lower(filename) < ? AND source<>? LIMIT 1`
+
 func scanEntry(row *sql.Row) (Entry, bool, error) {
 	var e Entry
 	err := row.Scan(&e.Title, &e.SizeBytes, &e.Files, &e.Filename, &e.Category, &e.PreAt, &e.Nuked, &e.RequestID, &e.GroupName)
@@ -155,8 +166,7 @@ func (s *Store) ByFilename(ctx context.Context, filename string) (Entry, bool, e
 	if fn == "" {
 		return Entry{}, false, nil
 	}
-	e, ok, err := scanEntry(s.db.QueryRowContext(ctx,
-		selectEntry+` WHERE lower(filename)=? AND source<>? LIMIT 1`, fn, SourceMiss))
+	e, ok, err := scanEntry(s.db.QueryRowContext(ctx, byFilenameExact, fn, SourceMiss))
 	if err != nil || ok {
 		return e, ok, err
 	}
@@ -167,14 +177,7 @@ func (s *Store) ByFilename(ctx context.Context, filename string) (Entry, bool, e
 	if len(stem) < 16 {
 		return Entry{}, false, nil
 	}
-	// Claude 2026-10-22: prefix range, not LIKE, so idx_usenet_nntp_predb_filename
-	// can be used. Default btree ops do not serve LIKE (needs text_pattern_ops).
-	// Reason: live leftover=0 PreDB pass still `deadline phase=predb leftover=182`
-	//   in 20s; stem+".%" seq-scanned 6.9M rows. Do not CREATE INDEX CONCURRENTLY
-	//   on deploy (lock). Review if: a text_pattern_ops index is added off-hours.
-	return scanEntry(s.db.QueryRowContext(ctx,
-		selectEntry+` WHERE lower(filename) >= ? AND lower(filename) < ? AND source<>? LIMIT 1`,
-		stem+".", stem+"/", SourceMiss))
+	return scanEntry(s.db.QueryRowContext(ctx, byFilenameStem, stem+".", stem+"/", SourceMiss))
 }
 
 // RecentMiss reports whether title has a cached negative lookup newer than ttl.

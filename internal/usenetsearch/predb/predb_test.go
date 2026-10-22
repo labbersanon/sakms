@@ -206,6 +206,17 @@ func TestStore_ByFilenameStemMatchesPartRar(t *testing.T) {
 	}
 }
 
+func TestByFilenameSQLMatchesPartialIndex(t *testing.T) {
+	for _, q := range []string{byFilenameExact, byFilenameStem} {
+		if !strings.Contains(q, "filename <> ''") {
+			t.Fatalf("partial index predicate missing: %s", q)
+		}
+		if strings.Contains(strings.ToLower(q), " like ") {
+			t.Fatalf("LIKE would seq-scan: %s", q)
+		}
+	}
+}
+
 func TestHTTPClient_HitMissAndFailures(t *testing.T) {
 	var calls atomic.Int32
 	mode := "hit"

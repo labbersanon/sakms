@@ -89,10 +89,6 @@ func (s *Store) ImportPath(ctx context.Context, path string) (DumpStats, error) 
 	if path == "" {
 		return DumpStats{}, nil
 	}
-	// Claude 2026-10-18: reject :// so api.predb.net is never fetched as a dump.
-	// if path == "" || strings.Contains(path, "://") {
-	// 	return DumpStats{}, nil
-	// }
 	if IsFetchURL(path) {
 		n, err := s.ImportURL(ctx, path)
 		n.Files = 1

@@ -242,12 +242,14 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 			return res, err
 		}
 	}
-	// Claude 2026-10-19: PreDB-only first, then ident BODY, then 95% BODY.
-	// Reason: live leftover=220 after one ~750KB BODY; hash_hits=0 for hours
-	//   while 200 PreDB keys (1883 complete boneless) never ran. 95% yield
-	//   still stays BODY-capable (not in preOnly) so a PreDB miss can PAR2.
-	// Troubleshooting: namefix deadline leftover≈predb with hash_hits=0 →
-	//   add(sets) ran before preOnly. Review if: 20s is raised, not removed.
+	// Claude 2026-10-21: BODY before PreDB/parhash (each phase still 20s).
+	// Reason: live leftover predb=197 then parhash=1 then body leftover=41
+	//   with renamed=0. Hash.mkv+PAR2 waited behind 200 PreDB LIKE scans
+	//   and named-PAR2 seed BODYs. BODY keys still lookupPreDB before
+	//   BodyHead; preOnly is dump/IRC only.
+	// Troubleshooting: namefix deadline phase=body leftover=40 after
+	//   phase=predb leftover≈200 → this order reversed. Review if: PreDB
+	//   HTTP needs its own cadence off the crawl loop.
 	skipPre := map[string]bool{}
 	keyOf := func(set PendingSet) string { return set.Group + "\x00" + set.Key }
 	for _, list := range [][]PendingSet{sets, ident, headerSets} {
@@ -307,11 +309,6 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 		}
 		return nil
 	}
-	// Claude 2026-10-19: PreDB-only and BODY each get the 20s budget.
-	// Reason: live due PreDB sets have 3k–7k headers; SetRows of one set
-	//   burned the shared deadline (hash_hits=1 leftover=222 body_fetches=0).
-	// Troubleshooting: leftover=predb with body_fetches=0 after a hit →
-	//   BODY phase missing. Review if: PreDB sample 64 misses a hash token.
 	// Claude 2026-10-19: quoted ident titles before PreDB HTTP / BODY.
 	// Reason: live 95% Black Clover/Yameii were in the BODY queue, stripped
 	//   from preOnly; one hash SetRows+ByHash burned PreDB (leftover=162,
@@ -319,13 +316,6 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 	// Troubleshooting: header=0 while pending95 subjects quote 1080p titles
 	//   → DuePendingHeaderNames regex. Review if: 4K-without-p.
 	if err := run(headerSets, "header"); err != nil {
-		return res, err
-	}
-	if err := run(preOnly, "predb"); err != nil {
-		return res, err
-	}
-	// Named PAR2 donors before pending BODY so hash_16K matches this pass.
-	if err := run(parSeed, "parhash"); err != nil {
 		return res, err
 	}
 	var body []PendingSet
@@ -337,6 +327,13 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 	body = append(body, sets...)
 	body = append(body, ident...)
 	if err := run(body, "body"); err != nil {
+		return res, err
+	}
+	// Named PAR2 donors after pending BODY so hash.mkv FileDesc runs first.
+	if err := run(parSeed, "parhash"); err != nil {
+		return res, err
+	}
+	if err := run(preOnly, "predb"); err != nil {
 		return res, err
 	}
 	if res.Sets > 0 || res.Finalized > 0 || res.BodyFetches > 0 || res.Renamed > 0 {
@@ -572,6 +569,19 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		}
 		if hit, ok := n.lookupCRCs(work, set, crcs); ok {
 			return n.promote(work, set, rows, hit.Title, sourceSRRDB, confMedium, "srrdb", res, statBudget)
+		}
+		// Claude 2026-10-21: rar5-enc is a password pack; NNTP has no title.
+		// Reason: live hash-rar after PAR2 still had leftover=41 with
+		//   payload=rar5-enc crcs=0. BODY cannot recover the NZB password.
+		// Troubleshooting: namefix crc payload=rar5-enc then BumpNameAttempt
+		//   → this return missing. Review if: an unencrypted RAR5 is
+		//   misclassified as rar5-enc (then PayloadKind).
+		if kind == "rar5-enc" && keepCompleteYield(set.Group, set.CompletenessBP, set.PayloadBytes) {
+			res.Unresolved++
+			if triedBody {
+				_ = n.Index.MarkParHashSampled(work, set.Group, set.Key)
+			}
+			return false, n.Index.ShelveBodyAttempts(work, set.Group, set.Key)
 		}
 		// Claude 2026-10-21: Newznab is supplemental after a local 7z-aes miss.
 		// Reason: NZBGeek (and peers) do not ingest ngPost hash.7z NZBs;
@@ -1087,6 +1097,13 @@ func (n *NameFixer) lookupPreDBNames(ctx context.Context, set PendingSet, cands 
 				return hit, true
 			}
 		}
+		// Claude 2026-10-21: FileDesc hashes use ByHash, not ByFilename LIKE.
+		// Reason: live leftover=197; hash.part5.rar LIKE per candidate.
+		// Troubleshooting: lookupPreDBNames still LIKE on 32-hex → this
+		//   continue missing. Review if: IRC [FN:] is filename-only.
+		if hashCore(normalizeRecovered(cand.name)) != "" {
+			continue
+		}
 		if hit, ok := n.PreDB.ByFilename(ctx, cand.name); preDBHitOK(hit, ok, set.PayloadBytes) {
 			return hit, true
 		}
@@ -1147,6 +1164,15 @@ func filenameCandidates(rows []HeaderRow) []string {
 		if s == "" {
 			return
 		}
+		// Claude 2026-10-21: skip md5/sha1 archive names for ByFilename.
+		// Reason: live PreDB leftover=197 in 20s; each hash-rar issued
+		//   LIKE per part (45+). Hex stems are ByHash (title_md5 index).
+		// Troubleshooting: namefix deadline phase=predb leftover≈200 with
+		//   hash_hits=0 → this skip missing. Review if: IRC [FN:] is only
+		//   on filename and not title_md5 (then one stem LIKE, not 45).
+		if hashCore(normalizeRecovered(s)) != "" {
+			return
+		}
 		key := strings.ToLower(s)
 		if seen[key] {
 			return
@@ -1160,6 +1186,9 @@ func filenameCandidates(rows []HeaderRow) []string {
 		add(normalizeRecovered(r.Filename))
 		add(q)
 		add(normalizeRecovered(q))
+		if len(out) >= 8 {
+			break
+		}
 	}
 	return out
 }
@@ -1302,8 +1331,8 @@ type bodyPick struct {
 
 // pickBodyTargets chooses up to namefixBodiesPerSet articles:
 // SFV, main non-vol PAR2, first-volume RAR/ZIP/7z (part01 / .7z.001 / bare
-// .rar), last volume (RAR first segment; 7z last segment), then NFO.
-// Volume PAR2 never fills a slot. Encrypted .7z.enc is skipped.
+// .rar), last volume (7z last segment; RAR first segment only when no main
+// PAR2), then NFO. Volume PAR2 never fills a slot. Encrypted .7z.enc is skipped.
 // Claude 2026-10-21: PAR2 before archive volumes.
 // Reason: live after 7z dequeue, hash-rar still fetched two 716KB part01
 //
@@ -1413,16 +1442,13 @@ func pickBodyTargets(rows []HeaderRow) []bodyPick {
 	}
 	for _, f := range sorted {
 		if anyName(f, isFirstArchiveVolume) {
-			// Claude 2026-10-21: skip 716KB RAR when PAR2 is present.
-			// Reason: live hash-rar FileDesc was a hash then two rar5-enc
-			//   part01 fetches (wire=716800, crcs=0) leftover=41.
-			// Troubleshooting: namefix crc payload=rar5-enc after par2=true
-			//   → this still adding first-volume RAR beside main PAR2.
-			// Review if: unencrypted hash-rar needs FILE_CRC after a hash
-			//   FileDesc (then pick last volume only, not part01).
-			if par2Present && !anyName(f, is7zName) {
-				continue
-			}
+			// Claude 2026-10-21: first-volume RAR after PAR2 for srrdb CRC.
+			// Reason: skip-RAR-when-PAR2 dropped unique FILE_CRC hits
+			//   (TestNameFix_SRRDBArchiveCRCRenamesHashRAR). Titled FileDesc
+			//   still returns before this pick. rar5-enc shelves in fixSet.
+			// Troubleshooting: leftover=41 with two 716KB rar after par2 →
+			//   last-volume still added while par2Present. Review if:
+			//   hash.mkv FileDesc never reaches this pick (then drop rar).
 			addFirst(f)
 			break
 		}

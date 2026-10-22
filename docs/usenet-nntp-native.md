@@ -171,9 +171,9 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   name). PreDB (no BODY) also runs on ≥80% pending sets in **any** group
   (including boneless), 200 per pass, even when OVER is busy (BODY waits).
   Each pass runs quoted ident-shaped header names first (no BODY; ignores
-  `next_name_at`), then PreDB-only keys, then a one-shot hash_16K seed of
-  named/shelved PAR2, then 95% BODY, then ident BODY, so a 20s BODY
-  deadline cannot skip titles already sitting in the subject.
+  `next_name_at`), then 95% BODY, then ident BODY, then a one-shot hash_16K
+  seed of named/shelved PAR2, then PreDB-only keys. Each phase still has its
+  own 20s budget.
   Each BODY article is capped at 8s (dial included) and does not inherit leftover
   phase crumbs, so setRows eating the 20s still fetches one PAR2. A hung fetch
   logs `namefix body msgid=` and continues to the next PAR2/NFO pick unless the
@@ -185,14 +185,17 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   a hash.par2 sibling whose FileDesc names are also hashes. Seed BODYs only the
   main (non-vol) `.par2` and reserves half of each seed pass for shelved
   pending so named donors cannot starve hash.par2. The due queue ranks SFV,
-  then RAR/ZIP, then `has_par2` (hash.mkv+PAR2). Split 7z is not a prefer
-  rank. ngPost hash.7z and UUID `.7z.enc` are dropped from BODY queues
-  (password is only in the NZB); PreDB may hash-lookup then shelve.
+  then `has_par2` without rar/zip/7z (hash.mkv+PAR2), then RAR/ZIP, then other
+  PAR2. Split 7z is not a prefer rank. ngPost hash.7z and UUID `.7z.enc`
+  are dropped from BODY queues (password is only in the NZB); PreDB may
+  hash-lookup then shelve. Hex-hash filenames skip PreDB `ByFilename` LIKE
+  (those are `ByHash`).
   BODY picks SFV, then the main `.par2` (FileDesc / hash_16K), then the
-  first-volume RAR/7z (`part01` / `.7z.001` / bare `.rar`), then the last
-  volume (RAR5 first segment; 7z last segment of `.7z.NNN` for the end
-  header — never `.vol*.par2` or `.7z.enc`). 95% complete
-  sets run before 80% ident BODY. RAR4 `FILE_CRC` / RAR5 Data CRC32 / ZIP CRC /
+  first-volume RAR/7z (`part01` / `.7z.001` / bare `.rar`) for srrdb CRC
+  after a hash FileDesc. Last-volume RAR is skipped when a main PAR2
+  exists. 7z last segment of `.7z.NNN` still runs for the end header.
+  Never `.vol*.par2` or `.7z.enc`. A `rar5-enc` sample shelves the set.
+  95% complete sets run before 80% ident BODY. RAR4 `FILE_CRC` / RAR5 Data CRC32 / ZIP CRC /
   7z end-header CRC / SFV CRC32 is looked up on srrdb
   `archive-crc:` when that CRC is unique
   (`resultsCount==1`, size ±15%); srrdb ToS is use-don't-scrape (no catalog

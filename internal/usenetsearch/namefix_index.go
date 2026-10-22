@@ -190,36 +190,31 @@ func scanPendingSets(rows *sql.Rows, preDBOnly bool) ([]PendingSet, error) {
 	return out, rows.Err()
 }
 
-// Claude 2026-10-20: SFV, then split 7z, then RAR/ZIP in the due queue.
-// Reason: live pending95_sfv=2 sat behind 119 rar; 20s body named RAR5
+// Claude 2026-10-21: SFV, then has_par2 without rar/zip/7z, then rar/zip.
+// Reason: live after 7z dequeue, crcPrefer ranked RAR ahead of has_par2 so
 //
-//	magazines (crcs=0). After #231, 32 due `.7z.0xx` were CASE 1 with rar
-//	and lost to ingested_at DESC, so last-segment footer CRC never ran.
+//	hash-rar (FileDesc=hash.part.rar, often rar5-enc) filled BODY=40 while
+//	anime hash.mkv+PAR2 waited. PAR2 FileDesc on mkv/mp4 is the title.
 //
-// Troubleshooting: namefix crc magic=52617221 with 32 pending95_7z → this
+// Troubleshooting: namefix pattern pack=rar-split leftover=41 with pending
 //
-//	CASE. Review if: crc_sampled column replaces this CASE.
-//
-// Claude 2026-10-21: SFV, RAR/ZIP, has_par2; 7z is not a prefer rank.
-// Reason: live BODY=40 leftover=41 was ngPost hash.7z / skip_7z while 434
-//
-//	anime hash.mkv+PAR2 sat attempts=0. Ranking 7z ahead of rar filled
-//	every slot; password packs cannot become Searchable.
-//
-// Troubleshooting: namefix pattern skip_7z=true and searchable flat with
-//
-//	pending95 has_par2 → this CASE still ranks 7z ahead of has_par2.
-//
-// Review if: a non-password scene 7z needs a prefer rank (then after rar).
+//	hash.mkv+par2 attempts=0 → this CASE still ranks rar ahead of
+//	has_par2-without-rar. Review if: unencrypted hash-rar CRC needs a
+//	prefer rank (then after mkv+par2).
 const crcPreferOrderSQL = `CASE WHEN EXISTS (
   SELECT 1 FROM usenet_nntp_headers h
   WHERE h.group_name=usenet_nntp_releases.group_name AND h.release_name=usenet_nntp_releases.release_key
     AND (LOWER(h.filename) LIKE '%.sfv%' OR LOWER(h.subject) LIKE '%.sfv%')
-) THEN 0 WHEN EXISTS (
+) THEN 0 WHEN has_par2 AND NOT EXISTS (
+  SELECT 1 FROM usenet_nntp_headers h
+  WHERE h.group_name=usenet_nntp_releases.group_name AND h.release_name=usenet_nntp_releases.release_key
+    AND (LOWER(h.filename) LIKE '%.rar%' OR LOWER(h.filename) LIKE '%.zip%' OR LOWER(h.filename) LIKE '%.7z%'
+      OR LOWER(h.subject) LIKE '%.rar%' OR LOWER(h.subject) LIKE '%.zip%' OR LOWER(h.subject) LIKE '%.7z%')
+) THEN 1 WHEN EXISTS (
   SELECT 1 FROM usenet_nntp_headers h
   WHERE h.group_name=usenet_nntp_releases.group_name AND h.release_name=usenet_nntp_releases.release_key
     AND (LOWER(h.filename) LIKE '%.rar%' OR LOWER(h.filename) LIKE '%.zip%' OR LOWER(h.subject) LIKE '%.rar%' OR LOWER(h.subject) LIKE '%.zip%')
-) THEN 1 WHEN has_par2 THEN 2 ELSE 3 END`
+) THEN 2 WHEN has_par2 THEN 3 ELSE 4 END`
 
 // passwordLockedSQL is true when headers are ngPost hash.7z or UUID .7z.enc.
 // Those need an NZB password; BODY cannot recover a title. Dropped from the
@@ -305,10 +300,11 @@ LIMIT ?`, spanRepairFloorBP, limit)
 // Claude 2026-10-19: all groups, 200/pass, no payload floor.
 // Reason: yield-only PreDB left 1883 complete boneless pending unnamed;
 //
-//	namefix ran twice in 2h with hash_hits=1. Run() processes these
-//	before BODY so a 20s BODY deadline cannot skip them.
+//	namefix ran twice in 2h with hash_hits=1.
 //
-// Review if: firehose PreDB is moved back behind yield BODY.
+// Claude 2026-10-21: Run() now processes these after yield BODY.
+// Reason: live PreDB leftover=197 burned the first 20s; BODY leftover=41.
+// Review if: firehose PreDB needs its own loop off crawl.
 func (idx *Index) DuePendingPreDB(ctx context.Context, limit int) ([]PendingSet, error) {
 	if limit <= 0 {
 		return nil, nil

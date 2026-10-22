@@ -533,9 +533,8 @@ func pickSampleIDs(t *testing.T, f *nfFixture) []string {
 func TestNameFix_BodyBudgetStopsPassWithoutAttempts(t *testing.T) {
 	f := newNFFixture(t, obfuscatedSet("b", nfHash, 1, 45), nil)
 	f.crawlAndRecompute(t)
-	// part01 is 2MB on disk but BodyHead only keeps 256KiB. A cap below that
-	// head size must stop before charging attempts.
-	f.nf.Budget.capBytes = 200 << 10
+	// PAR2 (~40KB) is picked first; a cap below that stops before any BODY.
+	f.nf.Budget.capBytes = 1024
 	res, err := f.nf.Run(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -549,15 +548,14 @@ func TestNameFix_BodyBudgetStopsPassWithoutAttempts(t *testing.T) {
 }
 
 func TestNameFix_BodyArticleTimeoutContinuesToNextPick(t *testing.T) {
-	nfo := usenet.MessageOverview{
-		Number: 1, Subject: fmt.Sprintf(`[%02d/%d] - "%s.nfo" yEnc (1/1)`, 1, 2, nfHash),
-		From: "poster@obf", MessageID: "tnfo", Bytes: 10_000, DateUnix: 1700000000,
+	sfv := usenet.MessageOverview{
+		Number: 1, Subject: fmt.Sprintf(`[%02d/%d] - "%s.sfv" yEnc (1/1)`, 1, 2, nfHash),
+		From: "poster@obf", MessageID: "tsfv", Bytes: 400, DateUnix: 1700000000,
 	}
-	rows := append([]usenet.MessageOverview{nfo}, obfuscatedSet("t", nfHash, 2, 1)...)
+	rows := append([]usenet.MessageOverview{sfv}, obfuscatedSet("t", nfHash, 2, 1)...)
 	f := newNFFixture(t, rows, nil)
 	f.crawlAndRecompute(t)
 	f.src.bodyFailFirst = 1
-	f.src.bodies["tnfo"] = usenet.BodySample{Data: []byte("Release info"), WireBytes: 1000}
 	f.src.bodies["tpar2"] = par2Body("Some.Movie.2021.1080p.BluRay.x264-GRP.part01.rar")
 	res, err := f.nf.Run(context.Background())
 	if err != nil {
@@ -581,8 +579,8 @@ func TestPickBodyTargets_PrefersPar2ThenFirstVolume(t *testing.T) {
 	if !ids["par2@t"] {
 		t.Fatalf("picks = %+v, want main par2", picks)
 	}
-	if ids["huge@t"] {
-		t.Fatalf("picks = %+v, RAR volume must not BODY when PAR2 is present", picks)
+	if !ids["huge@t"] {
+		t.Fatalf("picks = %+v, want first-volume RAR after PAR2 (srrdb CRC)", picks)
 	}
 	if picks[0].MsgID != "par2@t" {
 		t.Fatalf("picks[0] = %+v, want main par2 first (FileDesc)", picks[0])
@@ -612,19 +610,14 @@ func TestPickBodyTargets_SkipsVolPar2IncludesLastRar(t *testing.T) {
 	if !ids["sfv@t"] || !ids["par2@t"] {
 		t.Fatalf("picks=%+v, want sfv + main par2", picks)
 	}
-	if ids["first@t"] || ids["last@t"] {
-		t.Fatalf("picks=%+v, RAR volumes must not fill slots when PAR2 is present", picks)
+	if !ids["first@t"] || ids["last@t"] {
+		t.Fatalf("picks=%+v, want first-volume RAR after PAR2, not last volume", picks)
 	}
 	if ids["vol@t"] || ids["vol2@t"] {
 		t.Fatalf("picks=%+v, vol par2 must not fill BODY slots", picks)
 	}
 	if len(picks) > namefixBodiesPerSet {
 		t.Fatalf("picks=%d, cap %d", len(picks), namefixBodiesPerSet)
-	}
-	for _, p := range picks {
-		if p.MsgID == "last@t" && !p.CRC {
-			t.Fatalf("last volume pick %+v must be CRC-capable (RAR5 unpacked CRC)", p)
-		}
 	}
 }
 
@@ -778,7 +771,7 @@ func assertPendingHeaderHas(t *testing.T, idx *Index, set PendingSet, needle, la
 	t.Fatalf("first due set key=%s must be %s, headers=%d", set.Key, label, len(hdrs))
 }
 
-func TestDuePendingNames_PrefersRarOverMkv(t *testing.T) {
+func TestDuePendingNames_PrefersMkvPar2OverRar(t *testing.T) {
 	mkvHash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	rows := []usenet.MessageOverview{
 		{Number: 1, Subject: fmt.Sprintf(`[01/2] - "%s.mkv" yEnc (1/1)`, mkvHash),
@@ -796,7 +789,81 @@ func TestDuePendingNames_PrefersRarOverMkv(t *testing.T) {
 	if len(sets) < 2 {
 		t.Fatalf("due=%d, want mkv + rar pending", len(sets))
 	}
-	assertPendingHeaderHas(t, f.idx, sets[0], ".rar", "rar")
+	assertPendingHeaderHas(t, f.idx, sets[0], ".mkv", "mkv+par2 (ahead of hash-rar)")
+}
+
+func TestFilenameCandidates_SkipsHexHashKeepsRandom(t *testing.T) {
+	hex := []HeaderRow{
+		{Filename: nfHash + ".part01.rar"},
+		{Filename: nfHash + ".par2"},
+		{Subject: `[01/2] - "` + nfHash + `.mkv" yEnc (1/1)`},
+	}
+	if got := filenameCandidates(hex); len(got) != 0 {
+		t.Fatalf("hex hash filenames = %v, want none (ByHash)", got)
+	}
+	const tok = "v1AAqzDH11LfEAAN9yuzTJ.part01.rar"
+	got := filenameCandidates([]HeaderRow{{Filename: tok}})
+	for _, n := range got {
+		if n == tok {
+			return
+		}
+	}
+	t.Fatalf("random archive = %v, want %q", got, tok)
+}
+
+func TestNameFix_MkvPar2BodyBeforeHashRar(t *testing.T) {
+	const title = "Anime.Show.S01E01.1080p.WEB.x264-GRP"
+	mkvHash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	mkv := []usenet.MessageOverview{
+		{Number: 1, Subject: fmt.Sprintf(`[01/2] - "%s.mkv" yEnc (1/1)`, mkvHash),
+			From: "poster@obf", MessageID: "mkv1", Bytes: 2_000_000, DateUnix: 1700000000},
+		{Number: 2, Subject: fmt.Sprintf(`[02/2] - "%s.par2" yEnc (1/1)`, mkvHash),
+			From: "poster@obf", MessageID: "mkvpar2", Bytes: 40_000, DateUnix: 1700000000},
+	}
+	f := newNFFixture(t, append(mkv, obfuscatedSet("r", nfHash, 3, 45)...), nil)
+	f.src.bodies["mkvpar2"] = par2Body(title + ".mkv")
+	f.src.bodies["rpar2"] = par2Body(nfHash + ".part01.rar")
+	f.crawlAndRecompute(t)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.src.bodyCalls) == 0 || f.src.bodyCalls[0] != "mkvpar2" {
+		t.Fatalf("first BODY must be mkv par2, calls=%v res=%+v", f.src.bodyCalls, res)
+	}
+	var named int
+	if err := f.idx.db.QueryRow(`SELECT COUNT(*) FROM usenet_nntp_releases WHERE display_name=? AND searchable`, title).Scan(&named); err != nil {
+		t.Fatal(err)
+	}
+	if named != 1 || res.Renamed < 1 {
+		t.Fatalf("mkv FileDesc searchable=%d res=%+v", named, res)
+	}
+}
+
+func TestNameFix_Rar5EncShelvesWithoutRetry(t *testing.T) {
+	rows := obfuscatedSet("e", nfHash, 1, 45)
+	rows = rows[:len(rows)-1]
+	f := newNFFixture(t, rows, nil)
+	enc := append([]byte("Rar!\x1a\x07\x01\x00"), 0, 0, 0, 0, 1, 4, 0, 0)
+	if usenet.PayloadKind(enc) != "rar5-enc" {
+		t.Fatalf("fixture PayloadKind=%q, want rar5-enc", usenet.PayloadKind(enc))
+	}
+	f.src.bodies["e1_1@t"] = usenet.BodySample{Data: enc, YencName: nfHash + ".part01.rar", WireBytes: 716800}
+	f.crawlAndRecompute(t)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Renamed != 0 {
+		t.Fatalf("encrypted rar must not rename: %+v", res)
+	}
+	var attempts int
+	if err := f.idx.db.QueryRow(`SELECT name_attempts FROM usenet_nntp_releases`).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts < maxNameAttempts {
+		t.Fatalf("rar5-enc must shelve, attempts=%d calls=%v res=%+v", attempts, f.src.bodyCalls, res)
+	}
 }
 
 func TestDuePendingNames_PrefersSfvOverRar(t *testing.T) {
@@ -890,7 +957,7 @@ func TestDuePendingNames_SkipsNgPost7z(t *testing.T) {
 	}
 }
 
-func TestNameFix_HashPar2FileDescShelvesWithoutRarBody(t *testing.T) {
+func TestNameFix_HashPar2FileDescShelves(t *testing.T) {
 	f := newNFFixture(t, obfuscatedSet("hp", nfHash, 1, 45), nil)
 	f.src.bodies["hppar2"] = par2Body(nfHash + ".part01.rar")
 	f.crawlAndRecompute(t)
@@ -898,10 +965,8 @@ func TestNameFix_HashPar2FileDescShelvesWithoutRarBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range f.src.bodyCalls {
-		if strings.Contains(id, "hp1_") || strings.Contains(id, ".rar") {
-			t.Fatalf("must not BODY RAR beside hash PAR2, calls=%v res=%+v", f.src.bodyCalls, res)
-		}
+	if len(f.src.bodyCalls) == 0 || f.src.bodyCalls[0] != "hppar2" {
+		t.Fatalf("hash FileDesc must BODY PAR2 first, calls=%v res=%+v", f.src.bodyCalls, res)
 	}
 	var attempts int
 	if err := f.idx.db.QueryRow(`SELECT name_attempts FROM usenet_nntp_releases`).Scan(&attempts); err != nil {

@@ -12494,3 +12494,19 @@ status stays active.
 |---|---|
 | `internal/usenetsearch/namefix.go` | skip RAR volumes when PAR2 present |
 | `internal/usenetsearch/namefix_test.go` | no RAR pick beside PAR2 |
+
+## 2026-10-21 — Namefix BODY identifies mkv+PAR2 before hash-rar / PreDB
+
+**Problem:** After password-7z dequeue and PAR2-first BODY, live still `renamed=0` with `leftover predb=197` then `body leftover=41` on hash-rar FileDesc (`849ec30a….part5.rar`) / `rar5-enc`. Searchable crawled only via already-named subjects.
+**Root cause:** (1) due queue ranked RAR ahead of `has_par2`, so hash-rar filled 40 BODY slots while anime hash.mkv+PAR2 waited. (2) PreDB then parhash each burned their own 20s before BODY. (3) `ByFilename` LIKE on every `hash.partN.rar` (45+ per set) starved PreDB. (4) `rar5-enc` bumped attempts instead of shelving.
+**Fix:** due queue is SFV, then `has_par2` without rar/zip/7z (mkv/mp4), then RAR/ZIP. Run header → BODY → parhash → PreDB. Skip hex-hash `ByFilename` (ByHash stays). Shelve `rar5-enc` yield sets. First-volume RAR still follows PAR2 so unencrypted FILE_CRC can hit srrdb; last-volume RAR stays skipped when PAR2 is present.
+**Outcome:** `TestDuePendingNames_PrefersMkvPar2OverRar`, `TestNameFix_MkvPar2BodyBeforeHashRar`, `TestFilenameCandidates_SkipsHexHashKeepsRandom`, `TestNameFix_Rar5EncShelvesWithoutRetry`. Random-token IRC `[FN:]` still uses `ByFilename`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix_index.go` | crc prefer mkv+par2 over hash-rar |
+| `internal/usenetsearch/namefix.go` | BODY before PreDB/parhash; skip hex ByFilename; shelve rar5-enc |
+| `internal/usenetsearch/namefix_test.go` | mkv-first due; BODY order; filename skip; rar5-enc shelve |
+| `docs/usenet-nntp-native.md` | phase order and due-queue ranks |

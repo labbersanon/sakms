@@ -334,8 +334,7 @@ func (c *Crawler) ingestRange(ctx context.Context, opts ingestOpts, group string
 	return len(rows), nil
 }
 
-// ingestRecomputeMaxKeys = 32
-// Claude 2026-10-21: 64, named keys first.
+// Claude 2026-10-21: 64 (was 32), named keys first.
 // Reason: a 2000-row x264 obf chunk filled the 32-key cap so ident-named
 //
 //	titles in the same ingest waited on the 1.98M dirty FIFO.
@@ -345,8 +344,8 @@ func (c *Crawler) ingestRange(ctx context.Context, opts ingestOpts, group string
 //	sorting by header count only. Review if: dirty backlog is tiny.
 const ingestRecomputeMaxKeys = 64
 
-// recomputeIngested refreshes completeness for keys that gained the most
-// parts in this chunk so namefix/searchable can see them this loop.
+// recomputeIngested refreshes completeness for this chunk's keys (named
+// first, then by header count) so namefix/searchable can see them this loop.
 //
 // Claude 2026-10-16: do not wait on the 196k dirty FIFO.
 // Reason: x264 had 14k dirty empty pending (headers already stored) while

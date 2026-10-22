@@ -26,7 +26,13 @@ var (
 	adminOnce    sync.Once
 	adminDB      *sql.DB
 	adminErr     error
-	dropSem      = make(chan struct{}, 4)
+	// Claude 2026-10-22: CREATE DATABASE and DROP share one limiter.
+	// Reason: ci-local -p 4 flaked TestNameFix_SmallSetFinalizedWithoutBody
+	//   with "dbtest ping … failed SASL auth: timeout" after CREATE returned.
+	//   Drops were capped at 4; clones were unlimited, so TEMPLATE copy plus
+	//   auth piled onto a busy postmaster. Review if: shm/max_connections
+	//   raise and this cap is unused.
+	ddlSem = make(chan struct{}, 4)
 )
 
 // New returns a migrated, isolated Postgres database for one test.
@@ -66,20 +72,40 @@ func OpenNamed(t *testing.T, name string) *sql.DB {
 	//   timeouts on whichever test was next (TypedDateOutsideWindow).
 	// Troubleshooting: clone missing a new migration → remake sakms_goose_template
 	//   (ensureTemplate still db.Open's it). Review if: tests need goose on clones.
-	sqlDB, err := sql.Open("pgx-qmark", withDBName(testDSN(t), name))
+	sqlDB, err := openAndPing(withDBName(testDSN(t), name))
 	if err != nil {
-		t.Fatalf("dbtest open %q: %v", name, err)
-	}
-	sqlDB.SetMaxOpenConns(4)
-	sqlDB.SetMaxIdleConns(1)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := sqlDB.PingContext(ctx); err != nil {
-		_ = sqlDB.Close()
 		t.Fatalf("dbtest ping %q: %v", name, err)
 	}
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	return sqlDB
+}
+
+// Claude 2026-10-22: retry clone ping; do not bring back goose.Up.
+// Reason: one 10s PingContext died on SASL timeout while -p 4 cloned.
+// Troubleshooting: Close and reopen so a failed handshake is not reused.
+// Review if: Postgres connect_timeout on the DSN replaces this loop.
+func openAndPing(dsn string) (*sql.DB, error) {
+	var last error
+	for i := 0; i < 3; i++ {
+		if i > 0 {
+			time.Sleep(200 * time.Millisecond)
+		}
+		sqlDB, err := sql.Open("pgx-qmark", dsn)
+		if err != nil {
+			return nil, err
+		}
+		sqlDB.SetMaxOpenConns(4)
+		sqlDB.SetMaxIdleConns(1)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err = sqlDB.PingContext(ctx)
+		cancel()
+		if err == nil {
+			return sqlDB, nil
+		}
+		last = err
+		_ = sqlDB.Close()
+	}
+	return nil, last
 }
 
 func testDSN(t *testing.T) string {
@@ -207,9 +233,12 @@ func ensureClone(t *testing.T, name string) {
 		t.Fatalf("dbtest exists check: %v", err)
 	}
 	if !exists {
-		if _, err := admin.ExecContext(ctx,
+		ddlSem <- struct{}{}
+		_, err := admin.ExecContext(ctx,
 			"CREATE DATABASE "+quoteIdent(name)+" TEMPLATE "+quoteIdent(templateName),
-		); err != nil {
+		)
+		<-ddlSem
+		if err != nil {
 			t.Fatalf("create clone %s: %v", name, err)
 		}
 	}
@@ -217,13 +246,14 @@ func ensureClone(t *testing.T, name string) {
 		// Claude 2026-10-21: DROP in the background so the next test's
 		// CREATE DATABASE is not gated on ~40ms drop. Sem-limited so a
 		// 1679-test package does not stampede Postgres.
+		// Claude 2026-10-22: CREATE shares ddlSem (SASL ping flake).
 		go dropClone(admin, name)
 	})
 }
 
 func dropClone(admin *sql.DB, name string) {
-	dropSem <- struct{}{}
-	defer func() { <-dropSem }()
+	ddlSem <- struct{}{}
+	defer func() { <-ddlSem }()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, _ = admin.ExecContext(ctx,

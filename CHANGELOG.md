@@ -12620,3 +12620,16 @@ status stays active.
 | `internal/api/import_quality.go` | no search-pick skip; mislabel rejects every origin |
 | `internal/api/import_quality_test.go` | bait search-pick rejects; below-floor search-pick keeps |
 | `internal/api/search.go` | comment: file post-check still runs |
+
+## 2026-10-22 — Retry dbtest clone ping after SASL timeout
+
+**Problem:** Full `ci-local` `go test -p 4` flaked `TestNameFix_SmallSetFinalizedWithoutBody` at `dbtest ping` with `failed SASL auth: timeout: context deadline exceeded` (20.60s). Isolation retry passed.
+**Root cause:** Unlimited parallel `CREATE DATABASE TEMPLATE` clones plus background DROP (only drops were capped at 4) overloaded the postmaster. One 10s `PingContext` died mid-handshake after CREATE returned. Isolation is idle postgres, so it auths quickly.
+**Fix:** `CREATE DATABASE` and `DROP` share `ddlSem` (cap 4). Clone ping retries 3×10s and Close+reopens so a failed handshake is not reused. Do not bring back goose.Up on clones (2026-10-21 api 60s/90s timeouts). shm 1GiB / max_connections=400 unchanged.
+**Outcome:** Isolation `TestNameFix_SmallSetFinalizedWithoutBody|TestNameFix_SkipBodyStillHitsPreDB` ×3 passed (31s).
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/dbtest/dbtest.go` | shared `ddlSem` for CREATE+DROP; 3× clone ping retry |

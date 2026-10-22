@@ -6,18 +6,6 @@ import (
 	"unicode"
 )
 
-// Claude 2026-10-22: NZBmegasearch smartsearch, in Go, for grab t=search.
-// Reason: indexer RSS is noisy; they kept hits whose sanitized title tokens
-//
-//	cover the query (prefix-relax for 1080 vs 1080p), hid the rest, collapsed
-//	same title within 5MB, and ranked an exact PreDB title first. We do not
-//	scrape predb.me: exact means sanitized title == sanitized query. Do not
-//	fetch NZBs to count PAR2.
-//
-// Troubleshooting: grab empty after a title that should match → sanitize or
-//
-//	prefix-relax dropped it; this falls back to the unfiltered list (still
-//	deduped). Review if: Prowlarr already applies the same token gate.
 const grabDupSizeSlack int64 = 5_000_000
 
 var grabLogicTerm = regexp.MustCompile(`(?:^|\s)([-+])(\w+)`)
@@ -25,6 +13,15 @@ var grabLogicTerm = regexp.MustCompile(`(?:^|\s)([-+])(\w+)`)
 // FilterGrabReleases keeps query-matching grab hits, prefers an exact
 // sanitized title, and drops same-title duplicates within 5MB.
 func FilterGrabReleases(query string, rels []Release) []Release {
+	// Claude 2026-10-22: NZBmegasearch smartsearch, in Go, for grab t=search.
+	// Reason: indexer RSS is noisy; they kept hits whose sanitized title tokens
+	//   cover the query (prefix-relax for 1080 vs 1080p), hid the rest, collapsed
+	//   same title within 5MB, and ranked an exact PreDB title first. We do not
+	//   scrape predb.me: exact means sanitized title == sanitized query. Do not
+	//   fetch NZBs to count PAR2.
+	// Troubleshooting: grab empty after a title that should match → sanitize or
+	//   prefix-relax dropped it; this falls back to the unfiltered list (still
+	//   deduped). Review if: Prowlarr already applies the same token gate.
 	if len(rels) == 0 {
 		return rels
 	}

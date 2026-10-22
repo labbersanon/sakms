@@ -233,3 +233,77 @@ func TestRefuseImportBelowFloor_AdultSkipped(t *testing.T) {
 		t.Fatalf("Adult must skip the movies/series floor, got %v", err)
 	}
 }
+
+func TestRefuseImportBelowFloor_QualityStopgapKeptAndStamped(t *testing.T) {
+	ctx := context.Background()
+	_, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	if err := settingsStore.Set(ctx, qualityTiersKey(mode.Series), `["medium","high","lossless"]`); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "Show.S01E01.1080p.x264.mkv")
+	// 20 MiB / 120s ≈ 1.33 Mbps implied, padded 1.07: above the 0.8 mislabel
+	// line, below Medium/1080 (5).
+	if err := os.WriteFile(path, make([]byte, 20<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	probe := importQualityProber{height: 1080, codec: "h264", duration: 120}
+	stopgap := &grabs.Grab{Mode: mode.Series, Title: "Show", TMDBID: 1413, SeasonNumber: 1, EpisodeNumber: 1, Protocol: "usenet", Origin: grabOriginQualityStopgap}
+	if err := refuseImportBelowFloor(ctx, libStore, settingsStore, nil, stopgap, path, probe); err != nil {
+		t.Fatalf("quality-stopgap must be kept, got %v", err)
+	}
+	if got := searchPickLibraryTier(ctx, libStore, settingsStore, nil, stopgap, path, probe, "medium"); got != string(quality.Low) {
+		t.Fatalf("stamped tier = %q, want %q", got, quality.Low)
+	}
+	auto := &grabs.Grab{Mode: mode.Series, Title: "Show", TMDBID: 1413, SeasonNumber: 1, EpisodeNumber: 1, Protocol: "usenet"}
+	if err := refuseImportBelowFloor(ctx, libStore, settingsStore, nil, auto, path, probe); err == nil || !errors.Is(err, autograb.ErrBelowQualityFloor) {
+		t.Fatalf("unmarked auto-grab must still reject, got %v", err)
+	}
+}
+
+func TestRefuseImportBelowFloor_StopgapStillEnforcesMinResolution(t *testing.T) {
+	ctx := context.Background()
+	_, _, settingsStore, _, libStore, _, _, _, _, _ := testStores(t)
+	if err := settingsStore.Set(ctx, minResolutionKey(mode.Movies), "1080"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "Movie.2020.720p.x264.mkv")
+	if err := os.WriteFile(path, make([]byte, 8<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := &grabs.Grab{Mode: mode.Movies, Title: "Movie", TMDBID: 42, Protocol: "usenet", Origin: grabOriginQualityStopgap}
+	err := refuseImportBelowFloor(ctx, libStore, settingsStore, nil, g, path, importQualityProber{
+		height: 720, codec: "h264", duration: 100 * 60,
+	})
+	if err == nil || !errors.Is(err, autograb.ErrBelowQualityFloor) {
+		t.Fatalf("stopgap must still reject below min resolution, got %v", err)
+	}
+}
+
+func TestEnableUpgradeWatchAfterStopgap(t *testing.T) {
+	ctx := context.Background()
+	_, _, _, _, libStore, _, _, _, _, _ := testStores(t)
+	item, err := libStore.Upsert(ctx, library.Item{Mode: mode.Movies, TMDBID: 42, Title: "Movie", FilePath: "/movies/Movie.mkv"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enableUpgradeWatchAfterStopgap(ctx, libStore, &grabs.Grab{Mode: mode.Movies, Origin: grabOriginQualityStopgap}, item.ID, 0)
+	got, err := libStore.GetByTMDBID(ctx, mode.Movies, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.UpgradeWatch {
+		t.Fatal("quality-stopgap import must turn upgrade-watch on")
+	}
+	plain, err := libStore.Upsert(ctx, library.Item{Mode: mode.Movies, TMDBID: 7, Title: "Other", FilePath: "/movies/Other.mkv"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enableUpgradeWatchAfterStopgap(ctx, libStore, &grabs.Grab{Mode: mode.Movies, Origin: ""}, plain.ID, 0)
+	other, err := libStore.GetByTMDBID(ctx, mode.Movies, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.UpgradeWatch {
+		t.Fatal("ordinary import must not turn upgrade-watch on")
+	}
+}

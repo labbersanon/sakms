@@ -238,10 +238,9 @@ export const TitleQualityPrefs: Component<{
         <Show when={upgradeNote()}>
           <Muted class="mt-1">{upgradeNote()}</Muted>
         </Show>
-        {/* Claude 2026-09-29: opt-in upgrade-watch on the quality card.
-            Reason: owned-title hunt for movies and series; GET quality-prefs
-              carries upgradeWatchAvailable so unowned Discover titles hide it.
-            Troubleshooting: PUT .../upgrade-watch; sixth retry-cycle pass.
+        {/* Claude 2026-10-21: below-floor auto-grab turns upgrade-watch on.
+            Reason: stopgap import must hunt preferred without a manual toggle.
+            Troubleshooting: PUT .../upgrade-watch; grab origin quality-stopgap.
             Review if: Adult gets a matching per-title watch control. */}
         <Show when={prefs()!.upgradeWatchAvailable}>
           <div class="mt-3 flex items-start justify-between gap-3">
@@ -250,7 +249,8 @@ export const TitleQualityPrefs: Component<{
               <Muted class="mt-0.5">
                 Search each auto-grab cycle until a release meets this title's
                 quality minimum. Stops while the file on disk already meets that
-                floor. For series, hunts owned episodes only.
+                floor. For series, hunts owned episodes only. A below-floor
+                auto-grab turns this on automatically.
               </Muted>
             </div>
             <Switch

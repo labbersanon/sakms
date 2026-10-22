@@ -233,7 +233,8 @@ const (
 	// StatusQualified — clears every gate; eligible for unattended auto-grab.
 	StatusQualified Status = "qualified"
 	// StatusBelowFloor — bitrate is known and plausible but under the tier
-	// floor. Not auto-grabbed; appears in the manual pick list.
+	// floor. Not Qualified. Select may still pick it as a stopgap when nothing
+	// qualifies, so a later upgrade-watch can replace it with preferred.
 	StatusBelowFloor Status = "below-floor"
 	// StatusMislabeled — implied bitrate is wildly inconsistent with the
 	// claimed resolution/codec. Excluded from auto-grab, surfaced to manual
@@ -309,15 +310,23 @@ type Grade struct {
 
 // Selection is the outcome of evaluating every candidate for one title/
 // season/scene. PickIndex is the auto-grab choice (highest Score among
-// qualified), or -1 when nothing qualifies. Fallback == (PickIndex == -1):
-// the signal for the UI to present the manual pick list — Ranked gives that
-// list's order (all candidates, best Score first), consistent with the same
-// bitrate score that rejected them.
+// qualified, else the best honest below-floor stopgap), or -1 when nothing
+// is even a stopgap. Fallback == (PickIndex == -1): the signal for the UI
+// to present the manual pick list — Ranked gives that list's order (all
+// candidates, best Score first), consistent with the same bitrate score
+// that rejected them. Stopgap is true when the pick is StatusBelowFloor
+// rather than Qualified — dispatch may keep it; upgrade-watch must not.
 type Selection struct {
 	Grades    []Grade
 	PickIndex int
 	Fallback  bool
+	Stopgap   bool
 	Ranked    []int // indices into Grades, best Score first (stable)
+}
+
+// HasQualified is a preferred-tier pick (not a below-floor stopgap).
+func (s Selection) HasQualified() bool {
+	return s.PickIndex >= 0 && !s.Fallback && !s.Stopgap
 }
 
 func codecMultiplier(codec string) float64 {
@@ -448,9 +457,9 @@ func betterQualified(a, b Grade, codecOrder []string) bool {
 }
 
 // Select grades every candidate and picks the highest-scored qualifying one
-// for auto-grab. When nothing qualifies, Fallback is true and the caller
-// presents Ranked (all candidates, best bitrate score first) as the manual
-// pick list — ranked by this same score, never by release.ScoreCandidate.
+// for auto-grab. When nothing qualifies, the best StatusBelowFloor candidate
+// is a stopgap (Fallback false, Stopgap true). Only mislabeled, low-seeder,
+// and unknown grades leave Fallback true for the manual pick list.
 func Select(candidates []Candidate, tier quality.Tier, minSeeders int) Selection {
 	return selectRanked(candidates, tier, minSeeders, nil)
 }
@@ -463,15 +472,25 @@ func selectRanked(candidates []Candidate, tier quality.Tier, minSeeders int, cod
 	return selectionFromGrades(grades, codecOrder)
 }
 
-func selectionFromGrades(grades []Grade, codecOrder []string) Selection {
+func pickBestGrade(grades []Grade, codecOrder []string, ok func(Grade) bool) int {
 	pick := -1
 	for i := range grades {
-		if !grades[i].Qualified {
+		if !ok(grades[i]) {
 			continue
 		}
 		if pick == -1 || betterQualified(grades[i], grades[pick], codecOrder) {
 			pick = i
 		}
+	}
+	return pick
+}
+
+func selectionFromGrades(grades []Grade, codecOrder []string) Selection {
+	pick := pickBestGrade(grades, codecOrder, func(g Grade) bool { return g.Qualified })
+	stopgap := false
+	if pick == -1 {
+		pick = pickBestGrade(grades, codecOrder, func(g Grade) bool { return g.Status == StatusBelowFloor })
+		stopgap = pick != -1
 	}
 
 	ranked := make([]int, len(grades))
@@ -493,20 +512,22 @@ func selectionFromGrades(grades []Grade, codecOrder []string) Selection {
 		Grades:    grades,
 		PickIndex: pick,
 		Fallback:  pick == -1,
+		Stopgap:   stopgap,
 		Ranked:    ranked,
 	}
 }
 
 // SelectBest grades against each accepted tier, highest first, and
-// returns the first non-fallback Selection. A stored single-tier
+// returns the first Qualified Selection. A stored single-tier
 // preference is expanded by the caller via quality.TiersAtOrAbove; this
 // function only walks the set it is given. Empty/unrecognized accepted
 // lists expand from quality.Default so a corrupt settings value cannot
 // silently grab nothing.
 //
-// When every accepted tier misses, the returned Selection is the
-// lowest-tier Select (most permissive grades) so the manual pick list
-// explains the miss against the floor the operator actually allowed.
+// When every accepted tier misses a Qualified pick, the returned
+// Selection is the lowest-tier Select (most permissive grades): a
+// below-floor stopgap if one exists, otherwise Fallback for the
+// manual pick list.
 func SelectBest(candidates []Candidate, accepted []quality.Tier, minSeeders int) Selection {
 	filtered := make([]quality.Tier, 0, len(accepted))
 	seen := make(map[quality.Tier]bool, len(accepted))
@@ -526,7 +547,13 @@ func SelectBest(candidates []Candidate, accepted []quality.Tier, minSeeders int)
 	var last Selection
 	for _, t := range filtered {
 		last = Select(candidates, t, minSeeders)
-		if !last.Fallback {
+		// Claude 2026-10-21: skip stopgap so a lower accepted tier can still qualify.
+		// Reason: Select at High would otherwise return a Medium-bitrate file as
+		//   a stopgap and never walk Medium, where that same file is preferred.
+		// Troubleshooting: redownload parked "no candidate cleared the quality floor"
+		//   while a below-High release existed; preferred must still beat stopgap.
+		// Review if: accepted tiers are no longer walked highest-first.
+		if last.HasQualified() {
 			return last
 		}
 	}

@@ -34,6 +34,16 @@ const contentBelowFloorReason = "the downloaded video is below the quality floor
 // actually meets, and that pass already includes the HDR/channel switch.
 const grabOriginSearchPick = "search-pick"
 
+// grabOriginQualityStopgap is grabs.origin for an unattended Movies/Series
+// auto-grab that kept the best honest below-floor release. Import keeps the
+// file (min/max resolution and mislabel still reject). upgrade_watch turns on
+// so the sixth retry-cycle pass can replace it with preferred.
+const grabOriginQualityStopgap = "quality-stopgap"
+
+func keepBelowFloorOrigin(origin string) bool {
+	return origin == grabOriginSearchPick || origin == grabOriginQualityStopgap
+}
+
 func refuseImportBelowFloor(ctx context.Context, libStore *library.Store, settingsStore *settings.Store, sess *mode.Session, g *grabs.Grab, videoPath string, prober dedup.Prober) error {
 	if g == nil || g.Mode == mode.Adult {
 		return nil
@@ -43,7 +53,6 @@ func refuseImportBelowFloor(ctx context.Context, libStore *library.Store, settin
 	//   the bitrate floor, and the alternate search never kept the file.
 	// Troubleshooting: journal "import: search-pick kept"; origin stays
 	//   empty on drain/auto-grab, which still returns ErrBelowQualityFloor.
-	// Review if: Discover one-click Grab should share this exemption.
 	// Related files: internal/api/search.go grabHandler; searchPickLibraryTier.
 	if g.Origin == grabOriginSearchPick {
 		return nil
@@ -65,23 +74,34 @@ func refuseImportBelowFloor(ctx context.Context, libStore *library.Store, settin
 	if !gr.BitrateKnown {
 		return nil
 	}
-	switch gr.Status {
-	case autograb.StatusBelowFloor, autograb.StatusMislabeled:
+	// Claude 2026-10-21: keep an honest below-floor stopgap.
+	// Reason: redownload deleted the only available NZB for missing the
+	//   bitrate floor; preferred is hunted later via upgrade-watch.
+	// Troubleshooting: journal "import: quality-stopgap kept"; origin is
+	//   quality-stopgap from RunAutoGrab. Min/max resolution still reject.
+	// Review if: stopgap should also keep StatusMislabeled (it must not).
+	// Related files: grabOriginQualityStopgap; enableUpgradeWatchAfterStopgap.
+	if gr.Status == autograb.StatusBelowFloor && g.Origin == grabOriginQualityStopgap {
+		log.Printf("import: quality-stopgap kept file=%q title=%q status=%s score=%.2fMbps floor=%.2fMbps",
+			filepath.Base(videoPath), g.Title, gr.Status, gr.Score, gr.FloorMbps)
+		return nil
+	}
+	if gr.Status == autograb.StatusBelowFloor || gr.Status == autograb.StatusMislabeled {
 		log.Printf("import: below quality floor file=%q title=%q status=%s score=%.2fMbps floor=%.2fMbps implied=%.2fMbps runtime=%.0fs size=%d codec=%s res=%d",
 			filepath.Base(videoPath), g.Title, gr.Status, gr.Score, gr.FloorMbps, gr.ImpliedMbps,
 			c.RuntimeSeconds, c.SizeBytes, c.Codec, c.Resolution)
 		return fmt.Errorf("%w: %w", usenet.ErrContentUnusable, autograb.ErrBelowQualityFloor)
-	default:
-		return nil
 	}
+	return nil
 }
 
 // searchPickLibraryTier is the library quality_tier for one imported video.
-// Search-screen picks that miss the title floor are stamped with the highest
-// tier they actually meet (Low when they meet none), so upgrade-watch can
-// replace them. Every other grab keeps fallback, which is the mode floor.
+// Search-screen picks and quality-stopgap grabs that miss the title floor are
+// stamped with the highest tier they actually meet (Low when they meet none),
+// so upgrade-watch can replace them. Every other grab keeps fallback, which
+// is the mode floor.
 func searchPickLibraryTier(ctx context.Context, libStore *library.Store, settingsStore *settings.Store, sess *mode.Session, g *grabs.Grab, videoPath string, prober dedup.Prober, fallback string) string {
-	if g == nil || g.Origin != grabOriginSearchPick || g.Mode == mode.Adult {
+	if g == nil || !keepBelowFloorOrigin(g.Origin) || g.Mode == mode.Adult {
 		return fallback
 	}
 	c, ok := importQualityCandidate(ctx, libStore, sess, g, videoPath, prober)
@@ -116,9 +136,31 @@ func searchPickLibraryTier(ctx context.Context, libStore *library.Store, setting
 	//   medium; upgrade-watch then lists the episode.
 	// Review if: episode rows store probed Mbps and the watch reads that.
 	// Related files: fileNeedsQualityUpgrade; grabOriginSearchPick.
-	log.Printf("import: search-pick kept file=%q title=%q status=%s score=%.2fMbps floor=%.2fMbps stamped=%s",
-		filepath.Base(videoPath), g.Title, gr.Status, gr.Score, gr.FloorMbps, met)
+	log.Printf("import: %s kept file=%q title=%q status=%s score=%.2fMbps floor=%.2fMbps stamped=%s",
+		g.Origin, filepath.Base(videoPath), g.Title, gr.Status, gr.Score, gr.FloorMbps, met)
 	return string(met)
+}
+
+func enableUpgradeWatchAfterStopgap(ctx context.Context, libStore *library.Store, g *grabs.Grab, movieID, seriesID int64) {
+	if libStore == nil || g == nil || g.Origin != grabOriginQualityStopgap {
+		return
+	}
+	switch g.Mode {
+	case mode.Movies:
+		if movieID == 0 {
+			return
+		}
+		if err := libStore.SetItemUpgradeWatch(ctx, movieID, true); err != nil {
+			log.Printf("import: enabling upgrade-watch on movie %d: %v", movieID, err)
+		}
+	case mode.Series:
+		if seriesID == 0 {
+			return
+		}
+		if err := libStore.SetSeriesUpgradeWatch(ctx, seriesID, true); err != nil {
+			log.Printf("import: enabling upgrade-watch on series %d: %v", seriesID, err)
+		}
+	}
 }
 
 func importQualityCandidate(ctx context.Context, libStore *library.Store, sess *mode.Session, g *grabs.Grab, videoPath string, prober dedup.Prober) (autograb.Candidate, bool) {

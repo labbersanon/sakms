@@ -415,9 +415,10 @@ func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, stor
 	cands := buildAutoGrabCandidates(releases, runtimeSeconds, neutralizeSeasonPacks)
 	sel := selectAutoGrabBest(ctx, libStore, settingsStore, sess, m, req.TMDBID, 0, cands)
 
-	// Fallback: nothing cleared the floor → hand back the ranked pick list, no
-	// grab attempted (never "grab the least-bad option").
-	if sel.Fallback {
+	// Fallback: nothing cleared the floor and nothing is an honest stopgap
+	// (or Adult, which still uses the pick list). Movies/Series dispatch a
+	// below-floor stopgap and stamp origin=quality-stopgap.
+	if sel.Fallback || (sel.Stopgap && m == mode.Adult) {
 		return nil, true, false, rankedAutoGrabCandidates(sel, releases), "nothing cleared the quality floor automatically — pick one below", nil
 	}
 
@@ -493,7 +494,8 @@ func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, stor
 		}
 		created.DownloadGID = gid
 	}
+	stampQualityStopgapOrigin(ctx, grabsStore, &created, sel)
 
 	dto := toDTOGrab(created)
-	return &dto, false, false, nil, "auto-grabbed " + picked.Title, nil
+	return &dto, false, false, nil, autoGrabbedMessage(picked.Title, sel.Stopgap), nil
 }

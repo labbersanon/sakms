@@ -12510,3 +12510,24 @@ status stays active.
 | `internal/usenetsearch/namefix.go` | BODY before PreDB/parhash; skip hex ByFilename; shelve rar5-enc |
 | `internal/usenetsearch/namefix_test.go` | mkv-first due; BODY order; filename skip; rar5-enc shelve |
 | `docs/usenet-nntp-native.md` | phase order and due-queue ranks |
+
+## 2026-10-21 — Keep a below-floor stopgap and auto-upgrade to preferred
+
+**Problem:** A redownload was deleted at import (`below quality floor`) whenever the only available NZB missed the quality-slider floor, so the title stayed empty.
+**Root cause:** `SelectBest` / `selectionFromGrades` treated `StatusBelowFloor` as a hard miss (`Fallback`), and `refuseImportBelowFloor` deleted the file. `upgrade_watch` stayed off unless the operator flipped it.
+**Fix:** When nothing Qualified, pick the best honest `StatusBelowFloor` as a stopgap (`Fallback=false`, `Stopgap=true`, grade stays unqualified). Movies/Series unattended and operator auto-grab dispatch it with `origin=quality-stopgap`. Import keeps that origin (min/max resolution and mislabel still reject), stamps the met tier, and turns `upgrade_watch` on. Upgrade-watch and Adult still refuse stopgaps so the hunt cannot re-dispatch the same below-floor NZB. Preferred still wins: `SelectBest` walks lower accepted tiers before keeping a High stopgap; later search phases still run after a stopgap in case preferred appears.
+**Outcome:** `TestMinScoreFloorStopgap`, `TestRunAutoGrab_StopgapDispatchesBelowFloor`, `TestRunAutoGrab_QualityWatchRefusesStopgap`, `TestRefuseImportBelowFloor_QualityStopgapKeptAndStamped`. Discover availability cells still require Qualified.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/autograb/autograb.go` | stopgap pick; SelectBest skips stopgap to try lower tiers |
+| `internal/autograb/autograb_test.go` | stopgap vs preferred vs mislabel |
+| `internal/api/autograb_shared.go` | dispatch stopgap except quality-watch/Adult; stamp origin |
+| `internal/api/autograb.go` / `autograb_batch.go` | operator/batch stopgap message |
+| `internal/api/import_quality.go` | keep quality-stopgap; stamp met tier; enable watch |
+| `internal/api/import.go` | call enableUpgradeWatchAfterStopgap |
+| `internal/api/discover_availability.go` | grid still Qualified-only |
+| `frontend/src/screens/settings/Library.tsx` | floor is preferred, not a hard reject |
+| `frontend/src/components/TitleQualityPrefs.tsx` | auto-watch copy |

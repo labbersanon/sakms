@@ -290,5 +290,8 @@ describe("Settings → Library — quality prefs: Rename Undo depth", () => {
     expect(
       await screen.findByText(/Medium at 480p is a lower Mbps bar/i),
     ).toBeInTheDocument();
+    expect(
+      await screen.findByText(/keep the best honest below-floor release/i),
+    ).toBeInTheDocument();
   });
 });

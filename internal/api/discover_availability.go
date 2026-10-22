@@ -578,7 +578,9 @@ func selectAvailabilityCandidate(candidates []autograb.Candidate, releases []pro
 	}
 
 	sel := autograb.Select(subCandidates, tier, minSeeders)
-	if sel.Fallback {
+	// Stopgap is a grab-time keep, not an availability-grid qualify. A
+	// below-floor release must not light Medium/High cells.
+	if !sel.HasQualified() {
 		logAvailabilityRejections(tier, protocol, subReleases, sel.Grades)
 		for _, g := range sel.Grades {
 			rejections.add(g.Status)

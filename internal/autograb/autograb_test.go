@@ -277,13 +277,16 @@ func TestSelectBestTriesHighestAcceptedTierFirst(t *testing.T) {
 	}
 
 	onlyMedium := SelectBest([]Candidate{mediumOnly}, []quality.Tier{quality.Medium, quality.High}, 0)
-	if onlyMedium.Fallback || onlyMedium.Grades[onlyMedium.PickIndex].Candidate.Title != "medium-only" {
-		t.Fatalf("when High misses, SelectBest must fall through to Medium, got fallback=%v pick=%+v", onlyMedium.Fallback, onlyMedium)
+	if onlyMedium.Fallback || onlyMedium.Stopgap || !onlyMedium.HasQualified() || onlyMedium.Grades[onlyMedium.PickIndex].Candidate.Title != "medium-only" {
+		t.Fatalf("Medium+High must qualify at Medium, not stopgap at High, got fallback=%v stopgap=%v pick=%+v", onlyMedium.Fallback, onlyMedium.Stopgap, onlyMedium)
 	}
 
 	highOnly := SelectBest([]Candidate{mediumOnly}, []quality.Tier{quality.High}, 0)
-	if !highOnly.Fallback {
-		t.Fatal("a Medium-only candidate must not qualify when High is the only accepted tier")
+	if highOnly.Fallback || !highOnly.Stopgap || highOnly.HasQualified() {
+		t.Fatalf("a Medium-only candidate must be a stopgap when High is the only accepted tier, got fallback=%v stopgap=%v pick=%+v", highOnly.Fallback, highOnly.Stopgap, highOnly)
+	}
+	if highOnly.Grades[highOnly.PickIndex].Qualified || highOnly.Grades[highOnly.PickIndex].Status != StatusBelowFloor {
+		t.Fatalf("stopgap grade must stay below-floor, got %+v", highOnly.Grades[highOnly.PickIndex])
 	}
 
 	empty := SelectBest([]Candidate{highOk}, nil, 0)
@@ -292,10 +295,10 @@ func TestSelectBestTriesHighestAcceptedTierFirst(t *testing.T) {
 	}
 }
 
-// TestMinScoreFloorFallback proves the fallback-to-manual-pick-list signal:
-// when nothing clears the floor, Fallback is true, PickIndex is -1, and Ranked
-// is ordered by the SAME bitrate score (not release.ScoreCandidate).
-func TestMinScoreFloorFallback(t *testing.T) {
+// TestMinScoreFloorStopgap proves that honest below-floor grades are kept as
+// a stopgap (best Score) instead of parking. Ranked is still ordered by the
+// SAME bitrate score (not release.ScoreCandidate).
+func TestMinScoreFloorStopgap(t *testing.T) {
 	cands := []Candidate{
 		// All below the 10 Mbps High/1080p floor after padding, different scores.
 		{Title: "a", Protocol: "usenet", SizeBytes: bytesForMbps(8, testRuntime), RuntimeSeconds: testRuntime, Resolution: 1080, Codec: "x264"},  // padded 6.4
@@ -303,8 +306,11 @@ func TestMinScoreFloorFallback(t *testing.T) {
 		{Title: "c", Protocol: "usenet", SizeBytes: bytesForMbps(5, testRuntime), RuntimeSeconds: testRuntime, Resolution: 1080, Codec: "x264"},  // padded 4.0
 	}
 	sel := Select(cands, quality.High, 0)
-	if !sel.Fallback || sel.PickIndex != -1 {
-		t.Fatalf("expected fallback (nothing qualifies): fallback=%v pick=%d", sel.Fallback, sel.PickIndex)
+	if sel.Fallback || !sel.Stopgap || sel.PickIndex != 1 {
+		t.Fatalf("expected stopgap pick b: fallback=%v stopgap=%v pick=%d", sel.Fallback, sel.Stopgap, sel.PickIndex)
+	}
+	if sel.HasQualified() || sel.Grades[sel.PickIndex].Qualified {
+		t.Fatal("stopgap must not be marked qualified")
 	}
 	// Ranked by bitrate score desc: b (8.8) > a (6.4) > c (4.0).
 	want := []int{1, 0, 2}
@@ -312,6 +318,19 @@ func TestMinScoreFloorFallback(t *testing.T) {
 		if sel.Ranked[i] != idx {
 			t.Fatalf("Ranked = %v, want %v (by bitrate score, not ScoreCandidate)", sel.Ranked, want)
 		}
+	}
+}
+
+func TestStopgapSkipsMislabeledAndLowSeeders(t *testing.T) {
+	cands := []Candidate{
+		// 2160p at 1 Mbps is mislabeled (below 0.4× Low/2160).
+		{Title: "fake", Protocol: "usenet", SizeBytes: bytesForMbps(1, testRuntime), RuntimeSeconds: testRuntime, Resolution: 2160, Codec: "x264"},
+		{Title: "thin", Protocol: "torrent", Seeders: 1, SizeBytes: bytesForMbps(20, testRuntime), RuntimeSeconds: testRuntime, Resolution: 1080, Codec: "av1"},
+		{Title: "unknown", Protocol: "usenet", SizeBytes: 0, RuntimeSeconds: testRuntime, Resolution: 1080, Codec: "x264"},
+	}
+	sel := Select(cands, quality.High, 0)
+	if !sel.Fallback || sel.Stopgap || sel.PickIndex != -1 {
+		t.Fatalf("mislabeled/low-seeders/unknown must stay fallback, got fallback=%v stopgap=%v pick=%d", sel.Fallback, sel.Stopgap, sel.PickIndex)
 	}
 }
 
@@ -548,8 +567,11 @@ func TestSelectBestByResolutionUsesPerRungFloor(t *testing.T) {
 	}
 
 	allMedium := SelectBestByResolution([]Candidate{dvdrip}, AcceptedFromFloors(UniformFloors(quality.Medium)), 0)
-	if !allMedium.Fallback {
-		t.Fatal("a Medium-everywhere map must still reject the Honey-Mousers-sized DVDRip")
+	if allMedium.HasQualified() {
+		t.Fatal("a Medium-everywhere map must not qualify the Honey-Mousers-sized DVDRip")
+	}
+	if !allMedium.Stopgap || allMedium.Grades[allMedium.PickIndex].Candidate.Title != "short-dvdrip" {
+		t.Fatalf("honest below-floor DVDRip must be a stopgap, fallback=%v stopgap=%v pick=%+v", allMedium.Fallback, allMedium.Stopgap, allMedium)
 	}
 }
 

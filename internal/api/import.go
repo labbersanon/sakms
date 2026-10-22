@@ -320,13 +320,19 @@ func importGrabMovies(ctx context.Context, libStore *library.Store, g *grabs.Gra
 	} else {
 		changes = []mode.PathChange{{Path: destPath, Kind: mode.Created}}
 	}
-	if _, err := libStore.Upsert(ctx, library.Item{
+	item, err := libStore.Upsert(ctx, library.Item{
 		Mode: mode.Movies, TMDBID: g.TMDBID, Title: g.Title, Year: year,
 		FilePath: destPath, RootFolderPath: g.RootFolderPath,
 		Size: library.FileSize(destPath), QualityTier: tier,
-	}); err != nil {
+	})
+	if err != nil {
 		return changes, fmt.Errorf("file relocated but recording it in the library failed: %w", err)
 	}
+	// Claude 2026-10-21: stopgap import turns upgrade-watch on.
+	// Reason: preferred was missing at grab time; sixth retry-cycle pass hunts it.
+	// Troubleshooting: library_items.upgrade_watch after origin=quality-stopgap.
+	// Review if: operator can opt out of auto-watch on stopgap keep.
+	enableUpgradeWatchAfterStopgap(ctx, libStore, g, item.ID, 0)
 	changes = append(changes, retireReplacedMovieFile(ctx, libStore, priorPath, destPath)...)
 	// Claude 2026-09-23: persist poster_url on import (DB only; Jellyfin independent).
 	ensureImportPoster(ctx, libStore, sess, mode.Movies, g.TMDBID)
@@ -455,6 +461,7 @@ func importGrabSeries(ctx context.Context, libStore *library.Store, g *grabs.Gra
 		// Review if: Organize Rename is wired to consume these leftover dirs.
 		return nil, fmt.Errorf("%w (%d video file(s))", errSeriesImportNoEpisodeIdentity, len(videoPaths))
 	}
+	enableUpgradeWatchAfterStopgap(ctx, libStore, g, 0, series.ID)
 	// Claude 2026-09-23: persist poster_url on import (DB only; Jellyfin independent).
 	ensureImportPoster(ctx, libStore, sess, mode.Series, g.TMDBID)
 	return changes, nil

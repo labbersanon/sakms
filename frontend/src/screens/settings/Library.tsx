@@ -552,12 +552,18 @@ export const QualityPrefsSection: Component<{ mode: () => Mode }> = (props) => {
         </Show>
         <SaveStatus text={status.status().text} error={status.status().error} />
       </div>
+      {/* Claude 2026-10-21: stopgap copy — floor is preferred, not a hard reject.
+          Reason: redownload deleted below-floor files; keep + upgrade-watch instead.
+          Troubleshooting: Settings → Library quality help text.
+          Review if: Adult also keeps a below-floor auto-grab. */}
       <Muted class="mt-2">
         The quality slider is the accepted band (floor through ceiling).
         Auto-grab compares each release to that floor’s bitrate at the
         release’s resolution — Medium at 480p is a lower Mbps bar than
-        Medium at 1080p. The resolution slider is a hard min/max; a full
-        span (480p–2160p) leaves both open. Auto-grab tries accepted tiers
+        Medium at 1080p. If nothing meets the floor, Movies and Series keep
+        the best honest below-floor release and watch for a preferred
+        upgrade. The resolution slider is a hard min/max; a full span
+        (480p–2160p) leaves both open. Auto-grab tries accepted tiers
         highest first. Protocol is the Discover popup’s default pick when
         both are available; it still falls back to whichever protocol
         actually has a release. Undoable recent Applies (1–100) is how many

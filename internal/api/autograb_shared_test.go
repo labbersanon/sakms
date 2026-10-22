@@ -748,3 +748,86 @@ func TestRunAutoGrab_MinResolutionDoesNotDispatchDroppedRelease(t *testing.T) {
 		t.Fatalf("dispatched %s (%s), want uhd — min-res filter desynced release indices", picked.GUID, picked.Title)
 	}
 }
+
+func belowFloorRelease() prowlarr.Release {
+	r := qualifyingRelease()
+	r.GUID = "below"
+	r.Title = "Some.Movie.2023.1080p.WEB-DL.x264-GROUP"
+	// ~3 Mbps implied at 6000s → padded 2.4 vs High/1080 floor 10; above the 0.8 mislabel line.
+	r.Size = 2_250_000_000
+	return r
+}
+
+func TestRunAutoGrab_StopgapDispatchesBelowFloor(t *testing.T) {
+	ctx := context.Background()
+	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
+	dl := newTestDownloader("gid-stopgap", t.TempDir())
+	setAutoGrabToggle(t, settingsStore, true)
+	if err := settingsStore.Set(ctx, qualityTierKey(mode.Movies), string(quality.High)); err != nil {
+		t.Fatal(err)
+	}
+	if err := settingsStore.Set(ctx, moviesLibraryRootFolderKey, "/movies"); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := RunAutoGrab(ctx,
+		AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore},
+		&mode.Session{Mode: mode.Movies, Downloader: dl, TMDB: releasedTMDBClient(t)},
+		AutoGrabRequest{
+			Mode: mode.Movies, Title: "Some Movie", TMDBID: 42,
+			Trigger:        TriggerRequest,
+			Releases:       []prowlarr.Release{belowFloorRelease()},
+			RuntimeSeconds: 6000,
+		})
+	if err != nil {
+		t.Fatalf("RunAutoGrab: %v", err)
+	}
+	if !out.Grabbed || out.NoMatch || !out.Selection.Stopgap {
+		t.Fatalf("expected a stopgap dispatch, got %+v", out)
+	}
+	if got := len(dl.List()); got != 1 {
+		t.Fatalf("expected one download-client add, got %d", got)
+	}
+	list, err := grabsStore.List(ctx, mode.Movies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Origin != grabOriginQualityStopgap {
+		t.Fatalf("origin = %+v, want %q", list, grabOriginQualityStopgap)
+	}
+}
+
+func TestRunAutoGrab_QualityWatchRefusesStopgap(t *testing.T) {
+	ctx := context.Background()
+	_, _, settingsStore, grabsStore, _, _, _, _, _, _ := testStores(t)
+	dl := newTestDownloader("gid-watch", t.TempDir())
+	setAutoGrabToggle(t, settingsStore, true)
+	if err := settingsStore.Set(ctx, qualityTierKey(mode.Movies), string(quality.High)); err != nil {
+		t.Fatal(err)
+	}
+	if err := settingsStore.Set(ctx, moviesLibraryRootFolderKey, "/movies"); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := RunAutoGrab(ctx,
+		AutoGrabDeps{SettingsStore: settingsStore, GrabsStore: grabsStore},
+		&mode.Session{Mode: mode.Movies, Downloader: dl, TMDB: releasedTMDBClient(t)},
+		AutoGrabRequest{
+			Mode: mode.Movies, Title: "Some Movie", TMDBID: 42,
+			Trigger:        TriggerQualityWatch,
+			Releases:       []prowlarr.Release{belowFloorRelease()},
+			RuntimeSeconds: 6000,
+		})
+	if err != nil {
+		t.Fatalf("RunAutoGrab: %v", err)
+	}
+	if !out.NoMatch || out.Grabbed {
+		t.Fatalf("upgrade-watch must park when only a stopgap exists, got %+v", out)
+	}
+	if got := len(dl.List()); got != 0 {
+		t.Fatalf("upgrade-watch dispatched %d download(s)", got)
+	}
+	if out.RetryReason != noQualifyingCandidateReason {
+		t.Errorf("retry reason = %q, want %q", out.RetryReason, noQualifyingCandidateReason)
+	}
+}

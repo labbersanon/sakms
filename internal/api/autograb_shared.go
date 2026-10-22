@@ -542,11 +542,13 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 	// Phase loop: try each phase in order, stop at the first qualifying result.
 	// out.Releases/out.Selection describe the LAST phase run (the one acted on),
 	// which is the qualifying one on a hit or the final phase on a total miss.
+	// A below-floor stopgap does not stop the loop: a later phase may still
+	// have preferred quality. If every phase misses, the first stopgap is kept.
 	var (
-		releases       []prowlarr.Release
-		runtimeSeconds float64
-		sel            autograb.Selection
-		nativePhase    bool
+		releases    []prowlarr.Release
+		sel         autograb.Selection
+		nativePhase bool
+		stopgap     phaseResult
 	)
 	for i, phase := range phases {
 		pr, err := scoreOnePhase(phase)
@@ -559,17 +561,36 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 			return AutoGrabOutcome{Status: http.StatusBadGateway, Err: err}, err
 		}
 		releases = pr.releases
-		runtimeSeconds = pr.runtimeSeconds
 		sel = pr.sel
 		nativePhase = pr.native
-		if !sel.Fallback || req.Releases != nil || i == len(phases)-1 {
+		if sel.HasQualified() || req.Releases != nil || i == len(phases)-1 {
+			if sel.Fallback && stopgap.sel.Stopgap {
+				releases = stopgap.releases
+				sel = stopgap.sel
+				nativePhase = stopgap.native
+			}
 			break
+		}
+		if sel.Stopgap && !stopgap.sel.Stopgap {
+			stopgap = pr
 		}
 		log.Printf("auto-grab: phase %d (%v) miss for %q — trying next phase", i+1, phase, req.Title)
 	}
-	_ = runtimeSeconds // retained for future scoreOnePhase callers if needed
 
 	out := AutoGrabOutcome{Selection: sel, Releases: releases, Status: http.StatusOK}
+
+	// Claude 2026-10-21: upgrade-watch and Adult keep preferred-only dispatch.
+	// Reason: a stopgap re-dispatch of the same below-floor NZB would loop
+	//   forever; Adult still uses the manual pick list on a floor miss.
+	// Troubleshooting: journal "auto-grab: refusing stopgap"; origin stays
+	//   upgrade-watch parked rather than quality-stopgap.
+	// Review if: Adult should keep a below-floor scene the way Movies/Series do.
+	if sel.Stopgap && refuseQualityStopgap(req) {
+		log.Printf("auto-grab: refusing stopgap for trigger=%s mode=%s %q", req.Trigger, req.Mode, req.Title)
+		sel.Fallback = true
+		sel.PickIndex = -1
+		out.Selection = sel
+	}
 
 	if sel.Fallback {
 		out.NoMatch = true
@@ -701,6 +722,7 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 			out.Status, out.Err = http.StatusInternalServerError, err
 			return out, err
 		}
+		stampQualityStopgapOrigin(ctx, deps.GrabsStore, relaunched, sel)
 		dto := toDTOGrab(*relaunched)
 		out.Grabbed, out.GrabID, out.Grab = true, relaunched.ID, &dto
 		return out, nil
@@ -724,6 +746,7 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 		}
 		created.DownloadGID = gid
 	}
+	stampQualityStopgapOrigin(ctx, deps.GrabsStore, &created, sel)
 
 	dto := toDTOGrab(created)
 	out.Grabbed, out.GrabID, out.Grab = true, created.ID, &dto
@@ -871,8 +894,26 @@ func parkGrabForRetry(ctx context.Context, deps AutoGrabDeps, id int64, reason s
 	return deps.GrabsStore.ParkWithBackoff(ctx, id, time.Now(), reason)
 }
 
+// refuseQualityStopgap is true when a below-floor pick must stay parked:
+// upgrade-watch hunts preferred only, and Adult still uses the pick list.
+func refuseQualityStopgap(req AutoGrabRequest) bool {
+	return req.Trigger == TriggerQualityWatch || req.Mode == mode.Adult
+}
+
+func stampQualityStopgapOrigin(ctx context.Context, grabsStore *grabs.Store, g *grabs.Grab, sel autograb.Selection) {
+	if !sel.Stopgap || grabsStore == nil || g == nil || g.ID == 0 {
+		return
+	}
+	if err := grabsStore.SetOrigin(ctx, g.ID, grabOriginQualityStopgap); err != nil {
+		log.Printf("auto-grab: marking grab %d as quality-stopgap: %v", g.ID, err)
+		return
+	}
+	g.Origin = grabOriginQualityStopgap
+}
+
 // qualifiedCandidateOrder returns PickIndex first, then other Ranked indices
-// that cleared the quality floor (Qualified). Used by the precheck fallback loop.
+// that cleared the quality floor (Qualified), or other honest below-floor
+// grades when the pick itself is a stopgap. Used by the precheck fallback loop.
 func qualifiedCandidateOrder(sel autograb.Selection) []int {
 	if sel.PickIndex < 0 {
 		return nil
@@ -883,11 +924,14 @@ func qualifiedCandidateOrder(sel autograb.Selection) []int {
 		if seen[idx] {
 			continue
 		}
-		if idx < 0 || idx >= len(sel.Grades) || !sel.Grades[idx].Qualified {
+		if idx < 0 || idx >= len(sel.Grades) {
 			continue
 		}
-		seen[idx] = true
-		out = append(out, idx)
+		g := sel.Grades[idx]
+		if g.Qualified || (sel.Stopgap && g.Status == autograb.StatusBelowFloor) {
+			seen[idx] = true
+			out = append(out, idx)
+		}
 	}
 	return out
 }

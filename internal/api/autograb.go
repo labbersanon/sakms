@@ -73,8 +73,10 @@ func indexerOrFeed(indexer string) string {
 //   - sends the single highest-scored qualifying release straight to the
 //     download client (no human release-pick — that IS auto-grab), recording
 //     it in grabsStore exactly like grabHandler; or
-//   - when nothing clears the floor, returns the ranked candidate list for the
-//     frontend's manual pick fallback (never "grab the least-bad option").
+//   - when nothing clears the floor, Movies/Series dispatch the best honest
+//     below-floor stopgap and turn on upgrade-watch; otherwise the ranked
+//     candidate list is returned for a manual pick (mislabeled / low-seeders /
+//     Adult / upgrade-watch preferred-only).
 //
 // Exactly one release is ever grabbed per call: no bulk action, the same
 // staged-single-mutation invariant every other SAK workflow keeps.
@@ -242,7 +244,7 @@ func autoGrabHandler(httpClient *http.Client, connStore *connections.Store, scSt
 
 		writeAutoGrabJSON(w, apidto.AutoGrabResponse{
 			Grabbed: true,
-			Message: "auto-grabbed " + out.Releases[out.Selection.PickIndex].Title,
+			Message: autoGrabbedMessage(out.Releases[out.Selection.PickIndex].Title, out.Selection.Stopgap),
 			Grab:    out.Grab,
 		})
 	}
@@ -648,4 +650,12 @@ func toDTOGrab(g grabs.Grab) apidto.Grab {
 func writeAutoGrabJSON(w http.ResponseWriter, resp apidto.AutoGrabResponse) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+func autoGrabbedMessage(title string, stopgap bool) string {
+	msg := "auto-grabbed " + title
+	if stopgap {
+		msg += " (below preferred quality — watching for an upgrade)"
+	}
+	return msg
 }

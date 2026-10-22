@@ -12695,3 +12695,18 @@ status stays active.
 | `internal/usenetsearch/namefix_test.go` | parallel 4-set fetch; leftover test sequential |
 | `internal/usenetsearch/crawler_admission_test.go` | BodyHead mutex |
 | `docs/usenet-nntp-native.md` | BODY pool 4; ErrBusy yields |
+
+## 2026-10-22 — Park parhash/PreDB-only while BODY leftover
+
+**Problem:** After the 4-worker BODY pool, live still spent 20s parhash + 20s PreDB LIKE (`phase=predb leftover=198`) between 90s BODY passes with leftover=22.
+**Root cause:** Run() always continued to parhash seed BODY and PreDB-only after the BODY deadline. Parhash competes for NNTP; LIKE is local but 20s.
+**Fix:** When `BodyLeftover>0`, skip parhash and PreDB-only and log `namefix park`. They run again when leftover drains (or BODY finishes the queued 40). Do not put PreDB before BODY. 90s / 8s / workers=4 unchanged.
+**Outcome:** `TestNameFix_BodyLeftoverOnDeadline` asserts HashHits=0 when leftover>0. Same-pass dump/IRC still runs when leftover=0 (`TestNameFix_PreDBOnlyBeforeSlowBODY`).
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix.go` | park parhash/predb when BodyLeftover>0 |
+| `internal/usenetsearch/namefix_test.go` | leftover parks PreDB-only hash hit |
+| `docs/usenet-nntp-native.md` | park parhash/predb on BODY leftover |

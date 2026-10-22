@@ -367,11 +367,20 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 	if err := n.runBodyPhase(ctx, body, &res, done, keyOf); err != nil {
 		return res, err
 	}
-	// Named PAR2 donors after pending BODY so hash.mkv FileDesc runs first.
-	if err := run(parSeed, "parhash"); err != nil {
+	// Claude 2026-10-22: park parhash/PreDB-only while BODY leftover remains.
+	// Reason: live leftover=22 after 20 FileDesc renames still spent 20s
+	//   parhash BODY + 20s PreDB LIKE (predb leftover=198) before the next
+	//   90s BODY. Parhash competes for NNTP; LIKE is local but 20s.
+	// Troubleshooting: o2cli grep "namefix park"; phase=predb leftover=
+	//   after body leftover>0 → this skip missing. Review if: leftover
+	//   stays >0 for days and dump/IRC titles never get a PreDB-only pass
+	//   (then run predb on the skip-crawl cap loop).
+	if res.BodyLeftover > 0 {
+		log.Printf("usenetsearch: namefix park parhash=%d predb=%d leftover=%d",
+			len(parSeed), len(preOnly), res.BodyLeftover)
+	} else if err := run(parSeed, "parhash"); err != nil {
 		return res, err
-	}
-	if err := run(preOnly, "predb"); err != nil {
+	} else if err := run(preOnly, "predb"); err != nil {
 		return res, err
 	}
 	if res.Sets > 0 || res.Finalized > 0 || res.BodyFetches > 0 || res.Renamed > 0 {

@@ -1871,15 +1871,29 @@ func TestNameFixPhaseBudget_BodyIs90s(t *testing.T) {
 }
 
 func TestNameFix_BodyLeftoverOnDeadline(t *testing.T) {
+	const title = "Parked.Predb.2022.1080p.WEB-DL.x264-GRP"
+	const fire = "alt.binaries.boneless"
+	sum := md5.Sum([]byte(title))
+	h := hex.EncodeToString(sum[:])
 	a := obfuscatedSet("la", nfHash, 1, 5)
 	b := obfuscatedSet("lb", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", len(a)+1, 5)
-	f := newNFFixture(t, append(a, b...), nil)
+	bo := obfuscatedSet("bo", h, len(a)+len(b)+1, 5)
+	rows := append(a, b...)
+	f := newNFFixture(t, append(rows, bo...), nil)
 	f.nf.BodyWorkers = 1
 	f.nf.PassBudget = 50 * time.Millisecond
 	f.src.bodyDelay = 200 * time.Millisecond
 	f.src.bodies["lapar2"] = par2Body(nfHash + ".part01.rar")
 	f.src.bodies["lbpar2"] = par2Body("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.part01.rar")
+	f.nf.PreDB = &fakePreDB{hashes: map[string]PreDBHit{h: {Title: title}}}
 	f.crawlAndRecompute(t)
+	boKey := ObfKey(nfGroup, "poster@obf", bo[0].Subject)
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET group_name=? WHERE release_key=?`, fire, boKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_headers SET group_name=? WHERE release_name=?`, fire, boKey); err != nil {
+		t.Fatal(err)
+	}
 	res, err := f.nf.Run(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -1889,6 +1903,9 @@ func TestNameFix_BodyLeftoverOnDeadline(t *testing.T) {
 	}
 	if !res.Advanced() {
 		t.Fatalf("leftover must count as advanced: %+v", res)
+	}
+	if res.HashHits != 0 {
+		t.Fatalf("BODY leftover must park PreDB-only: %+v", res)
 	}
 }
 

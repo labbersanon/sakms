@@ -12531,3 +12531,17 @@ status stays active.
 | `internal/api/discover_availability.go` | grid still Qualified-only |
 | `frontend/src/screens/settings/Library.tsx` | floor is preferred, not a hard reject |
 | `frontend/src/components/TitleQualityPrefs.tsx` | auto-watch copy |
+
+## 2026-10-21 — ci-local Postgres shm so parallel clones do not crash
+
+**Problem:** `scripts/ci-local.sh` `go test ./...` died with SQLSTATE 53100 (`could not resize shared memory segment … No space left on device`) then crash recovery.
+**Root cause:** sakms-pg had Docker’s 64MiB `/dev/shm` and `max_connections=400`. Parallel `CREATE DATABASE … TEMPLATE` clones allocate POSIX DSM segments there.
+**Fix:** Create/recreate sakms-pg with `--shm-size=1g` and `max_connections=400`. Undersized or stuck containers are replaced instead of `pg_isready` on a recovering postmaster.
+**Outcome:** `bash -n scripts/ci-local.sh`. Full `go test ./...` re-run after recreate.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `scripts/ci-local.sh` | `--shm-size=1g`; recreate if ShmSize < 256MiB |
+| `internal/dbtest/dbtest.go` | skip-message docker one-liner matches |

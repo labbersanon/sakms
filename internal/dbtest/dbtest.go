@@ -89,7 +89,7 @@ func testDSN(t *testing.T) string {
 		if os.Getenv("SAKMS_TEST_DATABASE_URL_REQUIRED") == "1" || os.Getenv("CI") == "true" {
 			t.Fatal("SAKMS_TEST_DATABASE_URL is required in CI — start postgres and export it")
 		}
-		t.Skip("SAKMS_TEST_DATABASE_URL not set; e.g. docker run -d -e POSTGRES_PASSWORD=sakms -e POSTGRES_USER=sakms -e POSTGRES_DB=sakms -p 5433:5432 postgres:16-alpine")
+		t.Skip("SAKMS_TEST_DATABASE_URL not set; e.g. docker run -d --shm-size=1g -e POSTGRES_PASSWORD=sakms -e POSTGRES_USER=sakms -e POSTGRES_DB=sakms -p 5433:5432 postgres:16-alpine postgres -c max_connections=400")
 	}
 	return dsn
 }

@@ -614,8 +614,10 @@ func grabReleaseFromItem(idx Indexer, it rssItem) (Release, bool) {
 	}, true
 }
 
-// GetNZBID is the t=get id. Catalog RSS guids are details URLs
-// (NZBGeek geekseek.php?guid=, NZB.life /details/hash), not the id.
+// Claude 2026-10-23: t=get id is not the RSS <guid> URL.
+// Reason: catalog stores geekseek.php?guid= and /details/hash; t=get wants the hash.
+// Troubleshooting: newznab: No such item (300) on every On Demand get.
+// Review if: an indexer uses a third guid shape.
 func GetNZBID(guid string) string {
 	s := strings.TrimSpace(guid)
 	if s == "" {
@@ -625,14 +627,14 @@ func GetNZBID(guid string) string {
 	if err != nil || u.Host == "" {
 		return s
 	}
-	if g := strings.TrimSpace(u.Query().Get("guid")); g != "" {
+	q := u.Query()
+	if g := strings.TrimSpace(q.Get("guid")); g != "" {
 		return g
 	}
-	if g := strings.TrimSpace(u.Query().Get("id")); g != "" {
+	if g := strings.TrimSpace(q.Get("id")); g != "" {
 		return g
 	}
-	base := path.Base(u.Path)
-	if base != "" && base != "." && base != "/" {
+	if base := path.Base(u.Path); base != "." && base != "/" {
 		return base
 	}
 	return s

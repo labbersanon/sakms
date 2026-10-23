@@ -13068,3 +13068,17 @@ status stays active.
 | `internal/usenet/precheck.go` | `StatPayload` (2 workers) |
 | `internal/newznab/client.go` | `GetNZB` |
 | `cmd/sakms/main.go` | start crawler |
+
+## 2026-10-23 — On Demand t=get uses hash id from catalog GUID URLs
+
+**Problem:** Live On Demand `t=get` failed `No such item (300)` on every NZB.life row (~1/s `error`).
+**Root cause:** `newznab_catalog.guid` is a details URL (`geekseek.php?guid=`, `/details/hash`), passed as `t=get&id=`.
+**Fix:** `GetNZBID` takes the query `guid`/`id` or last path segment. `NextFromCatalog` retries `status=error` after new rows.
+**Outcome:** `TestGetNZBID_FromCatalogURLs`, `TestStore_NextFromCatalogRetriesError`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/newznab/client.go` | `GetNZBID` |
+| `internal/newznabondemand/store.go` | retry error rows |

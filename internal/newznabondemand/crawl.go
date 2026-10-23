@@ -9,14 +9,19 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/newznab"
-	"github.com/labbersanon/sakms/internal/release"
 	"github.com/labbersanon/sakms/internal/usenet"
 )
+
+// Claude 2026-10-23: lossless skip is raw implied Mbps, not a remux title token.
+// Reason: quality is bitrate. Matches autograb Lossless@2160 (70 Mbps x264-eq).
+// Review if: Settings lossless floor at 2160 changes.
+const onDemandLosslessMbps = 70
 
 const (
 	getInterval  = time.Second
@@ -114,9 +119,9 @@ func step(ctx context.Context, store *Store, client *newznab.Client, idxs []newz
 		}
 	}
 	// Claude 2026-10-23: requeue 7050-era skips that now fit 4K High.
-	// Reason: Omen/Hostage 1080p WEB-DLs were parked; remux stays skipped.
-	// Review if: OnDemandStatMaxSegments is lowered again.
-	row, ok, err = store.NextRequeueableSkip(ctx, usenet.OnDemandStatMaxSegments)
+	// Reason: Omen/Hostage 1080p WEB-DLs were parked. Remux is not a title skip.
+	// Review if: OnDemandStatMaxSegments or lossless Mbps is lowered.
+	row, ok, err = store.NextRequeueableSkip(ctx, usenet.OnDemandStatMaxSegments, onDemandLosslessMbps)
 	if err != nil {
 		return false, err
 	}
@@ -195,15 +200,19 @@ func fetchRow(ctx context.Context, store *Store, client *newznab.Client, idx new
 		NZBRelPath:      rel,
 		PayloadFiles:    a.Files,
 		PayloadSegments: a.Segments,
+		PayloadBytes:    a.Bytes,
 		Plan:            a.Plan,
 		UpdatedAt:       now,
+	}
+	if row.PayloadBytes <= 0 {
+		row.PayloadBytes = ref.Size
 	}
 	if !a.OK {
 		row.Status = StatusXMLRejected
 		log.Printf("newznab ondemand: xml-reject indexer=%s kind=%s reason=%s", ref.Indexer, ref.Kind, a.Reason)
 		return store.Save(ctx, row)
 	}
-	if skipOnDemandStat(ref.Title, a.Segments) {
+	if skipOnDemandStat(row.PayloadSegments, row.BitrateMbps) {
 		return skipStatBudget(ctx, store, row)
 	}
 	row.Status = StatusFetched
@@ -211,15 +220,15 @@ func fetchRow(ctx context.Context, store *Store, client *newznab.Client, idx new
 	return store.Save(ctx, row)
 }
 
-// Claude 2026-10-23: skip remux by title; size cap is 3h 4K High, not 12m.
-// Reason: 1080p remux (Mutiny 32810) is smaller than 4K High (~60k segs).
-// Troubleshooting: skip-stat on a WEB-DL under the cap → remux token false-positive.
-// Review if: Play streams remux.
-func skipOnDemandStat(title string, segs int) bool {
-	if !usenet.StatFitsDeadline(segs) {
+// Claude 2026-10-23: skip by size cap or lossless bitrate, never the title.
+// Reason: remux/2160p tokens are not quality. 70 Mbps is Lossless@2160.
+// Troubleshooting: skip-stat on a WEB-DL under the cap → bitrate was already lossless.
+// Review if: Play streams lossless.
+func skipOnDemandStat(segs int, mbps float64) bool {
+	if mbps >= onDemandLosslessMbps {
 		return true
 	}
-	return release.Parse(title).Source == "remux"
+	return !usenet.StatFitsDeadline(segs)
 }
 
 func skipStatBudget(ctx context.Context, store *Store, row Row) error {
@@ -233,7 +242,11 @@ func skipStatBudget(ctx context.Context, store *Store, row Row) error {
 // statRow STATs one fetched NZB. inconclusive means the caller should t=get
 // another catalog row instead of retrying this guid immediately.
 func statRow(ctx context.Context, store *Store, nntp *usenet.Manager, dataDir string, row Row, finder IMDBFinder) (inconclusive bool, err error) {
-	if skipOnDemandStat(row.Title, row.PayloadSegments) {
+	if err := resolveCatalogTMDB(ctx, store, finder, row); err != nil && !errors.Is(err, ErrTMDBUnset) {
+		return false, err
+	}
+	applyBitrate(ctx, store, finder, &row)
+	if skipOnDemandStat(row.PayloadSegments, row.BitrateMbps) {
 		return false, skipStatBudget(ctx, store, row)
 	}
 	nzb, err := loadNZB(dataDir, row.NZBRelPath)
@@ -267,10 +280,32 @@ func statRow(ctx context.Context, store *Store, nntp *usenet.Manager, dataDir st
 	if err := store.Save(ctx, row); err != nil {
 		return false, err
 	}
-	if err := resolveCatalogTMDB(ctx, store, finder, row); err != nil && !errors.Is(err, ErrTMDBUnset) {
-		return false, err
-	}
 	return false, nil
+}
+
+func applyBitrate(ctx context.Context, store *Store, finder IMDBFinder, row *Row) {
+	if row == nil || finder == nil || store == nil {
+		return
+	}
+	if row.PayloadBytes <= 0 {
+		row.PayloadBytes = store.CatalogSize(ctx, row.Indexer, row.GUID)
+	}
+	if row.PayloadBytes <= 0 {
+		return
+	}
+	_, tmdbID, _, err := store.CatalogIDs(ctx, row.Indexer, row.GUID)
+	if err != nil {
+		return
+	}
+	id, _ := strconv.Atoi(newznab.DigitsOnly(tmdbID))
+	if id <= 0 {
+		return
+	}
+	mins, err := finder.RuntimeMinutes(ctx, row.Kind, id)
+	if err != nil || mins <= 0 {
+		return
+	}
+	row.BitrateMbps = float64(row.PayloadBytes) * 8 / (float64(mins) * 60) / 1e6
 }
 
 func writeNZB(dataDir, indexer, guid string, data []byte) (string, error) {

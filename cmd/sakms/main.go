@@ -1126,6 +1126,28 @@ func (f *ondemandIMDBFinder) TVByTVDB(ctx context.Context, tvdbID int) (int, err
 	return c.FindTVByTVDBID(ctx, tvdbID)
 }
 
+func (f *ondemandIMDBFinder) RuntimeMinutes(ctx context.Context, kind string, tmdbID int) (int, error) {
+	c, err := f.client(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if tmdbID <= 0 {
+		return 0, nil
+	}
+	if kind == "series" {
+		d, err := c.TVDetails(ctx, tmdbID)
+		if err != nil {
+			return 0, err
+		}
+		return d.Runtime, nil
+	}
+	d, err := c.MovieDetails(ctx, tmdbID)
+	if err != nil {
+		return 0, err
+	}
+	return d.Runtime, nil
+}
+
 // settingInt64 reads an int64 settings scalar, returning def when unset/invalid.
 func settingInt64(ctx context.Context, settingsStore *settings.Store, key string, def int64) int64 {
 	v, err := settingsStore.Get(ctx, key)

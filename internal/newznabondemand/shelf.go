@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/labbersanon/sakms/internal/newznab"
-	"github.com/labbersanon/sakms/internal/release"
 )
 
 // Claude 2026-10-23: Discover On Demand shelf is verified rows only.
@@ -44,14 +43,15 @@ type ShelfTitle struct {
 }
 
 type shelfRow struct {
-	Indexer string
-	GUID    string
-	Kind    string
-	Title   string
-	ImdbID  string
-	TvdbID  string
-	TmdbID  string
-	Year    int
+	Indexer     string
+	GUID        string
+	Kind        string
+	Title       string
+	ImdbID      string
+	TvdbID      string
+	TmdbID      string
+	Year        int
+	BitrateMbps float64
 }
 
 func (s *Store) ListVerified(ctx context.Context, kind string) ([]ShelfTitle, error) {
@@ -64,7 +64,8 @@ func (s *Store) ListVerified(ctx context.Context, kind string) ([]ShelfTitle, er
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT o.indexer, o.guid, o.kind, o.title,
-			COALESCE(c.imdb_id, ''), COALESCE(c.tvdb_id, ''), COALESCE(c.tmdb_id, ''), COALESCE(c.year, 0)
+			COALESCE(c.imdb_id, ''), COALESCE(c.tvdb_id, ''), COALESCE(c.tmdb_id, ''), COALESCE(c.year, 0),
+			o.bitrate_mbps
 		FROM newznab_ondemand o
 		LEFT JOIN newznab_catalog c ON c.indexer = o.indexer AND c.guid = o.guid
 		WHERE o.status = $1 AND o.kind = $2
@@ -76,7 +77,7 @@ func (s *Store) ListVerified(ctx context.Context, kind string) ([]ShelfTitle, er
 	var raw []shelfRow
 	for rows.Next() {
 		var r shelfRow
-		if err := rows.Scan(&r.Indexer, &r.GUID, &r.Kind, &r.Title, &r.ImdbID, &r.TvdbID, &r.TmdbID, &r.Year); err != nil {
+		if err := rows.Scan(&r.Indexer, &r.GUID, &r.Kind, &r.Title, &r.ImdbID, &r.TvdbID, &r.TmdbID, &r.Year, &r.BitrateMbps); err != nil {
 			return nil, err
 		}
 		raw = append(raw, r)
@@ -125,10 +126,7 @@ func groupShelf(rows []shelfRow) []ShelfTitle {
 			grouped[key] = a
 			order = append(order, key)
 		}
-		label := QualityLabel(r.Title)
-		if label == "" {
-			label = "Unknown"
-		}
+		label := bitrateLabel(r.BitrateMbps)
 		if a.seenQual[label] {
 			continue
 		}
@@ -143,7 +141,7 @@ func groupShelf(rows []shelfRow) []ShelfTitle {
 	for _, key := range order {
 		t := grouped[key].title
 		sort.Slice(t.Qualities, func(i, j int) bool {
-			return qualityRank(t.Qualities[i].Label) < qualityRank(t.Qualities[j].Label)
+			return bitrateRank(t.Qualities[i].Label) > bitrateRank(t.Qualities[j].Label)
 		})
 		out = append(out, t)
 	}
@@ -201,35 +199,22 @@ func episodeKey(title string) string {
 	return season
 }
 
-func QualityLabel(title string) string {
-	info := release.Parse(title)
-	switch {
-	case info.Resolution >= 2160:
-		return "2160p"
-	case info.Resolution >= 1080:
-		return "1080p"
-	case info.Resolution >= 720:
-		return "720p"
-	case info.Resolution >= 480:
-		return "480p"
-	default:
-		return ""
+func bitrateLabel(mbps float64) string {
+	if mbps <= 0 {
+		return "Unknown"
 	}
+	return strconv.FormatFloat(mbps, 'f', 0, 64) + " Mbps"
 }
 
-func qualityRank(label string) int {
-	switch label {
-	case "2160p":
+func bitrateRank(label string) float64 {
+	if label == "" || label == "Unknown" {
 		return 0
-	case "1080p":
-		return 1
-	case "720p":
-		return 2
-	case "480p":
-		return 3
-	default:
-		return 9
 	}
+	n, err := strconv.ParseFloat(strings.TrimSuffix(label, " Mbps"), 64)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func DisplayTitle(raw string) string {

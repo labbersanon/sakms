@@ -27,6 +27,7 @@ type IMDBFinder interface {
 	MovieByIMDB(ctx context.Context, imdbID string) (int, error)
 	TVByIMDB(ctx context.Context, imdbID string) (int, error)
 	TVByTVDB(ctx context.Context, tvdbID int) (int, error)
+	RuntimeMinutes(ctx context.Context, kind string, tmdbID int) (int, error)
 }
 
 func resolveCatalogTMDB(ctx context.Context, store *Store, finder IMDBFinder, row Row) error {

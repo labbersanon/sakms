@@ -43,6 +43,17 @@ func (s *stubFinder) TVByTVDB(_ context.Context, tvdbID int) (int, error) {
 	return s.tvdb[tvdbID], nil
 }
 
+func (s *stubFinder) RuntimeMinutes(_ context.Context, kind string, tmdbID int) (int, error) {
+	s.calls = append(s.calls, "runtime")
+	if s.err != nil {
+		return 0, s.err
+	}
+	if tmdbID <= 0 {
+		return 0, nil
+	}
+	return 120, nil
+}
+
 func TestIMDBCandidates(t *testing.T) {
 	cases := []struct {
 		in   string

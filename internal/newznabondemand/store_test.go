@@ -135,8 +135,9 @@ func TestStore_StatSkippedIsNotRetried(t *testing.T) {
 	if _, ok, err := st.NextFetched(ctx); err != nil || ok {
 		t.Fatalf("skipped row must not STAT again ok=%v err=%v", ok, err)
 	}
-	if _, ok, err := st.NextRequeueableSkip(ctx, usenet.OnDemandStatMaxSegments); err != nil || ok {
-		t.Fatalf("remux skip must not requeue ok=%v err=%v", ok, err)
+	row, ok, err := st.NextRequeueableSkip(ctx, usenet.OnDemandStatMaxSegments, onDemandLosslessMbps)
+	if err != nil || !ok || row.GUID != "mutiny" {
+		t.Fatalf("remux under the cap requeues by size/bitrate row=%+v ok=%v err=%v", row, ok, err)
 	}
 }
 
@@ -151,9 +152,25 @@ func TestStore_RequeuesSizeSkipUnder4KHighCap(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	row, ok, err := st.NextRequeueableSkip(ctx, usenet.OnDemandStatMaxSegments)
+	row, ok, err := st.NextRequeueableSkip(ctx, usenet.OnDemandStatMaxSegments, onDemandLosslessMbps)
 	if err != nil || !ok || row.GUID != "omen" {
 		t.Fatalf("row=%+v ok=%v err=%v", row, ok, err)
+	}
+}
+
+func TestStore_DoesNotRequeueLosslessBitrate(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	ctx := context.Background()
+	st := NewStore(sqlDB)
+	if err := st.Save(ctx, Row{
+		Indexer: "newznab2", GUID: "big", Kind: newznabcatalog.KindMovies,
+		Title: "Some.Movie.2021.1080p.WEB-DL", Status: StatusStatSkipped, Streamable: true,
+		PayloadSegments: 1000, BitrateMbps: onDemandLosslessMbps,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := st.NextRequeueableSkip(ctx, usenet.OnDemandStatMaxSegments, onDemandLosslessMbps); err != nil || ok {
+		t.Fatalf("lossless bitrate must stay skipped ok=%v err=%v", ok, err)
 	}
 }
 

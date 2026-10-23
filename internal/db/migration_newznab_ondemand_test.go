@@ -50,3 +50,33 @@ func TestMigration0056NewznabOndemand(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestMigration0057OndemandBitrate(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	ctx := context.Background()
+	goose.SetBaseFS(migrationsFS)
+	if err := goose.SetDialect("postgres"); err != nil {
+		t.Fatalf("set dialect: %v", err)
+	}
+	if err := goose.DownTo(sqlDB, "migrations", 56); err != nil {
+		t.Fatalf("goose down to 56: %v", err)
+	}
+	var exists bool
+	if err := sqlDB.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_name = 'newznab_ondemand' AND column_name = 'bitrate_mbps'
+		)`).Scan(&exists); err != nil || exists {
+		t.Fatalf("bitrate_mbps exists=%v err=%v after down to 56", exists, err)
+	}
+	if err := goose.UpTo(sqlDB, "migrations", 57); err != nil {
+		t.Fatalf("goose up to 57: %v", err)
+	}
+	if err := sqlDB.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_name = 'newznab_ondemand' AND column_name = 'bitrate_mbps'
+		)`).Scan(&exists); err != nil || !exists {
+		t.Fatalf("bitrate_mbps exists=%v err=%v after 0057", exists, err)
+	}
+}

@@ -25,6 +25,7 @@ type Assessment struct {
 	Plan     SequencePlan
 	Files    int
 	Segments int
+	Bytes    int64
 }
 
 // AssessNZB decides whether an NZB can start-while-downloading.
@@ -48,6 +49,9 @@ func AssessNZB(nzb *NZB) Assessment {
 	for _, f := range payload {
 		plan, segs := filePlan(f)
 		out.Segments += segs
+		for _, s := range f.Segs {
+			out.Bytes += s.Bytes
+		}
 		if plan.Name == "" || len(plan.MsgIDs) == 0 {
 			continue
 		}

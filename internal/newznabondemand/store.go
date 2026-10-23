@@ -39,6 +39,8 @@ type Row struct {
 	StatChecked     int
 	StatMissing     int
 	Plan            usenet.SequencePlan
+	PayloadBytes    int64
+	BitrateMbps     float64
 	UpdatedAt       int64
 	VerifiedAt      int64
 }
@@ -49,6 +51,7 @@ type CatalogRef struct {
 	GUID    string
 	Kind    string
 	Title   string
+	Size    int64
 }
 
 // Store persists On Demand rows.
@@ -69,12 +72,12 @@ func (s *Store) NextFromCatalog(ctx context.Context) (CatalogRef, bool, error) {
 		return ref, false, nil
 	}
 	err := s.db.QueryRowContext(ctx, `
-		SELECT c.indexer, c.guid, c.kind, c.title
+		SELECT c.indexer, c.guid, c.kind, c.title, c.size
 		FROM newznab_catalog c
 		LEFT JOIN newznab_ondemand o ON o.indexer = c.indexer AND o.guid = c.guid
 		WHERE o.guid IS NULL OR o.status = $1
 		ORDER BY CASE WHEN o.guid IS NULL THEN 0 ELSE 1 END, c.ingested_at ASC, c.guid ASC
-		LIMIT 1`, StatusError).Scan(&ref.Indexer, &ref.GUID, &ref.Kind, &ref.Title)
+		LIMIT 1`, StatusError).Scan(&ref.Indexer, &ref.GUID, &ref.Kind, &ref.Title, &ref.Size)
 	if err == sql.ErrNoRows {
 		return ref, false, nil
 	}
@@ -110,6 +113,19 @@ func (s *Store) NextVerifiedNeedingTMDB(ctx context.Context) (Row, bool, error) 
 	}
 	row.Status = StatusVerified
 	return row, true, nil
+}
+
+func (s *Store) CatalogSize(ctx context.Context, indexer, guid string) int64 {
+	if s == nil || s.db == nil {
+		return 0
+	}
+	var size int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT size FROM newznab_catalog WHERE indexer = $1 AND guid = $2`, indexer, guid).Scan(&size)
+	if err != nil {
+		return 0
+	}
+	return size
 }
 
 func (s *Store) CatalogIDs(ctx context.Context, indexer, guid string) (imdbID, tmdbID, tvdbID string, err error) {
@@ -161,7 +177,8 @@ func (s *Store) NextFetched(ctx context.Context) (Row, bool, error) {
 	}
 	return scanOndemand(s.db.QueryRowContext(ctx, `
 		SELECT indexer, guid, kind, title, status, streamable, reject_reason, nzb_relpath,
-			payload_files, payload_segments, stat_checked, stat_missing, plan_json, updated_at, verified_at
+			payload_files, payload_segments, stat_checked, stat_missing, plan_json, updated_at, verified_at,
+			payload_bytes, bitrate_mbps
 		FROM newznab_ondemand
 		WHERE status = $1 AND streamable = TRUE
 		ORDER BY updated_at ASC
@@ -169,22 +186,23 @@ func (s *Store) NextFetched(ctx context.Context) (Row, bool, error) {
 }
 
 // Claude 2026-10-23: requeue size-skipped encodes that now fit the 4K High cap.
-// Reason: 7050 skipped 1080p WEB-DLs (Omen, Hostage). Remux stays skipped.
-// Troubleshooting: skip-stat rows under the cap with no remux token should STAT.
-// Review if: OnDemandStatMaxSegments changes again.
-func (s *Store) NextRequeueableSkip(ctx context.Context, maxSegs int) (Row, bool, error) {
+// Reason: 7050 skipped 1080p WEB-DLs. Remux is not skipped by title.
+// Troubleshooting: skip-stat rows under the cap with bitrate under lossless should STAT.
+// Review if: OnDemandStatMaxSegments or lossless Mbps changes.
+func (s *Store) NextRequeueableSkip(ctx context.Context, maxSegs int, losslessMbps float64) (Row, bool, error) {
 	if s == nil || s.db == nil {
 		return Row{}, false, nil
 	}
 	return scanOndemand(s.db.QueryRowContext(ctx, `
 		SELECT indexer, guid, kind, title, status, streamable, reject_reason, nzb_relpath,
-			payload_files, payload_segments, stat_checked, stat_missing, plan_json, updated_at, verified_at
+			payload_files, payload_segments, stat_checked, stat_missing, plan_json, updated_at, verified_at,
+			payload_bytes, bitrate_mbps
 		FROM newznab_ondemand
 		WHERE status = $1 AND streamable = TRUE
 			AND payload_segments <= $2
-			AND title NOT ILIKE '%remux%'
+			AND bitrate_mbps < $3
 		ORDER BY updated_at ASC
-		LIMIT 1`, StatusStatSkipped, maxSegs))
+		LIMIT 1`, StatusStatSkipped, maxSegs, losslessMbps))
 }
 
 func scanOndemand(q *sql.Row) (Row, bool, error) {
@@ -193,7 +211,8 @@ func scanOndemand(q *sql.Row) (Row, bool, error) {
 	err := q.Scan(
 		&row.Indexer, &row.GUID, &row.Kind, &row.Title, &row.Status, &row.Streamable,
 		&row.RejectReason, &row.NZBRelPath, &row.PayloadFiles, &row.PayloadSegments,
-		&row.StatChecked, &row.StatMissing, &plan, &row.UpdatedAt, &row.VerifiedAt)
+		&row.StatChecked, &row.StatMissing, &plan, &row.UpdatedAt, &row.VerifiedAt,
+		&row.PayloadBytes, &row.BitrateMbps)
 	if err == sql.ErrNoRows {
 		return row, false, nil
 	}
@@ -226,8 +245,9 @@ func (s *Store) Save(ctx context.Context, row Row) error {
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO newznab_ondemand (
 			indexer, guid, kind, title, status, streamable, reject_reason, nzb_relpath,
-			payload_files, payload_segments, stat_checked, stat_missing, plan_json, updated_at, verified_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+			payload_files, payload_segments, stat_checked, stat_missing, plan_json, updated_at, verified_at,
+			payload_bytes, bitrate_mbps
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
 		ON CONFLICT (indexer, guid) DO UPDATE SET
 			kind = EXCLUDED.kind,
 			title = EXCLUDED.title,
@@ -241,10 +261,12 @@ func (s *Store) Save(ctx context.Context, row Row) error {
 			stat_missing = EXCLUDED.stat_missing,
 			plan_json = EXCLUDED.plan_json,
 			updated_at = EXCLUDED.updated_at,
-			verified_at = EXCLUDED.verified_at`,
+			verified_at = EXCLUDED.verified_at,
+			payload_bytes = EXCLUDED.payload_bytes,
+			bitrate_mbps = EXCLUDED.bitrate_mbps`,
 		row.Indexer, row.GUID, row.Kind, row.Title, row.Status, row.Streamable, row.RejectReason,
 		row.NZBRelPath, row.PayloadFiles, row.PayloadSegments, row.StatChecked, row.StatMissing,
-		string(plan), row.UpdatedAt, row.VerifiedAt)
+		string(plan), row.UpdatedAt, row.VerifiedAt, row.PayloadBytes, row.BitrateMbps)
 	return err
 }
 

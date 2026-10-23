@@ -22,12 +22,12 @@ func TestDisplayTitle(t *testing.T) {
 	}
 }
 
-func TestQualityLabel(t *testing.T) {
-	if QualityLabel("Movie.2021.2160p.WEB-DL") != "2160p" {
-		t.Fatal(QualityLabel("Movie.2021.2160p.WEB-DL"))
+func TestBitrateLabel(t *testing.T) {
+	if bitrateLabel(0) != "Unknown" {
+		t.Fatal(bitrateLabel(0))
 	}
-	if QualityLabel("Movie.2021.1080p") != "1080p" {
-		t.Fatal(QualityLabel("Movie.2021.1080p"))
+	if bitrateLabel(40.2) != "40 Mbps" {
+		t.Fatal(bitrateLabel(40.2))
 	}
 }
 
@@ -44,8 +44,8 @@ func TestListVerified_GroupsByIMDBAndQuality(t *testing.T) {
 	}
 	st := NewStore(sqlDB)
 	for _, row := range []Row{
-		{Indexer: "newznab", GUID: "https://nzbgeek.info/geekseek.php?guid=aaa111", Kind: newznabcatalog.KindMovies, Title: "Same.Movie.2021.1080p-GRP", Status: StatusVerified, Streamable: true},
-		{Indexer: "newznab2", GUID: "https://api.nzb.life/details/bbb222", Kind: newznabcatalog.KindMovies, Title: "Same.Movie.2021.2160p-GRP", Status: StatusVerified, Streamable: true},
+		{Indexer: "newznab", GUID: "https://nzbgeek.info/geekseek.php?guid=aaa111", Kind: newznabcatalog.KindMovies, Title: "Same.Movie.2021.1080p-GRP", Status: StatusVerified, Streamable: true, BitrateMbps: 12},
+		{Indexer: "newznab2", GUID: "https://api.nzb.life/details/bbb222", Kind: newznabcatalog.KindMovies, Title: "Same.Movie.2021.2160p-GRP", Status: StatusVerified, Streamable: true, BitrateMbps: 40},
 		{Indexer: "newznab", GUID: "other", Kind: newznabcatalog.KindMovies, Title: "Other.Movie.2020.720p-GRP", Status: StatusFetched, Streamable: true},
 	} {
 		if err := st.Save(ctx, row); err != nil {
@@ -65,7 +65,7 @@ func TestListVerified_GroupsByIMDBAndQuality(t *testing.T) {
 	if len(got[0].Qualities) != 2 {
 		t.Fatalf("qualities=%+v", got[0].Qualities)
 	}
-	if got[0].Qualities[0].Label != "2160p" || got[0].Qualities[1].Label != "1080p" {
+	if got[0].Qualities[0].Label != "40 Mbps" || got[0].Qualities[1].Label != "12 Mbps" {
 		t.Fatalf("order=%+v", got[0].Qualities)
 	}
 	if got[0].Qualities[1].NzbID != "aaa111" || got[0].Qualities[0].NzbID != "bbb222" {

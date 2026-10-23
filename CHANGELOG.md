@@ -13159,6 +13159,22 @@ status stays active.
 | `internal/usenet/precheck_test.go` | remux budget must not clamp; hung STAT ≤ article timeout |
 | `docs/usenet-precheck.md` | 12m cap retired; per-article hang bound |
 
+## 2026-10-23 — On Demand quality is implied bitrate, not the title
+
+**Problem:** Skip and the quality picker treated `Remux` / `2160p` in the release name as quality.
+**Root cause:** `skipOnDemandStat` parsed `release.Parse(title).Source`, and the shelf labeled 2160p/1080p from the same title tokens.
+**Fix:** Skip when implied Mbps ≥ 70 (Lossless@2160) or segments exceed the 3h 4K High cap. Picker labels are `N Mbps` from NZB/catalog bytes ÷ TMDB runtime. Remux under the cap is requeued.
+**Outcome:** `TestSkipOnDemandStat_BitrateNotTitle`, `TestBitrateLabel`, `TestListVerified_GroupsByIMDBAndQuality`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/db/migrations/0057_ondemand_bitrate.sql` | `payload_bytes`, `bitrate_mbps` |
+| `internal/newznabondemand/crawl.go` | skip by Mbps/segments; `applyBitrate` |
+| `internal/newznabondemand/shelf.go` | quality chips are Mbps |
+| `internal/newznabondemand/store.go` | persist bytes/Mbps; requeue ignores remux tokens |
+
 ## 2026-10-23 — On Demand STAT fits a 3-hour 4K High encode
 
 **Problem:** `OnDemandStatMaxSegments=7050` is ~4 Mbps over 3 hours, so 1080p WEB-DLs and any 4K High film were `stat_skipped`. 100ms/seg left almost no margin on live RTT.

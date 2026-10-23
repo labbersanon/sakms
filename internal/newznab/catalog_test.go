@@ -167,3 +167,61 @@ func TestOverlapKey_UsesSanitizedNZBTitle(t *testing.T) {
 		t.Fatalf("imdb-only must not overlap")
 	}
 }
+
+func TestGetNZB_ReturnsBytesWithoutAPIKey(t *testing.T) {
+	const nzbXML = `<?xml version="1.0"?>
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+  <file subject="&quot;Movie.part001.rar&quot; yEnc (1/1)">
+    <groups><group>alt.binaries.movies</group></groups>
+    <segments>
+      <segment bytes="1" number="1">a@x</segment>
+      <segment bytes="1" number="2">b@x</segment>
+    </segments>
+  </file>
+  <file subject="&quot;Movie.part002.rar&quot; yEnc (1/1)">
+    <groups><group>alt.binaries.movies</group></groups>
+    <segments>
+      <segment bytes="1" number="1">c@x</segment>
+      <segment bytes="1" number="2">d@x</segment>
+    </segments>
+  </file>
+</nzb>`
+	var gotT, gotID string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotT = r.URL.Query().Get("t")
+		gotID = r.URL.Query().Get("id")
+		io.WriteString(w, nzbXML)
+	}))
+	defer srv.Close()
+	c := &Client{HTTP: srv.Client(), Interval: time.Nanosecond}
+	nzb, data, err := c.GetNZB(context.Background(), Indexer{
+		Name: "newznab", Endpoint: srv.URL + "/api", APIKey: "secret-key",
+	}, "g1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotT != "get" || gotID != "g1" {
+		t.Fatalf("t=%q id=%q", gotT, gotID)
+	}
+	if nzb == nil || len(nzb.Files) != 2 {
+		t.Fatalf("nzb=%+v", nzb)
+	}
+	body := strings.ToLower(string(data))
+	if strings.Contains(body, "apikey") || strings.Contains(body, "secret-key") {
+		t.Fatalf("nzb body leaked key")
+	}
+}
+
+func TestGetNZB_RejectsAPIKeyInBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `<?xml version="1.0"?><nzb xmlns="http://www.newzbin.com/DTD/2003/nzb"></nzb><!-- apikey=secret -->`)
+	}))
+	defer srv.Close()
+	c := &Client{HTTP: srv.Client(), Interval: time.Nanosecond}
+	_, _, err := c.GetNZB(context.Background(), Indexer{
+		Name: "newznab", Endpoint: srv.URL + "/api", APIKey: "k",
+	}, "g1")
+	if err == nil {
+		t.Fatal("want apikey body error")
+	}
+}

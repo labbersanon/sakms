@@ -626,6 +626,38 @@ func getURL(idx Indexer, id string) string {
 	return u.String()
 }
 
+// GetNZB runs t=get for id. The apikey URL is never returned or logged.
+func (c *Client) GetNZB(ctx context.Context, idx Indexer, id string) (*usenet.NZB, []byte, error) {
+	id = strings.TrimSpace(id)
+	if id == "" || strings.TrimSpace(idx.Endpoint) == "" || strings.TrimSpace(idx.APIKey) == "" {
+		return nil, nil, fmt.Errorf("newznab: missing indexer or id")
+	}
+	idx.Endpoint = NormalizeEndpoint(idx.Endpoint)
+	raw := getURL(idx, id)
+	if raw == "" {
+		return nil, nil, fmt.Errorf("newznab: cannot build t=get")
+	}
+	u, err := url.Parse(idx.Endpoint)
+	if err != nil {
+		return nil, nil, fmt.Errorf("newznab: indexer endpoint")
+	}
+	if err := c.throttle(ctx, u.Host); err != nil {
+		return nil, nil, err
+	}
+	nzb, _, data, err := usenet.FetchNZBBytes(ctx, c.httpClient(), raw)
+	c.mark(u.Host)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := parseAPIError(data); err != nil {
+		return nil, nil, err
+	}
+	if bytes.Contains(bytes.ToLower(data), []byte("apikey=")) {
+		return nil, nil, fmt.Errorf("newznab: nzb body contained apikey")
+	}
+	return nzb, data, nil
+}
+
 func mergeUnique(a, b []string) []string {
 	seen := map[string]bool{}
 	var out []string

@@ -13050,3 +13050,21 @@ status stays active.
 | File | Change |
 |---|---|
 | `internal/newznabcatalog/store.go` | load then tx prepared UPDATE |
+
+## 2026-10-23 — On Demand NZB cache + STAT crawler (no Discover chip yet)
+
+**Problem:** On Demand Play needs verified, sequenceable NZBs. Catalog rows have titles/guids only; `t=get` at every Play would burn indexer quota, and Discover must not show dead archives.
+**Root cause:** No local NZB XML/message-ID cache and no background STAT of catalog releases.
+**Fix:** Goose 56 `newznab_ondemand`. Background `t=get` (1s/host) writes NZB files under `<dataDir>/ondemand/nzb/` and a sequence plan (no enclosure/apikey URLs). XML must be sequential RAR or a raw video; 7z-solid and gapped segments are rejected. Streamable rows get a full payload STAT with at most 2 Usenet sockets. `verified` vs `dead`/`xml_rejected`. Discover chip and Play are later.
+**Outcome:** `TestAssessNZB_*`, `TestGetNZB_ReturnsBytesWithoutAPIKey`, `TestFetchRow_CachesNZBAndMarksStreamable`, `TestMigration0056NewznabOndemand`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/db/migrations/0056_newznab_ondemand.sql` | table, no URL columns |
+| `internal/newznabondemand/` | store + crawler |
+| `internal/usenet/streamable.go` | AssessNZB + SequencePlan |
+| `internal/usenet/precheck.go` | `StatPayload` (2 workers) |
+| `internal/newznab/client.go` | `GetNZB` |
+| `cmd/sakms/main.go` | start crawler |

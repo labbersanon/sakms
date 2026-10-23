@@ -271,3 +271,12 @@ func TestIsMetaSubject_Par2IsNotDecorative(t *testing.T) {
 		t.Fatal("sample mkv should skip STAT")
 	}
 }
+
+func TestStatPayload_NoSubscriptionsIsInconclusive(t *testing.T) {
+	m := New(Config{})
+	nzb := &NZB{Files: []NZBFile{subjectFile("Movie.mkv", 2)}}
+	res, err := m.StatPayload(context.Background(), nzb, OnDemandStatWorkers)
+	if err != nil || !res.Inconclusive {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+}

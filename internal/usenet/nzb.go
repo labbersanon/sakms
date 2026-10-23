@@ -138,15 +138,22 @@ func fetchNZB(httpClient *http.Client, rawURL string) (*NZB, DNZBHeaders, error)
 // FetchNZB GETs an NZB over http(s). Errors omit the URL so an apikey query
 // is not logged.
 func FetchNZB(ctx context.Context, httpClient *http.Client, rawURL string) (*NZB, DNZBHeaders, error) {
+	nzb, dnzb, _, err := FetchNZBBytes(ctx, httpClient, rawURL)
+	return nzb, dnzb, err
+}
+
+// FetchNZBBytes is FetchNZB plus the raw NZB document for a local cache.
+// Errors omit the URL so an apikey query is not logged.
+func FetchNZBBytes(ctx context.Context, httpClient *http.Client, rawURL string) (*NZB, DNZBHeaders, []byte, error) {
 	if err := requireHTTPURL(rawURL); err != nil {
-		return nil, DNZBHeaders{}, err
+		return nil, DNZBHeaders{}, nil, err
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, DNZBHeaders{}, fmt.Errorf("usenet: fetching NZB: %w", err)
+		return nil, DNZBHeaders{}, nil, fmt.Errorf("usenet: fetching NZB: %w", err)
 	}
 	resp, err := nzbHTTPClient(httpClient).Do(req)
 	if err != nil {
@@ -154,34 +161,38 @@ func FetchNZB(ctx context.Context, httpClient *http.Client, rawURL string) (*NZB
 		if req.URL != nil {
 			host = req.URL.Host
 		}
-		return nil, DNZBHeaders{}, fmt.Errorf("usenet: fetching NZB: %w", httpx.WrapTransportError(host, err))
+		return nil, DNZBHeaders{}, nil, fmt.Errorf("usenet: fetching NZB: %w", httpx.WrapTransportError(host, err))
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
-		return nil, DNZBHeaders{}, fmt.Errorf("usenet: NZB URL returned %d", resp.StatusCode)
+		return nil, DNZBHeaders{}, nil, fmt.Errorf("usenet: NZB URL returned %d", resp.StatusCode)
 	}
-
 	dnzb := parseDNZBHeaders(resp.Header)
 	if dnzb.RCode != 0 && dnzb.RCode != http.StatusOK {
 		if dnzb.Failure != "" {
-			return nil, dnzb, fmt.Errorf("usenet: indexer rejected NZB: %s", dnzb.Failure)
+			return nil, dnzb, nil, fmt.Errorf("usenet: indexer rejected NZB: %s", dnzb.Failure)
 		}
-		return nil, dnzb, fmt.Errorf("usenet: indexer rejected NZB (rcode %d)", dnzb.RCode)
+		return nil, dnzb, nil, fmt.Errorf("usenet: indexer rejected NZB (rcode %d)", dnzb.RCode)
 	}
-
-	const maxNZBBytes = 10 << 20 // 10 MB
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxNZBBytes))
+	nzb, data, err := readNZBBody(resp.Body)
 	if err != nil {
-		return nil, dnzb, fmt.Errorf("usenet: reading NZB body: %w", err)
+		return nil, dnzb, nil, err
+	}
+	return nzb, dnzb, data, nil
+}
+
+func readNZBBody(r io.Reader) (*NZB, []byte, error) {
+	const maxNZBBytes = 10 << 20 // 10 MB
+	data, err := io.ReadAll(io.LimitReader(r, maxNZBBytes))
+	if err != nil {
+		return nil, nil, fmt.Errorf("usenet: reading NZB body: %w", err)
 	}
 	if int64(len(data)) == maxNZBBytes {
-		return nil, dnzb, fmt.Errorf("usenet: NZB response body exceeds 10 MB limit")
+		return nil, nil, fmt.Errorf("usenet: NZB response body exceeds 10 MB limit")
 	}
-
 	nzb, err := ParseNZB(data)
 	if err != nil {
-		return nil, dnzb, err
+		return nil, nil, err
 	}
-	return nzb, dnzb, nil
+	return nzb, data, nil
 }

@@ -32,6 +32,7 @@ import (
 	"github.com/labbersanon/sakms/internal/mediainfo"
 	"github.com/labbersanon/sakms/internal/mode"
 	"github.com/labbersanon/sakms/internal/newznabcatalog"
+	"github.com/labbersanon/sakms/internal/newznabondemand"
 	"github.com/labbersanon/sakms/internal/nodekeys"
 	"github.com/labbersanon/sakms/internal/nodes"
 	"github.com/labbersanon/sakms/internal/nodesettings"
@@ -246,6 +247,7 @@ func run() error {
 	// Review if: Lighthouse availability filter reads newznab_catalog.
 	catalogStore := newznabcatalog.NewStore(sqlDB)
 	api.AttachNewznabCatalog(catalogStore)
+	ondemandStore := newznabondemand.NewStore(sqlDB)
 	// traktStore persists Trakt's single application connection + linked
 	// account tokens (its own table, not connections.Store — see
 	// internal/trakt's package doc for why); secretStore encrypts the same
@@ -701,6 +703,11 @@ func run() error {
 	// Reason: 5s/host t=search; stop on shutdown. Grab Client stays 1s.
 	// Troubleshooting: catalog after SIGTERM → Run not using this ctx.
 	go newznabcatalog.Run(ctx, catalogStore, connStore, &http.Client{Timeout: outboundTimeout})
+	// Claude 2026-10-23: On Demand t=get + STAT crawler (no Discover chip yet).
+	// Reason: cache NZB XML/sequence, STAT with 2 sockets, promote streamable rows.
+	// Troubleshooting: ondemand logs quota backoff → indexer t=get cap; inconclusive → no NNTP.
+	// Review if: Discover ?view=ondemand reads newznab_ondemand.
+	go newznabondemand.Run(ctx, ondemandStore, connStore, nzbManager, cfg.DataDir, &http.Client{Timeout: outboundTimeout})
 	go discoverrefresh.Run(ctx, discoverrefresh.LoadInterval(ctx, settingsStore), discoverrefresh.Deps{
 		HTTPClient:    &http.Client{Timeout: outboundTimeout},
 		ConnStore:     connStore,

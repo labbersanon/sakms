@@ -154,7 +154,7 @@ func (m *Manager) precheckNZB(ctx context.Context, nzb *NZB, skip map[string]boo
 	fullCtx, cancel := context.WithTimeout(ctx, fullPrecheckTimeout(len(all)))
 	defer cancel()
 
-	missing, removed, checked, inconc, err := m.statBatch(fullCtx, all, progressGID)
+	missing, removed, checked, inconc, err := m.statBatch(fullCtx, all, progressGID, 0)
 	res.Checked = checked
 	res.Inconclusive = inconc
 	if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
@@ -195,6 +195,65 @@ func (m *Manager) precheckNZB(ctx context.Context, nzb *NZB, skip map[string]boo
 	log.Printf("usenet precheck: abort — full missing=%d/%d worst=%q",
 		res.Missing, res.Checked, res.WorstFile)
 	return res, ErrArticlesUnavailable
+}
+
+// OnDemandStatWorkers is the Usenet STAT budget for the On Demand crawler
+// while Downloads may be using the rest of the pool.
+const OnDemandStatWorkers = 2
+
+// StatPayload STATs every payload and PAR2 article. maxWorkers caps pool
+// sockets (On Demand uses OnDemandStatWorkers). It does not take the
+// download or precheck semaphore, does not BODY-confirm STAT misses, and
+// does not peek video. Empty pools return an inconclusive result.
+func (m *Manager) StatPayload(ctx context.Context, nzb *NZB, maxWorkers int) (PrecheckResult, error) {
+	var res PrecheckResult
+	if m == nil || nzb == nil {
+		res.Inconclusive = true
+		return res, nil
+	}
+	if !m.HasSubscriptions() {
+		res.Inconclusive = true
+		return res, nil
+	}
+	payload := payloadFiles(nzb)
+	if len(payload) == 0 {
+		res.Inconclusive = true
+		return res, nil
+	}
+	var all []sampledSeg
+	for fi, f := range payload {
+		for _, s := range f.Segs {
+			id := strings.TrimSpace(s.MsgID)
+			if id == "" {
+				continue
+			}
+			all = append(all, sampledSeg{fileIdx: fi, msgID: id})
+		}
+	}
+	res.PayloadSegments = len(all)
+	if len(all) == 0 {
+		res.Inconclusive = true
+		return res, nil
+	}
+	if maxWorkers < 1 {
+		maxWorkers = OnDemandStatWorkers
+	}
+	fullCtx, cancel := context.WithTimeout(ctx, fullPrecheckTimeout(len(all)))
+	defer cancel()
+	missing, removed, checked, inconc, err := m.statBatch(fullCtx, all, "", maxWorkers)
+	res.Checked = checked
+	res.Inconclusive = inconc
+	if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+		res.Inconclusive = true
+		return res, nil
+	}
+	missIDs := missingSegs(all, missing)
+	res.Missing = len(missIDs) + removed
+	if len(missIDs) > 0 || removed > 0 {
+		res.WorstFile = worstFileName(payload, missIDs)
+		return res, ErrArticlesUnavailable
+	}
+	return res, nil
 }
 
 // Claude 2026-09-28: after STAT ok, peek first-segment BODY for usable video.
@@ -353,12 +412,15 @@ func (m *Manager) precheckConcurrency() int {
 // 	return min(max(n, 1), defaultPrecheckPolicy.MaxWorkers)
 // }
 
-func (m *Manager) statBatch(ctx context.Context, segs []sampledSeg, progressGID string) (missing map[string]bool, removed, checked int, inconclusive bool, err error) {
+func (m *Manager) statBatch(ctx context.Context, segs []sampledSeg, progressGID string, maxWorkers int) (missing map[string]bool, removed, checked int, inconclusive bool, err error) {
 	missing = make(map[string]bool)
 	if len(segs) == 0 {
 		return missing, 0, 0, false, nil
 	}
 	workers := m.precheckConcurrency()
+	if maxWorkers > 0 && workers > maxWorkers {
+		workers = maxWorkers
+	}
 	type outcome struct {
 		msgID   string
 		missing bool

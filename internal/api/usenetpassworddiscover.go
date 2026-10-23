@@ -21,7 +21,7 @@ import (
 
 const maxDiscoveredPasswords = 5
 
-// Claude 2026-10-11: Discover/native/AI password lookup for encrypted RARs.
+// Claude 2026-10-11: Prowlarr/AI password lookup for encrypted RARs.
 // Reason: fallback after this NZB's file subjects and nfo/txt BODY peeks miss.
 //   Indexer titles may still carry {{pw}} / password=; AI is opt-in.
 // Troubleshooting: journal "usenet password discover:" then engine

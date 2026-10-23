@@ -7,14 +7,14 @@
 // ConnectionRow. NZB host API is a stacked URL+key card on this page, not a
 // ConnectionMiniTable.
 //
-// Two things this page must never grow:
+// Three things this page must never grow:
 //   - Priority / fallback ordering between subscriptions. When a download needs
 //     Usenet, every enabled subscription is tried, with no priority ordering at
 //     all — an operator runs several providers for differing retention and
 //     takedown coverage, not as a ranked chain. There is no priority field and
 //     no reorder UI beyond cosmetic sorting.
 //   - A generic "add any connection type" framework. This page adds NNTP
-//     subscriptions and optional Newznab hosts (alternate Usenet grab search). Nothing else.
+//     subscriptions and optional Newznab hosts (Usenet grab catalog). Nothing else.
 //   - A retry-interval input. The cadence is coupled to the auto-grab toggle
 //     server-side (on → 86400s, off → 0) precisely so the two can't disagree;
 //     there is deliberately no user-facing control for it.

@@ -477,7 +477,7 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 			pr.releases = FilterSeasonScope(pr.releases, req.Season, req.Episode, req.SeasonSpecified)
 		}
 
-		// Claude 2026-10-10: native/pre-fetched phases inherit TMDB runtime.
+		// Claude 2026-10-10: Newznab/pre-fetched phases inherit TMDB runtime.
 		// Reason: scoreOnePhase set runtime from req.RuntimeSeconds only (0 for
 		//   series drain/operator Grab). Native then graded unknown-bitrate and
 		//   could not apply the Medium/1080 floor. AHS S13E06 ELiTE (~294 MiB /

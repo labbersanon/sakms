@@ -219,10 +219,7 @@ func putTitleQualityPrefs(w http.ResponseWriter, r *http.Request, deps titleQual
 // ensureSeriesByTMDB) — a Discover-only movie override has no shell-row
 // concept to anchor on. Checks the local library first (an already-grabbed
 // movie), then falls back to one TMDB lookup. Returns ("", 0) when neither
-// resolves (e.g. no TMDB connection configured); the row's Title column
-// stays blank and NewNNTPAdmissionPolicy's Snapshot skips it — the title
-// override still applies everywhere else (Search/auto-grab), only crawl-time
-// admission falls back to mode defaults until the title is resolvable.
+// resolves (e.g. no TMDB connection configured).
 func resolveMovieTitleYear(ctx context.Context, deps titleQualityDeps, tmdbID int) (title string, year int) {
 	if deps.lib != nil {
 		if item, err := deps.lib.GetByTMDBID(ctx, mode.Movies, tmdbID); err == nil && item != nil {

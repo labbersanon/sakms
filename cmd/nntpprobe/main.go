@@ -1,12 +1,5 @@
-// Command nntpprobe measures whether a provider subscription can support the
-// standalone NNTP probe (not the removed OVER index).
-//
-// Claude 2026-09-17: spike-only tool; not wired into the app.
-// Reason: SEARCH is not an NNTP command; discovery cost is OVER crawl throughput
-// and obfuscation rate, which must be measured against real groups before any
-// product surface ships.
-// Troubleshooting: refuse to invent capability claims; print numbers or fail.
-// Review if: the spike decision gate in the plan is closed (pass or drop).
+// Command nntpprobe measures NNTP OVER throughput against a provider
+// subscription. Spike-only; not wired into the app.
 //
 // Usage (credentials via flags/env only — never reads sakms.db):
 //
@@ -108,17 +101,17 @@ func probeGroup(host string, port int, useTLS bool, user, pass, group string, ra
 	type job struct{ a, b int }
 	jobs := make(chan job, conns*2)
 	var (
-		wg           sync.WaitGroup
-		rowsTotal    atomic.Int64
-		bytesApprox  atomic.Int64
-		pipeErrs     atomic.Int64
-		otherErrs    atomic.Int64
-		sampleMu     sync.Mutex
-		sampleLeft   = sample
-		usable       int
-		obfuscated   int
-		unparsed     int
-		firstErr     atomic.Value
+		wg          sync.WaitGroup
+		rowsTotal   atomic.Int64
+		bytesApprox atomic.Int64
+		pipeErrs    atomic.Int64
+		otherErrs   atomic.Int64
+		sampleMu    sync.Mutex
+		sampleLeft  = sample
+		usable      int
+		obfuscated  int
+		unparsed    int
+		firstErr    atomic.Value
 	)
 
 	worker := func() {

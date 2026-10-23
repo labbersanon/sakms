@@ -62,10 +62,6 @@ func putGrabPreferredLanguagesHandler(settingsStore *settings.Store) http.Handle
 	}
 }
 
-func LoadPreferredLanguages(ctx context.Context, store *settings.Store) ([]string, error) {
-	return loadPreferredLanguages(ctx, store)
-}
-
 func loadPreferredLanguages(ctx context.Context, store *settings.Store) ([]string, error) {
 	if store == nil {
 		return nil, nil

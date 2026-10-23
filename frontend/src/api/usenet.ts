@@ -45,7 +45,6 @@ export function putUsenetAutoGrabEnabled(enabled: boolean): Promise<void> {
   });
 }
 
-
 // fetchUsenetMaxConcurrentDownloads reads how many NZBs may fetch segments at
 // once — GET /api/settings/usenet-max-concurrent-downloads. Default 1. Does not
 // count PAR2/repair.

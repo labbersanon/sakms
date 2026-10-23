@@ -39,12 +39,12 @@ type newznabCatalogCount struct {
 }
 
 type newznabCatalogOverlap struct {
-	Kind        string `json:"kind"`
-	Host1Titles int    `json:"host1Titles"`
-	Host2Titles int    `json:"host2Titles"`
-	Both        int    `json:"both"`
-	OnlyHost1   int    `json:"onlyHost1"`
-	OnlyHost2   int    `json:"onlyHost2"`
+	Kind      string `json:"kind"`
+	Host1Nzbs int    `json:"host1Nzbs"`
+	Host2Nzbs int    `json:"host2Nzbs"`
+	Both      int    `json:"both"`
+	OnlyHost1 int    `json:"onlyHost1"`
+	OnlyHost2 int    `json:"onlyHost2"`
 }
 
 type newznabCatalogReport struct {
@@ -93,7 +93,7 @@ func newznabCatalogHandler() http.HandlerFunc {
 		}
 		for _, o := range rep.Overlap {
 			out.Overlap = append(out.Overlap, newznabCatalogOverlap{
-				Kind: o.Kind, Host1Titles: o.Host1Titles, Host2Titles: o.Host2Titles,
+				Kind: o.Kind, Host1Nzbs: o.Host1Nzbs, Host2Nzbs: o.Host2Nzbs,
 				Both: o.Both, OnlyHost1: o.OnlyHost1, OnlyHost2: o.OnlyHost2,
 			})
 		}

@@ -119,6 +119,39 @@ func (s *Store) InsertHits(ctx context.Context, kind string, hits []newznab.Cata
 	return n, nil
 }
 
+// RecomputeOverlapKeys rewrites overlap_key from the NZB title. Existing
+// rows were keyed by IMDB/TVDB/TMDB (same movie, many NZBs).
+func (s *Store) RecomputeOverlapKeys(ctx context.Context) (int, error) {
+	if s == nil || s.db == nil {
+		return 0, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT indexer, guid, title, imdb_id, tvdb_id, tmdb_id, year
+		FROM newznab_catalog`)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var h newznab.CatalogHit
+		if err := rows.Scan(&h.Indexer, &h.GUID, &h.Title, &h.ImdbID, &h.TvdbID, &h.TmdbID, &h.Year); err != nil {
+			return n, err
+		}
+		key := newznab.OverlapKey(h)
+		res, err := s.db.ExecContext(ctx, `
+			UPDATE newznab_catalog SET overlap_key = $1
+			WHERE indexer = $2 AND guid = $3 AND overlap_key <> $1`,
+			key, h.Indexer, h.GUID)
+		if err != nil {
+			return n, err
+		}
+		aff, _ := res.RowsAffected()
+		n += int(aff)
+	}
+	return n, rows.Err()
+}
+
 // KindCount is NZB rows for one indexer and kind.
 type KindCount struct {
 	Indexer string
@@ -126,14 +159,14 @@ type KindCount struct {
 	NZBs    int
 }
 
-// KindOverlap is title-key overlap for one kind.
+// KindOverlap is NZB-release overlap for one kind (sanitized title, not IMDB).
 type KindOverlap struct {
-	Kind        string
-	Host1Titles int
-	Host2Titles int
-	Both        int
-	OnlyHost1   int
-	OnlyHost2   int
+	Kind      string
+	Host1Nzbs int
+	Host2Nzbs int
+	Both      int
+	OnlyHost1 int
+	OnlyHost2 int
 }
 
 // Report is the Dock card payload.
@@ -216,7 +249,7 @@ func (s *Store) Report(ctx context.Context) (Report, error) {
 	defer orows.Close()
 	for orows.Next() {
 		var o KindOverlap
-		if err := orows.Scan(&o.Kind, &o.Host1Titles, &o.Host2Titles, &o.Both, &o.OnlyHost1, &o.OnlyHost2); err != nil {
+		if err := orows.Scan(&o.Kind, &o.Host1Nzbs, &o.Host2Nzbs, &o.Both, &o.OnlyHost1, &o.OnlyHost2); err != nil {
 			return out, err
 		}
 		out.Overlap = append(out.Overlap, o)

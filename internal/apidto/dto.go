@@ -1936,14 +1936,14 @@ type NewznabCatalogCount struct {
 	Nzbs    int    `json:"nzbs"`
 }
 
-// NewznabCatalogOverlap is title-key overlap for one kind (movies/series/adult).
+// NewznabCatalogOverlap is NZB-release overlap for one kind (movies/series/adult).
 type NewznabCatalogOverlap struct {
-	Kind        string `json:"kind"`
-	Host1Titles int    `json:"host1Titles"`
-	Host2Titles int    `json:"host2Titles"`
-	Both        int    `json:"both"`
-	OnlyHost1   int    `json:"onlyHost1"`
-	OnlyHost2   int    `json:"onlyHost2"`
+	Kind      string `json:"kind"`
+	Host1Nzbs int    `json:"host1Nzbs"`
+	Host2Nzbs int    `json:"host2Nzbs"`
+	Both      int    `json:"both"`
+	OnlyHost1 int    `json:"onlyHost1"`
+	OnlyHost2 int    `json:"onlyHost2"`
 }
 
 // NewznabCatalogReport is GET /api/admin/newznab-catalog. No enclosure URLs.

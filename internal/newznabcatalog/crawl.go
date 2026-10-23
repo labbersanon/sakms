@@ -41,6 +41,16 @@ func Run(ctx context.Context, store *Store, conns *connections.Store, httpClient
 		httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
 	client := &newznab.Client{HTTP: httpClient, Interval: Interval}
+	// Claude 2026-10-23: rewrite overlap_key from NZB title once per process.
+	// Reason: rows inserted under IMDB keys would keep title-overlap until recrawl.
+	// Troubleshooting: Dock still shows same-title counts after this ship → recompute
+	//   did not run (Run not started) or overlap_key still imdb:.
+	// Review if: new inserts already use nzb: keys and no imdb: rows remain.
+	if n, err := store.RecomputeOverlapKeys(ctx); err != nil {
+		log.Printf("newznab catalog: recompute overlap keys err=%v", err)
+	} else if n > 0 {
+		log.Printf("newznab catalog: recomputed overlap keys n=%d", n)
+	}
 	for {
 		if ctx.Err() != nil {
 			return

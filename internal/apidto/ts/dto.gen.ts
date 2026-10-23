@@ -1918,12 +1918,12 @@ export interface NewznabCatalogCount {
   nzbs: number /* int */;
 }
 /**
- * NewznabCatalogOverlap is title-key overlap for one kind (movies/series/adult).
+ * NewznabCatalogOverlap is NZB-release overlap for one kind (movies/series/adult).
  */
 export interface NewznabCatalogOverlap {
   kind: string;
-  host1Titles: number /* int */;
-  host2Titles: number /* int */;
+  host1Nzbs: number /* int */;
+  host2Nzbs: number /* int */;
   both: number /* int */;
   onlyHost1: number /* int */;
   onlyHost2: number /* int */;

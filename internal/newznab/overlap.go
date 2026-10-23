@@ -1,7 +1,6 @@
 package newznab
 
 import (
-	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -9,31 +8,19 @@ import (
 
 var titleYear = regexp.MustCompile(`(?:^|[.\s_\-])((?:19|20)\d{2})(?:[.\s_\-]|$)`)
 
-// OverlapKey is the join used to tell whether two indexers list the same
-// title. Prefer IMDB, then TVDB, then TMDB, then sanitized title+year.
-// Empty means the hit cannot participate in overlap.
+// Claude 2026-10-23: overlap joins NZB release names, not IMDB titles.
+// Reason: Dock overlap is "same NZB on both indexers." IMDB collapsed every
+//
+//	quality of one movie into one key. imdb_id stays on the row for Lighthouse.
+//
+// Troubleshooting: both≈movie count → overlap_key still imdb:/tvdb:/tmdb:.
+// Review if: Lighthouse filters TMDB by imdb_id (do not reuse this key).
 func OverlapKey(h CatalogHit) string {
-	if id := NormalizeIMDB(h.ImdbID); id != "" {
-		return "imdb:" + id
-	}
-	if id := DigitsOnly(h.TvdbID); id != "" {
-		return "tvdb:" + id
-	}
-	if id := DigitsOnly(h.TmdbID); id != "" {
-		return "tmdb:" + id
-	}
 	title := sanitizeGrabQuery(h.Title)
 	if title == "" {
 		return ""
 	}
-	year := h.Year
-	if year == 0 {
-		year = yearFromTitle(h.Title)
-	}
-	if year > 0 {
-		return fmt.Sprintf("title:%s:%d", title, year)
-	}
-	return "title:" + title
+	return "nzb:" + title
 }
 
 // NormalizeIMDB turns "tt0111161", "111161", or "IMDB tt0111161" into tt + digits.

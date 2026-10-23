@@ -512,8 +512,8 @@ describe("Dashboard view", () => {
               overlap: [
                 {
                   kind: "movies",
-                  host1Titles: 10,
-                  host2Titles: 8,
+                  host1Nzbs: 10,
+                  host2Nzbs: 8,
                   both: 5,
                   onlyHost1: 5,
                   onlyHost2: 3,
@@ -528,10 +528,10 @@ describe("Dashboard view", () => {
     renderDashboard();
     expect(await screen.findByText("NZB catalog")).toBeInTheDocument();
     expect(
-      screen.getByText(/Same titles on both indexers: 5 · NZBGeek only: 5 · NZB.life only: 3/),
+      screen.getByText(/Same NZBs on both indexers: 5 · NZBGeek only: 5 · NZB.life only: 3/),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/NZBGeek: 10 titles \(1.?200 NZBs\) · NZB.life: 8 titles \(980 NZBs\)/),
+      screen.getByText(/NZBGeek: 1.?200 NZBs · NZB.life: 980 NZBs/),
     ).toBeInTheDocument();
     expect(
       screen.getByText(/NZBGeek movies · 150 indexed · last page \+40/),

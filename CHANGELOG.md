@@ -13020,3 +13020,20 @@ status stays active.
 |---|---|
 | `frontend/src/screens/Dashboard.tsx` | NZBGeek/NZB.life labels; overlap and cursor copy |
 | `frontend/src/screens/Dashboard.test.tsx` | match the new strings |
+
+## 2026-10-23 — Catalog overlap is NZB release names, not IMDB titles
+
+**Problem:** Dock overlap counted the same movie once even when each indexer had many NZBs (1080p vs 720p). Intent was NZB overlap, not title overlap.
+**Root cause:** `OverlapKey` preferred IMDB/TVDB/TMDB, so every quality of one title shared a key.
+**Fix:** Key is sanitized NZB title (`nzb:…`). IMDB columns stay for a later Lighthouse filter. Startup rewrites existing `overlap_key` rows. Dock copy says NZBs. Distinct 1080p vs 720p of the same IMDB id are not "both."
+**Outcome:** `TestOverlapKey_UsesSanitizedNZBTitle`, `TestStore_InsertAndOverlap`, `TestStore_RecomputeOverlapKeysRewritesIMDBKeys`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/newznab/overlap.go` | `OverlapKey` = sanitized NZB title |
+| `internal/newznabcatalog/store.go` | `Host1Nzbs`; `RecomputeOverlapKeys` |
+| `internal/newznabcatalog/crawl.go` | recompute at Run start |
+| `frontend/src/screens/Dashboard.tsx` | "Same NZBs on both indexers" |
+| `internal/apidto/dto.go` | `host1Nzbs` / `host2Nzbs` |

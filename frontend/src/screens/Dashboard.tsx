@@ -347,7 +347,9 @@ const Sparkline: Component<{ values: number[] }> = (props) => {
 
 // Claude 2026-10-23: NZB catalog overlap on the Dock, outside the SSE gate.
 // Reason: 1 page / 5s per indexer; poll 30s (not 10s COUNT). Not OVER.
+//   Overlap is NZB release names, not IMDB titles.
 // Troubleshooting: empty card with both hosts set → AttachNewznabCatalog.
+//   "Same titles" copy → this block was not updated with OverlapKey.
 // Review if: Lighthouse filter ships (keep this as progress, don't recrawl).
 const NewznabCatalogCard: Component<{ report: NewznabCatalogReport }> = (
   props,
@@ -383,10 +385,10 @@ const NewznabCatalogCard: Component<{ report: NewznabCatalogReport }> = (
                 <li>
                   <div class="font-medium text-fg">{titleCase(row.kind)}</div>
                   <div class="text-fg">
-                    {`Same titles on both indexers: ${formatCount(row.both)} · NZBGeek only: ${formatCount(row.onlyHost1)} · NZB.life only: ${formatCount(row.onlyHost2)}`}
+                    {`Same NZBs on both indexers: ${formatCount(row.both)} · NZBGeek only: ${formatCount(row.onlyHost1)} · NZB.life only: ${formatCount(row.onlyHost2)}`}
                   </div>
                   <div class="text-xs text-muted">
-                    {`NZBGeek: ${formatCount(row.host1Titles)} titles (${formatCount(catalogNZBs(props.report.counts, "newznab", row.kind))} NZBs) · NZB.life: ${formatCount(row.host2Titles)} titles (${formatCount(catalogNZBs(props.report.counts, "newznab2", row.kind))} NZBs)`}
+                    {`NZBGeek: ${formatCount(catalogNZBs(props.report.counts, "newznab", row.kind))} NZBs · NZB.life: ${formatCount(catalogNZBs(props.report.counts, "newznab2", row.kind))} NZBs`}
                   </div>
                 </li>
               )}

@@ -61,7 +61,7 @@ func TestSearchCatalog_CatOnlyNoHTMLNoNZB(t *testing.T) {
 	if len(hits) != 1 || hits[0].GUID != "cat-1" || hits[0].ImdbID != "tt0111161" {
 		t.Fatalf("hits=%+v", hits)
 	}
-	if OverlapKey(hits[0]) != "imdb:tt0111161" {
+	if OverlapKey(hits[0]) != "nzb:some.movie.2021.1080p.web.dl.x264.grp" {
 		t.Fatalf("key=%q", OverlapKey(hits[0]))
 	}
 }
@@ -149,11 +149,21 @@ func TestSearchCatalog_429HonorsRetryAfter(t *testing.T) {
 	}
 }
 
-func TestOverlapKey_PrefersIMDBThenTitleYear(t *testing.T) {
-	if got := OverlapKey(CatalogHit{ImdbID: "111161"}); got != "imdb:tt111161" {
-		t.Fatalf("imdb=%q", got)
+func TestOverlapKey_UsesSanitizedNZBTitle(t *testing.T) {
+	same := OverlapKey(CatalogHit{
+		Title: "Some.Movie.2021.1080p.WEB-DL.x264-GRP", ImdbID: "tt0111161",
+	})
+	want := "nzb:some.movie.2021.1080p.web.dl.x264.grp"
+	if same != want {
+		t.Fatalf("key=%q want %q", same, want)
 	}
-	if got := OverlapKey(CatalogHit{Title: "Some Movie 2021 1080p GRP"}); got != "title:some.movie.2021.1080p.grp:2021" {
-		t.Fatalf("title=%q", got)
+	other := OverlapKey(CatalogHit{
+		Title: "Some.Movie.2021.720p.WEB-DL.x264-GRP", ImdbID: "tt0111161",
+	})
+	if other == same || other == "" {
+		t.Fatalf("720p=%q 1080p=%q", other, same)
+	}
+	if OverlapKey(CatalogHit{ImdbID: "tt0111161"}) != "" {
+		t.Fatalf("imdb-only must not overlap")
 	}
 }

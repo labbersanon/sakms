@@ -14,9 +14,9 @@ func TestStore_InsertAndOverlap(t *testing.T) {
 	ctx := context.Background()
 
 	n, err := st.InsertHits(ctx, KindMovies, []newznab.CatalogHit{
-		{Indexer: "newznab", GUID: "a", Title: "Same.Movie.2021", ImdbID: "tt1"},
-		{Indexer: "newznab2", GUID: "b", Title: "Same.Movie.2021", ImdbID: "tt1"},
-		{Indexer: "newznab", GUID: "c", Title: "Only.One.2020", ImdbID: "tt2"},
+		{Indexer: "newznab", GUID: "a", Title: "Same.Movie.2021.1080p-GRP", ImdbID: "tt1"},
+		{Indexer: "newznab2", GUID: "b", Title: "Same.Movie.2021.1080p-GRP", ImdbID: "tt1"},
+		{Indexer: "newznab", GUID: "c", Title: "Same.Movie.2021.720p-GRP", ImdbID: "tt1"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -39,8 +39,31 @@ func TestStore_InsertAndOverlap(t *testing.T) {
 		t.Fatalf("overlap=%+v", rep.Overlap)
 	}
 	o := rep.Overlap[0]
-	if o.Both != 1 || o.OnlyHost1 != 1 || o.OnlyHost2 != 0 || o.Host1Titles != 2 || o.Host2Titles != 1 {
+	if o.Both != 1 || o.OnlyHost1 != 1 || o.OnlyHost2 != 0 || o.Host1Nzbs != 2 || o.Host2Nzbs != 1 {
 		t.Fatalf("overlap=%+v", o)
+	}
+}
+
+func TestStore_RecomputeOverlapKeysRewritesIMDBKeys(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	st := NewStore(sqlDB)
+	ctx := context.Background()
+	_, err := sqlDB.ExecContext(ctx, `
+		INSERT INTO newznab_catalog (indexer, guid, title, kind, overlap_key)
+		VALUES ('newznab', 'a', 'Same.Movie.2021.1080p-GRP', 'movies', 'imdb:tt1')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := st.RecomputeOverlapKeys(ctx)
+	if err != nil || n != 1 {
+		t.Fatalf("n=%d err=%v", n, err)
+	}
+	var key string
+	if err := sqlDB.QueryRowContext(ctx, `SELECT overlap_key FROM newznab_catalog WHERE guid='a'`).Scan(&key); err != nil {
+		t.Fatal(err)
+	}
+	if key != "nzb:same.movie.2021.1080p.grp" {
+		t.Fatalf("key=%q", key)
 	}
 }
 

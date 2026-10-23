@@ -85,13 +85,9 @@ func (s *Store) NextFromCatalog(ctx context.Context) (CatalogRef, bool, error) {
 
 // Claude 2026-10-23: backfill verified rows whose catalog tmdb_id is still empty.
 // Reason: Newznab RSS omits tmdb. Sentinel "0" means checked/no match — skip those
-//
-//	so we do not loop. Unset TMDB must not write "0".
-//
+// so we do not loop. Unset TMDB must not write "0".
 // Troubleshooting: NextVerifiedNeedingTMDB empty while shelf is empty → all
-//
-//	verified rows are "" (crawler idle) or "0" (no IMDb match).
-//
+// verified rows are "" (crawler idle) or "0" (no IMDb match).
 // Review if: Play starts-while-downloading.
 func (s *Store) NextVerifiedNeedingTMDB(ctx context.Context) (Row, bool, error) {
 	var row Row

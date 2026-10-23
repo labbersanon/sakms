@@ -22,12 +22,6 @@ var ErrTMDBUnset = errors.New("tmdb unset")
 
 var tmdbUnsetOnce sync.Once
 
-func noteTMDBUnset() {
-	tmdbUnsetOnce.Do(func() {
-		log.Printf("newznab ondemand: tmdb unset, unmatched titles stay hidden")
-	})
-}
-
 // IMDBFinder maps indexer ids onto TMDB. Tests stub this.
 type IMDBFinder interface {
 	MovieByIMDB(ctx context.Context, imdbID string) (int, error)
@@ -49,8 +43,9 @@ func resolveCatalogTMDB(ctx context.Context, store *Store, finder IMDBFinder, ro
 	id, tried, err := lookupTMDB(ctx, finder, row.Kind, imdbID, tvdbID)
 	if err != nil {
 		if errors.Is(err, ErrTMDBUnset) {
-			noteTMDBUnset()
-			return ErrTMDBUnset
+			tmdbUnsetOnce.Do(func() {
+				log.Printf("newznab ondemand: tmdb unset, unmatched titles stay hidden")
+			})
 		}
 		return err
 	}
@@ -58,10 +53,7 @@ func resolveCatalogTMDB(ctx context.Context, store *Store, finder IMDBFinder, ro
 	if id > 0 {
 		val = strconv.Itoa(id)
 	}
-	if !tried {
-		return store.SetCatalogTMDB(ctx, row.Indexer, row.GUID, val)
-	}
-	if newznab.NormalizeIMDB(imdbID) != "" {
+	if tried && newznab.NormalizeIMDB(imdbID) != "" {
 		if err := store.SetCatalogTMDBForIMDB(ctx, imdbID, val); err != nil {
 			return err
 		}
@@ -73,13 +65,13 @@ func lookupTMDB(ctx context.Context, finder IMDBFinder, kind, imdbID, tvdbID str
 	if finder == nil {
 		return 0, false, ErrTMDBUnset
 	}
+	findIMDB := finder.MovieByIMDB
+	if kind == "series" {
+		findIMDB = finder.TVByIMDB
+	}
 	for _, cand := range imdbCandidates(imdbID) {
 		tried = true
-		if kind == "series" {
-			id, err = finder.TVByIMDB(ctx, cand)
-		} else {
-			id, err = finder.MovieByIMDB(ctx, cand)
-		}
+		id, err = findIMDB(ctx, cand)
 		if err != nil {
 			return 0, true, err
 		}

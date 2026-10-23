@@ -13098,3 +13098,20 @@ status stays active.
 | `internal/api/newznab_ondemand.go` | GET `/api/modes/{mode}/ondemand` |
 | `frontend/src/screens/discover/OnDemandView.tsx` | verified-title grid + quality picker |
 | `frontend/src/screens/discover/{index,Mainstream,Adult}.tsx` | On Demand chip, `?view=ondemand` |
+
+## 2026-10-23 — On Demand IMDb→TMDB at verify; hide unmatched
+
+**Problem:** On Demand cards were letter tiles. Catalog had IMDb, not TMDB; posters need `tmdbId`.
+**Root cause:** Newznab RSS sends `imdb`, not `tmdb`/`tmdbid`. Discover joined catalog as-is and rendered anyway.
+**Fix:** After STAT verify (and a backfill of verified-empty rows) look up TMDB by IMDb (series: IMDb then TVDB). Cache on `newznab_catalog.tmdb_id`. Miss stamps `'0'` so we do not loop. TMDB unset does not stamp `'0'`. Over-long IMDb zeros also try 7 digits. ListVerified and the chip omit `TmdbID<=0`. No title-search, no TMDB on Discover render. Adult PIN unchanged.
+**Outcome:** `TestResolveCatalogTMDB_*`, `TestListVerified_OmitsWithoutTMDB`, Discover "does not display titles without a TMDB id".
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/newznabondemand/tmdb.go` | IMDb/TVDB lookup + cache |
+| `internal/newznabondemand/crawl.go` | resolve after verify; backfill before more t=get |
+| `internal/newznabondemand/shelf.go` | omit TmdbID<=0 |
+| `cmd/sakms/main.go` | `ondemandIMDBFinder` via `mode.Build` |
+| `frontend/src/screens/discover/OnDemandView.tsx` | hide `!tmdbId` |

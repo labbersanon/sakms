@@ -98,15 +98,19 @@ func Run(ctx context.Context, store *Store, conns *connections.Store, nntp *usen
 }
 
 func step(ctx context.Context, store *Store, client *newznab.Client, idxs []newznab.Indexer, nntp *usenet.Manager, dataDir string, finder IMDBFinder) (bool, error) {
-	if row, ok, err := store.NextFetched(ctx); err != nil {
+	row, ok, err := store.NextFetched(ctx)
+	if err != nil {
 		return false, err
-	} else if ok {
+	}
+	if ok {
 		return true, statRow(ctx, store, nntp, dataDir, row, finder)
 	}
 	// After STAT, fill catalog.tmdb_id for already-verified rows before more t=get.
-	if row, ok, err := store.NextVerifiedNeedingTMDB(ctx); err != nil {
+	row, ok, err = store.NextVerifiedNeedingTMDB(ctx)
+	if err != nil {
 		return false, err
-	} else if ok {
+	}
+	if ok {
 		err := resolveCatalogTMDB(ctx, store, finder, row)
 		if !errors.Is(err, ErrTMDBUnset) {
 			return true, err

@@ -102,13 +102,13 @@ func groupShelf(rows []shelfRow) []ShelfTitle {
 		key := groupKey(r)
 		a := grouped[key]
 		if a == nil {
-			year := r.Year
-			if year == 0 {
-				year = newznabYear(r.Title)
-			}
 			tmdbID, _ := strconv.Atoi(newznab.DigitsOnly(r.TmdbID))
 			if tmdbID <= 0 {
 				continue
+			}
+			year := r.Year
+			if year == 0 {
+				year = newznabYear(r.Title)
 			}
 			a = &acc{
 				title: ShelfTitle{
@@ -145,9 +145,6 @@ func groupShelf(rows []shelfRow) []ShelfTitle {
 		sort.Slice(t.Qualities, func(i, j int) bool {
 			return qualityRank(t.Qualities[i].Label) < qualityRank(t.Qualities[j].Label)
 		})
-		if t.TmdbID <= 0 {
-			continue
-		}
 		out = append(out, t)
 	}
 	sort.Slice(out, func(i, j int) bool {

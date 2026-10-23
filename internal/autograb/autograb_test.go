@@ -663,3 +663,27 @@ func TestSelectRanksHDRThenChannelsThenCodec(t *testing.T) {
 		t.Fatalf("want HDR Atmos AV1, pick=%+v", got.Grades[got.PickIndex].Candidate)
 	}
 }
+
+func TestHighestTierForMbps(t *testing.T) {
+	cases := []struct {
+		mbps float64
+		res  int
+		want quality.Tier
+	}{
+		{0, 1080, ""},
+		{1, 1080, quality.Low},
+		{2, 1080, quality.Low},
+		{6, 1080, quality.Medium},
+		{12, 1080, quality.High},
+		{18, 1080, quality.Lossless},
+		{25, 2160, quality.Medium},
+		{40, 2160, quality.High},
+		{70, 2160, quality.Lossless},
+		{12, 0, quality.High},
+	}
+	for _, c := range cases {
+		if got := HighestTierForMbps(c.mbps, c.res); got != c.want {
+			t.Errorf("HighestTierForMbps(%v, %d)=%q want %q", c.mbps, c.res, got, c.want)
+		}
+	}
+}

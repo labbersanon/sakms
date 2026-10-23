@@ -768,8 +768,8 @@ describe("Discover — On Demand chip", () => {
               year: 2021,
               tmdbId: 9,
               qualities: [
-                { indexer: "newznab", nzbId: "h1", label: "40 Mbps" },
-                { indexer: "newznab", nzbId: "h2", label: "12 Mbps" },
+                { indexer: "newznab", nzbId: "h1", label: "High" },
+                { indexer: "newznab", nzbId: "h2", label: "Medium" },
               ],
             },
           ],
@@ -787,8 +787,8 @@ describe("Discover — On Demand chip", () => {
     expect(screen.getByPlaceholderText("Search On Demand…")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Shelf Movie" }));
     expect(await screen.findByText("Quality")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "40 Mbps" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "12 Mbps" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "High" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Medium" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "In library" }));
     expect(screen.queryByText("Shelf Movie")).not.toBeInTheDocument();
   });

@@ -7,7 +7,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/labbersanon/sakms/internal/autograb"
 	"github.com/labbersanon/sakms/internal/newznab"
+	"github.com/labbersanon/sakms/internal/quality"
+	"github.com/labbersanon/sakms/internal/release"
 )
 
 // Claude 2026-10-23: Discover On Demand shelf is verified rows only.
@@ -126,7 +129,7 @@ func groupShelf(rows []shelfRow) []ShelfTitle {
 			grouped[key] = a
 			order = append(order, key)
 		}
-		label := bitrateLabel(r.BitrateMbps)
+		label := qualityChip(r.BitrateMbps, r.Title)
 		if a.seenQual[label] {
 			continue
 		}
@@ -141,7 +144,8 @@ func groupShelf(rows []shelfRow) []ShelfTitle {
 	for _, key := range order {
 		t := grouped[key].title
 		sort.Slice(t.Qualities, func(i, j int) bool {
-			return bitrateRank(t.Qualities[i].Label) > bitrateRank(t.Qualities[j].Label)
+			return quality.RankString(strings.ToLower(t.Qualities[i].Label)) >
+				quality.RankString(strings.ToLower(t.Qualities[j].Label))
 		})
 		out = append(out, t)
 	}
@@ -199,16 +203,32 @@ func episodeKey(title string) string {
 	return season
 }
 
-func bitrateLabel(mbps float64) string {
-	if mbps <= 0 {
+// Claude 2026-10-23: chips are Low/Medium/High/Lossless, not Mbps.
+// Reason: bitrate classifies; the picker shows the same quality levels as
+//   Settings. 2160p/1080p in the title only pick the floorTable rung.
+// Troubleshooting: two High encodes collapse to one High chip.
+// Review if: Play picks among same-level NZBs by bitrate.
+
+func qualityChip(mbps float64, title string) string {
+	info := release.Parse(title)
+	res := autograb.SnapFloorResolution(autograb.Candidate{
+		Resolution: info.Resolution,
+		Title:      title,
+		Source:     info.Source,
+		Codec:      info.Codec,
+	})
+	switch autograb.HighestTierForMbps(mbps, res) {
+	case quality.Low:
+		return "Low"
+	case quality.Medium:
+		return "Medium"
+	case quality.High:
+		return "High"
+	case quality.Lossless:
+		return "Lossless"
+	default:
 		return "Unknown"
 	}
-	return strconv.FormatFloat(mbps, 'f', 0, 64) + " Mbps"
-}
-
-func bitrateRank(label string) float64 {
-	n, _ := strconv.ParseFloat(strings.TrimSuffix(label, " Mbps"), 64)
-	return n
 }
 
 func DisplayTitle(raw string) string {

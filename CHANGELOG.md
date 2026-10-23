@@ -13219,3 +13219,18 @@ status stays active.
 | `internal/usenet/precheck.go` | 150ms/seg; 3h 4K High cap |
 | `internal/newznabondemand/crawl.go` | remux title skip; requeue undersized skips |
 | `internal/newznabondemand/store.go` | `NextRequeueableSkip` |
+
+## 2026-10-23 — On Demand chips are quality levels, not Mbps
+
+**Problem:** The On Demand quality picker showed `12 Mbps` / `40 Mbps`.
+**Root cause:** After quality stopped using remux/2160p title tokens, the shelf labeled implied bitrate directly.
+**Fix:** Chips are Low/Medium/High/Lossless. Implied Mbps still classifies, against autograb `floorTable` (title resolution only selects the rung). Same-level NZBs collapse to one chip.
+**Outcome:** `TestHighestTierForMbps`, `TestQualityChip`, `TestListVerified_GroupsByIMDBAndQuality`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/autograb/autograb.go` | `HighestTierForMbps` |
+| `internal/newznabondemand/shelf.go` | chips are quality levels |
+| `frontend/src/screens/Discover.test.tsx` | High/Medium picker buttons |

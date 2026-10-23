@@ -92,7 +92,7 @@ func TestOndemandHandler_ListsVerifiedWithoutURLs(t *testing.T) {
 	if len(got.Items) != 1 || got.Items[0].Title != "Shelf Movie 2021" || got.Items[0].TmdbID != 9 {
 		t.Fatalf("items=%+v", got.Items)
 	}
-	if len(got.Items[0].Qualities) != 1 || got.Items[0].Qualities[0].Label != "12 Mbps" || got.Items[0].Qualities[0].NzbID != "hash1" {
+	if len(got.Items[0].Qualities) != 1 || got.Items[0].Qualities[0].Label != "High" || got.Items[0].Qualities[0].NzbID != "hash1" {
 		t.Fatalf("qualities=%+v", got.Items[0].Qualities)
 	}
 }

@@ -172,6 +172,31 @@ func SnapFloorResolution(c Candidate) int {
 	return 0
 }
 
+// Claude 2026-10-23: HighestTierForMbps labels On Demand chips from bitrate.
+// Reason: picker shows Low/Medium/High/Lossless, not Mbps. Title tokens are
+//   not quality; resolution only selects the floorTable rung.
+// Troubleshooting: 12 Mbps 1080p must be High (floor 10), not "12 Mbps".
+// Review if: floorTable rungs or On Demand lossless skip (70 Mbps) change.
+
+// HighestTierForMbps is the highest named tier whose floorTable rung the
+// raw implied Mbps meets. Resolution 0 uses 1080. Below Low still returns
+// Low. mbps <= 0 returns "". No codec/HDR padding.
+func HighestTierForMbps(mbps float64, resolution int) quality.Tier {
+	if mbps <= 0 {
+		return ""
+	}
+	res := SnapFloorResolution(Candidate{Resolution: resolution})
+	if res == 0 {
+		res = 1080
+	}
+	for _, t := range []quality.Tier{quality.Lossless, quality.High, quality.Medium, quality.Low} {
+		if floor, ok := floorTable[t][res]; ok && mbps >= floor {
+			return t
+		}
+	}
+	return quality.Low
+}
+
 // UniformFloors puts the same quality-slider floor on every floorTable rung.
 // Mbps still differ by resolution (Medium@480 vs Medium@1080).
 func UniformFloors(floor quality.Tier) map[int]quality.Tier {

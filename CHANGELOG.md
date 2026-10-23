@@ -12905,3 +12905,20 @@ status stays active.
 |---|---|
 | `internal/usenetsearch/namefix_index.go` | `DuePendingPasswordLocked` |
 | `internal/usenetsearch/namefix.go` | header phase appends password packs |
+
+## 2026-10-23 — Newznab is the grab catalog; ident allows spaced titles without 1080p
+
+**Problem:** Native Searchable ~4500 is not a small indexer. Named space-separated titles without a resolution tag sat `named_hidden` at 80–94% (`SpankMonster - Ivy Mayhem`). Settings only stored one Newznab host (NZBGeek).
+**Root cause:** Discover/grab catalog is Newznab `t=search`, not native OVER/namefix. `identNameSQL` required 1080p/720p/etc before a multiword subject could be Searchable below the 95% grab gate. One `connections` service `newznab`.
+**Fix:** Space-separated multiword `display_name` is ident without a resolution tag. Dotted/underscore hashes stay non-ident. `identShapedName` still requires resolution so ingest does not name `0G6IJMEdZG_f-Evmq`. junkNameSQL still hides `(Els1212)` / single tokens. Optional `newznab2` URL+key on Usenet settings; grab search queries both. Migration `0053` dirties matching named-hidden rows. No secrets in git. Do not ingest a Newznab dump into native tables.
+**Outcome:** `TestRecomputeDirty_MultiwordWithoutResSearchableBelowGate`, `TestIdentShapedName_StillRequiresResolution`, `TestNewznabGrabSearch_SecondHostOnly`, `TestNewznabGrabSearch_MergesBothHosts`. ci-local ok.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/completeness.go` | identNameSQL third OR: space, not `.`/`_` |
+| `internal/usenetsearch/namefix.go` | identShapedName still requires resolution |
+| `internal/db/migrations/0053_ident_multiword_dirty.sql` | dirty named-hidden spaced titles |
+| `internal/api/newznabgrab.go` | `newznab` + `newznab2` grab search |
+| `frontend/src/screens/settings/Usenet.tsx` | NZB host API 2 card |

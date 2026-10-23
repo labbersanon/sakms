@@ -13115,3 +13115,16 @@ status stays active.
 | `internal/newznabondemand/shelf.go` | omit TmdbID<=0 |
 | `cmd/sakms/main.go` | `ondemandIMDBFinder` via `mode.Build` |
 | `frontend/src/screens/discover/OnDemandView.tsx` | hide `!tmdbId` |
+
+## 2026-10-23 — On Demand TMDB backfill runs before STAT
+
+**Problem:** Already-verified titles stayed unmatched while a 32k-segment STAT occupied the crawler.
+**Root cause:** `step` STATed `fetched` rows before `NextVerifiedNeedingTMDB`.
+**Fix:** Backfill empty `catalog.tmdb_id` first, then STAT, then t=get.
+**Outcome:** `TestStep_BackfillsVerifiedTMDBBeforeSTAT`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/newznabondemand/crawl.go` | TMDB backfill before NextFetched |

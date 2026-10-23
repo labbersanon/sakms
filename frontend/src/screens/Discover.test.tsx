@@ -757,7 +757,7 @@ describe("Discover — In library chip", () => {
 });
 
 describe("Discover — On Demand chip", () => {
-  it("replaces carousels with verified titles and a quality picker", async () => {
+  it("filters Discover to verified titles and opens DetailPopup", async () => {
     stubFetch((url) => {
       if (url.includes("/api/modes/movies/ondemand"))
         return jsonResponse({
@@ -774,6 +774,8 @@ describe("Discover — On Demand chip", () => {
             },
           ],
         });
+      const av = availabilityDefaults(url);
+      if (av) return av;
       const d = mainstreamDefaults(url);
       if (d) return d;
       throw new Error("unexpected fetch: " + url);
@@ -784,11 +786,13 @@ describe("Discover — On Demand chip", () => {
     fireEvent.click(screen.getByRole("button", { name: "On Demand" }));
     expect(await screen.findByText("Shelf Movie")).toBeInTheDocument();
     expect(screen.queryByText("Trending Movies")).not.toBeInTheDocument();
-    expect(screen.getByPlaceholderText("Search On Demand…")).toBeInTheDocument();
+    expect(
+      screen.getByPlaceholderText("Search movies & shows…"),
+    ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Shelf Movie" }));
-    expect(await screen.findByText("Quality")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "High" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Medium" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "480p" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "High" })).not.toBeNull();
+    fireEvent.click(screen.getByText("Close"));
     fireEvent.click(screen.getByRole("button", { name: "In library" }));
     expect(screen.queryByText("Shelf Movie")).not.toBeInTheDocument();
   });
@@ -824,10 +828,10 @@ describe("Discover — On Demand chip", () => {
     clickMoviesTab();
     fireEvent.click(screen.getByRole("button", { name: "On Demand" }));
     expect(await screen.findByText("Alpha Movie")).toBeInTheDocument();
-    fireEvent.input(screen.getByPlaceholderText("Search On Demand…"), {
+    fireEvent.input(screen.getByPlaceholderText("Search movies & shows…"), {
       target: { value: "beta" },
     });
-    fireEvent.submit(screen.getByPlaceholderText("Search On Demand…").closest("form")!);
+    fireEvent.submit(screen.getByPlaceholderText("Search movies & shows…").closest("form")!);
     expect(await screen.findByText("Beta Movie")).toBeInTheDocument();
     expect(screen.queryByText("Alpha Movie")).not.toBeInTheDocument();
     expect(screen.queryByText("Search results")).not.toBeInTheDocument();
@@ -884,7 +888,9 @@ describe("Discover — On Demand chip", () => {
     render(() => <DiscoverAdult />);
     expect(await screen.findByRole("button", { name: "In library" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "On Demand" }));
-    expect(await screen.findByText("Adult Shelf")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "Adult Shelf" }),
+    ).toBeInTheDocument();
   });
 });
 

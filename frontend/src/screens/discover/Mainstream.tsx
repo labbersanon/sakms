@@ -20,6 +20,7 @@ import {
   type Component,
   type JSX,
   createEffect,
+  createMemo,
   createResource,
   createSignal,
   on,
@@ -27,15 +28,18 @@ import {
   For,
   Show,
 } from "solid-js";
+import type { OndemandTitle } from "@dto";
 import {
   type DiscoverItem,
   type DiscoverCategory,
   type DiscoverFilterParams,
   fetchDiscover,
   fetchDiscoverFiltered,
+  fetchTitleCard,
   fetchTmdbSearch,
   tmdbPoster,
 } from "../../api/discover";
+import { fetchOndemand } from "../../api/ondemand";
 import { type TrackedItem, fetchTrackedItems } from "../../api/tag";
 import { setItemRating } from "../../api/rating";
 import {
@@ -51,7 +55,10 @@ import {
   type DiscoverBrowseView,
   type DiscoverSearchHit,
 } from "../discoverHref";
-import { OnDemandView } from "./OnDemandView";
+import {
+  filterOndemandTitles,
+  ondemandToDiscoverItem,
+} from "./ondemandFilter";
 import { fetchRequests } from "../../api/requests";
 import { Button, ErrorText, FilterChip, Muted, yearOf } from "../../components/ui";
 import {
@@ -481,6 +488,29 @@ export const PosterCard: Component<{
   );
 };
 
+const OndemandPosterCard: Component<{
+  mode: "movies" | "series";
+  item: OndemandTitle;
+  onDetail: (t: DetailTarget) => void;
+}> = (props) => {
+  const [card] = createResource(
+    () => props.item.tmdbId,
+    (tmdbId) =>
+      fetchTitleCard(props.mode, tmdbId).catch(() => ({
+        posterPath: "",
+        overview: "",
+      })),
+  );
+  return (
+    <PosterCard
+      mode={props.mode}
+      item={ondemandToDiscoverItem(props.item, props.mode, card())}
+      onDetail={props.onDetail}
+      layout="grid"
+    />
+  );
+};
+
 // PaginatedRow is one TMDB category strip (fixed mode + category) with a
 // "Show more" that APPENDS the next TMDB page rather than replacing the row —
 // the accumulator (items) only ever grows. It reloads from page 1 whenever
@@ -738,7 +768,10 @@ export const MainstreamDiscover: Component<{
   // level up, so this is the minimal upward signal to gate it.
   onFilteringChange?: (active: boolean) => void;
   // Claude 2026-09-24: In library chip — owned grid (LibraryView), not a page.
-  // Claude 2026-10-23: On Demand chip — verified NZB grid, mutually exclusive.
+  // Claude 2026-10-23: On Demand chip — same PosterCard + DetailPopup filter.
+  // Reason: not a second screen; Grab/download is already on DetailPopup.
+  // Troubleshooting: quality-only modal → OnDemandView was remounted.
+  // Review if: Play without download is wired on that same popup.
   browseView?: () => DiscoverBrowseView;
   onBrowseViewChange?: (view: DiscoverBrowseView) => void;
   initialTier?: string;
@@ -789,6 +822,13 @@ export const MainstreamDiscover: Component<{
   const [draft, setDraft] = createSignal("");
   const [submitted, setSubmitted] = createSignal("");
   const searching = () => submitted().trim().length > 0;
+  const [ondemandList] = createResource(
+    () => (ondemandOnly() ? ownedMode() : null),
+    (mode) => fetchOndemand(mode),
+  );
+  const ondemandTitles = createMemo(() =>
+    filterOndemandTitles(ondemandList()?.items ?? [], submitted()),
+  );
 
   // Filters: the ad-hoc filter/sort bar's state. filtering() is true only when
   // a real filter/non-default sort is set AND no search is running (search and
@@ -1279,9 +1319,7 @@ export const MainstreamDiscover: Component<{
           >
             <input
               class="w-full max-w-sm rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent"
-              placeholder={
-                ondemandOnly() ? "Search On Demand…" : "Search movies & shows…"
-              }
+              placeholder="Search movies & shows…"
               value={draft()}
               onInput={(e) => setDraft(e.currentTarget.value)}
             />
@@ -1329,10 +1367,36 @@ export const MainstreamDiscover: Component<{
           unbounded TMDB catalog, so one-shot full render is appropriate.
           Review if: a dedicated /api/modes/{mode}/monitored endpoint is added. */}
       <Show when={ondemandOnly()}>
-        <OnDemandView
-          mode={props.contentType === "series" ? "series" : "movies"}
-          query={submitted()}
-        />
+        <Show
+          when={!ondemandList.loading}
+          fallback={<Muted>Loading…</Muted>}
+        >
+          <Show
+            when={ondemandTitles().length > 0}
+            fallback={
+              <Muted>
+                {submitted().trim()
+                  ? "No On Demand titles match this search."
+                  : "No On Demand titles yet."}
+              </Muted>
+            }
+          >
+            <div class={MEDIA_POSTER_GRID_CLASS}>
+              <For each={ondemandTitles()}>
+                {(item) => (
+                  <OndemandPosterCard
+                    mode={ownedMode()}
+                    item={item}
+                    onDetail={(t) => {
+                      setOwnedDetail(null);
+                      setDetailTarget(t);
+                    }}
+                  />
+                )}
+              </For>
+            </div>
+          </Show>
+        </Show>
       </Show>
 
       <Show when={ownedOnly() && !searching()}>

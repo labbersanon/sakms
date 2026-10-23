@@ -13234,3 +13234,19 @@ status stays active.
 | `internal/autograb/autograb.go` | `HighestTierForMbps` |
 | `internal/newznabondemand/shelf.go` | chips are quality levels |
 | `frontend/src/screens/Discover.test.tsx` | High/Medium picker buttons |
+
+## 2026-10-23 — On Demand is a Discover filter, not a second screen
+
+**Problem:** The On Demand chip replaced Discover with a custom grid and a quality-only modal.
+**Root cause:** `OnDemandView` was a separate card + picker instead of filtering onto PosterCard/AdultCard and DetailPopup.
+**Fix:** Chip still uses `?view=ondemand`. Grid is the existing cards; click opens DetailPopup (overview, availability, Grab). One card per tmdbId. Search keeps the Discover placeholder.
+**Outcome:** Discover On Demand tests open DetailPopup; `ondemandFilter.test.ts`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/discover/OnDemandView.tsx` | removed |
+| `frontend/src/screens/discover/ondemandFilter.ts` | tmdbId unique + Discover/Adult mappers |
+| `frontend/src/screens/discover/Mainstream.tsx` | PosterCard grid + DetailPopup |
+| `frontend/src/screens/discover/Adult.tsx` | AdultCard grid + DetailPopup |

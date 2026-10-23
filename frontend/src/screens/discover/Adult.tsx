@@ -32,6 +32,7 @@ import {
   type JSX,
   createContext,
   createEffect,
+  createMemo,
   createResource,
   createSignal,
   onCleanup,
@@ -39,6 +40,7 @@ import {
   For,
   Show,
 } from "solid-js";
+import { fetchOndemand } from "../../api/ondemand";
 import {
   type AdultDiscoverItem,
   type AdultSearchScenesPage,
@@ -68,7 +70,10 @@ import {
   trackedToDetailTarget,
 } from "../Library";
 import { adultOwnedIdentityKey, type DiscoverBrowseView } from "../discoverHref";
-import { OnDemandView } from "./OnDemandView";
+import {
+  filterOndemandTitles,
+  ondemandToAdultItem,
+} from "./ondemandFilter";
 import { fetchTrackedItems, type TrackedItem } from "../../api/tag";
 import { canEditAdultPoster } from "../../api/adultPoster";
 import { AdultPosterPicker } from "../../components/AdultPosterPicker";
@@ -616,6 +621,13 @@ export const AdultDiscover: Component<{
   const [draft, setDraft] = createSignal("");
   const [submitted, setSubmitted] = createSignal("");
   const searching = () => submitted().trim().length > 0;
+  const [ondemandList] = createResource(
+    () => (ondemandOnly() ? ("adult" as const) : null),
+    (mode) => fetchOndemand(mode),
+  );
+  const ondemandTitles = createMemo(() =>
+    filterOndemandTitles(ondemandList()?.items ?? [], submitted()),
+  );
 
   // drill is the active Studio/Performer drill-down (null = the browse rows).
   const [drill, setDrill] = createSignal<AdultDrill | null>(null);
@@ -1102,11 +1114,9 @@ export const AdultDiscover: Component<{
         <input
           class="w-full max-w-sm rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent"
           placeholder={
-            ondemandOnly()
-              ? "Search On Demand…"
-              : kind() === "movie"
-                ? "Search movies by title…"
-                : "Search scenes by title…"
+            kind() === "movie"
+              ? "Search movies by title…"
+              : "Search scenes by title…"
           }
           value={draft()}
           onInput={(e) => setDraft(e.currentTarget.value)}
@@ -1144,11 +1154,37 @@ export const AdultDiscover: Component<{
       </Show>
 
       <Show when={ondemandOnly()}>
-        <OnDemandView
-          mode="adult"
-          query={submitted()}
-          posterAspect={kind() === "movie" ? "2 / 3" : "16 / 9"}
-        />
+        <Show
+          when={!ondemandList.loading}
+          fallback={<Muted>Loading…</Muted>}
+        >
+          <Show
+            when={ondemandTitles().length > 0}
+            fallback={
+              <Muted>
+                {submitted().trim()
+                  ? "No On Demand titles match this search."
+                  : "No On Demand titles yet."}
+              </Muted>
+            }
+          >
+            <div class={MEDIA_POSTER_GRID_CLASS}>
+              <For each={ondemandTitles()}>
+                {(item) => (
+                  <AdultCard
+                    item={ondemandToAdultItem(item)}
+                    onDetail={(t) => {
+                      setOwnedDetail(null);
+                      setDetailTarget(t);
+                    }}
+                    aspect={cardAspect()}
+                    layout="grid"
+                  />
+                )}
+              </For>
+            </div>
+          </Show>
+        </Show>
       </Show>
 
       <Show when={ownedOnly() && !searching()}>

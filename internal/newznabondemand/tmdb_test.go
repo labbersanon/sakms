@@ -165,6 +165,45 @@ func TestResolveCatalogTMDB_PadsOverlongIMDB(t *testing.T) {
 	}
 }
 
+func TestStep_BackfillsVerifiedTMDBBeforeSTAT(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	ctx := context.Background()
+	cat := newznabcatalog.NewStore(sqlDB)
+	if _, err := cat.InsertHits(ctx, newznabcatalog.KindMovies, []newznab.CatalogHit{
+		{Indexer: "newznab", GUID: "g1", Title: "Movie.1080p", ImdbID: "tt0111161"},
+		{Indexer: "newznab", GUID: "g2", Title: "Other.1080p", ImdbID: "tt2"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	st := NewStore(sqlDB)
+	if err := st.Save(ctx, Row{
+		Indexer: "newznab", GUID: "g1", Kind: newznabcatalog.KindMovies,
+		Title: "Movie.1080p", Status: StatusVerified, Streamable: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Save(ctx, Row{
+		Indexer: "newznab", GUID: "g2", Kind: newznabcatalog.KindMovies,
+		Title: "Other.1080p", Status: StatusFetched, Streamable: true,
+		NZBRelPath: "ondemand/nzb/newznab/missing.nzb",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	finder := &stubFinder{movie: map[string]int{"tt0111161": 278}}
+	worked, err := step(ctx, st, nil, nil, nil, t.TempDir(), finder)
+	if err != nil || !worked {
+		t.Fatalf("worked=%v err=%v", worked, err)
+	}
+	_, tmdbID, _, err := st.CatalogIDs(ctx, "newznab", "g1")
+	if err != nil || tmdbID != "278" {
+		t.Fatalf("tmdb=%q err=%v", tmdbID, err)
+	}
+	got, ok, err := st.NextFetched(ctx)
+	if err != nil || !ok || got.GUID != "g2" {
+		t.Fatalf("fetched still queued got=%+v ok=%v err=%v", got, ok, err)
+	}
+}
+
 func TestStep_BackfillsVerifiedTMDB(t *testing.T) {
 	sqlDB := dbtest.New(t)
 	ctx := context.Background()

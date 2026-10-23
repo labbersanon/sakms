@@ -98,15 +98,11 @@ func Run(ctx context.Context, store *Store, conns *connections.Store, nntp *usen
 }
 
 func step(ctx context.Context, store *Store, client *newznab.Client, idxs []newznab.Indexer, nntp *usenet.Manager, dataDir string, finder IMDBFinder) (bool, error) {
-	row, ok, err := store.NextFetched(ctx)
-	if err != nil {
-		return false, err
-	}
-	if ok {
-		return true, statRow(ctx, store, nntp, dataDir, row, finder)
-	}
-	// After STAT, fill catalog.tmdb_id for already-verified rows before more t=get.
-	row, ok, err = store.NextVerifiedNeedingTMDB(ctx)
+	// Claude 2026-10-23: TMDB backfill before STAT. A 30k-seg STAT would hide
+	//   already-verified titles for a long time; Find-by-IMDb is one HTTP call.
+	// Troubleshooting: letter tiles after deploy → NextFetched is starving this.
+	// Review if: Play starts-while-downloading.
+	row, ok, err := store.NextVerifiedNeedingTMDB(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -115,6 +111,13 @@ func step(ctx context.Context, store *Store, client *newznab.Client, idxs []newz
 		if !errors.Is(err, ErrTMDBUnset) {
 			return true, err
 		}
+	}
+	row, ok, err = store.NextFetched(ctx)
+	if err != nil {
+		return false, err
+	}
+	if ok {
+		return true, statRow(ctx, store, nntp, dataDir, row, finder)
 	}
 	ref, ok, err := store.NextFromCatalog(ctx)
 	if err != nil {

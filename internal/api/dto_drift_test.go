@@ -75,8 +75,7 @@ func TestHandlerDTOMirrorNoDrift(t *testing.T) {
 		{"libraryTrackedFile/TrackedItemFile", libraryTrackedFile{}, apidto.TrackedItemFile{}},
 		// storage_allocation.go
 		{"storageAllocationCell/StorageAllocationCell", storageAllocationCell{}, apidto.StorageAllocationCell{}},
-		{"nntpCrawlerChunk/NNTPCrawlerChunk", nntpCrawlerChunk{}, apidto.NNTPCrawlerChunk{}},
-		// nntpCrawlerStatusResponse excluded: LastChunk is a nested named type.
+		// nntp crawler DTOs removed with the OVER index.
 		// storageAllocationRow/storageAllocationResponse are excluded for the
 		// same reason applyBatchRequest is: each has a nested named-type field
 		// ([]storageAllocationCell vs []apidto.StorageAllocationCell), whose

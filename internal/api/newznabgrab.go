@@ -15,18 +15,17 @@ import (
 	"github.com/labbersanon/sakms/internal/prowlarr"
 )
 
-// Claude 2026-10-21: Settings `newznab` host is an alternate Usenet grab search.
-// Reason: NZBGeek cannot recover ngPost passwords; native NNTP is first, then
-//   this indexer, then Prowlarr. Do not scrape HTML. Do not fetch NZBs at search.
+// Claude 2026-10-21: Settings `newznab` host is the Usenet grab catalog.
+// Reason: NZBGeek cannot recover ngPost passwords. Do not scrape HTML.
+//   Do not fetch NZBs at search. Prowlarr stays last.
 // Troubleshooting: grab phase miss → host unset or t=search empty; indexerIds=-4
 //   on Prowlarr means ScopeNewznab leaked. Review if: Prowlarr already includes
 //   the same host (duplicate NZBs are deduped by URL/title).
 // Related files: internal/newznab/client.go, frontend Usenet.tsx
 //
 // Claude 2026-10-22: optional `newznab2` is a second grab indexer.
-// Reason: NZBGeek does not list ngPost obfuscated NZBs; Discover/grab catalog
-//   is Newznab, not native Searchable. A second host that does list those
-//   NZBs can be pasted in Settings — no secret in git.
+// Reason: NZBGeek does not list ngPost obfuscated NZBs. Paste URL+key in
+//   Settings — no secret in git. NZBFinder is the recommended second host.
 // Troubleshooting: only host 1 is queried → connections.service newznab2
 //   URL/key empty. Review if: Prowlarr already includes both.
 
@@ -103,14 +102,9 @@ func insertNewznabPhase(phases []prowlarr.Scope) []prowlarr.Scope {
 			return phases
 		}
 	}
-	i := 0
-	for i < len(phases) && phases[i].IsNative() {
-		i++
-	}
 	out := make([]prowlarr.Scope, 0, len(phases)+1)
-	out = append(out, phases[:i]...)
 	out = append(out, prowlarr.ScopeNewznab)
-	out = append(out, phases[i:]...)
+	out = append(out, phases...)
 	return out
 }
 

@@ -722,14 +722,6 @@ func putQualityPrefsHandler(settingsStore *settings.Store) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		// Claude 2026-10-15: mode defaults feed PolicySnapshot.Modes (Step 4
-		// of the crawl-admission plan) — a save here must not wait out the
-		// admitter's 5-minute refresh timer. invalidateAdmissionPolicy lives
-		// in titlequality.go (shared with the title-prefs PUT/Clear path).
-		// Troubleshooting: PUT mode quality prefs → crawl still gates on the
-		//   old floor/tiers for several minutes.
-		// Review if: this handler gains an explicit *usenetsearch.Service param.
-		invalidateAdmissionPolicy()
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

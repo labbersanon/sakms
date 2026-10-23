@@ -31,7 +31,6 @@ import (
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenet"
-	"github.com/labbersanon/sakms/internal/usenetsearch"
 	"github.com/labbersanon/sakms/internal/webhooks"
 )
 
@@ -410,7 +409,7 @@ func grabHandler(httpClient *http.Client, connStore *connections.Store, scStore 
 			return
 		}
 
-		downloadClient, gid, status, err := dispatchToDownloadClient(ctx, settingsStore, sess, m, nzb, nil, req.Protocol, req.DownloadURL, req.Title)
+		downloadClient, gid, status, err := dispatchToDownloadClient(ctx, settingsStore, sess, nzb, req.Protocol, req.DownloadURL, req.Title)
 		if err != nil {
 			// Claude 2026-09-22: manual pick precheck miss → requeue through precheck.
 			// Reason: operator asked Search&pick to walk alternates like auto-grab;
@@ -522,7 +521,7 @@ func grabHandler(httpClient *http.Client, connStore *connections.Store, scStore 
 // short-circuits before touching either engine, returning errDownloadsPaused and
 // 423 Locked so the frontend can distinguish "blocked because paused" from any
 // other grab failure.
-func dispatchToDownloadClient(ctx context.Context, settingsStore *settings.Store, sess *mode.Session, m mode.Mode, nzb *usenet.Manager, native *usenetsearch.Service, protocol, downloadURL, title string) (downloadClient, gid string, status int, err error) {
+func dispatchToDownloadClient(ctx context.Context, settingsStore *settings.Store, sess *mode.Session, nzb *usenet.Manager, protocol, downloadURL, title string) (downloadClient, gid string, status int, err error) {
 	paused, err := settingsStore.GetBool(ctx, downloadsGlobalPausedKey, false)
 	if err != nil {
 		return "", "", http.StatusInternalServerError, err
@@ -543,27 +542,6 @@ func dispatchToDownloadClient(ctx context.Context, settingsStore *settings.Store
 	case prowlarr.Usenet:
 		if nzb == nil {
 			return "", "", http.StatusBadRequest, errors.New("add a Usenet subscription on the Settings → Download → Usenet page to grab usenet releases")
-		}
-		// Claude 2026-09-17: sakms-nntp: locators → AddArticleSet (never fetchNZB).
-		if usenetsearch.IsLocator(downloadURL) {
-			if native == nil {
-				return "", "", http.StatusBadRequest, errors.New("native usenet search is not available")
-			}
-			cand, err := native.ResolveLocator(ctx, downloadURL)
-			if err != nil {
-				return "", "", http.StatusBadGateway, err
-			}
-			article, err := usenetsearch.ToNZB(cand)
-			if err != nil {
-				return "", "", http.StatusBadGateway, err
-			}
-			gid, err := nzb.AddArticleSet(ctx, article, title)
-			if err != nil {
-				// No GID yet on pre-dispatch failure — cooldown dedupe applies.
-				demoteNativeGroupFromURL(ctx, native, m, downloadURL, "", err)
-				return wrapUsenetPrecheckErr(err)
-			}
-			return "nntp", gid, http.StatusOK, nil
 		}
 		gid, err := nzb.AddNZB(ctx, downloadURL, title)
 		if err != nil {
@@ -859,13 +837,9 @@ func importUsenetFromDisk(
 		http.Error(w, errSeriesImportNoEpisodeIdentity.Error(), http.StatusConflict)
 		return errSeriesImportNoEpisodeIdentity
 	}
-	changed, err := grabsStore.MarkImportedIfNot(ctx, id)
-	if err != nil {
+	if _, err := grabsStore.MarkImportedIfNot(ctx, id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return err
-	}
-	if changed {
-		promoteNativeGroupFromGrab(ctx, *g)
 	}
 	// Claude 2026-09-11: remove sakms-owned staging after successful import
 	// Reason: RARs/PAR2 were left on disk after import; only delete if ownership

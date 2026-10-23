@@ -1896,46 +1896,6 @@ export interface StorageAllocation {
   grandTotalBytes: number /* int64 */;
 }
 /**
- * NNTPCrawlerChunk is the most recent OVER chunk on GET /api/admin/nntp-crawler.
- */
-export interface NNTPCrawlerChunk {
-  dir: string;
-  group: string;
-  rangeLow: number /* int */;
-  rangeHigh: number /* int */;
-  rows: number /* int */;
-  releases: number /* int */;
-  admitted: number /* int */;
-  stagedObf: number /* int */;
-  skipRes: number /* int */;
-  skipStat: number /* int */;
-  gaps: number /* int */;
-  elapsedMs: number /* int64 */;
-  atUnixMs: number /* int64 */;
-}
-/**
- * NNTPCrawlerStatus is GET /api/admin/nntp-crawler for the Dashboard card.
- */
-export interface NNTPCrawlerStatus {
-  enabled: boolean;
-  probeState: string;
-  probeDetail: string;
-  groups: number /* int */;
-  headers: number /* int64 */;
-  indexBytes: number /* int64 */;
-  indexMaxGb: number /* int */;
-  releasesSearchable: number /* int64 */;
-  releasesBelowGate: number /* int64 */;
-  pendingName: number /* int64 */;
-  missedRanges: number /* int64 */;
-  headersBinary: number /* int64 */;
-  headersIdentified: number /* int64 */;
-  identifiedPct: number /* int */;
-  lastPassBusy: boolean;
-  lastPassAdvanced: boolean;
-  lastChunk?: NNTPCrawlerChunk;
-}
-/**
  * ConnectionTestRequest is POST /api/connections/test's body — enough to
  * construct a client and make one real, read-only call (Settings' "Test"
  * button). Nothing is persisted, so APIKey here is a PLAIN string (not the

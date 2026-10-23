@@ -996,21 +996,6 @@ func (m *Manager) AddNZB(ctx context.Context, url, name string) (string, error) 
 	return m.addArticleSet(ctx, nzb, name, parkName, pws)
 }
 
-// AddArticleSet starts a download from an already-parsed (or synthesized) NZB
-// article set — same path as AddNZB after fetch. Used by the native NNTP
-// discovery backend so sakms-nntp: locators never hit fetchNZB.
-//
-// Claude 2026-09-17: split from AddNZB for native discovery.
-// Reason: engine is NZB-struct-driven; native candidates synthesize *NZB in-memory.
-// Troubleshooting: dispatch of sakms-nntp: URLs must call this, not AddNZB.
-// Review if: AddNZB gains non-HTTP sources beyond native search.
-func (m *Manager) AddArticleSet(ctx context.Context, nzb *NZB, name string) (string, error) {
-	parkName := strings.TrimSpace(name)
-	pws := collectJobPasswords(DNZBHeaders{}, nzb, name, nil)
-	name = preferredNZBName(name, DNZBHeaders{}, nzb)
-	return m.addArticleSet(ctx, nzb, name, parkName, pws)
-}
-
 func (m *Manager) addArticleSet(ctx context.Context, nzb *NZB, name, parkName string, passwords []string) (string, error) {
 	if nzb == nil {
 		return "", errors.New("usenet: nil article set")
@@ -1124,17 +1109,6 @@ func (m *Manager) RelaunchNZB(ctx context.Context, gid, url, name string) error 
 	return m.relaunchArticleSet(ctx, gid, nzb, name, dnzb)
 }
 
-// RelaunchArticleSet is RelaunchNZB without the HTTP fetch — used when the
-// article set was synthesized from the native header index (sakms-nntp:).
-//
-// Claude 2026-09-17: split from RelaunchNZB for native discovery resume.
-// Reason: transport-resume and reconcile must re-arm without fetchNZB on locators.
-// Troubleshooting: relaunch of sakms-nntp: must call this path.
-// Review if: locator re-resolution moves entirely into the API layer.
-func (m *Manager) RelaunchArticleSet(ctx context.Context, gid string, nzb *NZB, name string) error {
-	return m.relaunchArticleSet(ctx, gid, nzb, name, DNZBHeaders{})
-}
-
 func (m *Manager) relaunchArticleSet(ctx context.Context, gid string, nzb *NZB, name string, dnzb DNZBHeaders) error {
 	if !IsOwnedStagingName(gid) {
 		return fmt.Errorf("usenet: refusing relaunch into non-owned gid %q", gid)
@@ -1216,7 +1190,7 @@ func (m *Manager) relaunchArticleSet(ctx context.Context, gid string, nzb *NZB, 
 		// Keep existing staging/resume on disk for a later attempt.
 		return err
 	}
-	// Claude 2026-09-22: same as AddArticleSet — runDownload owns waiting/downloading.
+	// Claude 2026-09-22: runDownload owns waiting/downloading.
 	// Reason: relaunch must not flash Downloading while blocked on the BODY semaphore.
 	// Troubleshooting: reconcile relaunch with full slots shows Waiting after STAT.
 	// Review if: AddNZB should block until the download slot is taken.

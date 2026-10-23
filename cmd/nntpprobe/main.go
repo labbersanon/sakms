@@ -1,5 +1,5 @@
 // Command nntpprobe measures whether a provider subscription can support the
-// planned native Usenet header index (see .omc/plans/usenet-nntp-native-backend.md §8.1).
+// standalone NNTP probe (not the removed OVER index).
 //
 // Claude 2026-09-17: spike-only tool; not wired into the app.
 // Reason: SEARCH is not an NNTP command; discovery cost is OVER crawl throughput

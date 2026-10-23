@@ -140,7 +140,6 @@ func putTitleQualityPrefs(w http.ResponseWriter, r *http.Request, deps titleQual
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		invalidateAdmissionPolicy()
 		writeTitleQualityPrefs(w, ctx, deps, m, tmdbID, effectiveTitleQualityPrefs(ctx, deps, m, tmdbID))
 		return
 	}
@@ -207,7 +206,6 @@ func putTitleQualityPrefs(w http.ResponseWriter, r *http.Request, deps titleQual
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	invalidateAdmissionPolicy()
 
 	out := effectiveTitleQualityPrefs(ctx, deps, m, tmdbID)
 	if qualityPrefsRaised(prev, out) {
@@ -240,16 +238,6 @@ func resolveMovieTitleYear(ctx context.Context, deps titleQualityDeps, tmdbID in
 		return "", 0
 	}
 	return d.Title, yearFromDate(d.ReleaseDate)
-}
-
-// invalidateAdmissionPolicy forces the NNTP crawler to re-fetch its
-// PolicySnapshot before the next pass — called after any title/mode
-// quality-prefs write (PUT or Clear/DELETE) so a save takes effect without
-// waiting out the admitter's 5-minute refresh timer.
-func invalidateAdmissionPolicy() {
-	if svc := getNNTPNativeService(); svc != nil {
-		svc.InvalidateAdmissionPolicy()
-	}
 }
 
 func writeTitleQualityPrefs(w http.ResponseWriter, ctx context.Context, deps titleQualityDeps, m mode.Mode, tmdbID int, out apidto.TitleQualityPrefsResponse) {

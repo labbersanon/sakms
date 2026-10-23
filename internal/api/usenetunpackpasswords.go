@@ -9,7 +9,6 @@ import (
 
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenet"
-	"github.com/labbersanon/sakms/internal/usenetsearch"
 )
 
 // Claude 2026-10-11: operator unpack-password list (NZBGet UnpackPassFile).
@@ -66,7 +65,7 @@ func LoadUnpackPasswords(ctx context.Context, store *settings.Store) ([]string, 
 	if err != nil {
 		return nil, err
 	}
-	return normalizeUnpackPasswords(usenetsearch.ParseGroups(raw)), nil
+	return normalizeUnpackPasswords(parseGroupList(raw)), nil
 }
 
 func normalizeUnpackPasswords(in []string) []string {

@@ -12922,3 +12922,22 @@ status stays active.
 | `internal/db/migrations/0053_ident_multiword_dirty.sql` | dirty named-hidden spaced titles |
 | `internal/api/newznabgrab.go` | `newznab` + `newznab2` grab search |
 | `frontend/src/screens/settings/Usenet.tsx` | NZB host API 2 card |
+
+## 2026-10-23 — Scrap native NNTP crawler; grab catalog is Newznab
+
+**Problem:** Native Searchable ~4500 after namefix/PreDB was not close to a small indexer. OVER crawl + PAR2/NFO/yEnc namefix could not reverse ngPost hash filenames. A second Newznab host is the catalog growth path.
+**Root cause:** Indexers ingest NZBs; they do not reverse-hash Eweka OVER. Discover/grab should query Newznab (`newznab` + `newznab2`), not a local header index.
+**Fix:** Delete `internal/usenetsearch` (OVER crawl, namefix, `sakms-nntp:` locators). Keep `internal/usenet` AddNZB/Eweka subscriptions and Newznab/Prowlarr grab. Migration `0054` drops remaining `usenet_nntp_*` tables and `usenet_nntp_%` / per-mode native settings. No VACUUM FULL. Do not scrape indexer HTML. Do not restore PreDB/IRC. NZBFinder is the recommended second host (operator registers with a real email, pastes URL+key on NZB host API 2; films first). In-flight `sakms-nntp:` grabs cannot relaunch.
+**Outcome:** `TestMigration0054DropsNativeIndex`, `TestParseGroupList`, `TestInsertNewznabPhase`. Native Settings card and Dashboard crawler card gone.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/*` | removed crawl/index/namefix package |
+| `internal/api/usenetnntp*.go`, `usenetsearch_*.go`, `nntp_crawler_status.go`, `nzbpassword.go`, `usenetadmission.go`, `usenet_nntp_demote.go` | removed native API |
+| `internal/usenet/headersource.go` | removed crawler OVER/STAT/BODY surface |
+| `internal/db/migrations/0054_drop_usenet_nntp_index.sql` | DROP remaining `usenet_nntp_*` |
+| `frontend/src/screens/settings/Usenet.tsx` | drop Native search card; NZBFinder help on host 2 |
+| `frontend/src/screens/Dashboard.tsx` | drop NNTP crawler card |
+| `docs/usenet-nntp-native.md` | removed stub |

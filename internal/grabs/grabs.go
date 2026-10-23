@@ -408,7 +408,6 @@ func (s *Store) MarkImportedIfNot(ctx context.Context, id int64) (changed bool, 
 }
 
 // ListActive returns non-terminal grabs (not imported/failed) across all modes.
-// Used by native NNTP index protection so in-flight locators keep ResolveLocator.
 func (s *Store) ListActive(ctx context.Context) ([]Grab, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, mode, title, tmdb_id, tvdb_id, season_number, episode_number, season_specified, quality_profile_id, indexer, protocol,

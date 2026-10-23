@@ -455,7 +455,7 @@ func grabOneBatchItem(ctx context.Context, sess *mode.Session, m mode.Mode, stor
 	// Review if: batch should park pending_retry instead of returning a pick list.
 	for _, idx := range order {
 		picked = releases[idx]
-		downloadClient, gid, _, err = dispatchToDownloadClient(ctx, settingsStore, sess, m, nzb, nil, string(picked.Protocol), picked.DownloadURL, picked.Title)
+		downloadClient, gid, _, err = dispatchToDownloadClient(ctx, settingsStore, sess, nzb, string(picked.Protocol), picked.DownloadURL, picked.Title)
 		if err == nil {
 			sel.PickIndex = idx
 			break

@@ -1916,44 +1916,6 @@ type StorageAllocation struct {
 	GrandTotalBytes int64                  `json:"grandTotalBytes"`
 }
 
-// NNTPCrawlerChunk is the most recent OVER chunk on GET /api/admin/nntp-crawler.
-type NNTPCrawlerChunk struct {
-	Dir       string `json:"dir"`
-	Group     string `json:"group"`
-	RangeLow  int    `json:"rangeLow"`
-	RangeHigh int    `json:"rangeHigh"`
-	Rows      int    `json:"rows"`
-	Releases  int    `json:"releases"`
-	Admitted  int    `json:"admitted"`
-	StagedObf int    `json:"stagedObf"`
-	SkipRes   int    `json:"skipRes"`
-	SkipStat  int    `json:"skipStat"`
-	Gaps      int    `json:"gaps"`
-	ElapsedMs int64  `json:"elapsedMs"`
-	AtUnixMs  int64  `json:"atUnixMs"`
-}
-
-// NNTPCrawlerStatus is GET /api/admin/nntp-crawler for the Dashboard card.
-type NNTPCrawlerStatus struct {
-	Enabled            bool              `json:"enabled"`
-	ProbeState         string            `json:"probeState"`
-	ProbeDetail        string            `json:"probeDetail"`
-	Groups             int               `json:"groups"`
-	Headers            int64             `json:"headers"`
-	IndexBytes         int64             `json:"indexBytes"`
-	IndexMaxGB         int               `json:"indexMaxGb"`
-	ReleasesSearchable int64             `json:"releasesSearchable"`
-	ReleasesBelowGate  int64             `json:"releasesBelowGate"`
-	PendingName        int64             `json:"pendingName"`
-	MissedRanges       int64             `json:"missedRanges"`
-	HeadersBinary      int64             `json:"headersBinary"`
-	HeadersIdentified  int64             `json:"headersIdentified"`
-	IdentifiedPct      int               `json:"identifiedPct"`
-	LastPassBusy       bool              `json:"lastPassBusy"`
-	LastPassAdvanced   bool              `json:"lastPassAdvanced"`
-	LastChunk          *NNTPCrawlerChunk `json:"lastChunk,omitempty"`
-}
-
 // --- Stage 4: Settings + Advanced Settings ---------------------------------
 //
 // The DTOs backing the ported Settings view (Connections, API Access, Auth

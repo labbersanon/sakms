@@ -10,7 +10,6 @@ import (
 	"github.com/labbersanon/sakms/internal/prowlarr"
 	"github.com/labbersanon/sakms/internal/release"
 	"github.com/labbersanon/sakms/internal/settings"
-	"github.com/labbersanon/sakms/internal/usenetsearch"
 )
 
 // Claude 2026-09-22: Global preferred grab languages (multi-row include).
@@ -63,7 +62,6 @@ func putGrabPreferredLanguagesHandler(settingsStore *settings.Store) http.Handle
 	}
 }
 
-// LoadPreferredLanguages is the NNTP crawler's preferred-language callback.
 func LoadPreferredLanguages(ctx context.Context, store *settings.Store) ([]string, error) {
 	return loadPreferredLanguages(ctx, store)
 }
@@ -79,9 +77,9 @@ func loadPreferredLanguages(ctx context.Context, store *settings.Store) ([]strin
 	if err != nil {
 		return nil, err
 	}
-	cleaned, err := normalizePreferredLanguageList(usenetsearch.ParseGroups(raw))
+	cleaned, err := normalizePreferredLanguageList(parseGroupList(raw))
 	if err != nil {
-		return filterKnownOnly(usenetsearch.ParseGroups(raw)), nil
+		return filterKnownOnly(parseGroupList(raw)), nil
 	}
 	return cleaned, nil
 }

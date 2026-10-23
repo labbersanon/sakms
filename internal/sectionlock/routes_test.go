@@ -102,7 +102,6 @@ func TestClassify(t *testing.T) {
 		// share the /api/admin prefix.
 		{"/api/admin/sysinfo/stream", []string{SectionDashboard}},
 		{"/api/admin/storage-allocation", []string{SectionDashboard}},
-		{"/api/admin/nntp-crawler", []string{SectionDashboard}},
 		{"/api/admin/watch-folders", []string{SectionSettings}},
 
 		// Settings.

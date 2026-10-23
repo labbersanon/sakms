@@ -18,9 +18,9 @@ func TestInsertNewznabPhase(t *testing.T) {
 	if len(phases) != 1 || !phases[0].IsNewznab() {
 		t.Fatalf("empty: %+v", phases)
 	}
-	phases = insertNewznabPhase([]prowlarr.Scope{prowlarr.ScopeNative, prowlarr.ScopeAll})
-	if len(phases) != 3 || !phases[0].IsNative() || !phases[1].IsNewznab() || phases[2] != prowlarr.ScopeAll {
-		t.Fatalf("after native: %+v", phases)
+	phases = insertNewznabPhase([]prowlarr.Scope{prowlarr.ScopeAll})
+	if len(phases) != 2 || !phases[0].IsNewznab() || phases[1] != prowlarr.ScopeAll {
+		t.Fatalf("before all: %+v", phases)
 	}
 	if len(insertNewznabPhase(phases)) != 3 {
 		t.Fatal("idempotent")

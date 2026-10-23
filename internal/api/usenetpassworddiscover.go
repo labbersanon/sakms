@@ -16,7 +16,6 @@ import (
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenet"
-	"github.com/labbersanon/sakms/internal/usenetsearch"
 	"github.com/labbersanon/sakms/internal/websearch"
 )
 
@@ -52,7 +51,6 @@ func discoverUsenetPasswords(ctx context.Context, httpClient *http.Client, connS
 	if sess != nil {
 		found = append(found, passwordsFromProwlarr(ctx, sess.Prowlarr, query)...)
 	}
-	found = append(found, passwordsFromNativeSearch(ctx, query)...)
 	if len(found) == 0 && sess != nil {
 		found = append(found, passwordFromWebAI(ctx, sess.WebSearch, sess.MainstreamAI, query)...)
 	}
@@ -95,33 +93,6 @@ func passwordsFromProwlarr(ctx context.Context, client *prowlarr.Client, query s
 	pw := usenet.PasswordsFromTitles(titles)
 	if len(pw) > 0 {
 		log.Printf("usenet password discover: indexer titles yielded %d candidate(s)", len(pw))
-	}
-	return pw
-}
-
-func passwordsFromNativeSearch(ctx context.Context, query string) []string {
-	svc := getNNTPNativeService()
-	if svc == nil {
-		return nil
-	}
-	cands, err := svc.Search(ctx, usenetsearch.Query{
-		Terms: usenetsearch.NormalizeTitleTerms(query),
-		Limit: 20,
-	})
-	if err != nil {
-		log.Printf("usenet password discover: native: %v", err)
-		return nil
-	}
-	titles := make([]string, 0, len(cands))
-	for _, c := range cands {
-		titles = append(titles, c.Name)
-		for _, f := range c.Files {
-			titles = append(titles, f.Subject, f.Filename)
-		}
-	}
-	pw := usenet.PasswordsFromTitles(titles)
-	if len(pw) > 0 {
-		log.Printf("usenet password discover: native index yielded %d candidate(s)", len(pw))
 	}
 	return pw
 }

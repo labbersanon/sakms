@@ -774,11 +774,6 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// Dashboard's Storage Allocation table. Pure DB read — see the handler's
 	// doc comment for why it takes libStore and nothing else.
 	mux.HandleFunc("GET /api/admin/storage-allocation", storageAllocationHandler(libStore))
-	// Claude 2026-10-16: NNTP crawler counters for the Dashboard card.
-	// Reason: REST like storage-allocation; last-chunk is process memory.
-	// Troubleshooting: 200 with enabled=false → native search off / service nil.
-	// Review if: this should join the sysinfo SSE instead of polling.
-	mux.HandleFunc("GET /api/admin/nntp-crawler", nntpCrawlerStatusHandler())
 	// Live container/host resource metrics streamed as server-sent events for
 	// the System Dashboard (internal/sysinfo reads cgroups v2 + /proc).
 	mux.HandleFunc("GET /api/admin/sysinfo/stream", sysinfoStreamHandler(
@@ -819,10 +814,6 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	mux.HandleFunc("PUT /api/settings/grab-preferred-languages", putGrabPreferredLanguagesHandler(settingsStore))
 	mux.HandleFunc("GET /api/settings/usenet-segment-resume", getUsenetSegmentResumeHandler(settingsStore))
 	mux.HandleFunc("PUT /api/settings/usenet-segment-resume", putUsenetSegmentResumeHandler(settingsStore, nzb))
-	mux.HandleFunc("GET /api/settings/usenet-nntp-native", getUsenetNNTPNativeHandler(settingsStore, nil))
-	mux.HandleFunc("PUT /api/settings/usenet-nntp-native", putUsenetNNTPNativeHandler(settingsStore, nil))
-	mux.HandleFunc("GET /api/settings/usenet-nntp-native/groups", getUsenetNNTPGroupsHandler(nil))
-	mux.HandleFunc("POST /api/settings/usenet-nntp-native/grades/reset", postUsenetNNTPResetGradeHandler(nil))
 	mux.HandleFunc("GET /api/settings/download-rate-limit-mbps", getDownloadRateLimitHandler(settingsStore))
 	mux.HandleFunc("PUT /api/settings/download-rate-limit-mbps", putDownloadRateLimitHandler(settingsStore, nil))
 	mux.HandleFunc("GET /api/settings/usenet-autograb-slots", getAutoGrabSlotsHandler(settingsStore, autoGrabSlotsProtocolUsenet))

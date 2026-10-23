@@ -17,7 +17,6 @@ import (
 	"github.com/labbersanon/sakms/internal/release"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenet"
-	"github.com/labbersanon/sakms/internal/usenetsearch"
 	"github.com/labbersanon/sakms/internal/webhooks"
 )
 
@@ -165,9 +164,6 @@ type AutoGrabDeps struct {
 	// ReleaseStore is the Adult release cache store; nil degrades to a live
 	// Prowlarr search on every call.
 	ReleaseStore *adultnewest.ReleaseStore
-	// UsenetSearch is the optional native NNTP discovery backend. Nil = inert
-	// (flag-off / not wired). Never errors a grab when unset or not ready.
-	UsenetSearch *usenetsearch.Service
 	// Claude 2026-09-28: seventh retry-cycle pass (list ingest).
 	// Reason: RunUsenetRetry is the only production constructor that has a
 	//   trakt.Store + season catalog; TMDB/IMDb reuse Catalog + HTTPClient.
@@ -276,10 +272,6 @@ type AutoGrabRequest struct {
 	// Claude 2026-09-17: never written for ScopeTorrent phases or ScopeAll;
 	//   only set by the content-failure alternate-release path (Usenet-only).
 	ExcludeReleaseKeys []string
-
-	// SkipNativePhase prevents re-prepending ScopeNative. Set when falling
-	// back from native precheck exhaustion to remaining Prowlarr phases (§7.3).
-	SkipNativePhase bool
 }
 
 // AutoGrabOutcome is what happened. Exactly one of Grabbed / AlreadyGrabbing /
@@ -344,7 +336,6 @@ type AutoGrabOutcome struct {
 // sess is separate from deps because one Session is mode-scoped while deps are
 // not, and because runToggleGatedSearch's own signature takes it separately.
 func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req AutoGrabRequest) (AutoGrabOutcome, error) {
-	deps = WithUsenetSearch(deps)
 	if req.Trigger != TriggerOperator {
 		enabled, err := deps.SettingsStore.GetBool(ctx, usenetAutoGrabEnabledKey, false)
 		if err != nil {
@@ -414,15 +405,8 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 	if len(phases) == 0 {
 		phases = []prowlarr.Scope{prowlarr.ScopeAll}
 	}
-	// Claude 2026-09-17: prepend native NNTP phase when flags allow.
-	// Reason: native-first, Prowlarr fallback on miss; never change flag-off behaviour.
-	// Troubleshooting: native miss should log and continue; never 502.
-	// Review if: SearchPhases becomes a struct with Native bool.
-	if nativePhaseWanted(ctx, deps, req.Mode) && !req.SkipNativePhase {
-		phases = prependNativePhase(phases)
-	}
-	// Claude 2026-10-21: Newznab grab phase after native, before Prowlarr.
-	// Reason: Settings NZB host is an alternate Usenet search, not passwords.
+	// Claude 2026-10-23: Newznab grab phase first, then Prowlarr.
+	// Reason: native OVER index removed; Discover/grab catalog is Newznab.
 	// Troubleshooting: no newznab hits → host unset; indexerIds=-4 → leak.
 	// Review if: Prowlarr already includes the same indexer.
 	if newznabGrabConfigured(ctx) {
@@ -437,22 +421,13 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 		releases       []prowlarr.Release
 		runtimeSeconds float64
 		sel            autograb.Selection
-		native         bool
 	}
 	scoreOnePhase := func(scope prowlarr.Scope) (phaseResult, error) {
 		var pr phaseResult
-		pr.native = scope.IsNative()
 
 		if req.Releases != nil {
 			// Pre-fetched releases skip per-phase search (Search hook already has a list).
 			pr.releases = req.Releases
-			pr.runtimeSeconds = req.RuntimeSeconds
-		} else if scope.IsNative() {
-			rels, err := nativeAutoGrabSearch(ctx, deps, req)
-			if err != nil {
-				return pr, err
-			}
-			pr.releases = rels
 			pr.runtimeSeconds = req.RuntimeSeconds
 		} else if scope.IsNewznab() {
 			rels, err := newznabAutoGrabSearch(ctx, req.Mode, req)
@@ -545,16 +520,14 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 	// A below-floor stopgap does not stop the loop: a later phase may still
 	// have preferred quality. If every phase misses, the first stopgap is kept.
 	var (
-		releases    []prowlarr.Release
-		sel         autograb.Selection
-		nativePhase bool
-		stopgap     phaseResult
+		releases []prowlarr.Release
+		sel      autograb.Selection
+		stopgap  phaseResult
 	)
 	for i, phase := range phases {
 		pr, err := scoreOnePhase(phase)
 		if err != nil {
-			// Claude 2026-09-17: native phase errors degrade to next phase (§7.2).
-			if phase.IsNative() || phase.IsNewznab() {
+			if phase.IsNewznab() {
 				log.Printf("auto-grab: %v phase error for %q: %v — continuing", phase, req.Title, err)
 				continue
 			}
@@ -562,12 +535,10 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 		}
 		releases = pr.releases
 		sel = pr.sel
-		nativePhase = pr.native
 		if sel.HasQualified() || req.Releases != nil || i == len(phases)-1 {
 			if sel.Fallback && stopgap.sel.Stopgap {
 				releases = stopgap.releases
 				sel = stopgap.sel
-				nativePhase = stopgap.native
 			}
 			break
 		}
@@ -647,7 +618,7 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 			}
 		}
 		var status int
-		downloadClient, gid, status, err = dispatchToDownloadClient(ctx, deps.SettingsStore, sess, req.Mode, deps.NZB, deps.UsenetSearch, string(picked.Protocol), picked.DownloadURL, picked.Title)
+		downloadClient, gid, status, err = dispatchToDownloadClient(ctx, deps.SettingsStore, sess, deps.NZB, string(picked.Protocol), picked.DownloadURL, picked.Title)
 		if err == nil {
 			sel.PickIndex = idx
 			out.Selection = sel
@@ -667,17 +638,6 @@ func RunAutoGrab(ctx context.Context, deps AutoGrabDeps, sess *mode.Session, req
 	}
 	if gid == "" && err == nil {
 		err = errCandidateReleaseMismatch
-	}
-	// Claude 2026-09-17: native precheck exhaustion → remaining Prowlarr phases (§7.3).
-	if err != nil && nativePhase && usenet.IsPrecheckReject(err) {
-		rest := phasesAfterNative(phases)
-		if len(rest) > 0 && req.Releases == nil {
-			log.Printf("auto-grab: native candidates exhausted for %q — falling back to Prowlarr phases", req.Title)
-			req2 := req
-			req2.SearchPhases = stripNativePhase(rest)
-			req2.SkipNativePhase = true
-			return RunAutoGrab(ctx, deps, sess, req2)
-		}
 	}
 	if err != nil {
 		out.NoMatch = true

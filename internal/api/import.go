@@ -214,13 +214,9 @@ func UsenetCompleteImporter(httpClient *http.Client, connStore *connections.Stor
 		// Reason: complete + reconcile can race; double NoteSuccess would over-promote.
 		// Troubleshooting: grade drops two tiers after one import — check changed gate.
 		// Review if: torrent CompleteImporter needs the same one-shot pattern.
-		changed, err := grabsStore.MarkImportedIfNot(ctx, g.ID)
-		if err != nil {
+		if _, err := grabsStore.MarkImportedIfNot(ctx, g.ID); err != nil {
 			log.Printf("usenet import: grab %d marking imported: %v", g.ID, err)
 			return
-		}
-		if changed {
-			promoteNativeGroupFromGrab(ctx, *g)
 		}
 		// Claude 2026-09-11: clear owned staging on automatic complete
 		// Reason: critic — auto-import left nzb-* dirs

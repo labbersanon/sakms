@@ -13,7 +13,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@solidjs/testing-library";
 import { Route, Router } from "@solidjs/router";
-import type { NNTPCrawlerStatus, StorageAllocation, SysinfoSnapshot } from "@dto";
+import type { StorageAllocation, SysinfoSnapshot } from "@dto";
 import { Dashboard } from "./Dashboard";
 import { jsonResponse } from "../testing/http";
 
@@ -90,26 +90,6 @@ const cell = (tier: string, totalBytes: number, itemCount: number) => ({
   itemCount,
 });
 
-const nntpStatus = (over: Partial<NNTPCrawlerStatus> = {}): NNTPCrawlerStatus => ({
-  enabled: false,
-  probeState: "unknown",
-  probeDetail: "",
-  groups: 0,
-  headers: 0,
-  indexBytes: 0,
-  indexMaxGb: 20,
-  releasesSearchable: 0,
-  releasesBelowGate: 0,
-  pendingName: 0,
-  missedRanges: 0,
-  headersBinary: 0,
-  headersIdentified: 0,
-  identifiedPct: 0,
-  lastPassBusy: false,
-  lastPassAdvanced: false,
-  ...over,
-});
-
 const allocation = (): StorageAllocation => ({
   tiers: ["low", "medium", "high", "lossless", "unknown"],
   rows: [
@@ -169,13 +149,7 @@ beforeEach(() => {
   vi.stubGlobal("EventSource", MockEventSource);
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes("/api/admin/nntp-crawler")) {
-        return jsonResponse(nntpStatus());
-      }
-      return jsonResponse(allocation());
-    }),
+    vi.fn(async () => jsonResponse(allocation())),
   );
 });
 
@@ -382,64 +356,6 @@ describe("Dashboard view", () => {
     const heading = screen.getByRole("heading", { name: "Storage Allocation" });
     expect(heading.tagName).toBe("H3");
     expect(heading.closest(".rounded-xl.border")).toBeTruthy();
-  });
-
-  it("renders the NNTP crawler card without an SSE frame", async () => {
-    renderDashboard();
-    expect(
-      screen.getByText(/Waiting for the first live reading/i),
-    ).toBeInTheDocument();
-    expect(await screen.findByText("NNTP crawler")).toBeInTheDocument();
-    expect(screen.getByText(/Native search off/i)).toBeInTheDocument();
-  });
-
-  it("renders NNTP crawler counters when native search is on", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.includes("/api/admin/nntp-crawler")) {
-          return jsonResponse(
-            nntpStatus({
-              enabled: true,
-              probeState: "ok",
-              groups: 12,
-              headers: 96000,
-              indexBytes: 20_000_000,
-              indexMaxGb: 20,
-              releasesSearchable: 31,
-              pendingName: 4,
-              headersBinary: 80000,
-              headersIdentified: 64000,
-              identifiedPct: 80,
-              lastChunk: {
-                dir: "forward",
-                group: "alt.binaries.moovee",
-                rangeLow: 1,
-                rangeHigh: 2000,
-                rows: 2000,
-                releases: 12,
-                admitted: 3,
-                stagedObf: 0,
-                skipRes: 9,
-                skipStat: 0,
-                gaps: 0,
-                elapsedMs: 7,
-                atUnixMs: Date.now() - 5000,
-              },
-            }),
-          );
-        }
-        return jsonResponse(allocation());
-      }),
-    );
-    renderDashboard();
-    expect(await screen.findByText("NNTP crawler")).toBeInTheDocument();
-    expect(screen.getByText("12")).toBeInTheDocument();
-    expect(screen.getByText(/96.?000/)).toBeInTheDocument();
-    expect(screen.getByText(/64.?000 \/ 80.?000 \(80%\)/)).toBeInTheDocument();
-    expect(screen.getByText(/alt\.binaries\.moovee/)).toBeInTheDocument();
-    expect(screen.getByText(/3 admitted/)).toBeInTheDocument();
   });
 
   it("links Movies and Series cells into Library with tab and tier", async () => {

@@ -26,7 +26,6 @@ import (
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenet"
-	"github.com/labbersanon/sakms/internal/usenetsearch"
 )
 
 // Claude 2026-09-11: ARR-parity in-flight download reconcile (built-in engines)
@@ -460,12 +459,8 @@ func reconcileImportUsenet(ctx context.Context, deps DownloadReconcileDeps, g *g
 	if len(changes) == 0 {
 		return errSeriesImportNoEpisodeIdentity
 	}
-	changed, err := deps.GrabsStore.MarkImportedIfNot(ctx, g.ID)
-	if err != nil {
+	if _, err := deps.GrabsStore.MarkImportedIfNot(ctx, g.ID); err != nil {
 		return err
-	}
-	if changed {
-		promoteNativeGroupFromGrab(ctx, *g)
 	}
 	clearOwnedUsenetStaging(deps.NZB, g.DownloadGID)
 	return nil
@@ -551,27 +546,10 @@ func isPermanentRelaunchFail(err error) bool {
 	return false
 }
 
-// relaunchUsenetGrab re-arms a usenet grab into its existing GID. sakms-nntp:
-// locators resolve through the native index → RelaunchArticleSet; HTTP NZB URLs
-// keep RelaunchNZB.
+// relaunchUsenetGrab re-arms a usenet grab into its existing GID via HTTP NZB.
 func relaunchUsenetGrab(ctx context.Context, deps DownloadReconcileDeps, g *grabs.Grab) error {
 	if deps.NZB == nil {
 		return fmt.Errorf("usenet manager not configured")
-	}
-	if usenetsearch.IsLocator(g.DownloadURL) {
-		native := getNNTPNativeService()
-		if native == nil {
-			return fmt.Errorf("native usenet search is not available")
-		}
-		cand, err := native.ResolveLocator(ctx, g.DownloadURL)
-		if err != nil {
-			return err
-		}
-		nzb, err := usenetsearch.ToNZB(cand)
-		if err != nil {
-			return err
-		}
-		return deps.NZB.RelaunchArticleSet(ctx, g.DownloadGID, nzb, g.Title)
 	}
 	return deps.NZB.RelaunchNZB(ctx, g.DownloadGID, g.DownloadURL, g.Title)
 }

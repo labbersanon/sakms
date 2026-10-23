@@ -11,7 +11,6 @@ import (
 	"github.com/labbersanon/sakms/internal/release"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenet"
-	"github.com/labbersanon/sakms/internal/usenetsearch"
 )
 
 // Claude 2026-09-19: Advanced blocked release-group list for Usenet autograb (3c).
@@ -72,7 +71,7 @@ func loadBlockedReleaseGroups(ctx context.Context, store *settings.Store) ([]str
 	if err != nil {
 		return nil, err
 	}
-	return normalizeBlockedGroups(usenetsearch.ParseGroups(raw)), nil
+	return normalizeBlockedGroups(parseGroupList(raw)), nil
 }
 
 func normalizeBlockedGroups(in []string) []string {

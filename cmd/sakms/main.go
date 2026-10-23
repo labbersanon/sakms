@@ -50,7 +50,6 @@ import (
 	"github.com/labbersanon/sakms/internal/stagingsweep"
 	"github.com/labbersanon/sakms/internal/trakt"
 	"github.com/labbersanon/sakms/internal/usenet"
-	"github.com/labbersanon/sakms/internal/usenetsearch"
 	"github.com/labbersanon/sakms/internal/videophash"
 	"github.com/labbersanon/sakms/internal/web"
 	"github.com/labbersanon/sakms/internal/webhooks"
@@ -229,69 +228,17 @@ func run() error {
 		// HasSubscriptions() on a nil receiver panics.
 		log.Printf("usenet: starting with no subscriptions loaded (%v) — NZB grabbing unavailable until fixed", err)
 	}
-	// Claude 2026-09-17: native NNTP discovery service (OVER index). Default off.
-	// Reason: feature-flagged; Apply opens index + starts crawl only when enabled.
-	// Troubleshooting: settings → Usenet → Native search; probe_state/detail.
-	// Review if: NewMux takes the service as an explicit param.
-	nntpSearch := usenetsearch.NewService(nzbManager.HeaderSource(), sqlDB)
-	// Register before Load so applyPackageResolution can LIST ACTIVE (membership
-	// is the provider's mode groups, not packages.json).
-	api.SetNNTPNativeService(nntpSearch)
-	if cfgNative, err := api.LoadUsenetSearchConfig(context.Background(), settingsStore); err != nil {
-		log.Printf("usenetsearch: loading config: %v", err)
-	} else if err := nntpSearch.Apply(cfgNative); err != nil {
-		log.Printf("usenetsearch: apply: %v", err)
-	}
-	// Claude 2026-10-15: protect in-flight native locator groups from index delete.
-	// Reason: demote/prune must not wipe headers while ResolveLocator still needed.
-	// Troubleshooting: mid-download ResolveLocator fails after demote — protectFn.
-	// Review if: ListActive gains a sakms-nntp-only SQL filter.
-	nntpSearch.SetProtectedGroupsFn(func(ctx context.Context) map[string]bool {
-		return api.ActiveNativeLocatorGroups(ctx, grabsStore)
-	})
-	// Claude 2026-10-15: crawl-time quality admission policy (Step 4 of
-	// .omc/plans/nntp-crawl-quality-admission.md).
-	// Reason: Service.makeCrawler gates on cfg.AdmissionEnabled && s.admit
-	//   != nil; without this wiring the kill switch default-true setting is
-	//   moot because there is no policy to admit against (legacy upsert-all).
-	// Troubleshooting: crawl indexes non-matching releases → admit is nil → check this line ran.
-	// Review if: NewNNTPAdmissionPolicy gains settings beyond lib/settingsStore.
-	nntpSearch.SetAdmissionPolicy(api.NewNNTPAdmissionPolicy(libStore, settingsStore))
-	// Claude 2026-10-16: NNTP index uses Global preferred grab languages.
-	// Reason: same TitleLanguageAllowed rules as autograb (empty = english-assumed).
-	// Troubleshooting: german groups still OVERed → this callback not set.
-	// Review if: per-mode language overrides are added.
-	nntpSearch.SetPreferredLanguagesFn(func(ctx context.Context) []string {
-		langs, err := api.LoadPreferredLanguages(ctx, settingsStore)
-		if err != nil {
-			return nil
-		}
-		return langs
-	})
-	// Claude 2026-10-16: SetNNTPNativeService moved above LoadUsenetSearchConfig
-	// so boot LIST ACTIVE can expand mode groups. Duplicate register omitted.
-	// api.SetNNTPNativeService(nntpSearch)
-	// Claude 2026-10-22: PreDB HTTP + IRC removed (dump/IRC never named live
-	//   ngPost random stems). Namefix is PAR2/NFO/file/yEnc/srrdb/NZB-password.
-	// Reason: 6.9M dump rows + IRC had 0 name_source=predb on 24M headers.
-	// Troubleshooting: namefix still logging predb → leftover wiring.
-	// Review if: a new local title corpus is added (do not restore this).
-	// Claude 2026-10-16: collection-drift ChatJSON + NNTmux seeder fetch.
-	// Reason: usenetsearch only sees DriftAI/DriftFetch; nil AI (fallback off)
-	//   makes the idle pass a no-op. Kill switch is KV default-true.
-	// Troubleshooting: no "collection drift" logs → AI fallback off, or
-	//   rewrite v2 still running, or crawler not idle.
-	// Review if: extras should kick a v3 header rewrite.
-	api.AttachNNTPCollectionDrift(nntpSearch, connStore, settingsStore, &http.Client{Timeout: outboundTimeout})
-	// Claude 2026-10-21: Newznab host is an alternate Usenet grab search.
-	// Reason: passwords are not recoverable from NZB indexers; native NNTP
-	//   is first, then this host, then Prowlarr. Do not scrape HTML.
+	// Claude 2026-10-23: native OVER crawler/index/namefix removed.
+	// Reason: Searchable ~4500 was not an indexer catalog; Discover/grab is
+	//   Newznab then Prowlarr. Eweka stays for AddNZB download.
+	// Troubleshooting: crawl logs after deploy → leftover wiring.
+	// Review if: a future local OVER index is added (do not restore usenetsearch).
+	// Related files: docs/usenet-nntp-native.md
+	// Claude 2026-10-21: Newznab host is the Usenet grab catalog.
+	// Reason: passwords are not recoverable from NZB indexers. Do not scrape HTML.
 	// Troubleshooting: grab miss → newznab connection unset.
 	// Review if: Prowlarr already includes the same indexer.
 	api.AttachNewznabGrabSearch(connStore, &http.Client{Timeout: outboundTimeout})
-	// api.AttachNZBPasswordLookup stays for tests; namefix does not use
-	// Newznab on the live path. Passwords are not recoverable from NZBGeek.
-	defer nntpSearch.Close()
 	// traktStore persists Trakt's single application connection + linked
 	// account tokens (its own table, not connections.Store — see
 	// internal/trakt's package doc for why); secretStore encrypts the same
@@ -785,8 +732,7 @@ func run() error {
 			SettingsStore: settingsStore,
 			NZB:           nzbManager,
 			GrabsStore:    grabsStore,
-			LibStore:      libStore,
-			UsenetSearch:  nntpSearch,
+			LibStore: libStore,
 		},
 		HTTPClient:   &http.Client{Timeout: outboundTimeout},
 		ConnStore:    connStore,

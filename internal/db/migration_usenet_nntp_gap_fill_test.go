@@ -104,3 +104,33 @@ func TestMigration0052DropsPredb(t *testing.T) {
 		t.Fatalf("predb settings leftover=%d err=%v", n, err)
 	}
 }
+
+func TestMigration0054DropsNativeIndex(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	ctx := context.Background()
+	goose.SetBaseFS(migrationsFS)
+	if err := goose.SetDialect("postgres"); err != nil {
+		t.Fatalf("set dialect: %v", err)
+	}
+	if err := goose.UpTo(sqlDB, "migrations", 54); err != nil {
+		t.Fatalf("goose up to 54: %v", err)
+	}
+	for _, tbl := range []string{
+		"usenet_nntp_headers",
+		"usenet_nntp_watermarks",
+		"usenet_nntp_releases",
+		"usenet_nntp_missed_ranges",
+		"usenet_nntp_group_grades",
+		"usenet_nntp_skips",
+		"usenet_nntp_par_hashes",
+	} {
+		var exists bool
+		if err := sqlDB.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL`, tbl).Scan(&exists); err != nil || exists {
+			t.Fatalf("%s exists=%v err=%v after 0054, want dropped", tbl, exists, err)
+		}
+	}
+	var n int
+	if err := sqlDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM settings WHERE key LIKE 'usenet_nntp_%'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("nntp settings leftover=%d err=%v", n, err)
+	}
+}

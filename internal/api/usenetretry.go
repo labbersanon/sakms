@@ -446,7 +446,6 @@ func sweepUsenetFailures(ctx context.Context, deps AutoGrabDeps, lookup usenetDo
 //
 // Review if: after alternate-cap, torrent escalation should return as a second stage.
 func applyUsenetFailure(ctx context.Context, deps AutoGrabDeps, g grabs.Grab, failure error, park grabParker) (grabs.Status, error) {
-	demoteNativeGroupFromGrab(ctx, deps, g, failure)
 	status := classifyDownloadState("error", failure)
 	switch status {
 	case grabs.PendingRetry:

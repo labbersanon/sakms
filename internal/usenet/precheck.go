@@ -119,16 +119,7 @@ func (m *Manager) precheckNZB(ctx context.Context, nzb *NZB, skip map[string]boo
 		return res, nil
 	}
 
-	var all []sampledSeg
-	for fi, f := range payload {
-		for _, s := range f.Segs {
-			id := strings.TrimSpace(s.MsgID)
-			if id == "" || skip[id] {
-				continue
-			}
-			all = append(all, sampledSeg{fileIdx: fi, msgID: id})
-		}
-	}
+	all := collectPayloadSegs(payload, skip)
 	res.PayloadSegments = len(all)
 	if len(all) == 0 {
 		return res, nil
@@ -207,29 +198,12 @@ const OnDemandStatWorkers = 2
 // does not peek video. Empty pools return an inconclusive result.
 func (m *Manager) StatPayload(ctx context.Context, nzb *NZB, maxWorkers int) (PrecheckResult, error) {
 	var res PrecheckResult
-	if m == nil || nzb == nil {
-		res.Inconclusive = true
-		return res, nil
-	}
-	if !m.HasSubscriptions() {
+	if m == nil || nzb == nil || !m.HasSubscriptions() {
 		res.Inconclusive = true
 		return res, nil
 	}
 	payload := payloadFiles(nzb)
-	if len(payload) == 0 {
-		res.Inconclusive = true
-		return res, nil
-	}
-	var all []sampledSeg
-	for fi, f := range payload {
-		for _, s := range f.Segs {
-			id := strings.TrimSpace(s.MsgID)
-			if id == "" {
-				continue
-			}
-			all = append(all, sampledSeg{fileIdx: fi, msgID: id})
-		}
-	}
+	all := collectPayloadSegs(payload, nil)
 	res.PayloadSegments = len(all)
 	if len(all) == 0 {
 		res.Inconclusive = true
@@ -674,6 +648,20 @@ func payloadFiles(nzb *NZB) []NZBFile {
 		return nzb.Files
 	}
 	return payload
+}
+
+func collectPayloadSegs(payload []NZBFile, skip map[string]bool) []sampledSeg {
+	var all []sampledSeg
+	for fi, f := range payload {
+		for _, s := range f.Segs {
+			id := strings.TrimSpace(s.MsgID)
+			if id == "" || skip[id] {
+				continue
+			}
+			all = append(all, sampledSeg{fileIdx: fi, msgID: id})
+		}
+	}
+	return all
 }
 
 func missingSegs(segs []sampledSeg, missing map[string]bool) []sampledSeg {

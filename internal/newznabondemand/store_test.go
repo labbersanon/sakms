@@ -3,7 +3,6 @@ package newznabondemand
 import (
 	"context"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/labbersanon/sakms/internal/dbtest"
@@ -64,8 +63,5 @@ func TestStore_SaveDropsURLFields(t *testing.T) {
 func TestLooksLikeURL(t *testing.T) {
 	if !looksLikeURL("apikey=x") || looksLikeURL(filepath.Join("ondemand", "nzb", "newznab", "a.nzb")) {
 		t.Fatal("looksLikeURL")
-	}
-	if strings.Contains("ondemand/nzb/a.nzb", "apikey=") {
-		t.Fatal("path")
 	}
 }

@@ -104,10 +104,8 @@ func filePlan(f NZBFile) (FilePlan, int) {
 	if name == "" {
 		name = sanitizeName(f.Subject)
 	}
-	segs := append([]NZBSegment(nil), f.Segs...)
-	sort.Slice(segs, func(i, j int) bool { return segs[i].Number < segs[j].Number })
 	var ids []string
-	for _, s := range segs {
+	for _, s := range sortedSegments(f) {
 		id := strings.TrimSpace(s.MsgID)
 		if id != "" {
 			ids = append(ids, id)
@@ -117,11 +115,10 @@ func filePlan(f NZBFile) (FilePlan, int) {
 }
 
 func contiguousMsgIDs(f NZBFile) bool {
-	if len(f.Segs) == 0 {
+	segs := sortedSegments(f)
+	if len(segs) == 0 {
 		return false
 	}
-	segs := append([]NZBSegment(nil), f.Segs...)
-	sort.Slice(segs, func(i, j int) bool { return segs[i].Number < segs[j].Number })
 	expect := segs[0].Number
 	if expect != 1 {
 		return false
@@ -136,6 +133,12 @@ func contiguousMsgIDs(f NZBFile) bool {
 		expect++
 	}
 	return true
+}
+
+func sortedSegments(f NZBFile) []NZBSegment {
+	segs := append([]NZBSegment(nil), f.Segs...)
+	sort.Slice(segs, func(i, j int) bool { return segs[i].Number < segs[j].Number })
+	return segs
 }
 
 func isVideoName(name string) bool {

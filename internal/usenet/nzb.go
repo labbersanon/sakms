@@ -174,25 +174,17 @@ func FetchNZBBytes(ctx context.Context, httpClient *http.Client, rawURL string) 
 		}
 		return nil, dnzb, nil, fmt.Errorf("usenet: indexer rejected NZB (rcode %d)", dnzb.RCode)
 	}
-	nzb, data, err := readNZBBody(resp.Body)
+	const maxNZBBytes = 10 << 20 // 10 MB
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxNZBBytes))
+	if err != nil {
+		return nil, dnzb, nil, fmt.Errorf("usenet: reading NZB body: %w", err)
+	}
+	if int64(len(data)) == maxNZBBytes {
+		return nil, dnzb, nil, fmt.Errorf("usenet: NZB response body exceeds 10 MB limit")
+	}
+	nzb, err := ParseNZB(data)
 	if err != nil {
 		return nil, dnzb, nil, err
 	}
 	return nzb, dnzb, data, nil
-}
-
-func readNZBBody(r io.Reader) (*NZB, []byte, error) {
-	const maxNZBBytes = 10 << 20 // 10 MB
-	data, err := io.ReadAll(io.LimitReader(r, maxNZBBytes))
-	if err != nil {
-		return nil, nil, fmt.Errorf("usenet: reading NZB body: %w", err)
-	}
-	if int64(len(data)) == maxNZBBytes {
-		return nil, nil, fmt.Errorf("usenet: NZB response body exceeds 10 MB limit")
-	}
-	nzb, err := ParseNZB(data)
-	if err != nil {
-		return nil, nil, err
-	}
-	return nzb, data, nil
 }

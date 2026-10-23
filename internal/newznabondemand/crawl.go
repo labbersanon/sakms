@@ -182,7 +182,6 @@ func statRow(ctx context.Context, store *Store, nntp *usenet.Manager, dataDir st
 	row.StatMissing = res.Missing
 	row.UpdatedAt = now
 	if res.Inconclusive && err == nil {
-		row.UpdatedAt = now
 		_ = store.Save(ctx, row)
 		log.Printf("newznab ondemand: stat inconclusive indexer=%s checked=%d", row.Indexer, res.Checked)
 		if !sleepCtx(ctx, idleRecheck) {

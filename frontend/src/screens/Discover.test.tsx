@@ -802,12 +802,14 @@ describe("Discover — On Demand chip", () => {
               id: "a",
               title: "Alpha Movie",
               year: 2021,
+              tmdbId: 1,
               qualities: [{ indexer: "newznab", nzbId: "a", label: "1080p" }],
             },
             {
               id: "b",
               title: "Beta Movie",
               year: 2020,
+              tmdbId: 2,
               qualities: [{ indexer: "newznab", nzbId: "b", label: "720p" }],
             },
           ],
@@ -831,6 +833,37 @@ describe("Discover — On Demand chip", () => {
     expect(screen.queryByText("Search results")).not.toBeInTheDocument();
   });
 
+  it("does not display titles without a TMDB id", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/ondemand"))
+        return jsonResponse({
+          items: [
+            {
+              id: "imdb:tt1",
+              title: "Matched Movie",
+              year: 2021,
+              tmdbId: 9,
+              qualities: [{ indexer: "newznab", nzbId: "h1", label: "1080p" }],
+            },
+            {
+              id: "imdb:tt2",
+              title: "Letter Tile Movie",
+              year: 1984,
+              qualities: [{ indexer: "newznab", nzbId: "h2", label: "1080p" }],
+            },
+          ],
+        });
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
+    fireEvent.click(screen.getByRole("button", { name: "On Demand" }));
+    expect(await screen.findByText("Matched Movie")).toBeInTheDocument();
+    expect(screen.queryByText("Letter Tile Movie")).not.toBeInTheDocument();
+  });
+
   it("sits next to In library on Adult", async () => {
     stubFetch((url) => {
       if (url.includes("/api/modes/adult/ondemand"))
@@ -839,6 +872,7 @@ describe("Discover — On Demand chip", () => {
             {
               id: "title:scene",
               title: "Adult Shelf",
+              tmdbId: 3,
               qualities: [{ indexer: "newznab", nzbId: "s1", label: "1080p" }],
             },
           ],

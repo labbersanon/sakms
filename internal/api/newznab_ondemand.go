@@ -11,8 +11,8 @@ import (
 // Claude 2026-10-23: Discover On Demand chip lists verified NZBs only.
 // Reason: join catalog ids, group titles, quality labels. Never recrawl on
 //   render. Never return enclosure/apikey/details URLs (nzbId is GetNZBID).
-// Troubleshooting: empty items → AttachNewznabOndemand not called, or no
-//   status=verified rows yet.
+// Troubleshooting: empty items → AttachNewznabOndemand not called, no
+//   status=verified rows, or verified rows have no TMDB id.
 // Review if: Play starts-while-downloading (do not add URL fields).
 
 var (

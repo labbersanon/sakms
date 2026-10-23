@@ -29,9 +29,10 @@ const (
 var catalogServices = []string{"newznab", "newznab2"}
 
 // Run fetches NZB XML for catalog rows, keeps streamable ones, then STATs
-// with at most OnDemandStatWorkers Usenet sockets. It does not scrape HTML
-// and does not store enclosure URLs.
-func Run(ctx context.Context, store *Store, conns *connections.Store, nntp *usenet.Manager, dataDir string, httpClient *http.Client) {
+// with at most OnDemandStatWorkers Usenet sockets. After verify it maps
+// IMDb/TVDB onto catalog.tmdb_id (finder). It does not scrape HTML and
+// does not store enclosure URLs.
+func Run(ctx context.Context, store *Store, conns *connections.Store, nntp *usenet.Manager, dataDir string, httpClient *http.Client, finder IMDBFinder) {
 	if store == nil || conns == nil {
 		return
 	}
@@ -51,7 +52,7 @@ func Run(ctx context.Context, store *Store, conns *connections.Store, nntp *usen
 			}
 			continue
 		}
-		worked, err := step(ctx, store, client, idxs, nntp, dataDir)
+		worked, err := step(ctx, store, client, idxs, nntp, dataDir, finder)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -96,11 +97,20 @@ func Run(ctx context.Context, store *Store, conns *connections.Store, nntp *usen
 	}
 }
 
-func step(ctx context.Context, store *Store, client *newznab.Client, idxs []newznab.Indexer, nntp *usenet.Manager, dataDir string) (bool, error) {
+func step(ctx context.Context, store *Store, client *newznab.Client, idxs []newznab.Indexer, nntp *usenet.Manager, dataDir string, finder IMDBFinder) (bool, error) {
 	if row, ok, err := store.NextFetched(ctx); err != nil {
 		return false, err
 	} else if ok {
-		return true, statRow(ctx, store, nntp, dataDir, row)
+		return true, statRow(ctx, store, nntp, dataDir, row, finder)
+	}
+	// After STAT, fill catalog.tmdb_id for already-verified rows before more t=get.
+	if row, ok, err := store.NextVerifiedNeedingTMDB(ctx); err != nil {
+		return false, err
+	} else if ok {
+		err := resolveCatalogTMDB(ctx, store, finder, row)
+		if !errors.Is(err, ErrTMDBUnset) {
+			return true, err
+		}
 	}
 	ref, ok, err := store.NextFromCatalog(ctx)
 	if err != nil {
@@ -168,7 +178,7 @@ func fetchRow(ctx context.Context, store *Store, client *newznab.Client, idx new
 	return store.Save(ctx, row)
 }
 
-func statRow(ctx context.Context, store *Store, nntp *usenet.Manager, dataDir string, row Row) error {
+func statRow(ctx context.Context, store *Store, nntp *usenet.Manager, dataDir string, row Row, finder IMDBFinder) error {
 	nzb, err := loadNZB(dataDir, row.NZBRelPath)
 	if err != nil {
 		row.Status = StatusError
@@ -200,7 +210,13 @@ func statRow(ctx context.Context, store *Store, nntp *usenet.Manager, dataDir st
 	row.VerifiedAt = now
 	row.RejectReason = ""
 	log.Printf("newznab ondemand: verified indexer=%s kind=%s checked=%d", row.Indexer, row.Kind, res.Checked)
-	return store.Save(ctx, row)
+	if err := store.Save(ctx, row); err != nil {
+		return err
+	}
+	if err := resolveCatalogTMDB(ctx, store, finder, row); err != nil && !errors.Is(err, ErrTMDBUnset) {
+		return err
+	}
+	return nil
 }
 
 func writeNZB(dataDir, indexer, guid string, data []byte) (string, error) {

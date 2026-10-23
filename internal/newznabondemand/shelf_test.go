@@ -78,13 +78,42 @@ func TestListVerified_GroupsByIMDBAndQuality(t *testing.T) {
 	}
 }
 
+func TestListVerified_OmitsWithoutTMDB(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	ctx := context.Background()
+	cat := newznabcatalog.NewStore(sqlDB)
+	if _, err := cat.InsertHits(ctx, newznabcatalog.KindMovies, []newznab.CatalogHit{
+		{Indexer: "newznab", GUID: "hit", Title: "Has.Poster.2021.1080p", ImdbID: "tt0111161", TmdbID: "278", Year: 2021},
+		{Indexer: "newznab", GUID: "empty", Title: "No.Match.2020.1080p", ImdbID: "tt2", Year: 2020},
+		{Indexer: "newznab", GUID: "zero", Title: "Sentinel.Zero.2019.1080p", ImdbID: "tt3", TmdbID: "0", Year: 2019},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	st := NewStore(sqlDB)
+	for _, guid := range []string{"hit", "empty", "zero"} {
+		if err := st.Save(ctx, Row{
+			Indexer: "newznab", GUID: guid, Kind: newznabcatalog.KindMovies,
+			Title: guid + ".1080p", Status: StatusVerified, Streamable: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := st.ListVerified(ctx, newznabcatalog.KindMovies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].TmdbID != 278 {
+		t.Fatalf("got=%+v", got)
+	}
+}
+
 func TestListVerified_SeriesKeepsEpisodesApart(t *testing.T) {
 	sqlDB := dbtest.New(t)
 	ctx := context.Background()
 	cat := newznabcatalog.NewStore(sqlDB)
 	if _, err := cat.InsertHits(ctx, newznabcatalog.KindSeries, []newznab.CatalogHit{
-		{Indexer: "newznab", GUID: "e1", Title: "Some.Show.S01E01.1080p", TvdbID: "123"},
-		{Indexer: "newznab", GUID: "e2", Title: "Some.Show.S01E02.1080p", TvdbID: "123"},
+		{Indexer: "newznab", GUID: "e1", Title: "Some.Show.S01E01.1080p", TvdbID: "123", TmdbID: "1396"},
+		{Indexer: "newznab", GUID: "e2", Title: "Some.Show.S01E02.1080p", TvdbID: "123", TmdbID: "1396"},
 	}); err != nil {
 		t.Fatal(err)
 	}

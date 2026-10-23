@@ -82,6 +82,77 @@ func (s *Store) NextFromCatalog(ctx context.Context) (CatalogRef, bool, error) {
 	return ref, true, nil
 }
 
+// Claude 2026-10-23: backfill verified rows whose catalog tmdb_id is still empty.
+// Reason: Newznab RSS omits tmdb. Sentinel "0" means checked/no match — skip those
+//   so we do not loop. Unset TMDB must not write "0".
+// Troubleshooting: NextVerifiedNeedingTMDB empty while shelf is empty → all
+//   verified rows are "" (crawler idle) or "0" (no IMDb match).
+// Review if: Play starts-while-downloading.
+func (s *Store) NextVerifiedNeedingTMDB(ctx context.Context) (Row, bool, error) {
+	var row Row
+	if s == nil || s.db == nil {
+		return row, false, nil
+	}
+	err := s.db.QueryRowContext(ctx, `
+		SELECT o.indexer, o.guid, o.kind, o.title
+		FROM newznab_ondemand o
+		JOIN newznab_catalog c ON c.indexer = o.indexer AND c.guid = o.guid
+		WHERE o.status = $1 AND COALESCE(c.tmdb_id, '') = ''
+		ORDER BY o.verified_at ASC, o.guid ASC
+		LIMIT 1`, StatusVerified).Scan(&row.Indexer, &row.GUID, &row.Kind, &row.Title)
+	if err == sql.ErrNoRows {
+		return row, false, nil
+	}
+	if err != nil {
+		return row, false, err
+	}
+	row.Status = StatusVerified
+	return row, true, nil
+}
+
+func (s *Store) CatalogIDs(ctx context.Context, indexer, guid string) (imdbID, tmdbID, tvdbID string, err error) {
+	if s == nil || s.db == nil {
+		return "", "", "", nil
+	}
+	err = s.db.QueryRowContext(ctx, `
+		SELECT imdb_id, tmdb_id, tvdb_id
+		FROM newznab_catalog
+		WHERE indexer = $1 AND guid = $2`, indexer, guid).Scan(&imdbID, &tmdbID, &tvdbID)
+	if err == sql.ErrNoRows {
+		return "", "", "", nil
+	}
+	return imdbID, tmdbID, tvdbID, err
+}
+
+func (s *Store) SetCatalogTMDB(ctx context.Context, indexer, guid, tmdbID string) error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	tmdbID = newznab.DigitsOnly(tmdbID)
+	if tmdbID == "" || looksLikeURL(tmdbID) {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE newznab_catalog SET tmdb_id = $1
+		WHERE indexer = $2 AND guid = $3`, tmdbID, indexer, guid)
+	return err
+}
+
+func (s *Store) SetCatalogTMDBForIMDB(ctx context.Context, imdbID, tmdbID string) error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	imdbID = newznab.NormalizeIMDB(imdbID)
+	tmdbID = newznab.DigitsOnly(tmdbID)
+	if imdbID == "" || tmdbID == "" || looksLikeURL(imdbID) || looksLikeURL(tmdbID) {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE newznab_catalog SET tmdb_id = $1
+		WHERE imdb_id = $2 AND COALESCE(tmdb_id, '') IN ('', '0')`, tmdbID, imdbID)
+	return err
+}
+
 func (s *Store) NextFetched(ctx context.Context) (Row, bool, error) {
 	var row Row
 	if s == nil || s.db == nil {

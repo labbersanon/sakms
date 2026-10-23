@@ -13,7 +13,8 @@ import (
 
 // Claude 2026-10-23: Discover On Demand shelf is verified rows only.
 // Reason: chip must not recrawl or return enclosure/apikey/details URLs.
-// Troubleshooting: empty grid → crawler still fetching/STAT, or kind mismatch.
+// Troubleshooting: empty grid → crawler still fetching/STAT, kind mismatch,
+//   or catalog.tmdb_id empty/0 (no IMDb→TMDB match).
 // Review if: Play starts-while-downloading (keep nzbId as GetNZBID hash).
 
 var (
@@ -106,6 +107,9 @@ func groupShelf(rows []shelfRow) []ShelfTitle {
 				year = newznabYear(r.Title)
 			}
 			tmdbID, _ := strconv.Atoi(newznab.DigitsOnly(r.TmdbID))
+			if tmdbID <= 0 {
+				continue
+			}
 			a = &acc{
 				title: ShelfTitle{
 					ID:     key,
@@ -141,6 +145,9 @@ func groupShelf(rows []shelfRow) []ShelfTitle {
 		sort.Slice(t.Qualities, func(i, j int) bool {
 			return qualityRank(t.Qualities[i].Label) < qualityRank(t.Qualities[j].Label)
 		})
+		if t.TmdbID <= 0 {
+			continue
+		}
 		out = append(out, t)
 	}
 	sort.Slice(out, func(i, j int) bool {

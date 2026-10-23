@@ -39,7 +39,8 @@ export const OnDemandView: Component<{
 
   const visible = createMemo(() => {
     const needle = (props.query ?? "").trim().toLowerCase();
-    const items = list()?.items ?? [];
+    // No TMDB id → no poster path. Hide letter tiles; backend also omits these.
+    const items = (list()?.items ?? []).filter((item) => (item.tmdbId ?? 0) > 0);
     if (!needle) return items;
     return items.filter((item) => {
       const hay = `${item.title} ${item.year ?? ""} ${item.imdbId ?? ""}`.toLowerCase();

@@ -41,16 +41,26 @@ func TestOndemandHandler_ListsVerifiedWithoutURLs(t *testing.T) {
 	cat := newznabcatalog.NewStore(sqlDB)
 	if _, err := cat.InsertHits(ctx, newznabcatalog.KindMovies, []newznab.CatalogHit{
 		{Indexer: "newznab", GUID: "https://nzbgeek.info/geekseek.php?guid=hash1", Title: "Shelf.Movie.2021.1080p-GRP", ImdbID: "tt1", TmdbID: "9", Year: 2021},
+		{Indexer: "newznab", GUID: "nomatch", Title: "No.Match.2020.1080p-GRP", ImdbID: "tt2", Year: 2020},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	st := newznabondemand.NewStore(sqlDB)
-	if err := st.Save(ctx, newznabondemand.Row{
-		Indexer: "newznab", GUID: "https://nzbgeek.info/geekseek.php?guid=hash1",
-		Kind: newznabcatalog.KindMovies, Title: "Shelf.Movie.2021.1080p-GRP",
-		Status: newznabondemand.StatusVerified, Streamable: true,
-	}); err != nil {
-		t.Fatal(err)
+	for _, row := range []newznabondemand.Row{
+		{
+			Indexer: "newznab", GUID: "https://nzbgeek.info/geekseek.php?guid=hash1",
+			Kind: newznabcatalog.KindMovies, Title: "Shelf.Movie.2021.1080p-GRP",
+			Status: newznabondemand.StatusVerified, Streamable: true,
+		},
+		{
+			Indexer: "newznab", GUID: "nomatch",
+			Kind: newznabcatalog.KindMovies, Title: "No.Match.2020.1080p-GRP",
+			Status: newznabondemand.StatusVerified, Streamable: true,
+		},
+	} {
+		if err := st.Save(ctx, row); err != nil {
+			t.Fatal(err)
+		}
 	}
 	AttachNewznabOndemand(st)
 	t.Cleanup(func() { AttachNewznabOndemand(nil) })

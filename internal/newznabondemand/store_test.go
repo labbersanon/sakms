@@ -79,6 +79,38 @@ func TestStore_SaveDropsURLFields(t *testing.T) {
 	}
 }
 
+func TestStore_NextVerifiedNeedingTMDB(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	ctx := context.Background()
+	cat := newznabcatalog.NewStore(sqlDB)
+	if _, err := cat.InsertHits(ctx, newznabcatalog.KindMovies, []newznab.CatalogHit{
+		{Indexer: "newznab", GUID: "empty", Title: "Empty.1080p", ImdbID: "tt1"},
+		{Indexer: "newznab", GUID: "zero", Title: "Zero.1080p", ImdbID: "tt2", TmdbID: "0"},
+		{Indexer: "newznab", GUID: "hit", Title: "Hit.1080p", ImdbID: "tt3", TmdbID: "278"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	st := NewStore(sqlDB)
+	for _, guid := range []string{"empty", "zero", "hit"} {
+		if err := st.Save(ctx, Row{
+			Indexer: "newznab", GUID: guid, Kind: newznabcatalog.KindMovies,
+			Status: StatusVerified, Streamable: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	row, ok, err := st.NextVerifiedNeedingTMDB(ctx)
+	if err != nil || !ok || row.GUID != "empty" {
+		t.Fatalf("row=%+v ok=%v err=%v", row, ok, err)
+	}
+	if err := st.SetCatalogTMDB(ctx, "newznab", "empty", "9"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := st.NextVerifiedNeedingTMDB(ctx); err != nil || ok {
+		t.Fatalf("after fill ok=%v err=%v", ok, err)
+	}
+}
+
 func TestLooksLikeURL(t *testing.T) {
 	if !looksLikeURL("apikey=x") || looksLikeURL(filepath.Join("ondemand", "nzb", "newznab", "a.nzb")) {
 		t.Fatal("looksLikeURL")

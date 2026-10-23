@@ -50,6 +50,7 @@ import (
 	"github.com/labbersanon/sakms/internal/serviceconn"
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/stagingsweep"
+	"github.com/labbersanon/sakms/internal/tmdb"
 	"github.com/labbersanon/sakms/internal/trakt"
 	"github.com/labbersanon/sakms/internal/usenet"
 	"github.com/labbersanon/sakms/internal/videophash"
@@ -708,11 +709,14 @@ func run() error {
 	// Reason: 5s/host t=search; stop on shutdown. Grab Client stays 1s.
 	// Troubleshooting: catalog after SIGTERM → Run not using this ctx.
 	go newznabcatalog.Run(ctx, catalogStore, connStore, &http.Client{Timeout: outboundTimeout})
-	// Claude 2026-10-23: On Demand t=get + STAT crawler (no Discover chip yet).
-	// Reason: cache NZB XML/sequence, STAT with 2 sockets, promote streamable rows.
-	// Troubleshooting: ondemand logs quota backoff → indexer t=get cap; inconclusive → no NNTP.
-	// Review if: Discover ?view=ondemand reads newznab_ondemand.
-	go newznabondemand.Run(ctx, ondemandStore, connStore, nzbManager, cfg.DataDir, &http.Client{Timeout: outboundTimeout})
+	// Claude 2026-10-23: On Demand crawler fills catalog.tmdb_id from IMDb at verify.
+	// Reason: Newznab RSS has imdb, not tmdb. Shelf hides TmdbID<=0. Do not stamp 0 when TMDB is unset.
+	// Troubleshooting: letter tiles / empty chip → tmdb unset or FindMovieByIMDBID miss.
+	// Review if: Play starts-while-downloading.
+	go newznabondemand.Run(ctx, ondemandStore, connStore, nzbManager, cfg.DataDir, &http.Client{Timeout: outboundTimeout}, &ondemandIMDBFinder{
+		conns: connStore, sc: serviceConnStore, settings: settingsStore,
+		httpClient: &http.Client{Timeout: outboundTimeout},
+	})
 	go discoverrefresh.Run(ctx, discoverrefresh.LoadInterval(ctx, settingsStore), discoverrefresh.Deps{
 		HTTPClient:    &http.Client{Timeout: outboundTimeout},
 		ConnStore:     connStore,
@@ -1076,6 +1080,50 @@ func loadPersistedHardwarePriors(ctx context.Context, settingsStore *settings.St
 		}
 	}
 	m.LoadPersistedPriors(repair, unpack, at)
+}
+
+// ondemandIMDBFinder resolves TMDB via mode.Build so a key added after boot
+// is picked up without restart. Nil TMDB is ErrTMDBUnset, not tmdb_id=0.
+type ondemandIMDBFinder struct {
+	conns      *connections.Store
+	sc         *serviceconn.Store
+	settings   *settings.Store
+	httpClient *http.Client
+}
+
+func (f *ondemandIMDBFinder) client(ctx context.Context) (*tmdb.Client, error) {
+	if f == nil || f.conns == nil {
+		return nil, newznabondemand.ErrTMDBUnset
+	}
+	sess, err := mode.Build(ctx, f.conns, f.sc, f.settings, f.httpClient, nil, mode.Movies)
+	if err != nil || sess == nil || sess.TMDB == nil {
+		return nil, newznabondemand.ErrTMDBUnset
+	}
+	return sess.TMDB, nil
+}
+
+func (f *ondemandIMDBFinder) MovieByIMDB(ctx context.Context, imdbID string) (int, error) {
+	c, err := f.client(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return c.FindMovieByIMDBID(ctx, imdbID)
+}
+
+func (f *ondemandIMDBFinder) TVByIMDB(ctx context.Context, imdbID string) (int, error) {
+	c, err := f.client(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return c.FindTVByIMDBID(ctx, imdbID)
+}
+
+func (f *ondemandIMDBFinder) TVByTVDB(ctx context.Context, tvdbID int) (int, error) {
+	c, err := f.client(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return c.FindTVByTVDBID(ctx, tvdbID)
 }
 
 // settingInt64 reads an int64 settings scalar, returning def when unset/invalid.

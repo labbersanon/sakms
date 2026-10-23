@@ -352,28 +352,26 @@ const Sparkline: Component<{ values: number[] }> = (props) => {
 const NewznabCatalogCard: Component<{ report: NewznabCatalogReport }> = (
   props,
 ) => {
-  const pace = () =>
-    `Each indexer: ${formatCount(props.report.pageSize || 100)} NZBs every ${props.report.intervalSeconds || 5} seconds`;
   const overlap = () => sortCatalogKinds(props.report.overlap);
   const cursors = () => sortCatalogKinds(props.report.cursors);
   const idle = () => overlap().length === 0 && cursors().length === 0;
   const cursorLine = (c: NewznabCatalogCursor) => {
-    const host = indexerLabel(c.indexer);
+    const prefix = `${indexerLabel(c.indexer)} ${c.kind}`;
     if (c.complete) {
-      return `${host} ${c.kind} · finished, ${formatCount(c.pageOffset)} indexed`;
+      return `${prefix} · finished, ${formatCount(c.pageOffset)} indexed`;
     }
     if (c.pageOffset <= 0 && c.lastPageNew <= 0) {
-      return `${host} ${c.kind} · waiting`;
+      return `${prefix} · waiting`;
     }
-    const next = `${host} ${c.kind} · ${formatCount(c.pageOffset)} indexed`;
+    const next = `${prefix} · ${formatCount(c.pageOffset)} indexed`;
     if (c.lastPageNew) return `${next} · last page +${formatCount(c.lastPageNew)}`;
     return next;
   };
-  const nzbs = (kind: string, indexer: string) =>
-    catalogNZBs(props.report.counts, indexer, kind);
   return (
     <Card title="NZB catalog">
-      <p class="mb-3 text-xs text-muted">{pace()}</p>
+      <p class="mb-3 text-xs text-muted">
+        {`Each indexer: ${formatCount(props.report.pageSize || 100)} NZBs every ${props.report.intervalSeconds || 5} seconds`}
+      </p>
       <Show
         when={!idle()}
         fallback={<Muted>Waiting for NZBGeek and NZB.life.</Muted>}
@@ -388,7 +386,7 @@ const NewznabCatalogCard: Component<{ report: NewznabCatalogReport }> = (
                     {`Same titles on both indexers: ${formatCount(row.both)} · NZBGeek only: ${formatCount(row.onlyHost1)} · NZB.life only: ${formatCount(row.onlyHost2)}`}
                   </div>
                   <div class="text-xs text-muted">
-                    {`NZBGeek: ${formatCount(row.host1Titles)} titles (${formatCount(nzbs(row.kind, "newznab"))} NZBs) · NZB.life: ${formatCount(row.host2Titles)} titles (${formatCount(nzbs(row.kind, "newznab2"))} NZBs)`}
+                    {`NZBGeek: ${formatCount(row.host1Titles)} titles (${formatCount(catalogNZBs(props.report.counts, "newznab", row.kind))} NZBs) · NZB.life: ${formatCount(row.host2Titles)} titles (${formatCount(catalogNZBs(props.report.counts, "newznab2", row.kind))} NZBs)`}
                   </div>
                 </li>
               )}

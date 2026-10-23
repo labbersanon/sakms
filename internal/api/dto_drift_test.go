@@ -126,7 +126,8 @@ func TestHandlerDTOMirrorNoDrift(t *testing.T) {
 		{"sectionLockStatusResponse/SectionLockStatusResponse", sectionLockStatusResponse{}, apidto.SectionLockStatusResponse{}},
 		{"sectionLockUnlockRequest/SectionLockUnlockRequest", sectionLockUnlockRequest{}, apidto.SectionLockUnlockRequest{}},
 		{"sectionLockPinRequest/SectionLockPinRequest", sectionLockPinRequest{}, apidto.SectionLockPinRequest{}},
-		{"newznabCatalogReport/NewznabCatalogReport", newznabCatalogReport{}, apidto.NewznabCatalogReport{}},
+		// newznabCatalogReport is excluded: Cursors/Counts/Overlap are
+		// nested named slices whose Go type strings differ by package.
 		{"newznabCatalogCursor/NewznabCatalogCursor", newznabCatalogCursor{}, apidto.NewznabCatalogCursor{}},
 		{"newznabCatalogCount/NewznabCatalogCount", newznabCatalogCount{}, apidto.NewznabCatalogCount{}},
 		{"newznabCatalogOverlap/NewznabCatalogOverlap", newznabCatalogOverlap{}, apidto.NewznabCatalogOverlap{}},

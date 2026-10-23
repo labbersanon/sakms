@@ -12891,3 +12891,17 @@ status stays active.
 | `internal/usenetsearch/namefix.go` | drop PreDB lookup/queues; keep srrdb `PreDBHit` |
 | `internal/db/migrations/0052_drop_usenet_nntp_predb.sql` | DROP table + settings |
 | `docs/usenet-nntp-native.md` | PreDB/IRC removed |
+
+## 2026-10-22 — Shelve password packs without PreDB-only
+
+**Problem:** After PreDB removal, ngPost hash.7z / `.7z.enc` never entered namefix (`DuePendingNames` still excludes them). They sat at `name_attempts=0` and never got `ShelveBodyAttempts`.
+**Root cause:** Those packs were processed by `DuePendingPreDB` (no BODY), which is gone.
+**Fix:** `DuePendingPasswordLocked` in the header phase (no NNTP). `passwordLockedPack` still shelves. BODY queues stay exclusive of password packs.
+**Outcome:** `TestNameFix_NgPost7zShelvesWithoutBody`, `TestNameFix_Skip7zDoesNotQueryNZB`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/namefix_index.go` | `DuePendingPasswordLocked` |
+| `internal/usenetsearch/namefix.go` | header phase appends password packs |

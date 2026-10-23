@@ -710,6 +710,14 @@ export const AdultDiscover: Component<{
   // sort has no defined meaning inside one studio's/performer's scene list).
   // When sorting, a single sorted grid replaces the browse rows.
   const [adultSort, setAdultSort] = createSignal<AdultSortValue>("default");
+  const toggleBrowseView = (view: DiscoverBrowseView) => {
+    const turningOn = browseView() !== view;
+    if (turningOn) {
+      setDrill(null);
+      setAdultSort("default");
+    }
+    props.onBrowseViewChange?.(turningOn ? view : "default");
+  };
   const sorting = () => !searching() && !drill() && adultSort() !== "default";
   createEffect(() =>
     props.onSortingChange?.(sorting() || ownedOnly() || ondemandOnly()),
@@ -1071,27 +1079,13 @@ export const AdultDiscover: Component<{
           label="In library"
           size="sm"
           active={ownedOnly}
-          onToggle={() => {
-            const turningOn = !ownedOnly();
-            if (turningOn) {
-              setDrill(null);
-              setAdultSort("default");
-            }
-            props.onBrowseViewChange?.(turningOn ? "library" : "default");
-          }}
+          onToggle={() => toggleBrowseView("library")}
         />
         <FilterChip
           label="On Demand"
           size="sm"
           active={ondemandOnly}
-          onToggle={() => {
-            const turningOn = !ondemandOnly();
-            if (turningOn) {
-              setDrill(null);
-              setAdultSort("default");
-            }
-            props.onBrowseViewChange?.(turningOn ? "ondemand" : "default");
-          }}
+          onToggle={() => toggleBrowseView("ondemand")}
         />
       </div>
       <form
@@ -1166,7 +1160,7 @@ export const AdultDiscover: Component<{
         />
       </Show>
 
-      <Show when={(!ownedOnly() && !ondemandOnly()) || (searching() && !ondemandOnly())}>
+      <Show when={!ondemandOnly() && (!ownedOnly() || searching())}>
       <Show
         when={searching()}
         fallback={

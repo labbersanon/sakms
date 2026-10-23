@@ -870,6 +870,15 @@ export const MainstreamDiscover: Component<{
       ...DEFAULT_MAINSTREAM_FILTERS,
       contentType: props.contentType ?? DEFAULT_MAINSTREAM_FILTERS.contentType,
     });
+  const toggleBrowseView = (view: DiscoverBrowseView) => {
+    const turningOn = browseView() !== view;
+    if (turningOn) {
+      setMonitoredOnly(false);
+      setView("rows");
+      resetFilters();
+    }
+    props.onBrowseViewChange?.(turningOn ? view : "default");
+  };
 
   const [results] = createResource(
     () => (searching() && !ondemandOnly() ? submitted().trim() : null),
@@ -1230,29 +1239,13 @@ export const MainstreamDiscover: Component<{
           label="In library"
           size="sm"
           active={ownedOnly}
-          onToggle={() => {
-            const turningOn = !ownedOnly();
-            if (turningOn) {
-              setMonitoredOnly(false);
-              setView("rows");
-              resetFilters();
-            }
-            props.onBrowseViewChange?.(turningOn ? "library" : "default");
-          }}
+          onToggle={() => toggleBrowseView("library")}
         />
         <FilterChip
           label="On Demand"
           size="sm"
           active={ondemandOnly}
-          onToggle={() => {
-            const turningOn = !ondemandOnly();
-            if (turningOn) {
-              setMonitoredOnly(false);
-              setView("rows");
-              resetFilters();
-            }
-            props.onBrowseViewChange?.(turningOn ? "ondemand" : "default");
-          }}
+          onToggle={() => toggleBrowseView("ondemand")}
         />
         <FilterChip
           label="Monitored"
@@ -1349,7 +1342,7 @@ export const MainstreamDiscover: Component<{
         />
       </Show>
 
-      <Show when={(!ownedOnly() && !ondemandOnly()) || (searching() && !ondemandOnly())}>
+      <Show when={!ondemandOnly() && (!ownedOnly() || searching())}>
       <Show when={monitoredOnly()}>
         <section class="mt-6">
           <div class="mb-2 flex items-center justify-between gap-3">

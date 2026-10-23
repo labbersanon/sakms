@@ -184,19 +184,17 @@ func groupKey(r shelfRow) string {
 }
 
 func episodeKey(title string) string {
+	season := ""
 	for _, w := range titleWords(title) {
 		lw := strings.ToLower(w)
 		if episodeToken.MatchString(lw) {
-			return strings.ToLower(lw)
+			return lw
+		}
+		if season == "" && seasonToken.MatchString(lw) {
+			season = lw
 		}
 	}
-	for _, w := range titleWords(title) {
-		lw := strings.ToLower(w)
-		if seasonToken.MatchString(lw) {
-			return strings.ToLower(lw)
-		}
-	}
-	return ""
+	return season
 }
 
 func QualityLabel(title string) string {
@@ -247,10 +245,11 @@ func DisplayTitle(raw string) string {
 			yearSeen = true
 			continue
 		}
-		if yearSeen && !(episodeToken.MatchString(lw) || seasonToken.MatchString(lw)) {
+		epOrSeason := episodeToken.MatchString(lw) || seasonToken.MatchString(lw)
+		if yearSeen && !epOrSeason {
 			break
 		}
-		if episodeToken.MatchString(lw) || seasonToken.MatchString(lw) {
+		if epOrSeason {
 			keep = append(keep, strings.ToUpper(lw))
 			continue
 		}

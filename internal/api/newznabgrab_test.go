@@ -22,7 +22,7 @@ func TestInsertNewznabPhase(t *testing.T) {
 	if len(phases) != 2 || !phases[0].IsNewznab() || phases[1] != prowlarr.ScopeAll {
 		t.Fatalf("before all: %+v", phases)
 	}
-	if len(insertNewznabPhase(phases)) != 3 {
+	if len(insertNewznabPhase(phases)) != 2 {
 		t.Fatal("idempotent")
 	}
 	rest := insertNewznabPhase([]prowlarr.Scope{prowlarr.ScopeUsenet, prowlarr.ScopeTorrent})

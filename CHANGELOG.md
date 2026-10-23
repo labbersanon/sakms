@@ -13037,3 +13037,16 @@ status stays active.
 | `internal/newznabcatalog/crawl.go` | recompute at Run start |
 | `frontend/src/screens/Dashboard.tsx` | "Same NZBs on both indexers" |
 | `internal/apidto/dto.go` | `host1Nzbs` / `host2Nzbs` |
+
+## 2026-10-23 — Overlap-key rewrite loads then updates in one transaction
+
+**Problem:** First overlap-key rewrite did one Exec per catalog row and blocked crawl for minutes (`context canceled` on deploy).
+**Root cause:** ~160k round-trips; pq also returns `conn busy` if UPDATE runs while the SELECT cursor is open.
+**Fix:** Load indexer/guid/title, close the cursor, then prepared UPDATE in one transaction.
+**Outcome:** Live rewrite `n=148290` in seconds; crawl resumed. `TestStore_RecomputeOverlapKeysRewritesIMDBKeys`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/newznabcatalog/store.go` | load then tx prepared UPDATE |

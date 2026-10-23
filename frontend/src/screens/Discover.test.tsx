@@ -803,14 +803,14 @@ describe("Discover — On Demand chip", () => {
               title: "Alpha Movie",
               year: 2021,
               tmdbId: 1,
-              qualities: [{ indexer: "newznab", nzbId: "a", label: "1080p" }],
+              qualities: [{ indexer: "newznab", nzbId: "a", label: "High" }],
             },
             {
               id: "b",
               title: "Beta Movie",
               year: 2020,
               tmdbId: 2,
-              qualities: [{ indexer: "newznab", nzbId: "b", label: "720p" }],
+              qualities: [{ indexer: "newznab", nzbId: "b", label: "Medium" }],
             },
           ],
         });
@@ -843,13 +843,13 @@ describe("Discover — On Demand chip", () => {
               title: "Matched Movie",
               year: 2021,
               tmdbId: 9,
-              qualities: [{ indexer: "newznab", nzbId: "h1", label: "1080p" }],
+              qualities: [{ indexer: "newznab", nzbId: "h1", label: "High" }],
             },
             {
               id: "imdb:tt2",
               title: "Letter Tile Movie",
               year: 1984,
-              qualities: [{ indexer: "newznab", nzbId: "h2", label: "1080p" }],
+              qualities: [{ indexer: "newznab", nzbId: "h2", label: "High" }],
             },
           ],
         });
@@ -873,7 +873,7 @@ describe("Discover — On Demand chip", () => {
               id: "title:scene",
               title: "Adult Shelf",
               tmdbId: 3,
-              qualities: [{ indexer: "newznab", nzbId: "s1", label: "1080p" }],
+              qualities: [{ indexer: "newznab", nzbId: "s1", label: "High" }],
             },
           ],
         });

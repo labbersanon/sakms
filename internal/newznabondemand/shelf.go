@@ -210,6 +210,9 @@ func episodeKey(title string) string {
 // Review if: Play picks among same-level NZBs by bitrate.
 
 func qualityChip(mbps float64, title string) string {
+	if mbps <= 0 {
+		return "Unknown"
+	}
 	info := release.Parse(title)
 	res := autograb.SnapFloorResolution(autograb.Candidate{
 		Resolution: info.Resolution,

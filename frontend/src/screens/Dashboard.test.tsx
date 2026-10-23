@@ -468,6 +468,7 @@ describe("Dashboard view", () => {
     ).toBeInTheDocument();
     expect(await screen.findByText("NZB catalog")).toBeInTheDocument();
     expect(screen.getByText("Indexer health")).toBeInTheDocument();
+    expect(screen.getAllByText("Missing articles: none")).toHaveLength(2);
     expect(
       screen.getByText(/Each indexer: 100 NZBs every 5 seconds/i),
     ).toBeInTheDocument();
@@ -534,12 +535,16 @@ describe("Dashboard view", () => {
                   status: "crawling",
                   detail: "movies",
                   updatedAt: Math.floor(Date.now() / 1000) - 90,
+                  missingNzbs: 12,
+                  missingArticles: 4201,
                 },
                 {
                   indexer: "newznab2",
                   status: "ok",
                   detail: "finished",
                   updatedAt: Math.floor(Date.now() / 1000) - 3600,
+                  missingNzbs: 0,
+                  missingArticles: 0,
                 },
               ],
             }),
@@ -553,6 +558,10 @@ describe("Dashboard view", () => {
     expect(screen.getByText("Indexer health")).toBeInTheDocument();
     expect(screen.getByText(/Indexing · movies · 1m ago/)).toBeInTheDocument();
     expect(screen.getByText(/OK · finished · 1h ago/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Missing articles: 12 NZBs · 4,?201 articles/),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Missing articles: none")).toBeInTheDocument();
     expect(
       screen.getByText(/Same NZBs on both indexers: 5 · NZBGeek: 5 · NZB.life: 3/),
     ).toBeInTheDocument();

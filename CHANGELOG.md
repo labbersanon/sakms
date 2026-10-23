@@ -13250,3 +13250,18 @@ status stays active.
 | `frontend/src/screens/discover/ondemandFilter.ts` | tmdbId unique + Discover/Adult mappers |
 | `frontend/src/screens/discover/Mainstream.tsx` | PosterCard grid + DetailPopup |
 | `frontend/src/screens/discover/Adult.tsx` | AdultCard grid + DetailPopup |
+
+## 2026-10-23 — Dock Indexer health shows missing-article NZBs
+
+**Problem:** Indexer health showed crawl status only; NZBs whose STAT found missing Usenet articles were invisible on the Dock.
+**Root cause:** `/api/admin/newznab-catalog` `indexers` was cursor health; dead On Demand rows were not overlaid.
+**Fix:** Count `status=dead` NZBs and SUM(stat_missing) per indexer. Card line is `Missing articles: none` or `N NZBs · M articles`. Dead NZBs do not flip crawl status to error.
+**Outcome:** `TestStore_CountDeadByIndexer`, `TestNewznabCatalogHandler_ReportsMissingArticles`, Dashboard missing-articles assertions.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/newznabondemand/store.go` | `CountDeadByIndexer` |
+| `internal/api/newznab_catalog.go` | `missingNzbs` / `missingArticles` overlay |
+| `frontend/src/screens/Dashboard.tsx` | Missing articles line on Indexer health |

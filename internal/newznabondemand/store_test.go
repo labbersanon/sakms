@@ -207,6 +207,35 @@ func TestStore_CountByKind(t *testing.T) {
 	}
 }
 
+func TestStore_CountDeadByIndexer(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	ctx := context.Background()
+	st := NewStore(sqlDB)
+	for _, row := range []Row{
+		{Indexer: "newznab", GUID: "d1", Kind: newznabcatalog.KindMovies, Title: "Dead.One", Status: StatusDead, StatMissing: 12},
+		{Indexer: "newznab", GUID: "d2", Kind: newznabcatalog.KindSeries, Title: "Dead.Two", Status: StatusDead, StatMissing: 3},
+		{Indexer: "newznab", GUID: "ok", Kind: newznabcatalog.KindMovies, Title: "Live", Status: StatusVerified, Streamable: true},
+		{Indexer: "newznab2", GUID: "ok2", Kind: newznabcatalog.KindMovies, Title: "Also.Live", Status: StatusFetched, Streamable: true},
+	} {
+		if err := st.Save(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := st.CountDeadByIndexer(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Indexer != "newznab" || got[1].Indexer != "newznab2" {
+		t.Fatalf("slots=%+v", got)
+	}
+	if got[0].Nzbs != 2 || got[0].Articles != 15 {
+		t.Fatalf("newznab=%+v", got[0])
+	}
+	if got[1].Nzbs != 0 || got[1].Articles != 0 {
+		t.Fatalf("newznab2=%+v", got[1])
+	}
+}
+
 func TestLooksLikeURL(t *testing.T) {
 	if !looksLikeURL("apikey=x") || looksLikeURL(filepath.Join("ondemand", "nzb", "newznab", "a.nzb")) {
 		t.Fatal("looksLikeURL")

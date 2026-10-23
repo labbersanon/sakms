@@ -1955,11 +1955,14 @@ type NewznabCatalogOndemand struct {
 }
 
 // NewznabIndexerHealth is one Newznab host's crawl health (not a live probe).
+// MissingNzbs/MissingArticles are On Demand STAT-dead counts; they do not change Status.
 type NewznabIndexerHealth struct {
-	Indexer   string `json:"indexer"`
-	Status    string `json:"status"`
-	Detail    string `json:"detail"`
-	UpdatedAt int64  `json:"updatedAt"`
+	Indexer         string `json:"indexer"`
+	Status          string `json:"status"`
+	Detail          string `json:"detail"`
+	UpdatedAt       int64  `json:"updatedAt"`
+	MissingNzbs     int    `json:"missingNzbs"`
+	MissingArticles int    `json:"missingArticles"`
 }
 
 // NewznabCatalogReport is GET /api/admin/newznab-catalog. No enclosure URLs.

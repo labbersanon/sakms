@@ -118,6 +118,55 @@ func (s *Store) CountByKind(ctx context.Context) ([]KindCount, error) {
 	return out, nil
 }
 
+// DeadCount is NZBs whose STAT found missing Usenet articles, per indexer.
+type DeadCount struct {
+	Indexer  string
+	Nzbs     int
+	Articles int
+}
+
+// Claude 2026-10-23: Indexer health card shows dead NZBs (missing articles).
+// Reason: STAT missing/removed is indexer retention, not crawl cursor health.
+// Troubleshooting: zeros while Dock shows verified → no status=dead rows yet.
+// Review if: Play treats dead as retryable (keep the count on this poll).
+func (s *Store) CountDeadByIndexer(ctx context.Context) ([]DeadCount, error) {
+	out := make([]DeadCount, 0, len(catalogServices))
+	for _, name := range catalogServices {
+		out = append(out, DeadCount{Indexer: name})
+	}
+	if s == nil || s.db == nil {
+		return out, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT indexer,
+			COUNT(*) FILTER (WHERE status = $1),
+			COALESCE(SUM(stat_missing) FILTER (WHERE status = $1), 0)
+		FROM newznab_ondemand
+		GROUP BY indexer`, StatusDead)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	by := map[string]DeadCount{}
+	for rows.Next() {
+		var d DeadCount
+		if err := rows.Scan(&d.Indexer, &d.Nzbs, &d.Articles); err != nil {
+			return out, err
+		}
+		by[d.Indexer] = d
+	}
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	for i, d := range out {
+		if got, ok := by[d.Indexer]; ok {
+			got.Indexer = d.Indexer
+			out[i] = got
+		}
+	}
+	return out, nil
+}
+
 func (s *Store) NextFromCatalog(ctx context.Context) (CatalogRef, bool, error) {
 	var ref CatalogRef
 	if s == nil || s.db == nil {

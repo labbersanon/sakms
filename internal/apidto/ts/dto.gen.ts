@@ -1939,12 +1939,15 @@ export interface NewznabCatalogOndemand {
 }
 /**
  * NewznabIndexerHealth is one Newznab host's crawl health (not a live probe).
+ * MissingNzbs/MissingArticles are On Demand STAT-dead counts; they do not change Status.
  */
 export interface NewznabIndexerHealth {
   indexer: string;
   status: string;
   detail: string;
   updatedAt: number /* int64 */;
+  missingNzbs: number /* int */;
+  missingArticles: number /* int */;
 }
 /**
  * NewznabCatalogReport is GET /api/admin/newznab-catalog. No enclosure URLs.

@@ -6,6 +6,7 @@ import (
 
 	"github.com/labbersanon/sakms/internal/newznab"
 	"github.com/labbersanon/sakms/internal/newznabcatalog"
+	"github.com/labbersanon/sakms/internal/newznabondemand"
 )
 
 // Claude 2026-10-23: Dock card reads catalog overlap, On Demand counts, indexer health.
@@ -55,10 +56,12 @@ type newznabCatalogOndemand struct {
 }
 
 type newznabIndexerHealth struct {
-	Indexer   string `json:"indexer"`
-	Status    string `json:"status"`
-	Detail    string `json:"detail"`
-	UpdatedAt int64  `json:"updatedAt"`
+	Indexer         string `json:"indexer"`
+	Status          string `json:"status"`
+	Detail          string `json:"detail"`
+	UpdatedAt       int64  `json:"updatedAt"`
+	MissingNzbs     int    `json:"missingNzbs"`
+	MissingArticles int    `json:"missingArticles"`
 }
 
 type newznabCatalogReport struct {
@@ -132,6 +135,12 @@ func newznabCatalogHandler() http.HandlerFunc {
 					Kind: k.Kind, Verified: k.Verified, Fetched: k.Fetched, Skipped: k.Skipped,
 				})
 			}
+			dead, err := od.CountDeadByIndexer(r.Context())
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			applyDeadCounts(out.Indexers, dead)
 		}
 		writeJSON(w, out)
 	}
@@ -145,4 +154,20 @@ func copyIndexerHealth(in []newznabcatalog.IndexerHealth) []newznabIndexerHealth
 		})
 	}
 	return out
+}
+
+// Claude 2026-10-23: Overlay dead NZB counts onto crawl health rows.
+// Reason: Indexer health status stays cursor-derived; missing articles are retention.
+// Troubleshooting: zeros with verified NZBs → ondemand store unattached or no dead rows.
+// Review if: Play treats dead as retryable (keep overlay, do not flip Status).
+func applyDeadCounts(health []newznabIndexerHealth, dead []newznabondemand.DeadCount) {
+	by := map[string]newznabondemand.DeadCount{}
+	for _, d := range dead {
+		by[d.Indexer] = d
+	}
+	for i, h := range health {
+		d := by[h.Indexer]
+		health[i].MissingNzbs = d.Nzbs
+		health[i].MissingArticles = d.Articles
+	}
 }

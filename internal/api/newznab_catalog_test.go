@@ -139,3 +139,49 @@ func TestNewznabCatalogHandler_ReportsOndemandCounts(t *testing.T) {
 		t.Fatalf("movies=%+v", got.Ondemand[0])
 	}
 }
+
+func TestNewznabCatalogHandler_ReportsMissingArticles(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	cat := newznabcatalog.NewStore(sqlDB)
+	od := newznabondemand.NewStore(sqlDB)
+	AttachNewznabCatalog(cat)
+	AttachNewznabOndemand(od)
+	t.Cleanup(func() {
+		AttachNewznabCatalog(nil)
+		AttachNewznabOndemand(nil)
+	})
+	ctx := context.Background()
+	if err := od.Save(ctx, newznabondemand.Row{
+		Indexer: "newznab", GUID: "d1", Kind: newznabcatalog.KindMovies,
+		Title: "Dead.Movie", Status: newznabondemand.StatusDead, StatMissing: 8,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := catalogMux(t)
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/api/admin/newznab-catalog")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var got newznabCatalogReport
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Indexers) != 2 {
+		t.Fatalf("indexers=%+v", got.Indexers)
+	}
+	if got.Indexers[0].Indexer != "newznab" || got.Indexers[0].MissingNzbs != 1 || got.Indexers[0].MissingArticles != 8 {
+		t.Fatalf("newznab=%+v", got.Indexers[0])
+	}
+	if got.Indexers[0].Status != "unset" {
+		t.Fatalf("dead NZBs must not flip health: %+v", got.Indexers[0])
+	}
+	if got.Indexers[1].Indexer != "newznab2" || got.Indexers[1].MissingNzbs != 0 || got.Indexers[1].MissingArticles != 0 {
+		t.Fatalf("newznab2=%+v", got.Indexers[1])
+	}
+}

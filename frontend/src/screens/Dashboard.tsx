@@ -167,6 +167,16 @@ function healthLine(row: NewznabIndexerHealth): string {
   return parts.join(" · ");
 }
 
+// Claude 2026-10-23: Missing articles is status=dead, not indexer error.
+// Reason: retention holes are per-NZB STAT; API health stays crawl-cursor.
+// Troubleshooting: zeros while Dock shows verified → no dead rows yet.
+// Review if: Play treats dead as retryable (keep the count on this poll).
+function missingArticlesLine(row: NewznabIndexerHealth): string {
+  const nzbs = row.missingNzbs ?? 0;
+  if (nzbs <= 0) return "Missing articles: none";
+  return `Missing articles: ${formatCount(nzbs)} NZBs · ${formatCount(row.missingArticles)} articles`;
+}
+
 function catalogNZBs(
   counts: NewznabCatalogCount[] | undefined,
   indexer: string,
@@ -413,8 +423,22 @@ const IndexerHealthCard: Component<{ report: NewznabCatalogReport }> = (
     props.report.indexers?.length
       ? props.report.indexers
       : ([
-          { indexer: "newznab", status: "unset", detail: "waiting", updatedAt: 0 },
-          { indexer: "newznab2", status: "unset", detail: "waiting", updatedAt: 0 },
+          {
+            indexer: "newznab",
+            status: "unset",
+            detail: "waiting",
+            updatedAt: 0,
+            missingNzbs: 0,
+            missingArticles: 0,
+          },
+          {
+            indexer: "newznab2",
+            status: "unset",
+            detail: "waiting",
+            updatedAt: 0,
+            missingNzbs: 0,
+            missingArticles: 0,
+          },
         ] satisfies NewznabIndexerHealth[]);
   return (
     <Card title="Indexer health">
@@ -425,6 +449,9 @@ const IndexerHealthCard: Component<{ report: NewznabCatalogReport }> = (
               <div class="font-medium text-fg">{indexerLabel(row.indexer)}</div>
               <div class={healthClass(row.status)}>
                 {healthLine(row)}
+              </div>
+              <div class={row.missingNzbs > 0 ? "text-warn" : "text-muted"}>
+                {missingArticlesLine(row)}
               </div>
             </li>
           )}

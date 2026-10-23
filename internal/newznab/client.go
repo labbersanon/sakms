@@ -39,6 +39,7 @@ const (
 	browseSizeTol      = 0.15
 	userAgent          = "sakms-newznab/1"
 	minInterval        = time.Second
+	catalogPageSize    = 50
 )
 
 // Indexer is a Newznab API endpoint. APIKey must not be logged.
@@ -147,6 +148,7 @@ type searchReq struct {
 	offset      int
 	limit       int
 	allowSingle bool
+	catalog     bool
 }
 
 // SearchGrab runs t=search for a title and returns NZB download URLs.
@@ -395,7 +397,18 @@ func (c *Client) search(ctx context.Context, idx Indexer, req searchReq) ([]rssI
 	q := strings.TrimSpace(req.q)
 	poster := strings.TrimSpace(req.poster)
 	group := strings.TrimSpace(req.group)
-	if q == "" && poster == "" && (group == "" || req.maxage <= 0) {
+	if req.catalog {
+		hasCat := false
+		for _, cat := range req.cats {
+			if cat > 0 {
+				hasCat = true
+				break
+			}
+		}
+		if !hasCat {
+			return nil, fmt.Errorf("catalog category required")
+		}
+	} else if q == "" && poster == "" && (group == "" || req.maxage <= 0) {
 		return nil, fmt.Errorf("empty search")
 	}
 	vals := u.Query()

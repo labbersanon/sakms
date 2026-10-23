@@ -6,14 +6,14 @@
 //
 // Every case mounts through renderDashboard(), a <Router> harness: the Storage
 // Allocation cells link with <A>, which reads router context and throws when
-// mounted bare. fetch is stubbed globally too — that section is the screen's
-// one REST call, and an unstubbed fetch would reject in every case, not just
-// the ones asserting on it.
+// mounted bare. fetch is stubbed globally too — Storage Allocation and NZB
+// catalog are the screen's REST calls, and an unstubbed fetch would reject in
+// every case, not just the ones asserting on them.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@solidjs/testing-library";
 import { Route, Router } from "@solidjs/router";
-import type { StorageAllocation, SysinfoSnapshot } from "@dto";
+import type { NewznabCatalogReport, StorageAllocation, SysinfoSnapshot } from "@dto";
 import { Dashboard } from "./Dashboard";
 import { jsonResponse } from "../testing/http";
 
@@ -90,6 +90,17 @@ const cell = (tier: string, totalBytes: number, itemCount: number) => ({
   itemCount,
 });
 
+const catalogReport = (
+  over: Partial<NewznabCatalogReport> = {},
+): NewznabCatalogReport => ({
+  intervalSeconds: 5,
+  pageSize: 50,
+  cursors: [],
+  counts: [],
+  overlap: [],
+  ...over,
+});
+
 const allocation = (): StorageAllocation => ({
   tiers: ["low", "medium", "high", "lossless", "unknown"],
   rows: [
@@ -149,7 +160,13 @@ beforeEach(() => {
   vi.stubGlobal("EventSource", MockEventSource);
   vi.stubGlobal(
     "fetch",
-    vi.fn(async () => jsonResponse(allocation())),
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/admin/newznab-catalog")) {
+        return jsonResponse(catalogReport());
+      }
+      return jsonResponse(allocation());
+    }),
   );
 });
 
@@ -442,10 +459,73 @@ describe("Dashboard view", () => {
     expect(hrefs).not.toContain("/library?mode=movies&tier=low");
   });
 
+  it("renders the NZB catalog card without an SSE frame", async () => {
+    renderDashboard();
+    expect(
+      screen.getByText(/Waiting for the first live reading/i),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("NZB catalog")).toBeInTheDocument();
+    expect(screen.getByText(/1 page \/ 5s per indexer/i)).toBeInTheDocument();
+    expect(screen.getByText(/Waiting for NZB host API 1 and 2/i)).toBeInTheDocument();
+  });
+
+  it("renders NZB catalog overlap and cursor progress", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/admin/newznab-catalog")) {
+          return jsonResponse(
+            catalogReport({
+              cursors: [
+                {
+                  indexer: "newznab",
+                  kind: "movies",
+                  pageOffset: 150,
+                  complete: false,
+                  lastPageNew: 40,
+                  lastError: "",
+                },
+              ],
+              counts: [
+                { indexer: "newznab", kind: "movies", nzbs: 1200 },
+                { indexer: "newznab2", kind: "movies", nzbs: 980 },
+              ],
+              overlap: [
+                {
+                  kind: "movies",
+                  host1Titles: 10,
+                  host2Titles: 8,
+                  both: 5,
+                  onlyHost1: 5,
+                  onlyHost2: 3,
+                },
+              ],
+            }),
+          );
+        }
+        return jsonResponse(allocation());
+      }),
+    );
+    renderDashboard();
+    expect(await screen.findByText("NZB catalog")).toBeInTheDocument();
+    expect(screen.getByText(/both 5/)).toBeInTheDocument();
+    expect(screen.getByText(/Host 1 only 5/)).toBeInTheDocument();
+    expect(screen.getByText(/Host 2 only 3/)).toBeInTheDocument();
+    expect(screen.getByText(/1.?200 NZBs on Host 1/)).toBeInTheDocument();
+    expect(screen.getByText(/Host 1 movies · offset 150 · \+40 new/)).toBeInTheDocument();
+  });
+
   it("shows an error banner when the storage allocation endpoint fails", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response("storage query failed", { status: 500 })),
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/api/admin/newznab-catalog")) {
+          return jsonResponse(catalogReport());
+        }
+        return new Response("storage query failed", { status: 500 });
+      }),
     );
     const { container } = renderDashboard();
 

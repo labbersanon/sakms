@@ -1896,6 +1896,49 @@ export interface StorageAllocation {
   grandTotalBytes: number /* int64 */;
 }
 /**
+ * Claude 2026-10-23: Dock catalog overlap DTOs (no enclosure URLs).
+ * Reason: Lighthouse filter is later; this pass only indexes and counts.
+ * Troubleshooting: frontend missing types → make dto.
+ * Review if: Lighthouse availability filter adds fields.
+ */
+export interface NewznabCatalogCursor {
+  indexer: string;
+  kind: string;
+  pageOffset: number /* int */;
+  complete: boolean;
+  lastPageNew: number /* int */;
+  lastError: string;
+}
+/**
+ * NewznabCatalogCount is NZB rows stored for one host and kind.
+ */
+export interface NewznabCatalogCount {
+  indexer: string;
+  kind: string;
+  nzbs: number /* int */;
+}
+/**
+ * NewznabCatalogOverlap is title-key overlap for one kind (movies/series/adult).
+ */
+export interface NewznabCatalogOverlap {
+  kind: string;
+  host1Titles: number /* int */;
+  host2Titles: number /* int */;
+  both: number /* int */;
+  onlyHost1: number /* int */;
+  onlyHost2: number /* int */;
+}
+/**
+ * NewznabCatalogReport is GET /api/admin/newznab-catalog. No enclosure URLs.
+ */
+export interface NewznabCatalogReport {
+  intervalSeconds: number /* int */;
+  pageSize: number /* int */;
+  cursors: NewznabCatalogCursor[];
+  counts: NewznabCatalogCount[];
+  overlap: NewznabCatalogOverlap[];
+}
+/**
  * ConnectionTestRequest is POST /api/connections/test's body — enough to
  * construct a client and make one real, read-only call (Settings' "Test"
  * button). Nothing is persisted, so APIKey here is a PLAIN string (not the

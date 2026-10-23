@@ -1916,6 +1916,45 @@ type StorageAllocation struct {
 	GrandTotalBytes int64                  `json:"grandTotalBytes"`
 }
 
+// Claude 2026-10-23: Dock catalog overlap DTOs (no enclosure URLs).
+// Reason: Lighthouse filter is later; this pass only indexes and counts.
+// Troubleshooting: frontend missing types → make dto.
+// Review if: Lighthouse availability filter adds fields.
+type NewznabCatalogCursor struct {
+	Indexer     string `json:"indexer"`
+	Kind        string `json:"kind"`
+	PageOffset  int    `json:"pageOffset"`
+	Complete    bool   `json:"complete"`
+	LastPageNew int    `json:"lastPageNew"`
+	LastError   string `json:"lastError"`
+}
+
+// NewznabCatalogCount is NZB rows stored for one host and kind.
+type NewznabCatalogCount struct {
+	Indexer string `json:"indexer"`
+	Kind    string `json:"kind"`
+	Nzbs    int    `json:"nzbs"`
+}
+
+// NewznabCatalogOverlap is title-key overlap for one kind (movies/series/adult).
+type NewznabCatalogOverlap struct {
+	Kind        string `json:"kind"`
+	Host1Titles int    `json:"host1Titles"`
+	Host2Titles int    `json:"host2Titles"`
+	Both        int    `json:"both"`
+	OnlyHost1   int    `json:"onlyHost1"`
+	OnlyHost2   int    `json:"onlyHost2"`
+}
+
+// NewznabCatalogReport is GET /api/admin/newznab-catalog. No enclosure URLs.
+type NewznabCatalogReport struct {
+	IntervalSeconds int                     `json:"intervalSeconds"`
+	PageSize        int                     `json:"pageSize"`
+	Cursors         []NewznabCatalogCursor  `json:"cursors"`
+	Counts          []NewznabCatalogCount   `json:"counts"`
+	Overlap         []NewznabCatalogOverlap `json:"overlap"`
+}
+
 // --- Stage 4: Settings + Advanced Settings ---------------------------------
 //
 // The DTOs backing the ported Settings view (Connections, API Access, Auth

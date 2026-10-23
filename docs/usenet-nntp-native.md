@@ -7,6 +7,11 @@ not an indexer catalog. ngPost random filenames never joined PreDB.
 **Grab catalog:** Newznab (`newznab` + optional `newznab2`, recommended
 NZBFinder for obfuscated NZBs) then Prowlarr.
 
+**Overlap index:** background `t=search` pages of cat 2000/5000/6000 into
+`newznab_catalog` at 1 page / 5s per host (Dock card). Grab search is a
+separate client at 1s. Lighthouse (Discover) does not filter on this table
+yet. Enclosure URLs are not stored.
+
 **Download pipe:** Eweka NNTP subscriptions via `internal/usenet` `AddNZB`.
 `cmd/nntpprobe` stays as a standalone probe.
 

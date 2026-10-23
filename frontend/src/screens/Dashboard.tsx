@@ -9,9 +9,10 @@
 // The backend emits its first data event ~2s after connect (after its initial
 // sample pair), so the loading state is expected on first mount.
 //
-// Storage Allocation (GET /api/admin/storage-allocation) is NOT SSE-fed.
-// It sits OUTSIDE the <Show when={snap()}> gate so it paints on its own
-// data if the metrics stream stalls.
+// Two REST sections sit OUTSIDE the <Show when={snap()}> gate so they
+// paint on their own data if the metrics stream stalls: Storage Allocation
+// (GET /api/admin/storage-allocation) and NZB catalog
+// (GET /api/admin/newznab-catalog, polled every 30s).
 //
 // Layout is a 3-column grid (CPU + GPUs left, Memory/Network/Container middle,
 // aggregate Disk I/O right) followed by a full-width Storage Mounts section: a
@@ -33,7 +34,15 @@ import {
   Show,
 } from "solid-js";
 import { A } from "@solidjs/router";
-import type { StorageAllocationCell, SysinfoSnapshot } from "@dto";
+import type {
+  NewznabCatalogCount,
+  NewznabCatalogCursor,
+  NewznabCatalogOverlap,
+  NewznabCatalogReport,
+  StorageAllocationCell,
+  SysinfoSnapshot,
+} from "@dto";
+import { fetchNewznabCatalog } from "../api/newznabCatalog";
 import { fetchStorageAllocation } from "../api/storage";
 import { Card, Muted } from "../components/ui";
 import { discoverOwnedHref } from "./discoverHref";
@@ -71,6 +80,42 @@ function formatSize(bytes: number | undefined): string {
 // titleCase labels the mode/tier axis values, which arrive lowercase.
 function titleCase(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function formatCount(n: number | undefined): string {
+  return (n ?? 0).toLocaleString();
+}
+
+function indexerLabel(name: string): string {
+  if (name === "newznab") return "Host 1";
+  if (name === "newznab2") return "Host 2";
+  return name;
+}
+
+const CATALOG_KIND_ORDER = ["movies", "series", "adult"];
+
+function catalogKindRank(kind: string): number {
+  const i = CATALOG_KIND_ORDER.indexOf(kind);
+  return i < 0 ? CATALOG_KIND_ORDER.length : i;
+}
+
+function sortCatalogKinds<T extends { kind: string }>(rows: T[] | undefined): T[] {
+  return [...(rows ?? [])].sort((a, b) => {
+    const d = catalogKindRank(a.kind) - catalogKindRank(b.kind);
+    if (d !== 0) return d;
+    return a.kind.localeCompare(b.kind);
+  });
+}
+
+function catalogNZBs(
+  counts: NewznabCatalogCount[] | undefined,
+  indexer: string,
+  kind: string,
+): number {
+  return (
+    (counts ?? []).find((c) => c.indexer === indexer && c.kind === kind)?.nzbs ??
+    0
+  );
 }
 
 function libraryTierHref(mode: string, tier: string): string {
@@ -318,6 +363,76 @@ const Sparkline: Component<{ values: number[] }> = (props) => {
 // body()'s own text-fg on the size line wins the cascade over a colour class on
 // the wrapper, but opacity applies to the whole subtree and can't be overridden)
 // so the cell reads as disabled at rest, not just to assistive tech.
+// Claude 2026-10-23: NZB catalog overlap on the Dock, outside the SSE gate.
+// Reason: 1 page / 5s per indexer; poll 30s (not 10s COUNT). Not OVER.
+// Troubleshooting: empty card with both hosts set → AttachNewznabCatalog.
+// Review if: Lighthouse filter ships (keep this as progress, don't recrawl).
+const NewznabCatalogCard: Component<{ report: NewznabCatalogReport }> = (
+  props,
+) => {
+  const pace = () =>
+    `1 page / ${props.report.intervalSeconds || 5}s per indexer · ${props.report.pageSize || 50} NZBs / page`;
+  const overlap = () => sortCatalogKinds(props.report.overlap);
+  const cursors = () => sortCatalogKinds(props.report.cursors);
+  const idle = () => overlap().length === 0 && cursors().length === 0;
+  const cursorLine = (c: NewznabCatalogCursor) => {
+    const host = indexerLabel(c.indexer);
+    if (c.complete) return `${host} ${c.kind} · done`;
+    const next = `${host} ${c.kind} · offset ${formatCount(c.pageOffset)}`;
+    if (c.lastPageNew) return `${next} · +${formatCount(c.lastPageNew)} new`;
+    return next;
+  };
+  const nzbs = (kind: string, indexer: string) =>
+    catalogNZBs(props.report.counts, indexer, kind);
+  return (
+    <Card title="NZB catalog">
+      <p class="mb-3 text-xs text-muted">{pace()}</p>
+      <Show
+        when={!idle()}
+        fallback={<Muted>Waiting for NZB host API 1 and 2.</Muted>}
+      >
+        <Show when={overlap().length > 0}>
+          <ul class="flex flex-col gap-3 text-sm">
+            <For each={overlap()}>
+              {(row: NewznabCatalogOverlap) => (
+                <li>
+                  <div class="font-medium text-fg">{titleCase(row.kind)}</div>
+                  <div class="text-fg">
+                    both {formatCount(row.both)} · Host 1 only{" "}
+                    {formatCount(row.onlyHost1)} · Host 2 only{" "}
+                    {formatCount(row.onlyHost2)}
+                  </div>
+                  <div class="text-xs text-muted">
+                    {formatCount(row.host1Titles)} titles /{" "}
+                    {formatCount(nzbs(row.kind, "newznab"))} NZBs on Host 1 ·{" "}
+                    {formatCount(row.host2Titles)} titles /{" "}
+                    {formatCount(nzbs(row.kind, "newznab2"))} NZBs on Host 2
+                  </div>
+                </li>
+              )}
+            </For>
+          </ul>
+        </Show>
+        <Show when={cursors().length > 0}>
+          <ul class="mt-3 flex flex-col gap-1 text-xs text-muted">
+            <For each={cursors()}>
+              {(c: NewznabCatalogCursor) => (
+                <li>
+                  {cursorLine(c)}
+                  <Show when={c.lastError}>
+                    {" "}
+                    · <span class="text-warn">{c.lastError}</span>
+                  </Show>
+                </li>
+              )}
+            </For>
+          </ul>
+        </Show>
+      </Show>
+    </Card>
+  );
+};
+
 const AllocCell: Component<{ mode: string; cell: StorageAllocationCell }> = (
   props,
 ) => {
@@ -377,8 +492,14 @@ export const Dashboard: Component = () => {
   // separate from the transport-level reconnecting notice: the connection is
   // still alive, but a metric read failed server-side.
   const [error, setError] = createSignal<string | null>(null);
-  // alloc is REST-backed (not SSE).
+  // alloc / catalog are REST-backed (not SSE). Poll the catalog so overlap
+  // and cursor lines stay current without joining the sysinfo stream.
   const [alloc] = createResource(fetchStorageAllocation);
+  const [catalog, { refetch: refetchCatalog }] = createResource(
+    fetchNewznabCatalog,
+  );
+  const catalogError = () =>
+    (catalog.error as Error | undefined)?.message || "request failed";
   // allocError is read INSTEAD of alloc(), never alongside it: a Solid resource
   // re-throws on read once its fetcher has errored, and an uncaught throw
   // mid-render leaves the section stuck (the GrabDialog bug, see CLAUDE.md).
@@ -406,6 +527,10 @@ export const Dashboard: Component = () => {
       setError(`Metric read failed: ${(e as MessageEvent).data}`);
     });
     es.onerror = () => setReconnecting(true);
+    const catalogPoll = setInterval(() => {
+      void refetchCatalog();
+    }, 30_000);
+    onCleanup(() => clearInterval(catalogPoll));
   });
 
   onCleanup(() => es?.close());
@@ -599,6 +724,23 @@ export const Dashboard: Component = () => {
           </>
         )}
       </Show>
+
+      {/* NZB catalog — REST-backed, outside the SSE gate like Storage Allocation. */}
+      <div class="mt-4">
+        <Show when={catalog.error}>
+          <div class="mb-4 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-warn">
+            NZB catalog unavailable — {catalogError()}
+          </div>
+        </Show>
+        <Show when={!catalog.error}>
+          <Show
+            when={catalog()}
+            fallback={<Muted>Loading NZB catalog…</Muted>}
+          >
+            {(rep) => <NewznabCatalogCard report={rep()} />}
+          </Show>
+        </Show>
+      </div>
 
       {/* Storage Allocation — REST-backed (GET /api/admin/storage-allocation),
           deliberately OUTSIDE the <Show when={snap()}> gate above: it has its

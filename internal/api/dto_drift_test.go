@@ -126,6 +126,10 @@ func TestHandlerDTOMirrorNoDrift(t *testing.T) {
 		{"sectionLockStatusResponse/SectionLockStatusResponse", sectionLockStatusResponse{}, apidto.SectionLockStatusResponse{}},
 		{"sectionLockUnlockRequest/SectionLockUnlockRequest", sectionLockUnlockRequest{}, apidto.SectionLockUnlockRequest{}},
 		{"sectionLockPinRequest/SectionLockPinRequest", sectionLockPinRequest{}, apidto.SectionLockPinRequest{}},
+		{"newznabCatalogReport/NewznabCatalogReport", newznabCatalogReport{}, apidto.NewznabCatalogReport{}},
+		{"newznabCatalogCursor/NewznabCatalogCursor", newznabCatalogCursor{}, apidto.NewznabCatalogCursor{}},
+		{"newznabCatalogCount/NewznabCatalogCount", newznabCatalogCount{}, apidto.NewznabCatalogCount{}},
+		{"newznabCatalogOverlap/NewznabCatalogOverlap", newznabCatalogOverlap{}, apidto.NewznabCatalogOverlap{}},
 		{"sectionLockSectionsRequest/SectionLockSectionsRequest", sectionLockSectionsRequest{}, apidto.SectionLockSectionsRequest{}},
 	}
 

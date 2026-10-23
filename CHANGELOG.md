@@ -12956,3 +12956,21 @@ status stays active.
 | `internal/api/newznabgrab.go` | concurrent SearchGrab per host |
 | `internal/newznab/client.go` | `last` map keyed by host |
 | `frontend/src/screens/settings/Usenet.tsx` | both hosts queried in parallel |
+
+## 2026-10-23 — Newznab catalog overlap index + Dock card
+
+**Problem:** Need overlap between NZBGeek and NZBFinder (movies/TV/adult) so Lighthouse can later show only indexed Mainstream titles and move Adult off RSS. Indexer APIs must not be flooded.
+**Root cause:** Grab `t=search` is on-demand and 1s-paced; there was no local catalog of both hosts and no Dock progress.
+**Fix:** Goose 0055 `newznab_catalog` + cursors (no enclosure URLs). Background crawl: cat 2000/5000/6000, 50/page, **1 page / 5s per host**, hosts in parallel, 429 backoff 1m→10m, resume offsets. Grab stays on a separate 1s Client. GET `/api/admin/newznab-catalog` + Dashboard card polled every 30s. Lighthouse filter/RSS replacement is not in this pass.
+**Outcome:** `TestSearchCatalog_CatOnlyNoHTMLNoNZB`, `TestSearchCatalog_429DoesNotRetryStar`, `TestStore_InsertAndOverlap`, `TestCrawlHost_PagesUntilEmptyAndDoesNotHitHTML`, `TestMigration0055NewznabCatalog`, `TestNewznabCatalogHandler_ReportsOverlapWithoutURLs`. Dock card shows per-kind both/only-host-1/only-host-2.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/db/migrations/0055_newznab_catalog.sql` | catalog + cursor tables |
+| `internal/newznab/catalog.go` | cat-only `SearchCatalog` |
+| `internal/newznabcatalog/*` | store, 5s crawl, overlap report |
+| `internal/api/newznab_catalog.go` | GET `/api/admin/newznab-catalog` |
+| `frontend/src/screens/Dashboard.tsx` | NZB catalog Dock card |
+| `docs/ROADMAP.md` | Lighthouse filter follow-up |

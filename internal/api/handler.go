@@ -774,6 +774,11 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// Dashboard's Storage Allocation table. Pure DB read — see the handler's
 	// doc comment for why it takes libStore and nothing else.
 	mux.HandleFunc("GET /api/admin/storage-allocation", storageAllocationHandler(libStore))
+	// Claude 2026-10-23: Newznab catalog overlap for the Dock card.
+	// Reason: paced t=search index of both hosts; not OVER. No HTML scrape.
+	// Troubleshooting: empty card → AttachNewznabCatalog not called.
+	// Review if: Lighthouse availability filter reads this table.
+	mux.HandleFunc("GET /api/admin/newznab-catalog", newznabCatalogHandler())
 	// Live container/host resource metrics streamed as server-sent events for
 	// the System Dashboard (internal/sysinfo reads cgroups v2 + /proc).
 	mux.HandleFunc("GET /api/admin/sysinfo/stream", sysinfoStreamHandler(

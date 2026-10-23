@@ -108,6 +108,21 @@ bulk batch.
 
 ## In progress
 
+### Lighthouse availability from Newznab catalog — overlap index shipping; Discover filter not built
+<!-- Claude 2026-10-23: overlap catalog first; filter/RSS swap later.
+     Reason: operator chose 1A now (report only), 2B later (Mainstream
+       TMDB filter + Adult RSS→index), 3C movies+TV+adult.
+     Troubleshooting: do not recrawl on every Discover render; read
+       newznab_catalog. Review if: the filter UI ships. -->
+Both Newznab hosts (`newznab` + `newznab2`) are paged at **1 page / 5s
+per indexer** (hosts in parallel, grab search stays 1s on a separate
+client, 429 backoff 1m→10m) into `newznab_catalog`. The Dock card shows
+per-kind overlap. **Not in this pass:** Mainstream Discover still lists
+TMDB regardless of catalog membership; Adult newest rows still come from
+RSS. When those land, filter TMDB to indexed titles and point Adult at
+the catalog instead of RSS. Do not scrape indexer HTML. Do not store
+enclosure URLs.
+
 ### Node CPU governor — backend + node-side enforcement shipped; slider, server-side reporting, and production verification still open
 Real cgroup-v2 CPU ceiling for `cmd/sakms-node`'s worker daemon, so an
 operator can cap how much of a node's total CPU the phash/videophash ffmpeg

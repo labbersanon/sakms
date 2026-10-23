@@ -31,6 +31,7 @@ import (
 	"github.com/labbersanon/sakms/internal/library"
 	"github.com/labbersanon/sakms/internal/mediainfo"
 	"github.com/labbersanon/sakms/internal/mode"
+	"github.com/labbersanon/sakms/internal/newznabcatalog"
 	"github.com/labbersanon/sakms/internal/nodekeys"
 	"github.com/labbersanon/sakms/internal/nodes"
 	"github.com/labbersanon/sakms/internal/nodesettings"
@@ -239,6 +240,12 @@ func run() error {
 	// Troubleshooting: grab miss → newznab connection unset.
 	// Review if: Prowlarr already includes the same indexer.
 	api.AttachNewznabGrabSearch(connStore, &http.Client{Timeout: outboundTimeout})
+	// Claude 2026-10-23: paced Newznab catalog crawl for overlap (Dock card).
+	// Reason: 1 page / 5s / host, both hosts in parallel. Not OVER. No HTML.
+	// Troubleshooting: catalog logs rate-limit backoff → NZBFinder quota.
+	// Review if: Lighthouse availability filter reads newznab_catalog.
+	catalogStore := newznabcatalog.NewStore(sqlDB)
+	api.AttachNewznabCatalog(catalogStore)
 	// traktStore persists Trakt's single application connection + linked
 	// account tokens (its own table, not connections.Store — see
 	// internal/trakt's package doc for why); secretStore encrypts the same
@@ -690,6 +697,10 @@ func run() error {
 	// To remove entirely: delete internal/discoverrefresh, this line,
 	// discoverCache's construction above, its NewMux param, and
 	// discoverRefreshTriggerMux's construction + mount.
+	// Claude 2026-10-23: catalog crawl shares signal ctx with discoverrefresh.
+	// Reason: 5s/host t=search; stop on shutdown. Grab Client stays 1s.
+	// Troubleshooting: catalog after SIGTERM → Run not using this ctx.
+	go newznabcatalog.Run(ctx, catalogStore, connStore, &http.Client{Timeout: outboundTimeout})
 	go discoverrefresh.Run(ctx, discoverrefresh.LoadInterval(ctx, settingsStore), discoverrefresh.Deps{
 		HTTPClient:    &http.Client{Timeout: outboundTimeout},
 		ConnStore:     connStore,

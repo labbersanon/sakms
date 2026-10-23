@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -613,6 +614,30 @@ func grabReleaseFromItem(idx Indexer, it rssItem) (Release, bool) {
 	}, true
 }
 
+// GetNZBID is the t=get id. Catalog RSS guids are details URLs
+// (NZBGeek geekseek.php?guid=, NZB.life /details/hash), not the id.
+func GetNZBID(guid string) string {
+	s := strings.TrimSpace(guid)
+	if s == "" {
+		return ""
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" {
+		return s
+	}
+	if g := strings.TrimSpace(u.Query().Get("guid")); g != "" {
+		return g
+	}
+	if g := strings.TrimSpace(u.Query().Get("id")); g != "" {
+		return g
+	}
+	base := path.Base(u.Path)
+	if base != "" && base != "." && base != "/" {
+		return base
+	}
+	return s
+}
+
 func getURL(idx Indexer, id string) string {
 	u, err := url.Parse(idx.Endpoint)
 	if err != nil {
@@ -628,7 +653,7 @@ func getURL(idx Indexer, id string) string {
 
 // GetNZB runs t=get for id. The apikey URL is never returned or logged.
 func (c *Client) GetNZB(ctx context.Context, idx Indexer, id string) (*usenet.NZB, []byte, error) {
-	id = strings.TrimSpace(id)
+	id = GetNZBID(id)
 	if id == "" || strings.TrimSpace(idx.Endpoint) == "" || strings.TrimSpace(idx.APIKey) == "" {
 		return nil, nil, fmt.Errorf("newznab: missing indexer or id")
 	}

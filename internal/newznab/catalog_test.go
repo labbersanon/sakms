@@ -168,6 +168,20 @@ func TestOverlapKey_UsesSanitizedNZBTitle(t *testing.T) {
 	}
 }
 
+func TestGetNZBID_FromCatalogURLs(t *testing.T) {
+	geek := "https://nzbgeek.info/geekseek.php?guid=00000670d64ac363d7745198ec59bd00"
+	if got := GetNZBID(geek); got != "00000670d64ac363d7745198ec59bd00" {
+		t.Fatalf("geek=%q", got)
+	}
+	life := "https://api.nzb.life/details/02d012a22659c4c83796713f79f8c895"
+	if got := GetNZBID(life); got != "02d012a22659c4c83796713f79f8c895" {
+		t.Fatalf("life=%q", got)
+	}
+	if got := GetNZBID("bare-id"); got != "bare-id" {
+		t.Fatalf("bare=%q", got)
+	}
+}
+
 func TestGetNZB_ReturnsBytesWithoutAPIKey(t *testing.T) {
 	const nzbXML = `<?xml version="1.0"?>
 <nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">

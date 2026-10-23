@@ -70,9 +70,9 @@ func (s *Store) NextFromCatalog(ctx context.Context) (CatalogRef, bool, error) {
 		SELECT c.indexer, c.guid, c.kind, c.title
 		FROM newznab_catalog c
 		LEFT JOIN newznab_ondemand o ON o.indexer = c.indexer AND o.guid = c.guid
-		WHERE o.guid IS NULL
-		ORDER BY c.ingested_at ASC, c.guid ASC
-		LIMIT 1`).Scan(&ref.Indexer, &ref.GUID, &ref.Kind, &ref.Title)
+		WHERE o.guid IS NULL OR o.status = $1
+		ORDER BY CASE WHEN o.guid IS NULL THEN 0 ELSE 1 END, c.ingested_at ASC, c.guid ASC
+		LIMIT 1`, StatusError).Scan(&ref.Indexer, &ref.GUID, &ref.Kind, &ref.Title)
 	if err == sql.ErrNoRows {
 		return ref, false, nil
 	}

@@ -45,6 +45,25 @@ func TestStore_NextFromCatalogAndSave(t *testing.T) {
 	}
 }
 
+func TestStore_NextFromCatalogRetriesError(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	ctx := context.Background()
+	cat := newznabcatalog.NewStore(sqlDB)
+	if _, err := cat.InsertHits(ctx, newznabcatalog.KindMovies, []newznab.CatalogHit{
+		{Indexer: "newznab", GUID: "g-err", Title: "Err.Movie"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	st := NewStore(sqlDB)
+	if err := st.Save(ctx, Row{Indexer: "newznab", GUID: "g-err", Kind: newznabcatalog.KindMovies, Status: StatusError}); err != nil {
+		t.Fatal(err)
+	}
+	ref, ok, err := st.NextFromCatalog(ctx)
+	if err != nil || !ok || ref.GUID != "g-err" {
+		t.Fatalf("retry=%+v ok=%v err=%v", ref, ok, err)
+	}
+}
+
 func TestStore_SaveDropsURLFields(t *testing.T) {
 	sqlDB := dbtest.New(t)
 	st := NewStore(sqlDB)

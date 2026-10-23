@@ -94,7 +94,7 @@ const catalogReport = (
   over: Partial<NewznabCatalogReport> = {},
 ): NewznabCatalogReport => ({
   intervalSeconds: 5,
-  pageSize: 50,
+  pageSize: 100,
   cursors: [],
   counts: [],
   overlap: [],
@@ -465,8 +465,10 @@ describe("Dashboard view", () => {
       screen.getByText(/Waiting for the first live reading/i),
     ).toBeInTheDocument();
     expect(await screen.findByText("NZB catalog")).toBeInTheDocument();
-    expect(screen.getByText(/1 page \/ 5s per indexer/i)).toBeInTheDocument();
-    expect(screen.getByText(/Waiting for NZB host API 1 and 2/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Each indexer: 100 NZBs every 5 seconds/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Waiting for NZBGeek and NZB.life/i)).toBeInTheDocument();
   });
 
   it("renders NZB catalog overlap and cursor progress", async () => {
@@ -484,6 +486,22 @@ describe("Dashboard view", () => {
                   pageOffset: 150,
                   complete: false,
                   lastPageNew: 40,
+                  lastError: "",
+                },
+                {
+                  indexer: "newznab2",
+                  kind: "movies",
+                  pageOffset: 23199,
+                  complete: true,
+                  lastPageNew: 99,
+                  lastError: "",
+                },
+                {
+                  indexer: "newznab2",
+                  kind: "adult",
+                  pageOffset: 0,
+                  complete: false,
+                  lastPageNew: 0,
                   lastError: "",
                 },
               ],
@@ -509,11 +527,19 @@ describe("Dashboard view", () => {
     );
     renderDashboard();
     expect(await screen.findByText("NZB catalog")).toBeInTheDocument();
-    expect(screen.getByText(/both 5/)).toBeInTheDocument();
-    expect(screen.getByText(/Host 1 only 5/)).toBeInTheDocument();
-    expect(screen.getByText(/Host 2 only 3/)).toBeInTheDocument();
-    expect(screen.getByText(/1.?200 NZBs on Host 1/)).toBeInTheDocument();
-    expect(screen.getByText(/Host 1 movies · offset 150 · \+40 new/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Same titles on both indexers: 5 · NZBGeek only: 5 · NZB.life only: 3/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/NZBGeek: 10 titles \(1.?200 NZBs\) · NZB.life: 8 titles \(980 NZBs\)/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/NZBGeek movies · 150 indexed · last page \+40/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/NZB.life movies · finished, 23,?199 indexed/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/NZB.life adult · waiting/)).toBeInTheDocument();
   });
 
   it("shows an error banner when the storage allocation endpoint fails", async () => {

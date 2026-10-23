@@ -13006,3 +13006,17 @@ status stays active.
 | `internal/newznab/client.go` | restore catalog empty-q gate; `APIError.MissingParam` |
 | `internal/newznab/catalog_test.go` | empty q first; missing-param retry |
 | `docs/usenet-nntp-native.md` | cat-only catalog; `q=*` is fallback |
+
+## 2026-10-23 — Dock NZB catalog card names NZBGeek / NZB.life
+
+**Problem:** The Dock card said Host 1/Host 2, "both N", and "offset N" — that hid which indexer was which and mixed titles with crawl internals.
+**Root cause:** Labels matched Settings slot numbers, not the live indexers. Overlap counts are titles; cursors are pages walked.
+**Fix:** Name NZBGeek and NZB.life. Spell out "same titles on both indexers" vs each indexer only. Show titles (NZBs) per host. Cursors say indexed / finished / waiting instead of offset / done.
+**Outcome:** Dashboard NZB catalog tests cover idle, overlap, and progress copy.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/screens/Dashboard.tsx` | NZBGeek/NZB.life labels; overlap and cursor copy |
+| `frontend/src/screens/Dashboard.test.tsx` | match the new strings |

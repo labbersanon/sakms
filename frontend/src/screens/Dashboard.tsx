@@ -86,9 +86,13 @@ function formatCount(n: number | undefined): string {
   return (n ?? 0).toLocaleString();
 }
 
+// Claude 2026-10-23: Dock catalog names the live slots, not "Host 1/2".
+// Reason: Settings cards are NZBGeek then NZB.life; Host 1/2 hid that.
+// Troubleshooting: wrong label → slot 1 is not NZBGeek anymore.
+// Review if: newznab / newznab2 point at different indexers.
 function indexerLabel(name: string): string {
-  if (name === "newznab") return "Host 1";
-  if (name === "newznab2") return "Host 2";
+  if (name === "newznab") return "NZBGeek";
+  if (name === "newznab2") return "NZB.life";
   return name;
 }
 
@@ -349,15 +353,20 @@ const NewznabCatalogCard: Component<{ report: NewznabCatalogReport }> = (
   props,
 ) => {
   const pace = () =>
-    `1 page / ${props.report.intervalSeconds || 5}s per indexer · ${props.report.pageSize || 100} NZBs / page`;
+    `Each indexer: ${formatCount(props.report.pageSize || 100)} NZBs every ${props.report.intervalSeconds || 5} seconds`;
   const overlap = () => sortCatalogKinds(props.report.overlap);
   const cursors = () => sortCatalogKinds(props.report.cursors);
   const idle = () => overlap().length === 0 && cursors().length === 0;
   const cursorLine = (c: NewznabCatalogCursor) => {
     const host = indexerLabel(c.indexer);
-    if (c.complete) return `${host} ${c.kind} · done`;
-    const next = `${host} ${c.kind} · offset ${formatCount(c.pageOffset)}`;
-    if (c.lastPageNew) return `${next} · +${formatCount(c.lastPageNew)} new`;
+    if (c.complete) {
+      return `${host} ${c.kind} · finished, ${formatCount(c.pageOffset)} indexed`;
+    }
+    if (c.pageOffset <= 0 && c.lastPageNew <= 0) {
+      return `${host} ${c.kind} · waiting`;
+    }
+    const next = `${host} ${c.kind} · ${formatCount(c.pageOffset)} indexed`;
+    if (c.lastPageNew) return `${next} · last page +${formatCount(c.lastPageNew)}`;
     return next;
   };
   const nzbs = (kind: string, indexer: string) =>
@@ -367,7 +376,7 @@ const NewznabCatalogCard: Component<{ report: NewznabCatalogReport }> = (
       <p class="mb-3 text-xs text-muted">{pace()}</p>
       <Show
         when={!idle()}
-        fallback={<Muted>Waiting for NZB host API 1 and 2.</Muted>}
+        fallback={<Muted>Waiting for NZBGeek and NZB.life.</Muted>}
       >
         <Show when={overlap().length > 0}>
           <ul class="flex flex-col gap-3 text-sm">
@@ -376,15 +385,10 @@ const NewznabCatalogCard: Component<{ report: NewznabCatalogReport }> = (
                 <li>
                   <div class="font-medium text-fg">{titleCase(row.kind)}</div>
                   <div class="text-fg">
-                    both {formatCount(row.both)} · Host 1 only{" "}
-                    {formatCount(row.onlyHost1)} · Host 2 only{" "}
-                    {formatCount(row.onlyHost2)}
+                    {`Same titles on both indexers: ${formatCount(row.both)} · NZBGeek only: ${formatCount(row.onlyHost1)} · NZB.life only: ${formatCount(row.onlyHost2)}`}
                   </div>
                   <div class="text-xs text-muted">
-                    {formatCount(row.host1Titles)} titles /{" "}
-                    {formatCount(nzbs(row.kind, "newznab"))} NZBs on Host 1 ·{" "}
-                    {formatCount(row.host2Titles)} titles /{" "}
-                    {formatCount(nzbs(row.kind, "newznab2"))} NZBs on Host 2
+                    {`NZBGeek: ${formatCount(row.host1Titles)} titles (${formatCount(nzbs(row.kind, "newznab"))} NZBs) · NZB.life: ${formatCount(row.host2Titles)} titles (${formatCount(nzbs(row.kind, "newznab2"))} NZBs)`}
                   </div>
                 </li>
               )}

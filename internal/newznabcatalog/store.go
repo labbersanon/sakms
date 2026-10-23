@@ -121,6 +121,13 @@ func (s *Store) InsertHits(ctx context.Context, kind string, hits []newznab.Cata
 
 // RecomputeOverlapKeys rewrites overlap_key from the NZB title. Existing
 // rows were keyed by IMDB/TVDB/TMDB (same movie, many NZBs).
+//
+// Claude 2026-10-23: load titles, then one tx with a prepared UPDATE.
+// Reason: ~160k rows; per-row Exec blocked crawl. pq cannot UPDATE while
+//   the SELECT cursor is open (conn busy).
+// Troubleshooting: crawl silent after boot → still updating one connection
+//   round-trip per row. conn busy → SELECT was still open.
+// Review if: overlap_key is only nzb: and this rewrite is a no-op.
 func (s *Store) RecomputeOverlapKeys(ctx context.Context) (int, error) {
 	if s == nil || s.db == nil {
 		return 0, nil
@@ -130,25 +137,43 @@ func (s *Store) RecomputeOverlapKeys(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
-	n := 0
+	var hits []newznab.CatalogHit
 	for rows.Next() {
 		var h newznab.CatalogHit
 		if err := rows.Scan(&h.Indexer, &h.GUID, &h.Title); err != nil {
-			return n, err
+			rows.Close()
+			return 0, err
 		}
-		key := newznab.OverlapKey(h)
-		res, err := s.db.ExecContext(ctx, `
-			UPDATE newznab_catalog SET overlap_key = $1
-			WHERE indexer = $2 AND guid = $3 AND overlap_key <> $1`,
-			key, h.Indexer, h.GUID)
+		hits = append(hits, h)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctx, `
+		UPDATE newznab_catalog SET overlap_key = $1
+		WHERE indexer = $2 AND guid = $3 AND overlap_key <> $1`)
+	if err != nil {
+		return 0, err
+	}
+	defer stmt.Close()
+	n := 0
+	for _, h := range hits {
+		res, err := stmt.ExecContext(ctx, newznab.OverlapKey(h), h.Indexer, h.GUID)
 		if err != nil {
 			return n, err
 		}
 		aff, _ := res.RowsAffected()
 		n += int(aff)
 	}
-	return n, rows.Err()
+	return n, tx.Commit()
 }
 
 // KindCount is NZB rows for one indexer and kind.

@@ -124,7 +124,7 @@ ORDER BY `+crcPreferOrderSQL+`, declared_segs ASC, ingested_at DESC LIMIT ?`, ar
 
 // DuePendingIdentBody returns ≥80% yield pending_name sets still below the
 // 95% BODY/autograb gate that have PAR2/meta. A first-segment BODY can
-// recover a title even when the dump (through 2024) has no hash for them.
+// recover a title from PAR2 FileDesc even below the 95% grab gate.
 //
 // Claude 2026-10-19: identification BODY at 80%, not only 95% grab-complete.
 // Reason: live pending hashes are 2026 and miss the nZEDb dump; indexers
@@ -217,7 +217,7 @@ const crcPreferOrderSQL = `CASE WHEN EXISTS (
 
 // passwordLockedSQL is true when headers are ngPost hash.7z or UUID .7z.enc.
 // Those need an NZB password; BODY cannot recover a title. Dropped from the
-// BODY due queues.
+// BODY due queues; DuePendingPasswordLocked shelves them without NNTP.
 // Claude 2026-10-21: keep password packs off DuePendingNames.
 // Reason: live 1157 pending95 included .7z.enc + ngPost 7z with has_par2;
 //
@@ -284,6 +284,34 @@ WHERE r.state='pending_name' AND r.dirty=FALSE AND r.declared_segs>0 AND r.compl
   )
 ORDER BY r.completeness_bp DESC, r.ingested_at DESC
 LIMIT ?`, spanRepairFloorBP, limit)
+	if err != nil {
+		return nil, err
+	}
+	return scanPendingSets(rows)
+}
+
+// DuePendingPasswordLocked returns ≥80% pending ngPost hash.7z / .7z.enc
+// sets so namefix can shelve BODY without a PreDB-only queue.
+//
+// Claude 2026-10-22: header-phase stand-in for removed DuePendingPreDB.
+// Reason: password packs are excluded from BODY; dump/IRC never named them.
+//
+//	Without this, they sat pending at attempts=0 forever.
+//
+// Troubleshooting: TestNameFix_NgPost7zShelvesWithoutBody attempts=0 → this
+//
+//	query missed from_addr/msgid. Review if: a non-ngPost 7z should BODY.
+func (idx *Index) DuePendingPasswordLocked(ctx context.Context, limit int) ([]PendingSet, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := idx.db.QueryContext(ctx, `
+SELECT group_name, release_key, payload_bytes, name_attempts, completeness_bp, has_par2
+FROM usenet_nntp_releases
+WHERE state='pending_name' AND dirty=FALSE AND declared_segs>0 AND completeness_bp>=?
+  AND name_attempts < ? AND (`+passwordLockedSQL+`)
+ORDER BY completeness_bp DESC, ingested_at DESC
+LIMIT ?`, spanRepairFloorBP, maxNameAttempts, limit)
 	if err != nil {
 		return nil, err
 	}

@@ -264,6 +264,11 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 	if err != nil {
 		return res, err
 	}
+	pwLock, err := n.Index.DuePendingPasswordLocked(ctx, namefixHeaderPerPass)
+	if err != nil {
+		return res, err
+	}
+	headerSets = append(headerSets, pwLock...)
 	var sets, ident, parSeed []PendingSet
 	if !n.SkipBody {
 		sets, err = n.Index.DuePendingNames(ctx, n.Groups, namefixSetsPerPass)

@@ -14,6 +14,32 @@ import (
 	"github.com/labbersanon/sakms/internal/prowlarr"
 )
 
+func grabSearchRSS(title, guid, nzb string) string {
+	return `<?xml version="1.0"?>
+<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2007/feeds/attributes/">
+<channel><item>
+<title>` + title + `</title>
+<guid>` + guid + `</guid>
+<enclosure url="` + nzb + `" length="999" type="application/x-nzb"/>
+<newznab:attr name="size" value="999"/>
+</item></channel></rss>`
+}
+
+func attachGrabSearch(t *testing.T, interval time.Duration, hosts ...newznab.Indexer) {
+	t.Helper()
+	connStore, _, _, _, _, _, _, _, _, _ := testStores(t)
+	for _, h := range hosts {
+		if err := connStore.Upsert(context.Background(), h.Name, h.Endpoint, h.APIKey); err != nil {
+			t.Fatal(err)
+		}
+	}
+	AttachNewznabGrabSearch(connStore, &http.Client{Timeout: 5 * time.Second})
+	t.Cleanup(func() { AttachNewznabGrabSearch(nil, nil) })
+	if c := newznabGrabClient; c != nil {
+		c.Interval = interval
+	}
+}
+
 func TestInsertNewznabPhase(t *testing.T) {
 	phases := insertNewznabPhase(nil)
 	if len(phases) != 1 || !phases[0].IsNewznab() {
@@ -59,27 +85,14 @@ func TestNewznabGrabSearch_ConfiguredHostNoHTML(t *testing.T) {
 		if r.URL.Query().Get("t") != "search" || r.URL.Query().Get("q") != "Grab Movie" {
 			t.Errorf("t=%s q=%s", r.URL.Query().Get("t"), r.URL.Query().Get("q"))
 		}
-		io.WriteString(w, `<?xml version="1.0"?>
-<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2007/feeds/attributes/">
-<channel><item>
-<title>Grab.Movie.2021.1080p.WEB-DL.x264-GRP</title>
-<guid>nzbg-1</guid>
-<enclosure url="`+nzbURL+`" length="999" type="application/x-nzb"/>
-<newznab:attr name="size" value="999"/>
-</item></channel></rss>`)
+		io.WriteString(w, grabSearchRSS("Grab.Movie.2021.1080p.WEB-DL.x264-GRP", "nzbg-1", nzbURL))
 	}))
 	defer idx.Close()
 	nzbURL = idx.URL + "/getnzb"
 
-	connStore, _, _, _, _, _, _, _, _, _ := testStores(t)
-	if err := connStore.Upsert(context.Background(), "newznab", idx.URL+"/api", "idx-key"); err != nil {
-		t.Fatal(err)
-	}
-	AttachNewznabGrabSearch(connStore, &http.Client{Timeout: 5 * time.Second})
-	t.Cleanup(func() { AttachNewznabGrabSearch(nil, nil) })
-	if c := newznabGrabClient; c != nil {
-		c.Interval = time.Nanosecond
-	}
+	attachGrabSearch(t, time.Nanosecond, newznab.Indexer{
+		Name: "newznab", Endpoint: idx.URL + "/api", APIKey: "idx-key",
+	})
 
 	rels, err := newznabGrabSearch(context.Background(), "Grab Movie", []int{2000})
 	if err != nil {
@@ -99,27 +112,14 @@ func TestNewznabGrabSearch_SecondHostOnly(t *testing.T) {
 		if r.URL.Query().Get("t") != "search" {
 			t.Errorf("t=%s", r.URL.Query().Get("t"))
 		}
-		io.WriteString(w, `<?xml version="1.0"?>
-<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2007/feeds/attributes/">
-<channel><item>
-<title>Grab.Movie.2021.1080p.WEB-DL.x264-GRP</title>
-<guid>nzbg-2</guid>
-<enclosure url="`+nzbURL+`" length="999" type="application/x-nzb"/>
-<newznab:attr name="size" value="999"/>
-</item></channel></rss>`)
+		io.WriteString(w, grabSearchRSS("Grab.Movie.2021.1080p.WEB-DL.x264-GRP", "nzbg-2", nzbURL))
 	}))
 	defer idx.Close()
 	nzbURL = idx.URL + "/getnzb"
 
-	connStore, _, _, _, _, _, _, _, _, _ := testStores(t)
-	if err := connStore.Upsert(context.Background(), "newznab2", idx.URL+"/api", "idx2-key"); err != nil {
-		t.Fatal(err)
-	}
-	AttachNewznabGrabSearch(connStore, &http.Client{Timeout: 5 * time.Second})
-	t.Cleanup(func() { AttachNewznabGrabSearch(nil, nil) })
-	if c := newznabGrabClient; c != nil {
-		c.Interval = time.Nanosecond
-	}
+	attachGrabSearch(t, time.Nanosecond, newznab.Indexer{
+		Name: "newznab2", Endpoint: idx.URL + "/api", APIKey: "idx2-key",
+	})
 
 	rels, err := newznabGrabSearch(context.Background(), "Grab Movie", []int{2000})
 	if err != nil {
@@ -131,37 +131,19 @@ func TestNewznabGrabSearch_SecondHostOnly(t *testing.T) {
 }
 
 func TestNewznabGrabSearch_MergesBothHosts(t *testing.T) {
-	rss := func(title, guid, nzb string) string {
-		return `<?xml version="1.0"?>
-<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2007/feeds/attributes/">
-<channel><item>
-<title>` + title + `</title>
-<guid>` + guid + `</guid>
-<enclosure url="` + nzb + `" length="999" type="application/x-nzb"/>
-<newznab:attr name="size" value="999"/>
-</item></channel></rss>`
-	}
 	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, rss("Grab.Movie.2021.1080p.WEB-DL.x264-AAA", "a", "http://a/nzb"))
+		io.WriteString(w, grabSearchRSS("Grab.Movie.2021.1080p.WEB-DL.x264-AAA", "a", "http://a/nzb"))
 	}))
 	defer a.Close()
 	b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, rss("Grab.Movie.2021.1080p.WEB-DL.x264-BBB", "b", "http://b/nzb"))
+		io.WriteString(w, grabSearchRSS("Grab.Movie.2021.1080p.WEB-DL.x264-BBB", "b", "http://b/nzb"))
 	}))
 	defer b.Close()
 
-	connStore, _, _, _, _, _, _, _, _, _ := testStores(t)
-	if err := connStore.Upsert(context.Background(), "newznab", a.URL+"/api", "a-key"); err != nil {
-		t.Fatal(err)
-	}
-	if err := connStore.Upsert(context.Background(), "newznab2", b.URL+"/api", "b-key"); err != nil {
-		t.Fatal(err)
-	}
-	AttachNewznabGrabSearch(connStore, &http.Client{Timeout: 5 * time.Second})
-	t.Cleanup(func() { AttachNewznabGrabSearch(nil, nil) })
-	if c := newznabGrabClient; c != nil {
-		c.Interval = time.Nanosecond
-	}
+	attachGrabSearch(t, time.Nanosecond,
+		newznab.Indexer{Name: "newznab", Endpoint: a.URL + "/api", APIKey: "a-key"},
+		newznab.Indexer{Name: "newznab2", Endpoint: b.URL + "/api", APIKey: "b-key"},
+	)
 
 	rels, err := newznabGrabSearch(context.Background(), "Grab Movie", []int{2000})
 	if err != nil {
@@ -176,23 +158,13 @@ func TestNewznabGrabSearch_MergesBothHosts(t *testing.T) {
 }
 
 func TestNewznabGrabSearch_QueriesBothHostsInParallel(t *testing.T) {
-	rss := func(title, guid, nzb string) string {
-		return `<?xml version="1.0"?>
-<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2007/feeds/attributes/">
-<channel><item>
-<title>` + title + `</title>
-<guid>` + guid + `</guid>
-<enclosure url="` + nzb + `" length="999" type="application/x-nzb"/>
-<newznab:attr name="size" value="999"/>
-</item></channel></rss>`
-	}
 	var entered atomic.Int32
 	gate := make(chan struct{})
 	mk := func(title, guid, nzb string) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			entered.Add(1)
 			<-gate
-			io.WriteString(w, rss(title, guid, nzb))
+			io.WriteString(w, grabSearchRSS(title, guid, nzb))
 		})
 	}
 	a := httptest.NewServer(mk("Grab.Movie.2021.1080p.WEB-DL.x264-AAA", "a", "http://a/nzb"))
@@ -200,18 +172,10 @@ func TestNewznabGrabSearch_QueriesBothHostsInParallel(t *testing.T) {
 	b := httptest.NewServer(mk("Grab.Movie.2021.1080p.WEB-DL.x264-BBB", "b", "http://b/nzb"))
 	defer b.Close()
 
-	connStore, _, _, _, _, _, _, _, _, _ := testStores(t)
-	if err := connStore.Upsert(context.Background(), "newznab", a.URL+"/api", "a-key"); err != nil {
-		t.Fatal(err)
-	}
-	if err := connStore.Upsert(context.Background(), "newznab2", b.URL+"/api", "b-key"); err != nil {
-		t.Fatal(err)
-	}
-	AttachNewznabGrabSearch(connStore, &http.Client{Timeout: 5 * time.Second})
-	t.Cleanup(func() { AttachNewznabGrabSearch(nil, nil) })
-	if c := newznabGrabClient; c != nil {
-		c.Interval = 3 * time.Second
-	}
+	attachGrabSearch(t, 3*time.Second,
+		newznab.Indexer{Name: "newznab", Endpoint: a.URL + "/api", APIKey: "a-key"},
+		newznab.Indexer{Name: "newznab2", Endpoint: b.URL + "/api", APIKey: "b-key"},
+	)
 
 	type result struct {
 		rels []prowlarr.Release
@@ -243,35 +207,19 @@ func TestNewznabGrabSearch_QueriesBothHostsInParallel(t *testing.T) {
 }
 
 func TestNewznabGrabSearch_OneHostErrorKeepsTheOther(t *testing.T) {
-	rss := `<?xml version="1.0"?>
-<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2007/feeds/attributes/">
-<channel><item>
-<title>Grab.Movie.2021.1080p.WEB-DL.x264-BBB</title>
-<guid>b</guid>
-<enclosure url="http://b/nzb" length="999" type="application/x-nzb"/>
-<newznab:attr name="size" value="999"/>
-</item></channel></rss>`
 	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "nope", http.StatusInternalServerError)
 	}))
 	defer a.Close()
 	b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, rss)
+		io.WriteString(w, grabSearchRSS("Grab.Movie.2021.1080p.WEB-DL.x264-BBB", "b", "http://b/nzb"))
 	}))
 	defer b.Close()
 
-	connStore, _, _, _, _, _, _, _, _, _ := testStores(t)
-	if err := connStore.Upsert(context.Background(), "newznab", a.URL+"/api", "a-key"); err != nil {
-		t.Fatal(err)
-	}
-	if err := connStore.Upsert(context.Background(), "newznab2", b.URL+"/api", "b-key"); err != nil {
-		t.Fatal(err)
-	}
-	AttachNewznabGrabSearch(connStore, &http.Client{Timeout: 5 * time.Second})
-	t.Cleanup(func() { AttachNewznabGrabSearch(nil, nil) })
-	if c := newznabGrabClient; c != nil {
-		c.Interval = time.Nanosecond
-	}
+	attachGrabSearch(t, time.Nanosecond,
+		newznab.Indexer{Name: "newznab", Endpoint: a.URL + "/api", APIKey: "a-key"},
+		newznab.Indexer{Name: "newznab2", Endpoint: b.URL + "/api", APIKey: "b-key"},
+	)
 
 	rels, err := newznabGrabSearch(context.Background(), "Grab Movie", []int{2000})
 	if err != nil {

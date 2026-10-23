@@ -4,17 +4,14 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/labbersanon/sakms/internal/newznab"
 	"github.com/labbersanon/sakms/internal/newznabcatalog"
 )
 
 // Claude 2026-10-23: Dock card reads the Newznab catalog overlap report.
-// Reason: Lighthouse will later filter Mainstream to indexed titles; this
-//
-//	pass only indexes and counts. Crawl is paced at 1 page / 5s / host.
-//
-// Troubleshooting: empty card → AttachNewznabCatalog not called, or both
-//
-//	hosts unset. Review if: Lighthouse availability filter ships.
+// Reason: Lighthouse Mainstream filter is later; this pass only indexes and counts at 1 page / 5s / host.
+// Troubleshooting: empty card → AttachNewznabCatalog not called, or both hosts unset.
+// Review if: Lighthouse availability filter ships.
 var (
 	catalogMu    sync.RWMutex
 	catalogStore *newznabcatalog.Store
@@ -66,7 +63,7 @@ func newznabCatalogHandler() http.HandlerFunc {
 		if st == nil {
 			writeJSON(w, newznabCatalogReport{
 				IntervalSeconds: int(newznabcatalog.Interval.Seconds()),
-				PageSize:        50,
+				PageSize:        newznab.CatalogPageSize(),
 				Cursors:         []newznabCatalogCursor{},
 				Counts:          []newznabCatalogCount{},
 				Overlap:         []newznabCatalogOverlap{},

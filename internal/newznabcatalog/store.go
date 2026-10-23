@@ -108,7 +108,7 @@ func (s *Store) InsertHits(ctx context.Context, kind string, hits []newznab.Cata
 			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 			ON CONFLICT (indexer, guid) DO NOTHING`,
 			indexer, guid, h.Title, h.Size, h.Category, kind,
-			newznab.NormalizeIMDB(h.ImdbID), digitsKeep(h.TvdbID), digitsKeep(h.TmdbID),
+			newznab.NormalizeIMDB(h.ImdbID), newznab.DigitsOnly(h.TvdbID), newznab.DigitsOnly(h.TmdbID),
 			h.Year, key, now)
 		if err != nil {
 			return n, err
@@ -117,16 +117,6 @@ func (s *Store) InsertHits(ctx context.Context, kind string, hits []newznab.Cata
 		n += int(aff)
 	}
 	return n, nil
-}
-
-func digitsKeep(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		if r >= '0' && r <= '9' {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
 }
 
 // KindCount is NZB rows for one indexer and kind.

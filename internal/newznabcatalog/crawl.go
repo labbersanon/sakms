@@ -18,9 +18,9 @@ const (
 	// indexer. Grab search stays on its own 1s client. Two hosts still run
 	// in parallel because they are independent APIs.
 	Interval = 5 * time.Second
-	// IdleRecheck is how often Run looks for a newly saved host after every
+	// idleRecheck is how often Run looks for a newly saved host after every
 	// configured indexer has finished (or none are configured).
-	IdleRecheck    = time.Minute
+	idleRecheck    = time.Minute
 	rateLimitMin   = time.Minute
 	rateLimitMax   = 10 * time.Minute
 	zeroInsertStop = 3
@@ -42,7 +42,7 @@ func Run(ctx context.Context, store *Store, conns *connections.Store, httpClient
 		}
 		idxs := indexersFromStore(ctx, conns)
 		if len(idxs) == 0 {
-			if !sleepCtx(ctx, IdleRecheck) {
+			if !sleepCtx(ctx, idleRecheck) {
 				return
 			}
 			continue
@@ -56,7 +56,7 @@ func Run(ctx context.Context, store *Store, conns *connections.Store, httpClient
 			}(idx)
 		}
 		wg.Wait()
-		if !sleepCtx(ctx, IdleRecheck) {
+		if !sleepCtx(ctx, idleRecheck) {
 			return
 		}
 	}
@@ -91,11 +91,9 @@ func crawlHost(ctx context.Context, store *Store, client *newznab.Client, idx ne
 					if !sleepCtx(ctx, backoff) {
 						return
 					}
-					if backoff < rateLimitMax {
-						backoff *= 2
-						if backoff > rateLimitMax {
-							backoff = rateLimitMax
-						}
+					backoff *= 2
+					if backoff > rateLimitMax {
+						backoff = rateLimitMax
 					}
 					continue
 				}

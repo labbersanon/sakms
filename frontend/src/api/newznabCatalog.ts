@@ -4,8 +4,6 @@
 import { api } from "./client";
 import type { NewznabCatalogReport } from "@dto";
 
-export type { NewznabCatalogReport };
-
 export function fetchNewznabCatalog(): Promise<NewznabCatalogReport> {
   return api<NewznabCatalogReport>("/api/admin/newznab-catalog");
 }

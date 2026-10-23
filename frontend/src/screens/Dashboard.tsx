@@ -342,27 +342,6 @@ const Sparkline: Component<{ values: number[] }> = (props) => {
   );
 };
 
-// AllocCell renders one mode x tier cell of the Storage Allocation table: the
-// group's byte total on one line, its item count beneath. An empty group is a
-// muted em-dash rather than "0 B / 0 items".
-//
-// Claude 2026-08-14: Adult cells use the same Library drill-down as Movies/
-// Series. Adult still has no storage split by poster_aspect_class, so the
-// href is /library/adult?tab=scenes&tier=… (libraryTierHref). Allocation
-// stays scene-shaped (one Adult row covering every library_scenes file).
-// Reason: Adult Library Scenes already honors ?tier=; the Movies/enrichment
-// stub blocked a working deep link.
-// Troubleshooting: empty Adult Movies tab is expected until a ~2:3 import.
-// Review if: storage_allocation.go splits Adult by poster_aspect_class.
-//
-// Claude 2026-08-14: previous Adult stub copy (kept for history):
-// Movies and Series cells drill into the Library screen's filtered list. Adult
-// cells stay non-interactive for this scaffold slice: the new Adult Library
-// route exists, but Adult Movies/catalog enrichment is not built yet and storage
-// allocation is still scene-shaped. That text is dimmed with opacity (NOT text-muted:
-// body()'s own text-fg on the size line wins the cascade over a colour class on
-// the wrapper, but opacity applies to the whole subtree and can't be overridden)
-// so the cell reads as disabled at rest, not just to assistive tech.
 // Claude 2026-10-23: NZB catalog overlap on the Dock, outside the SSE gate.
 // Reason: 1 page / 5s per indexer; poll 30s (not 10s COUNT). Not OVER.
 // Troubleshooting: empty card with both hosts set → AttachNewznabCatalog.
@@ -433,6 +412,27 @@ const NewznabCatalogCard: Component<{ report: NewznabCatalogReport }> = (
   );
 };
 
+// AllocCell renders one mode x tier cell of the Storage Allocation table: the
+// group's byte total on one line, its item count beneath. An empty group is a
+// muted em-dash rather than "0 B / 0 items".
+//
+// Claude 2026-08-14: Adult cells use the same Library drill-down as Movies/
+// Series. Adult still has no storage split by poster_aspect_class, so the
+// href is /library/adult?tab=scenes&tier=… (libraryTierHref). Allocation
+// stays scene-shaped (one Adult row covering every library_scenes file).
+// Reason: Adult Library Scenes already honors ?tier=; the Movies/enrichment
+// stub blocked a working deep link.
+// Troubleshooting: empty Adult Movies tab is expected until a ~2:3 import.
+// Review if: storage_allocation.go splits Adult by poster_aspect_class.
+//
+// Claude 2026-08-14: previous Adult stub copy (kept for history):
+// Movies and Series cells drill into the Library screen's filtered list. Adult
+// cells stay non-interactive for this scaffold slice: the new Adult Library
+// route exists, but Adult Movies/catalog enrichment is not built yet and storage
+// allocation is still scene-shaped. That text is dimmed with opacity (NOT text-muted:
+// body()'s own text-fg on the size line wins the cascade over a colour class on
+// the wrapper, but opacity applies to the whole subtree and can't be overridden)
+// so the cell reads as disabled at rest, not just to assistive tech.
 const AllocCell: Component<{ mode: string; cell: StorageAllocationCell }> = (
   props,
 ) => {

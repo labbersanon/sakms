@@ -16,10 +16,10 @@ func OverlapKey(h CatalogHit) string {
 	if id := NormalizeIMDB(h.ImdbID); id != "" {
 		return "imdb:" + id
 	}
-	if id := digitsOnly(h.TvdbID); id != "" {
+	if id := DigitsOnly(h.TvdbID); id != "" {
 		return "tvdb:" + id
 	}
-	if id := digitsOnly(h.TmdbID); id != "" {
+	if id := DigitsOnly(h.TmdbID); id != "" {
 		return "tmdb:" + id
 	}
 	title := sanitizeGrabQuery(h.Title)
@@ -46,14 +46,15 @@ func NormalizeIMDB(raw string) string {
 	s = strings.TrimPrefix(s, "imdb")
 	s = strings.TrimSpace(s)
 	s = strings.TrimPrefix(s, "tt")
-	s = digitsOnly(s)
+	s = DigitsOnly(s)
 	if s == "" {
 		return ""
 	}
 	return "tt" + s
 }
 
-func digitsOnly(s string) string {
+// DigitsOnly keeps decimal digits from s.
+func DigitsOnly(s string) string {
 	var b strings.Builder
 	for _, r := range s {
 		if r >= '0' && r <= '9' {

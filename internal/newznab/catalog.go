@@ -25,10 +25,7 @@ type CatalogHit struct {
 func CatalogPageSize() int { return catalogPageSize }
 
 // Claude 2026-10-23: category-only t=search pages for the local catalog.
-// Reason: grab search requires q=; overlap indexing pages cat=2000/5000/6000
-//
-//	with offset. Do not scrape HTML. Do not fetch NZBs.
-//
+// Reason: grab search requires q=; overlap indexing pages cat=2000/5000/6000 with offset. Do not scrape HTML. Do not fetch NZBs.
 // Troubleshooting: empty search error → catalog flag not set on searchReq.
 // Review if: an indexer requires q=* for latest-in-cat (retry in the crawler).
 func (c *Client) SearchCatalog(ctx context.Context, idx Indexer, cat, offset, limit int) ([]CatalogHit, error) {

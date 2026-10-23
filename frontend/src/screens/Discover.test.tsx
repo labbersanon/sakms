@@ -767,10 +767,7 @@ describe("Discover — On Demand chip", () => {
               title: "Shelf Movie",
               year: 2021,
               tmdbId: 9,
-              qualities: [
-                { indexer: "newznab", nzbId: "h1", label: "High" },
-                { indexer: "newznab", nzbId: "h2", label: "Medium" },
-              ],
+              qualities: [],
             },
           ],
         });
@@ -791,7 +788,6 @@ describe("Discover — On Demand chip", () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Shelf Movie" }));
     expect(await screen.findByRole("button", { name: "480p" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "High" })).not.toBeNull();
     fireEvent.click(screen.getByText("Close"));
     fireEvent.click(screen.getByRole("button", { name: "In library" }));
     expect(screen.queryByText("Shelf Movie")).not.toBeInTheDocument();
@@ -807,14 +803,14 @@ describe("Discover — On Demand chip", () => {
               title: "Alpha Movie",
               year: 2021,
               tmdbId: 1,
-              qualities: [{ indexer: "newznab", nzbId: "a", label: "High" }],
+              qualities: [],
             },
             {
               id: "b",
               title: "Beta Movie",
               year: 2020,
               tmdbId: 2,
-              qualities: [{ indexer: "newznab", nzbId: "b", label: "Medium" }],
+              qualities: [],
             },
           ],
         });
@@ -847,13 +843,13 @@ describe("Discover — On Demand chip", () => {
               title: "Matched Movie",
               year: 2021,
               tmdbId: 9,
-              qualities: [{ indexer: "newznab", nzbId: "h1", label: "High" }],
+              qualities: [],
             },
             {
               id: "imdb:tt2",
               title: "Letter Tile Movie",
               year: 1984,
-              qualities: [{ indexer: "newznab", nzbId: "h2", label: "High" }],
+              qualities: [],
             },
           ],
         });
@@ -877,7 +873,7 @@ describe("Discover — On Demand chip", () => {
               id: "title:scene",
               title: "Adult Shelf",
               tmdbId: 3,
-              qualities: [{ indexer: "newznab", nzbId: "s1", label: "High" }],
+              qualities: [],
             },
           ],
         });

@@ -1375,7 +1375,7 @@ export const MainstreamDiscover: Component<{
             when={ondemandTitles().length > 0}
             fallback={
               <Muted>
-                {submitted().trim()
+                {searching()
                   ? "No On Demand titles match this search."
                   : "No On Demand titles yet."}
               </Muted>

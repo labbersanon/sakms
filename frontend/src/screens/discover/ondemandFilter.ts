@@ -16,8 +16,8 @@ export function filterOndemandTitles(
   const seen = new Set<number>();
   const out: OndemandTitle[] = [];
   for (const item of items) {
-    const id = item.tmdbId ?? 0;
-    if (id <= 0 || seen.has(id)) continue;
+    const id = item.tmdbId;
+    if (id == null || id <= 0 || seen.has(id)) continue;
     seen.add(id);
     if (needle) {
       const hay = `${item.title} ${item.year ?? ""} ${item.imdbId ?? ""}`.toLowerCase();

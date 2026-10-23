@@ -13278,3 +13278,16 @@ status stays active.
 | File | Change |
 |---|---|
 | `cmd/ondemand-bitrate-backfill/main.go` | one-shot size+runtime backfill |
+
+## 2026-10-23 — Remove On Demand bitrate backfill command
+
+**Problem:** A one-shot DB backfill was committed as `cmd/ondemand-bitrate-backfill`.
+**Root cause:** The request was to fix stored Mbps, not to add an app command.
+**Fix:** Delete `cmd/ondemand-bitrate-backfill`. The 16-row Postgres write stays.
+**Outcome:** Helper gone from the tree. Not in the container image.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `cmd/ondemand-bitrate-backfill/main.go` | removed |

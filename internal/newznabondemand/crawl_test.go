@@ -83,13 +83,27 @@ func TestFetchRow_CachesNZBAndMarksStreamable(t *testing.T) {
 	}
 }
 
+func TestSkipOnDemandStat_4KHighPassesRemuxDoesNot(t *testing.T) {
+	n := usenet.High4KStatSegments(3 * time.Hour)
+	if skipOnDemandStat("Movie.2021.2160p.WEB-DL.HDR.DDP.7.1.x265-GRP", n) {
+		t.Fatalf("3h 4K High segs=%d must STAT", n)
+	}
+	if !skipOnDemandStat("Mutiny.2026.1080p.Blu-ray.Remux.AVC.TrueHD.7.1-HDT", 32810) {
+		t.Fatal("remux title must skip even under the 4K High cap")
+	}
+	if !skipOnDemandStat("La.Pelle.1981.MULTI.COMPLETE.BLURAY-FULLBRUTALiTY", 67854) {
+		t.Fatal("complete Blu-ray over the cap must skip")
+	}
+}
+
 func TestStatRow_SkipsOverBudgetWithoutSTAT(t *testing.T) {
 	sqlDB := dbtest.New(t)
 	ctx := context.Background()
 	st := NewStore(sqlDB)
 	row := Row{
 		Indexer: "newznab2", GUID: "mutiny", Kind: newznabcatalog.KindMovies,
-		Title: "Mutiny.2026", Status: StatusFetched, Streamable: true,
+		Title:  "Mutiny.2026.1080p.Blu-ray.Remux.AVC.TrueHD.7.1-HDT",
+		Status: StatusFetched, Streamable: true,
 		PayloadSegments: 32810,
 	}
 	if err := st.Save(ctx, row); err != nil {
@@ -109,7 +123,7 @@ func TestStep_SkipOverBudgetUnblocksCatalog(t *testing.T) {
 	ctx := context.Background()
 	cat := newznabcatalog.NewStore(sqlDB)
 	if _, err := cat.InsertHits(ctx, newznabcatalog.KindMovies, []newznab.CatalogHit{
-		{Indexer: "newznab2", GUID: "mutiny", Title: "Mutiny.2026"},
+		{Indexer: "newznab2", GUID: "mutiny", Title: "Mutiny.2026.1080p.Blu-ray.Remux.AVC.TrueHD.7.1-HDT"},
 		{Indexer: "newznab", GUID: "g-next", Title: "Next.Movie.2021"},
 	}); err != nil {
 		t.Fatal(err)
@@ -117,7 +131,7 @@ func TestStep_SkipOverBudgetUnblocksCatalog(t *testing.T) {
 	st := NewStore(sqlDB)
 	if err := st.Save(ctx, Row{
 		Indexer: "newznab2", GUID: "mutiny", Kind: newznabcatalog.KindMovies,
-		Title: "Mutiny.2026", Status: StatusFetched, Streamable: true,
+		Title: "Mutiny.2026.1080p.Blu-ray.Remux.AVC.TrueHD.7.1-HDT", Status: StatusFetched, Streamable: true,
 		PayloadSegments: 32810,
 	}); err != nil {
 		t.Fatal(err)
@@ -132,5 +146,26 @@ func TestStep_SkipOverBudgetUnblocksCatalog(t *testing.T) {
 	ref, ok, err := st.NextFromCatalog(ctx)
 	if err != nil || !ok || ref.GUID != "g-next" {
 		t.Fatalf("catalog still blocked ref=%+v ok=%v err=%v", ref, ok, err)
+	}
+}
+
+func TestStep_RequeuesSizeSkipUnder4KHighCap(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	ctx := context.Background()
+	st := NewStore(sqlDB)
+	if err := st.Save(ctx, Row{
+		Indexer: "newznab2", GUID: "omen", Kind: newznabcatalog.KindMovies,
+		Title:  "The.Omen.2006.1080p.MA.WEBRip.DDP5.1.x264-ZoroSenpai",
+		Status: StatusStatSkipped, Streamable: true, PayloadSegments: 23493,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	worked, err := step(ctx, st, nil, nil, nil, t.TempDir(), nil)
+	if err != nil || !worked {
+		t.Fatalf("worked=%v err=%v", worked, err)
+	}
+	row, ok, err := st.NextFetched(ctx)
+	if err != nil || !ok || row.GUID != "omen" || row.Status != StatusFetched {
+		t.Fatalf("row=%+v ok=%v err=%v", row, ok, err)
 	}
 }

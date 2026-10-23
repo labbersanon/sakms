@@ -314,12 +314,28 @@ func TestStatPayload_HungSTATTimesOutPerArticle(t *testing.T) {
 	}
 }
 
+func TestHigh4KStatSegments_3hFitsOnDemandBudget(t *testing.T) {
+	n := High4KStatSegments(3 * time.Hour)
+	if n != OnDemandStatMaxSegments {
+		t.Fatalf("cap %d drifted from 3h 4K High formula %d", OnDemandStatMaxSegments, n)
+	}
+	budget := fullPrecheckTimeout(n)
+	// Live STAT is ~100ms sequential; two workers halve wall clock.
+	liveWall := time.Duration(n) * 100 * time.Millisecond / time.Duration(OnDemandStatWorkers)
+	if liveWall > budget {
+		t.Fatalf("3h 4K High wall %s exceeds budget %s segs=%d", liveWall, budget, n)
+	}
+	if StatFitsDeadline(67854) {
+		t.Fatal("53 GB complete Blu-ray must stay skipped")
+	}
+}
+
 func TestStatFitsDeadline(t *testing.T) {
 	if !StatFitsDeadline(0) || !StatFitsDeadline(2797) || !StatFitsDeadline(6283) {
 		t.Fatal("verified NZB sizes must fit")
 	}
-	if StatFitsDeadline(32810) {
-		t.Fatal("Mutiny-sized remux stays off On Demand")
+	if !StatFitsDeadline(32810) {
+		t.Fatal("1080p remux is under the 4K High cap; crawler skips it by title")
 	}
 	if !StatFitsDeadline(OnDemandStatMaxSegments) || StatFitsDeadline(OnDemandStatMaxSegments+1) {
 		t.Fatalf("boundary %d: %v %v", OnDemandStatMaxSegments,

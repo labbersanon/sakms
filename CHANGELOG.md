@@ -13158,3 +13158,18 @@ status stays active.
 | `internal/usenet/precheck.go` | drop 12m clamp; `statArticleTimeout`; STAT socket uses article ctx |
 | `internal/usenet/precheck_test.go` | remux budget must not clamp; hung STAT ≤ article timeout |
 | `docs/usenet-precheck.md` | 12m cap retired; per-article hang bound |
+
+## 2026-10-23 — On Demand STAT fits a 3-hour 4K High encode
+
+**Problem:** `OnDemandStatMaxSegments=7050` is ~4 Mbps over 3 hours, so 1080p WEB-DLs and any 4K High film were `stat_skipped`. 100ms/seg left almost no margin on live RTT.
+**Root cause:** The skip ceiling was the old 12-minute clock converted to segments, not High@2160 size.
+**Fix:** Cap is `High4KStatSegments(3h)` (40 Mbps × x265 0.5 × HDR 1.25 × 7.1 1.20 + 10% PAR2 at 740 KiB/article). Per-seg budget 150ms. Remux titles skip even under the cap. Size-skipped non-remux rows requeue.
+**Outcome:** `TestHigh4KStatSegments_3hFitsOnDemandBudget`, `TestSkipOnDemandStat_4KHighPassesRemuxDoesNot`, `TestStore_RequeuesSizeSkipUnder4KHighCap`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/precheck.go` | 150ms/seg; 3h 4K High cap |
+| `internal/newznabondemand/crawl.go` | remux title skip; requeue undersized skips |
+| `internal/newznabondemand/store.go` | `NextRequeueableSkip` |

@@ -116,15 +116,16 @@ func TestStore_StatSkippedIsNotRetried(t *testing.T) {
 	ctx := context.Background()
 	cat := newznabcatalog.NewStore(sqlDB)
 	if _, err := cat.InsertHits(ctx, newznabcatalog.KindMovies, []newznab.CatalogHit{
-		{Indexer: "newznab2", GUID: "mutiny", Title: "Mutiny.2026"},
+		{Indexer: "newznab2", GUID: "mutiny", Title: "Mutiny.2026.1080p.Blu-ray.Remux.AVC.TrueHD.7.1-HDT"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	st := NewStore(sqlDB)
 	if err := st.Save(ctx, Row{
 		Indexer: "newznab2", GUID: "mutiny", Kind: newznabcatalog.KindMovies,
+		Title:  "Mutiny.2026.1080p.Blu-ray.Remux.AVC.TrueHD.7.1-HDT",
 		Status: StatusStatSkipped, RejectReason: "stat budget exceeded",
-		PayloadSegments: 32810,
+		PayloadSegments: 32810, Streamable: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -133,6 +134,26 @@ func TestStore_StatSkippedIsNotRetried(t *testing.T) {
 	}
 	if _, ok, err := st.NextFetched(ctx); err != nil || ok {
 		t.Fatalf("skipped row must not STAT again ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := st.NextRequeueableSkip(ctx, usenet.OnDemandStatMaxSegments); err != nil || ok {
+		t.Fatalf("remux skip must not requeue ok=%v err=%v", ok, err)
+	}
+}
+
+func TestStore_RequeuesSizeSkipUnder4KHighCap(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	ctx := context.Background()
+	st := NewStore(sqlDB)
+	if err := st.Save(ctx, Row{
+		Indexer: "newznab2", GUID: "omen", Kind: newznabcatalog.KindMovies,
+		Title:  "The.Omen.2006.1080p.MA.WEBRip.DDP5.1.x264-ZoroSenpai",
+		Status: StatusStatSkipped, Streamable: true, PayloadSegments: 23493,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	row, ok, err := st.NextRequeueableSkip(ctx, usenet.OnDemandStatMaxSegments)
+	if err != nil || !ok || row.GUID != "omen" {
+		t.Fatalf("row=%+v ok=%v err=%v", row, ok, err)
 	}
 }
 

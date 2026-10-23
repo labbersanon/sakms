@@ -156,18 +156,41 @@ func (s *Store) SetCatalogTMDBForIMDB(ctx context.Context, imdbID, tmdbID string
 }
 
 func (s *Store) NextFetched(ctx context.Context) (Row, bool, error) {
-	var row Row
 	if s == nil || s.db == nil {
-		return row, false, nil
+		return Row{}, false, nil
 	}
-	var plan string
-	err := s.db.QueryRowContext(ctx, `
+	return scanOndemand(s.db.QueryRowContext(ctx, `
 		SELECT indexer, guid, kind, title, status, streamable, reject_reason, nzb_relpath,
 			payload_files, payload_segments, stat_checked, stat_missing, plan_json, updated_at, verified_at
 		FROM newznab_ondemand
 		WHERE status = $1 AND streamable = TRUE
 		ORDER BY updated_at ASC
-		LIMIT 1`, StatusFetched).Scan(
+		LIMIT 1`, StatusFetched))
+}
+
+// Claude 2026-10-23: requeue size-skipped encodes that now fit the 4K High cap.
+// Reason: 7050 skipped 1080p WEB-DLs (Omen, Hostage). Remux stays skipped.
+// Troubleshooting: skip-stat rows under the cap with no remux token should STAT.
+// Review if: OnDemandStatMaxSegments changes again.
+func (s *Store) NextRequeueableSkip(ctx context.Context, maxSegs int) (Row, bool, error) {
+	if s == nil || s.db == nil {
+		return Row{}, false, nil
+	}
+	return scanOndemand(s.db.QueryRowContext(ctx, `
+		SELECT indexer, guid, kind, title, status, streamable, reject_reason, nzb_relpath,
+			payload_files, payload_segments, stat_checked, stat_missing, plan_json, updated_at, verified_at
+		FROM newznab_ondemand
+		WHERE status = $1 AND streamable = TRUE
+			AND payload_segments <= $2
+			AND title NOT ILIKE '%remux%'
+		ORDER BY updated_at ASC
+		LIMIT 1`, StatusStatSkipped, maxSegs))
+}
+
+func scanOndemand(q *sql.Row) (Row, bool, error) {
+	var row Row
+	var plan string
+	err := q.Scan(
 		&row.Indexer, &row.GUID, &row.Kind, &row.Title, &row.Status, &row.Streamable,
 		&row.RejectReason, &row.NZBRelPath, &row.PayloadFiles, &row.PayloadSegments,
 		&row.StatChecked, &row.StatMissing, &plan, &row.UpdatedAt, &row.VerifiedAt)

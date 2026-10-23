@@ -76,14 +76,41 @@ type precheckPolicy struct {
 // Troubleshooting: remux precheck DeadlineExceeded with holes=0 → cap came back.
 // Review if: Play or a settings knob changes OnDemandStatMaxSegments.
 const (
-	precheckTimeoutBase   = 15 * time.Second
-	precheckTimeoutPerSeg = 100 * time.Millisecond
+	precheckTimeoutBase = 15 * time.Second
+	// Live On Demand STAT is ~100ms sequential (~50ms wall with 2 workers).
+	// 150ms leaves margin so a 3h 4K High encode finishes inside the budget.
+	// precheckTimeoutPerSeg = 100 * time.Millisecond // retired 2026-10-23: too tight for 4K High
+	precheckTimeoutPerSeg = 150 * time.Millisecond
 	// precheckTimeoutMax = 12 * time.Minute // retired 2026-10-23: hard cap; hang is statArticleTimeout
 
-	// On Demand is not lossless streaming. Skip remux-sized payloads so two
-	// STAT sockets are not occupied for tens of thousands of segments.
-	OnDemandStatMaxSegments = 7050
+	// onDemandMaxArticleBytes is below the live NZB median (~792 KiB) so a
+	// small-article 3h 4K High still fits. +10% PAR2 is included in the cap.
+	onDemandMaxArticleBytes = 740_000
+	onDemandPar2Num         = 11
+	onDemandPar2Den         = 10
+	// High@2160 x264-eq 40 Mbps × x265 0.5 × HDR 1.25 × 7.1 1.20 = 30 Mbps.
+	onDemandHigh4KBitsPerSec = 30_000_000
+	onDemandHigh4KRuntime    = 3 * time.Hour
 )
+
+// OnDemandStatMaxSegments is a 3-hour 2160p High HEVC encode (HDR 7.1), not remux.
+// x264 4K High is remux-sized and stays skipped.
+var OnDemandStatMaxSegments = High4KStatSegments(onDemandHigh4KRuntime)
+
+// High4KStatSegments is payload+PAR2 articles for a High@2160 x265 HDR 7.1 film.
+func High4KStatSegments(runtime time.Duration) int {
+	sec := int64(runtime / time.Second)
+	if sec < 1 {
+		sec = 1
+	}
+	bytes := onDemandHigh4KBitsPerSec * sec / 8
+	bytes = bytes * onDemandPar2Num / onDemandPar2Den
+	n := int(bytes / onDemandMaxArticleBytes)
+	if bytes%onDemandMaxArticleBytes != 0 {
+		n++
+	}
+	return n
+}
 
 // Claude 2026-10-23: var so tests can shorten the hang bound like articleIOTimeout.
 // Reason: a wedged STAT must not wait BODY's 60s; production stays 5s per article.
@@ -97,14 +124,11 @@ func fullPrecheckTimeout(n int) time.Duration {
 }
 
 // Claude 2026-10-23: On Demand skip is OnDemandStatMaxSegments, not the STAT clock.
-// Reason: remux/lossless stay off the shelf; Downloads still STAT them with
+// Reason: 7050 segs is ~4 Mbps over 3h — 1080p WEB-DLs and 4K High were skipped.
 //
-//	15s+n×100ms and a 5s per-article hang bound. Previous skip used 15s+n×100ms
-//	vs 12m (retired with the cap): Mutiny.2026 (32810 segs) STATed for 12m,
-//	returned inconclusive (leftover jobs counted as checked), and NextFetched
-//	retried it forever.
+//	Downloads still STAT remuxes with 15s+n×per-seg and a 5s per-article hang bound.
 //
-// Troubleshooting: skip-stat logs + status=stat_skipped.
+// Troubleshooting: skip-stat logs + status=stat_skipped. Remux titles skip in the crawler.
 // Review if: Play uses a different On Demand STAT budget.
 func StatFitsDeadline(n int) bool {
 	return n <= OnDemandStatMaxSegments

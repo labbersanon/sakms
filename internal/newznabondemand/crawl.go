@@ -14,6 +14,7 @@ import (
 
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/newznab"
+	"github.com/labbersanon/sakms/internal/release"
 	"github.com/labbersanon/sakms/internal/usenet"
 )
 
@@ -112,6 +113,20 @@ func step(ctx context.Context, store *Store, client *newznab.Client, idxs []newz
 			return true, err
 		}
 	}
+	// Claude 2026-10-23: requeue 7050-era skips that now fit 4K High.
+	// Reason: Omen/Hostage 1080p WEB-DLs were parked; remux stays skipped.
+	// Review if: OnDemandStatMaxSegments is lowered again.
+	row, ok, err = store.NextRequeueableSkip(ctx, usenet.OnDemandStatMaxSegments)
+	if err != nil {
+		return false, err
+	}
+	if ok {
+		row.Status = StatusFetched
+		row.RejectReason = ""
+		row.UpdatedAt = time.Now().Unix()
+		log.Printf("newznab ondemand: requeue-skip indexer=%s kind=%s segs=%d", row.Indexer, row.Kind, row.PayloadSegments)
+		return true, store.Save(ctx, row)
+	}
 	row, ok, err = store.NextFetched(ctx)
 	if err != nil {
 		return false, err
@@ -188,12 +203,23 @@ func fetchRow(ctx context.Context, store *Store, client *newznab.Client, idx new
 		log.Printf("newznab ondemand: xml-reject indexer=%s kind=%s reason=%s", ref.Indexer, ref.Kind, a.Reason)
 		return store.Save(ctx, row)
 	}
-	if !usenet.StatFitsDeadline(a.Segments) {
+	if skipOnDemandStat(ref.Title, a.Segments) {
 		return skipStatBudget(ctx, store, row)
 	}
 	row.Status = StatusFetched
 	log.Printf("newznab ondemand: fetched indexer=%s kind=%s files=%d segs=%d", ref.Indexer, ref.Kind, a.Files, a.Segments)
 	return store.Save(ctx, row)
+}
+
+// Claude 2026-10-23: skip remux by title; size cap is 3h 4K High, not 12m.
+// Reason: 1080p remux (Mutiny 32810) is smaller than 4K High (~60k segs).
+// Troubleshooting: skip-stat on a WEB-DL under the cap → remux token false-positive.
+// Review if: Play streams remux.
+func skipOnDemandStat(title string, segs int) bool {
+	if !usenet.StatFitsDeadline(segs) {
+		return true
+	}
+	return release.Parse(title).Source == "remux"
 }
 
 func skipStatBudget(ctx context.Context, store *Store, row Row) error {
@@ -207,7 +233,7 @@ func skipStatBudget(ctx context.Context, store *Store, row Row) error {
 // statRow STATs one fetched NZB. inconclusive means the caller should t=get
 // another catalog row instead of retrying this guid immediately.
 func statRow(ctx context.Context, store *Store, nntp *usenet.Manager, dataDir string, row Row, finder IMDBFinder) (inconclusive bool, err error) {
-	if !usenet.StatFitsDeadline(row.PayloadSegments) {
+	if skipOnDemandStat(row.Title, row.PayloadSegments) {
 		return false, skipStatBudget(ctx, store, row)
 	}
 	nzb, err := loadNZB(dataDir, row.NZBRelPath)

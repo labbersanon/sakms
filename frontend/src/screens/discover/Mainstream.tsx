@@ -48,8 +48,10 @@ import {
 import {
   discoverOwnedHref,
   mergeOwnedCatalogSearch,
+  type DiscoverBrowseView,
   type DiscoverSearchHit,
 } from "../discoverHref";
+import { OnDemandView } from "./OnDemandView";
 import { fetchRequests } from "../../api/requests";
 import { Button, ErrorText, FilterChip, Muted, yearOf } from "../../components/ui";
 import {
@@ -736,11 +738,14 @@ export const MainstreamDiscover: Component<{
   // level up, so this is the minimal upward signal to gate it.
   onFilteringChange?: (active: boolean) => void;
   // Claude 2026-09-24: In library chip — owned grid (LibraryView), not a page.
-  ownedOnly?: () => boolean;
-  onOwnedOnlyChange?: (on: boolean) => void;
+  // Claude 2026-10-23: On Demand chip — verified NZB grid, mutually exclusive.
+  browseView?: () => DiscoverBrowseView;
+  onBrowseViewChange?: (view: DiscoverBrowseView) => void;
   initialTier?: string;
 }> = (props) => {
-  const ownedOnly = () => props.ownedOnly?.() ?? false;
+  const browseView = () => props.browseView?.() ?? "default";
+  const ownedOnly = () => browseView() === "library";
+  const ondemandOnly = () => browseView() === "ondemand";
   const [grabTarget, setGrabTarget] = createSignal<GrabTarget | null>(null);
   const [detailTarget, setDetailTarget] = createSignal<DetailTarget | null>(null);
   const [ownedDetail, setOwnedDetail] = createSignal<{
@@ -820,7 +825,11 @@ export const MainstreamDiscover: Component<{
   const [view, setView] = createSignal<MainstreamView>("rows");
   createEffect(() =>
     props.onFilteringChange?.(
-      filtering() || monitoredOnly() || ownedOnly() || view() === "calendar",
+      filtering() ||
+        monitoredOnly() ||
+        ownedOnly() ||
+        ondemandOnly() ||
+        view() === "calendar",
     ),
   );
 
@@ -831,7 +840,7 @@ export const MainstreamDiscover: Component<{
     if (v === "calendar") {
       clearSearch();
       setMonitoredOnly(false);
-      props.onOwnedOnlyChange?.(false);
+      props.onBrowseViewChange?.("default");
     }
     setView(v);
   };
@@ -853,7 +862,7 @@ export const MainstreamDiscover: Component<{
   const applyFilters = (f: MainstreamFilters) => {
     clearSearch();
     setMonitoredOnly(false);
-    props.onOwnedOnlyChange?.(false);
+    props.onBrowseViewChange?.("default");
     setFilters(f);
   };
   const resetFilters = () =>
@@ -863,7 +872,7 @@ export const MainstreamDiscover: Component<{
     });
 
   const [results] = createResource(
-    () => (searching() ? submitted().trim() : null),
+    () => (searching() && !ondemandOnly() ? submitted().trim() : null),
     async (q): Promise<DiscoverSearchHit[]> => {
       // A search error is surfaced the same way a category row's is: hand it to
       // setSetupError so a "tmdb isn't configured yet" failure raises the same
@@ -1228,7 +1237,21 @@ export const MainstreamDiscover: Component<{
               setView("rows");
               resetFilters();
             }
-            props.onOwnedOnlyChange?.(turningOn);
+            props.onBrowseViewChange?.(turningOn ? "library" : "default");
+          }}
+        />
+        <FilterChip
+          label="On Demand"
+          size="sm"
+          active={ondemandOnly}
+          onToggle={() => {
+            const turningOn = !ondemandOnly();
+            if (turningOn) {
+              setMonitoredOnly(false);
+              setView("rows");
+              resetFilters();
+            }
+            props.onBrowseViewChange?.(turningOn ? "ondemand" : "default");
           }}
         />
         <FilterChip
@@ -1240,7 +1263,7 @@ export const MainstreamDiscover: Component<{
             if (turningOn) {
               clearSearch();
               resetFilters();
-              props.onOwnedOnlyChange?.(false);
+              props.onBrowseViewChange?.("default");
             }
             setMonitoredOnly((v) => !v);
           }}
@@ -1263,7 +1286,9 @@ export const MainstreamDiscover: Component<{
           >
             <input
               class="w-full max-w-sm rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent"
-              placeholder="Search movies & shows…"
+              placeholder={
+                ondemandOnly() ? "Search On Demand…" : "Search movies & shows…"
+              }
               value={draft()}
               onInput={(e) => setDraft(e.currentTarget.value)}
             />
@@ -1272,7 +1297,7 @@ export const MainstreamDiscover: Component<{
             </Show>
           </form>
 
-          <Show when={!searching() && !ownedOnly()}>
+          <Show when={!searching() && !ownedOnly() && !ondemandOnly()}>
             <MainstreamFilterSortBar
               value={filters}
               onChange={applyFilters}
@@ -1310,6 +1335,13 @@ export const MainstreamDiscover: Component<{
           The list is bounded by what the operator actually monitors, not an
           unbounded TMDB catalog, so one-shot full render is appropriate.
           Review if: a dedicated /api/modes/{mode}/monitored endpoint is added. */}
+      <Show when={ondemandOnly()}>
+        <OnDemandView
+          mode={props.contentType === "series" ? "series" : "movies"}
+          query={submitted()}
+        />
+      </Show>
+
       <Show when={ownedOnly() && !searching()}>
         <LibraryView
           mode={props.contentType === "series" ? "series" : "movies"}
@@ -1317,7 +1349,7 @@ export const MainstreamDiscover: Component<{
         />
       </Show>
 
-      <Show when={!ownedOnly() || searching()}>
+      <Show when={(!ownedOnly() && !ondemandOnly()) || (searching() && !ondemandOnly())}>
       <Show when={monitoredOnly()}>
         <section class="mt-6">
           <div class="mb-2 flex items-center justify-between gap-3">

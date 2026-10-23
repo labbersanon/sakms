@@ -81,8 +81,9 @@ import {
   type MainstreamMediaTab,
 } from "../mediaNav";
 import {
-  DISCOVER_VIEW_LIBRARY,
-  isDiscoverOwnedView,
+  type DiscoverBrowseView,
+  discoverViewQuery,
+  parseDiscoverView,
   sanitizeAdultTab,
   sanitizeMainstreamTab,
 } from "../discoverHref";
@@ -95,15 +96,14 @@ function firstQuery(v: string | string[] | undefined): string | undefined {
 
 type SearchParamMap = Record<string, string | string[] | undefined>;
 
-function useDiscoverOwnedQuery<T extends string>(
+function useDiscoverBrowseQuery<T extends string>(
   sanitizeTab: (raw: string | undefined) => T,
 ): {
   tab: Accessor<T>;
   setTab: Setter<T>;
-  ownedOnly: Accessor<boolean>;
-  setOwnedOnly: Setter<boolean>;
+  browseView: Accessor<DiscoverBrowseView>;
   ownedTier: () => string;
-  persistQuery: (nextOwned: boolean, nextTab: T) => void;
+  persistQuery: (nextView: DiscoverBrowseView, nextTab: T) => void;
 } {
   let readParams: () => SearchParamMap = () => ({});
   let writeParams: (
@@ -123,33 +123,34 @@ function useDiscoverOwnedQuery<T extends string>(
   const [tab, setTab] = createSignal<T>(
     sanitizeTab(firstQuery(readParams().tab)),
   );
-  const [ownedOnly, setOwnedOnly] = createSignal(
-    isDiscoverOwnedView(firstQuery(readParams().view)),
+  const [browseView, setBrowseView] = createSignal<DiscoverBrowseView>(
+    parseDiscoverView(firstQuery(readParams().view)),
   );
   const ownedTier = () => firstQuery(readParams().tier) ?? "";
 
   createEffect(() => {
     // Claude 2026-09-24: skip URL sync when tests mount without Router.
-    // Reason: empty params would reset tab and clear In library.
+    // Reason: empty params would reset tab and clear In library / On Demand.
     // Review if: Discover tests wrap a MemoryRouter with search params.
     if (!hasSearchParams) return;
     const nextTab = sanitizeTab(firstQuery(readParams().tab));
     if (nextTab !== tab()) setTab(() => nextTab);
-    setOwnedOnly(isDiscoverOwnedView(firstQuery(readParams().view)));
+    setBrowseView(parseDiscoverView(firstQuery(readParams().view)));
   });
 
-  const persistQuery = (nextOwned: boolean, nextTab: T) => {
+  const persistQuery = (nextView: DiscoverBrowseView, nextTab: T) => {
+    setBrowseView(nextView);
     writeParams(
       {
         tab: nextTab,
-        view: nextOwned ? DISCOVER_VIEW_LIBRARY : undefined,
-        tier: nextOwned ? ownedTier() || undefined : undefined,
+        view: discoverViewQuery(nextView),
+        tier: nextView === "library" ? ownedTier() || undefined : undefined,
       },
       { replace: true },
     );
   };
 
-  return { tab, setTab, ownedOnly, setOwnedOnly, ownedTier, persistQuery };
+  return { tab, setTab, browseView, ownedTier, persistQuery };
 }
 
 // Claude 2026-08-13: LEGACY_DISCOVER_TABS retired with the unrouted Discover shell.
@@ -174,8 +175,8 @@ function useDiscoverOwnedQuery<T extends string>(
 // no-longer-visible title — plan pre-mortem #5) carries across a context change.
 export const DiscoverMainstream: Component = () => {
   const selection = createSelection();
-  const { tab, setTab, ownedOnly, setOwnedOnly, ownedTier, persistQuery } =
-    useDiscoverOwnedQuery(sanitizeMainstreamTab);
+  const { tab, setTab, browseView, ownedTier, persistQuery } =
+    useDiscoverBrowseQuery(sanitizeMainstreamTab);
   const [editMode, setEditMode] = createSignal(false);
   // mainstreamFiltering mirrors MainstreamDiscover's active-filter state (it
   // owns the filter signal; this toggle lives one level up). Row-reordering
@@ -211,7 +212,7 @@ export const DiscoverMainstream: Component = () => {
 
   // Edit is disabled while a filter/sort grid is up (its rows can't reorder);
   // Select never is.
-  const editDisabled = () => mainstreamFiltering() || ownedOnly();
+  const editDisabled = () => mainstreamFiltering() || browseView() !== "default";
 
   const toggleSelect = () => {
     const on = !selection.selectMode();
@@ -250,7 +251,7 @@ export const DiscoverMainstream: Component = () => {
     selection.setSelectMode(false);
     selection.clear();
     setTab(id as MainstreamMediaTab);
-    persistQuery(ownedOnly(), id as MainstreamMediaTab);
+    persistQuery(browseView(), id as MainstreamMediaTab);
   };
 
   return (
@@ -268,11 +269,8 @@ export const DiscoverMainstream: Component = () => {
             contentType={tab()}
             editMode={editMode}
             onFilteringChange={setMainstreamFiltering}
-            ownedOnly={ownedOnly}
-            onOwnedOnlyChange={(on) => {
-              setOwnedOnly(on);
-              persistQuery(on, tab());
-            }}
+            browseView={browseView}
+            onBrowseViewChange={(view) => persistQuery(view, tab())}
             initialTier={ownedTier()}
           />
         </div>
@@ -287,8 +285,8 @@ export const DiscoverAdult: Component = () => {
   const lock = useSectionLock();
   const adultLocked = () => lock.isLocked(ADULT_CONTENT_SECTION);
   const selection = createSelection();
-  const { tab, setTab, ownedOnly, setOwnedOnly, ownedTier, persistQuery } =
-    useDiscoverOwnedQuery(sanitizeAdultTab);
+  const { tab, setTab, browseView, ownedTier, persistQuery } =
+    useDiscoverBrowseQuery(sanitizeAdultTab);
   const [editMode, setEditMode] = createSignal(false);
   const [adultSorting, setAdultSorting] = createSignal(false);
   createEffect(() => {
@@ -333,7 +331,7 @@ export const DiscoverAdult: Component = () => {
       </Button>
       <Button
         class="!px-3 !py-1.5 !text-sm"
-        disabled={adultSorting() || ownedOnly()}
+        disabled={adultSorting() || browseView() !== "default"}
         onClick={toggleEdit}
       >
         {editMode() ? "Done" : "Edit"}
@@ -346,7 +344,7 @@ export const DiscoverAdult: Component = () => {
     selection.setSelectMode(false);
     selection.clear();
     setTab(id as AdultMediaTab);
-    persistQuery(ownedOnly(), id as AdultMediaTab);
+    persistQuery(browseView(), id as AdultMediaTab);
   };
 
   return (
@@ -374,11 +372,8 @@ export const DiscoverAdult: Component = () => {
                   kind="movie"
                   editMode={editMode}
                   onSortingChange={setAdultSorting}
-                  ownedOnly={ownedOnly}
-                  onOwnedOnlyChange={(on) => {
-                    setOwnedOnly(on);
-                    persistQuery(on, tab());
-                  }}
+                  browseView={browseView}
+                  onBrowseViewChange={(view) => persistQuery(view, tab())}
                   initialTier={ownedTier()}
                 />
               }
@@ -387,11 +382,8 @@ export const DiscoverAdult: Component = () => {
                 kind="scene"
                 editMode={editMode}
                 onSortingChange={setAdultSorting}
-                ownedOnly={ownedOnly}
-                onOwnedOnlyChange={(on) => {
-                  setOwnedOnly(on);
-                  persistQuery(on, tab());
-                }}
+                browseView={browseView}
+                onBrowseViewChange={(view) => persistQuery(view, tab())}
                 initialTier={ownedTier()}
               />
             </Show>

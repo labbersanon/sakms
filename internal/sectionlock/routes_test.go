@@ -28,6 +28,8 @@ func TestClassify(t *testing.T) {
 		// applies whether or not the rest of the path maps to a tab.
 		{"/api/modes/adult/discover", []string{SectionAdultContent, SectionDiscover}},
 		{"/api/modes/movies/discover", []string{SectionDiscover}},
+		{"/api/modes/movies/ondemand", []string{SectionDiscover}},
+		{"/api/modes/adult/ondemand", []string{SectionAdultContent, SectionDiscover}},
 		{"/api/modes/adult/dedup/scan/stream", []string{SectionAdultContent, SectionOrganize}},
 		{"/api/modes/series/dedup/scan/status", []string{SectionOrganize}},
 		{"/api/modes/adult/scenes/tags", []string{SectionAdultContent, SectionDiscover, SectionLibrary}},

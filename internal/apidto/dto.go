@@ -1955,6 +1955,32 @@ type NewznabCatalogReport struct {
 	Overlap         []NewznabCatalogOverlap `json:"overlap"`
 }
 
+// Claude 2026-10-23: Discover On Demand list (verified NZBs only).
+// Reason: chip reads this; Play is later. NzbID is the t=get hash, not a URL.
+// Troubleshooting: frontend missing types → make dto.
+// Review if: Play adds fields (do not add enclosure/apikey URLs).
+type OndemandQuality struct {
+	Indexer string `json:"indexer"`
+	NzbID   string `json:"nzbId"`
+	Label   string `json:"label"`
+}
+
+// OndemandTitle is one Discover On Demand card.
+type OndemandTitle struct {
+	ID        string            `json:"id"`
+	Title     string            `json:"title"`
+	Year      int               `json:"year,omitempty"`
+	ImdbID    string            `json:"imdbId,omitempty"`
+	TmdbID    int               `json:"tmdbId,omitempty"`
+	TvdbID    string            `json:"tvdbId,omitempty"`
+	Qualities []OndemandQuality `json:"qualities"`
+}
+
+// OndemandList is GET /api/modes/{mode}/ondemand. No enclosure URLs.
+type OndemandList struct {
+	Items []OndemandTitle `json:"items"`
+}
+
 // --- Stage 4: Settings + Advanced Settings ---------------------------------
 //
 // The DTOs backing the ported Settings view (Connections, API Access, Auth

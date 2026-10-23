@@ -62,6 +62,21 @@ export function adultOwnedIdentityKey(
 }
 
 export const DISCOVER_VIEW_LIBRARY = "library";
+export const DISCOVER_VIEW_ONDEMAND = "ondemand";
+
+export type DiscoverBrowseView = "default" | "library" | "ondemand";
+
+export function parseDiscoverView(raw: string | undefined): DiscoverBrowseView {
+  if (raw === DISCOVER_VIEW_LIBRARY) return "library";
+  if (raw === DISCOVER_VIEW_ONDEMAND) return "ondemand";
+  return "default";
+}
+
+export function discoverViewQuery(view: DiscoverBrowseView): string | undefined {
+  if (view === "library") return DISCOVER_VIEW_LIBRARY;
+  if (view === "ondemand") return DISCOVER_VIEW_ONDEMAND;
+  return undefined;
+}
 
 export function discoverOwnedHref(
   section: MediaSection,
@@ -90,6 +105,10 @@ export function libraryPathToDiscover(pathname: string, search: string): string 
 
 export function isDiscoverOwnedView(raw: string | undefined): boolean {
   return raw === DISCOVER_VIEW_LIBRARY;
+}
+
+export function isDiscoverOndemandView(raw: string | undefined): boolean {
+  return raw === DISCOVER_VIEW_ONDEMAND;
 }
 
 export function sanitizeMainstreamTab(

@@ -13082,3 +13082,19 @@ status stays active.
 |---|---|
 | `internal/newznab/client.go` | `GetNZBID` |
 | `internal/newznabondemand/store.go` | retry error rows |
+
+## 2026-10-23 — Discover On Demand chip + quality picker (no Play yet)
+
+**Problem:** Verified NZBs were only in `newznab_ondemand`; Discover had no way to browse them like a streaming shelf.
+**Root cause:** Crawler slice shipped without `?view=ondemand`, grouping, or a quality picker.
+**Fix:** `GET /api/modes/{mode}/ondemand` lists `status=verified` titles (join catalog ids, group, quality labels, `nzbId` = GetNZBID hash, no URLs). Discover FilterChip next to In library on Movies, Series, and Adult. Mutually exclusive with In library and Monitored. Search filters the shelf. Card click picks quality. Play is later. Adult PIN unchanged.
+**Outcome:** `TestListVerified_GroupsByIMDBAndQuality`, `TestOndemandHandler_ListsVerifiedWithoutURLs`, Discover On Demand chip tests.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/newznabondemand/shelf.go` | ListVerified + grouping + quality labels |
+| `internal/api/newznab_ondemand.go` | GET `/api/modes/{mode}/ondemand` |
+| `frontend/src/screens/discover/OnDemandView.tsx` | verified-title grid + quality picker |
+| `frontend/src/screens/discover/{index,Mainstream,Adult}.tsx` | On Demand chip, `?view=ondemand` |

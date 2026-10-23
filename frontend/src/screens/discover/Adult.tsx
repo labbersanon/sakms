@@ -67,7 +67,8 @@ import {
   playableLibrarySrc,
   trackedToDetailTarget,
 } from "../Library";
-import { adultOwnedIdentityKey } from "../discoverHref";
+import { adultOwnedIdentityKey, type DiscoverBrowseView } from "../discoverHref";
+import { OnDemandView } from "./OnDemandView";
 import { fetchTrackedItems, type TrackedItem } from "../../api/tag";
 import { canEditAdultPoster } from "../../api/adultPoster";
 import { AdultPosterPicker } from "../../components/AdultPosterPicker";
@@ -565,8 +566,8 @@ type AdultDrill = {
 export const AdultDiscover: Component<{
   editMode?: () => boolean;
   onSortingChange?: (active: boolean) => void;
-  ownedOnly?: () => boolean;
-  onOwnedOnlyChange?: (on: boolean) => void;
+  browseView?: () => DiscoverBrowseView;
+  onBrowseViewChange?: (view: DiscoverBrowseView) => void;
   initialTier?: string;
   // Claude 2026-08-13: "movie" is Discover Adult Movies (1A). Default "scene"
   // keeps every existing mount on Scenes. One component, two Show-swapped
@@ -579,7 +580,9 @@ export const AdultDiscover: Component<{
   kind?: "scene" | "movie";
 }> = (props) => {
   const kind = () => props.kind ?? "scene";
-  const ownedOnly = () => props.ownedOnly?.() ?? false;
+  const browseView = () => props.browseView?.() ?? "default";
+  const ownedOnly = () => browseView() === "library";
+  const ondemandOnly = () => browseView() === "ondemand";
   const cardAspect = () => (kind() === "movie" ? "poster" : "video");
   // Claude 2026-08-02: the grabTarget signal (and the <GrabDialog> it drove)
   // was removed along with AdultCard's inline Grab button — AdultCard was its
@@ -708,7 +711,9 @@ export const AdultDiscover: Component<{
   // When sorting, a single sorted grid replaces the browse rows.
   const [adultSort, setAdultSort] = createSignal<AdultSortValue>("default");
   const sorting = () => !searching() && !drill() && adultSort() !== "default";
-  createEffect(() => props.onSortingChange?.(sorting() || ownedOnly()));
+  createEffect(() =>
+    props.onSortingChange?.(sorting() || ownedOnly() || ondemandOnly()),
+  );
 
   // Changing the sort clears search and any drill-down (all three views are
   // mutually exclusive).
@@ -777,7 +782,7 @@ export const AdultDiscover: Component<{
   const performerGenders = () => performerGendersData() ?? [];
 
   const [ownedHits] = createResource(
-    () => (searching() ? submitted().trim() : null),
+    () => (searching() && !ondemandOnly() ? submitted().trim() : null),
     async (q): Promise<TrackedItem[]> => {
       const aspect = kind() === "movie" ? "vertical" : "horizontal";
       const tracked = await fetchTrackedItems("adult", aspect).catch(
@@ -789,7 +794,7 @@ export const AdultDiscover: Component<{
   );
 
   const [results] = createResource(
-    () => (searching() ? submitted().trim() : null),
+    () => (searching() && !ondemandOnly() ? submitted().trim() : null),
     async (q): Promise<AdultSearchScenesPage> => {
       // A search error is surfaced the same way a row's is: handed to
       // setSetupError so a "tpdb isn't configured yet" failure raises the same
@@ -1072,7 +1077,20 @@ export const AdultDiscover: Component<{
               setDrill(null);
               setAdultSort("default");
             }
-            props.onOwnedOnlyChange?.(turningOn);
+            props.onBrowseViewChange?.(turningOn ? "library" : "default");
+          }}
+        />
+        <FilterChip
+          label="On Demand"
+          size="sm"
+          active={ondemandOnly}
+          onToggle={() => {
+            const turningOn = !ondemandOnly();
+            if (turningOn) {
+              setDrill(null);
+              setAdultSort("default");
+            }
+            props.onBrowseViewChange?.(turningOn ? "ondemand" : "default");
           }}
         />
       </div>
@@ -1090,9 +1108,11 @@ export const AdultDiscover: Component<{
         <input
           class="w-full max-w-sm rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-accent"
           placeholder={
-            kind() === "movie"
-              ? "Search movies by title…"
-              : "Search scenes by title…"
+            ondemandOnly()
+              ? "Search On Demand…"
+              : kind() === "movie"
+                ? "Search movies by title…"
+                : "Search scenes by title…"
           }
           value={draft()}
           onInput={(e) => setDraft(e.currentTarget.value)}
@@ -1102,7 +1122,7 @@ export const AdultDiscover: Component<{
         </Show>
       </form>
 
-      <Show when={!searching() && !drill() && !ownedOnly()}>
+      <Show when={!searching() && !drill() && !ownedOnly() && !ondemandOnly()}>
         <AdultSortBar
           value={adultSort}
           onChange={applyAdultSort}
@@ -1129,6 +1149,14 @@ export const AdultDiscover: Component<{
         </Show>
       </Show>
 
+      <Show when={ondemandOnly()}>
+        <OnDemandView
+          mode="adult"
+          query={submitted()}
+          posterAspect={kind() === "movie" ? "2 / 3" : "16 / 9"}
+        />
+      </Show>
+
       <Show when={ownedOnly() && !searching()}>
         <LibraryView
           mode="adult"
@@ -1138,7 +1166,7 @@ export const AdultDiscover: Component<{
         />
       </Show>
 
-      <Show when={!ownedOnly() || searching()}>
+      <Show when={(!ownedOnly() && !ondemandOnly()) || (searching() && !ondemandOnly())}>
       <Show
         when={searching()}
         fallback={

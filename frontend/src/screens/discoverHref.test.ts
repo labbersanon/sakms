@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   adultOwnedIdentityKey,
   discoverOwnedHref,
+  isDiscoverOndemandView,
   isDiscoverOwnedView,
   libraryPathToDiscover,
   mergeOwnedCatalogSearch,
+  parseDiscoverView,
   sanitizeAdultTab,
   sanitizeMainstreamTab,
 } from "./discoverHref";
@@ -35,7 +37,12 @@ describe("discoverOwnedHref / libraryPathToDiscover", () => {
 
   it("sanitizes tabs and view", () => {
     expect(isDiscoverOwnedView("library")).toBe(true);
+    expect(isDiscoverOwnedView("ondemand")).toBe(false);
+    expect(isDiscoverOndemandView("ondemand")).toBe(true);
     expect(isDiscoverOwnedView("rows")).toBe(false);
+    expect(parseDiscoverView("ondemand")).toBe("ondemand");
+    expect(parseDiscoverView("library")).toBe("library");
+    expect(parseDiscoverView("rows")).toBe("default");
     expect(sanitizeMainstreamTab("movies")).toBe("movies");
     expect(sanitizeMainstreamTab("nope")).toBe("series");
     expect(sanitizeAdultTab("movies")).toBe("movies");

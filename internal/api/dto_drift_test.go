@@ -131,6 +131,9 @@ func TestHandlerDTOMirrorNoDrift(t *testing.T) {
 		{"newznabCatalogCursor/NewznabCatalogCursor", newznabCatalogCursor{}, apidto.NewznabCatalogCursor{}},
 		{"newznabCatalogCount/NewznabCatalogCount", newznabCatalogCount{}, apidto.NewznabCatalogCount{}},
 		{"newznabCatalogOverlap/NewznabCatalogOverlap", newznabCatalogOverlap{}, apidto.NewznabCatalogOverlap{}},
+		// ondemandTitle/ondemandList are excluded: Qualities/Items are nested
+		// named slices whose Go type strings differ by package.
+		{"ondemandQuality/OndemandQuality", ondemandQuality{}, apidto.OndemandQuality{}},
 		{"sectionLockSectionsRequest/SectionLockSectionsRequest", sectionLockSectionsRequest{}, apidto.SectionLockSectionsRequest{}},
 	}
 

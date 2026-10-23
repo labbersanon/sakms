@@ -207,11 +207,15 @@ func classifyModes(rest []string, out Set) {
 	case "rename", "purge", "dedup", "proposals":
 		out.Add(SectionOrganize)
 	case "discover", "search", "autograb", "tmdb-search", "tvdb-search",
-		"performers", "studios", "newest-rows":
+		"performers", "studios", "newest-rows", "ondemand":
 		// performers/studios/newest-rows are Adult Discover's own rows and
 		// drill-downs. newest-rows is also configured from Settings; per
 		// the shared-route rule above it is attributed to Discover, the
 		// less restrictive of the two.
+		// Claude 2026-10-23: ondemand is the Discover On Demand chip.
+		// Reason: adult-content still comes from rest[0]=="adult".
+		// Troubleshooting: SL-9 fails on GET /api/modes/{mode}/ondemand.
+		// Review if: Play moves this off Discover.
 		out.Add(SectionDiscover)
 	case "grabs":
 		out.Add(SectionQueue)

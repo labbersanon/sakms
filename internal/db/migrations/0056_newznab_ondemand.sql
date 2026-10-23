@@ -1,10 +1,9 @@
 -- +goose Up
--- Claude 2026-10-23: On Demand NZB cache + STAT shelf (no Play UI yet).
--- Reason: Discover On Demand chip will list only verified streamable NZBs.
---   Store parsed sequence and a local NZB path, never enclosure/apikey URLs.
--- Troubleshooting: relation newznab_ondemand does not exist → goose < 56.
--- Review if: Discover ?view=ondemand reads this table (do not recrawl on render).
--- Related files: internal/newznabondemand
+-- Claude 2026-10-23: On Demand shelf is status=verified, no URL columns.
+-- Reason: Discover ?view=ondemand reads this table; do not recrawl on render.
+-- Troubleshooting: empty On Demand grid → crawler still fetching/STAT.
+-- Review if: Play starts-while-downloading (still no enclosure/apikey columns).
+-- Related files: internal/newznabondemand, internal/api/newznab_ondemand.go
 
 CREATE TABLE newznab_ondemand (
     indexer          TEXT NOT NULL,

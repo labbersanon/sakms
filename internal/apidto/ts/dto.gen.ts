@@ -1939,6 +1939,35 @@ export interface NewznabCatalogReport {
   overlap: NewznabCatalogOverlap[];
 }
 /**
+ * Claude 2026-10-23: Discover On Demand list (verified NZBs only).
+ * Reason: chip reads this; Play is later. NzbID is the t=get hash, not a URL.
+ * Troubleshooting: frontend missing types → make dto.
+ * Review if: Play adds fields (do not add enclosure/apikey URLs).
+ */
+export interface OndemandQuality {
+  indexer: string;
+  nzbId: string;
+  label: string;
+}
+/**
+ * OndemandTitle is one Discover On Demand card.
+ */
+export interface OndemandTitle {
+  id: string;
+  title: string;
+  year?: number /* int */;
+  imdbId?: string;
+  tmdbId?: number /* int */;
+  tvdbId?: string;
+  qualities: OndemandQuality[];
+}
+/**
+ * OndemandList is GET /api/modes/{mode}/ondemand. No enclosure URLs.
+ */
+export interface OndemandList {
+  items: OndemandTitle[];
+}
+/**
  * ConnectionTestRequest is POST /api/connections/test's body — enough to
  * construct a client and make one real, read-only call (Settings' "Test"
  * button). Nothing is persisted, so APIKey here is a PLAIN string (not the

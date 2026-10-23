@@ -248,6 +248,11 @@ func run() error {
 	catalogStore := newznabcatalog.NewStore(sqlDB)
 	api.AttachNewznabCatalog(catalogStore)
 	ondemandStore := newznabondemand.NewStore(sqlDB)
+	// Claude 2026-10-23: Discover On Demand chip reads this store.
+	// Reason: GET /api/modes/{mode}/ondemand; crawler already uses the same store.
+	// Troubleshooting: empty chip → AttachNewznabOndemand missing.
+	// Review if: Play starts-while-downloading.
+	api.AttachNewznabOndemand(ondemandStore)
 	// traktStore persists Trakt's single application connection + linked
 	// account tokens (its own table, not connections.Store — see
 	// internal/trakt's package doc for why); secretStore encrypts the same

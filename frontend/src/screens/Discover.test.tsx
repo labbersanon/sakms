@@ -116,6 +116,7 @@ const mainstreamDefaults = (url: string): Response | null => {
       { id: 28, name: "Action" },
       { id: 35, name: "Comedy" },
     ]);
+  if (url.includes("/ondemand")) return jsonResponse({ items: [] });
   if (url.includes("/discover")) return jsonResponse([]);
   if (url.includes("/tracked")) return jsonResponse([]);
   if (url.includes("/tags")) return jsonResponse([]);
@@ -752,6 +753,104 @@ describe("Discover — In library chip", () => {
       screen.getByPlaceholderText("Search movies & shows…"),
     ).toBeInTheDocument();
     expect(screen.queryByLabelText("Search")).not.toBeInTheDocument();
+  });
+});
+
+describe("Discover — On Demand chip", () => {
+  it("replaces carousels with verified titles and a quality picker", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/ondemand"))
+        return jsonResponse({
+          items: [
+            {
+              id: "imdb:tt1",
+              title: "Shelf Movie",
+              year: 2021,
+              tmdbId: 9,
+              qualities: [
+                { indexer: "newznab", nzbId: "h1", label: "2160p" },
+                { indexer: "newznab", nzbId: "h2", label: "1080p" },
+              ],
+            },
+          ],
+        });
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
+    expect(await screen.findByText("Trending Movies")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "On Demand" }));
+    expect(await screen.findByText("Shelf Movie")).toBeInTheDocument();
+    expect(screen.queryByText("Trending Movies")).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Search On Demand…")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Shelf Movie" }));
+    expect(await screen.findByText("Quality")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "2160p" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "1080p" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "In library" }));
+    expect(screen.queryByText("Shelf Movie")).not.toBeInTheDocument();
+  });
+
+  it("scopes search to the On Demand shelf", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/movies/ondemand"))
+        return jsonResponse({
+          items: [
+            {
+              id: "a",
+              title: "Alpha Movie",
+              year: 2021,
+              qualities: [{ indexer: "newznab", nzbId: "a", label: "1080p" }],
+            },
+            {
+              id: "b",
+              title: "Beta Movie",
+              year: 2020,
+              qualities: [{ indexer: "newznab", nzbId: "b", label: "720p" }],
+            },
+          ],
+        });
+      if (url.includes("/tmdb-search"))
+        throw new Error("On Demand search must not hit TMDB");
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => <DiscoverMainstream />);
+    clickMoviesTab();
+    fireEvent.click(screen.getByRole("button", { name: "On Demand" }));
+    expect(await screen.findByText("Alpha Movie")).toBeInTheDocument();
+    fireEvent.input(screen.getByPlaceholderText("Search On Demand…"), {
+      target: { value: "beta" },
+    });
+    fireEvent.submit(screen.getByPlaceholderText("Search On Demand…").closest("form")!);
+    expect(await screen.findByText("Beta Movie")).toBeInTheDocument();
+    expect(screen.queryByText("Alpha Movie")).not.toBeInTheDocument();
+    expect(screen.queryByText("Search results")).not.toBeInTheDocument();
+  });
+
+  it("sits next to In library on Adult", async () => {
+    stubFetch((url) => {
+      if (url.includes("/api/modes/adult/ondemand"))
+        return jsonResponse({
+          items: [
+            {
+              id: "title:scene",
+              title: "Adult Shelf",
+              qualities: [{ indexer: "newznab", nzbId: "s1", label: "1080p" }],
+            },
+          ],
+        });
+      const d = mainstreamDefaults(url);
+      if (d) return d;
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => <DiscoverAdult />);
+    expect(await screen.findByRole("button", { name: "In library" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "On Demand" }));
+    expect(await screen.findByText("Adult Shelf")).toBeInTheDocument();
   });
 });
 

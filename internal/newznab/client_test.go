@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -460,6 +461,48 @@ func TestSearchGrab_ReturnsEnclosureWithoutFetchingNZB(t *testing.T) {
 	}
 	if len(rels) != 1 || rels[0].Title == "" || rels[0].DownloadURL == "" || rels[0].Size != 12345 {
 		t.Fatalf("rels=%+v", rels)
+	}
+}
+
+func TestGet_TwoHostsAreNotSerializedByThrottle(t *testing.T) {
+	const rss = `<?xml version="1.0"?><rss version="2.0"><channel></channel></rss>`
+	var aN, bN atomic.Int32
+	gate := make(chan struct{})
+	mk := func(n *atomic.Int32) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			n.Add(1)
+			<-gate
+			io.WriteString(w, rss)
+		})
+	}
+	a := httptest.NewServer(mk(&aN))
+	defer a.Close()
+	b := httptest.NewServer(mk(&bN))
+	defer b.Close()
+	c := &Client{HTTP: http.DefaultClient, Interval: 3 * time.Second}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	errc := make(chan error, 2)
+	go func() {
+		_, err := c.SearchGrab(ctx, Indexer{Name: "a", Endpoint: a.URL + "/api", APIKey: "k"}, "Grab Movie", nil)
+		errc <- err
+	}()
+	go func() {
+		_, err := c.SearchGrab(ctx, Indexer{Name: "b", Endpoint: b.URL + "/api", APIKey: "k"}, "Grab Movie", nil)
+		errc <- err
+	}()
+	deadline := time.Now().Add(400 * time.Millisecond)
+	for aN.Load() < 1 || bN.Load() < 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("a=%d b=%d — throttle still process-wide", aN.Load(), bN.Load())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	close(gate)
+	for i := 0; i < 2; i++ {
+		if err := <-errc; err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

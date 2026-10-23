@@ -12941,3 +12941,18 @@ status stays active.
 | `frontend/src/screens/settings/Usenet.tsx` | drop Native search card; NZBFinder help on host 2 |
 | `frontend/src/screens/Dashboard.tsx` | drop NNTP crawler card |
 | `docs/usenet-nntp-native.md` | removed stub |
+
+## 2026-10-23 — Newznab grab hosts search in parallel
+
+**Problem:** `newznab` and `newznab2` `t=search` ran one after the other. NZBFinder waited on NZBGeek, and a process-wide 1s throttle added another delay.
+**Root cause:** `newznabGrabSearch` looped `SearchGrab` sequentially. `Client.last` was one timestamp for every host.
+**Fix:** Fan-out both configured hosts with a WaitGroup (one host error does not cancel or drop the other). Slot order still ranks `newznab` ahead of `newznab2` after merge. Throttle is per indexer host. Prowlarr stays last. Settings copy says parallel, not "tried after host 1".
+**Outcome:** `TestNewznabGrabSearch_QueriesBothHostsInParallel`, `TestNewznabGrabSearch_OneHostErrorKeepsTheOther`, `TestGet_TwoHostsAreNotSerializedByThrottle`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/newznabgrab.go` | concurrent SearchGrab per host |
+| `internal/newznab/client.go` | `last` map keyed by host |
+| `frontend/src/screens/settings/Usenet.tsx` | both hosts queried in parallel |

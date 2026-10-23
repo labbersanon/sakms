@@ -72,7 +72,7 @@ type Client struct {
 	Interval time.Duration
 
 	mu     sync.Mutex
-	last   time.Time
+	last   map[string]time.Time
 	capsMu sync.Mutex
 	caps   map[string]capsInfo
 }
@@ -91,11 +91,17 @@ func (c *Client) interval() time.Duration {
 	return minInterval
 }
 
-func (c *Client) throttle(ctx context.Context) error {
+// Claude 2026-10-23: throttle per indexer host, not process-wide.
+// Reason: NZBGeek and NZBFinder are independent APIs; a shared last-call
+//   timestamp serialized t=search by minInterval even when both hosts are
+//   configured. Same-host spacing stays.
+// Troubleshooting: host 2 always ~1s behind host 1 → last is still one Time.
+// Review if: an indexer documents a stricter per-key rate than minInterval.
+func (c *Client) throttle(ctx context.Context, host string) error {
 	wait := time.Duration(0)
 	c.mu.Lock()
-	if !c.last.IsZero() {
-		wait = c.interval() - time.Since(c.last)
+	if t, ok := c.last[host]; ok {
+		wait = c.interval() - time.Since(t)
 	}
 	c.mu.Unlock()
 	if wait <= 0 {
@@ -111,9 +117,12 @@ func (c *Client) throttle(ctx context.Context) error {
 	}
 }
 
-func (c *Client) mark() {
+func (c *Client) mark(host string) {
 	c.mu.Lock()
-	c.last = time.Now()
+	if c.last == nil {
+		c.last = map[string]time.Time{}
+	}
+	c.last[host] = time.Now()
 	c.mu.Unlock()
 }
 
@@ -763,7 +772,7 @@ func (c *Client) Caps(ctx context.Context, idx Indexer) error {
 }
 
 func (c *Client) get(ctx context.Context, u *url.URL) ([]byte, error) {
-	if err := c.throttle(ctx); err != nil {
+	if err := c.throttle(ctx, u.Host); err != nil {
 		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
@@ -771,7 +780,7 @@ func (c *Client) get(ctx context.Context, u *url.URL) ([]byte, error) {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", userAgent)
-	c.mark()
+	c.mark(u.Host)
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
 		return nil, httpx.WrapTransportError(u.Host, err)

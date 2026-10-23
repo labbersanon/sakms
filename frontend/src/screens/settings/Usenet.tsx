@@ -99,6 +99,8 @@ export const UsenetSection: Component = () => (
 //   NZBFinder is the recommended second host (real email; films first).
 // Troubleshooting: grab never queries host 2 → connections.service newznab2 empty.
 // Review if: Prowlarr already includes both hosts.
+// Claude 2026-10-23: both hosts are queried in parallel, not host-1-then-2.
+// Reason: sequential t=search hid NZBFinder behind NZBGeek. Prowlarr stays last.
 const NewznabHostCard: Component = () => {
   const [conns, { refetch }] = createResource(fetchConnections);
   return (
@@ -109,7 +111,7 @@ const NewznabHostCard: Component = () => {
         title="NZB host API"
         urlAria="newznab URL"
         keyAria="newznab API key"
-        help="Optional Newznab indexer for Usenet grab search. Tried before Prowlarr. This is the grab catalog. Not used for torrents. Example: https://api.nzbgeek.info/api"
+        help="Optional Newznab indexer for Usenet grab search. Queried in parallel with host 2, before Prowlarr. This is the grab catalog. Not used for torrents. Example: https://api.nzbgeek.info/api"
         rows={conns}
         rowsError={conns.error}
         onChanged={() => void refetch()}
@@ -120,7 +122,7 @@ const NewznabHostCard: Component = () => {
         title="NZB host API 2"
         urlAria="newznab2 URL"
         keyAria="newznab2 API key"
-        help="Optional second Newznab indexer (NZBFinder recommended: https://nzbfinder.ws/api). Sign up with a real email, then paste URL and API key. Films first. Tried after host 1 and before Prowlarr. Nothing is stored in the repo."
+        help="Optional second Newznab indexer (NZBFinder recommended: https://nzbfinder.ws/api). Sign up with a real email, then paste URL and API key. Films first. Queried in parallel with host 1, before Prowlarr. Nothing is stored in the repo."
         rows={conns}
         rowsError={conns.error}
         onChanged={() => void refetch()}

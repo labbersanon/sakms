@@ -28,6 +28,9 @@ import (
 //   Settings — no secret in git. NZBFinder is the recommended second host.
 // Troubleshooting: only host 1 is queried → connections.service newznab2
 //   URL/key empty. Review if: Prowlarr already includes both.
+// Claude 2026-10-23: both hosts run in the same grab phase, in parallel.
+// Reason: sequential t=search hid NZBFinder behind NZBGeek latency.
+// Troubleshooting: host 2 unused → empty newznab2 connection, not ordering.
 
 var (
 	newznabGrabMu     sync.RWMutex
@@ -127,18 +130,42 @@ func newznabGrabSearch(ctx context.Context, query string, cats []int) ([]prowlar
 	if !ok {
 		return nil, nil
 	}
+	// Claude 2026-10-23: query every configured Newznab host at once.
+	// Reason: sequential SearchGrab waited on NZBGeek before NZBFinder, and
+	//   a process-wide throttle added another second. One host error must
+	//   not drop the other. WaitGroup (not errgroup) so a failure does not
+	//   cancel siblings. Slot order keeps newznab ahead of newznab2.
+	// Troubleshooting: only one indexer in flight → this loop is sequential
+	//   again, or newznab2 URL/key empty.
+	// Review if: a third Newznab host is added (still fan-out; do not
+	//   serialize). Related files: internal/newznab/client.go (per-host last).
+	type slot struct {
+		rels []prowlarr.Release
+		err  error
+	}
+	slots := make([]slot, len(idxs))
+	var wg sync.WaitGroup
+	for i, idx := range idxs {
+		wg.Add(1)
+		go func(i int, idx newznab.Indexer) {
+			defer wg.Done()
+			rels, err := client.SearchGrab(ctx, idx, query, cats)
+			if err != nil {
+				log.Printf("search: newznab indexer=%s err=%v", idx.Name, err)
+				slots[i].err = err
+				return
+			}
+			slots[i].rels = adaptNewznabReleases(rels)
+		}(i, idx)
+	}
+	wg.Wait()
 	var out []prowlarr.Release
 	var firstErr error
-	for _, idx := range idxs {
-		rels, err := client.SearchGrab(ctx, idx, query, cats)
-		if err != nil {
-			log.Printf("search: newznab indexer=%s err=%v", idx.Name, err)
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
+	for _, s := range slots {
+		if s.err != nil && firstErr == nil {
+			firstErr = s.err
 		}
-		out = append(out, adaptNewznabReleases(rels)...)
+		out = append(out, s.rels...)
 	}
 	out = dedupeGrabReleases(out)
 	if len(out) == 0 {

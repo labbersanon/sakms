@@ -112,7 +112,6 @@ func (s *Store) CountByKind(ctx context.Context) ([]KindCount, error) {
 	}
 	for i, k := range out {
 		if got, ok := byKind[k.Kind]; ok {
-			got.Kind = k.Kind
 			out[i] = got
 		}
 	}

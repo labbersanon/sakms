@@ -113,12 +113,8 @@ function sortCatalogKinds<T extends { kind: string }>(rows: T[] | undefined): T[
 
 function ondemandCounts(row: NewznabCatalogOndemand): string {
   const parts = [`${formatCount(row.verified)} verified`];
-  if (row.fetched) {
-    parts.push(`${formatCount(row.fetched)} in progress`);
-  }
-  if (row.skipped) {
-    parts.push(`${formatCount(row.skipped)} skipped`);
-  }
+  if (row.fetched > 0) parts.push(`${formatCount(row.fetched)} in progress`);
+  if (row.skipped > 0) parts.push(`${formatCount(row.skipped)} skipped`);
   return parts.join(" · ");
 }
 
@@ -369,8 +365,6 @@ const NewznabCatalogCard: Component<{ report: NewznabCatalogReport }> = (
   const overlap = () => sortCatalogKinds(props.report.overlap);
   const cursors = () => sortCatalogKinds(props.report.cursors);
   const ondemand = () => sortCatalogKinds(props.report.ondemand);
-  const ondemandFor = (kind: string) =>
-    ondemand().find((row) => row.kind === kind);
   const extraOndemand = () => {
     const seen = new Set(overlap().map((row) => row.kind));
     return ondemand().filter(
@@ -412,7 +406,7 @@ const NewznabCatalogCard: Component<{ report: NewznabCatalogReport }> = (
                   <div class="text-xs text-muted">
                     {`NZBGeek: ${formatCount(catalogNZBs(props.report.counts, "newznab", row.kind))} NZBs · NZB.life: ${formatCount(catalogNZBs(props.report.counts, "newznab2", row.kind))} NZBs`}
                   </div>
-                  <Show when={ondemandFor(row.kind)}>
+                  <Show when={ondemand().find((od) => od.kind === row.kind)}>
                     {(od) => (
                       <div class="text-fg">{`On Demand: ${ondemandCounts(od())}`}</div>
                     )}

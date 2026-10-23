@@ -6,16 +6,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
-	"github.com/labbersanon/sakms/internal/dbtest"
-	"github.com/labbersanon/sakms/internal/secrets"
-	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenetsearch"
 )
 
-func TestNNTPGapFill_DefaultsAreOnIncludingIRC(t *testing.T) {
+func TestNNTPGapFill_DefaultsAreOn(t *testing.T) {
 	store := newSettingsStore(t)
 	r, err := loadNNTPNativeSettings(context.Background(), store, nil)
 	if err != nil {
@@ -31,11 +27,8 @@ func TestNNTPGapFill_DefaultsAreOnIncludingIRC(t *testing.T) {
 		t.Fatalf("defaults: %+v", cfg)
 	}
 	g := r.GapFill
-	if !g.PreDBHTTPEnabled || !g.PreDBIRCEnabled || !g.SRRDBEnabled || !g.NZBPasswordEnabled || g.IRCPasswordSet || g.PreDBHTTPURL != "https://api.predb.net/" || g.PreDBDumpPath != "" {
-		t.Fatalf("predb defaults: %+v", g)
-	}
-	if len(g.PreDBIRCExtra) != 1 || g.PreDBIRCExtra[0].Server != "irc.corrupt-net.org" || len(g.PreDBIRCExtra[0].Channels) != 1 || g.PreDBIRCExtra[0].Channels[0] != "#pre" {
-		t.Fatalf("predb extra default: %+v", g.PreDBIRCExtra)
+	if !g.SRRDBEnabled || !g.NZBPasswordEnabled {
+		t.Fatalf("srrdb/nzb-password defaults: %+v", g)
 	}
 }
 
@@ -44,7 +37,7 @@ func TestNNTPGapFill_KillSwitchesReachConfig(t *testing.T) {
 	ctx := context.Background()
 	for _, k := range []string{
 		usenetsearch.KeyNameFixEnabled, usenetsearch.KeyRepairEnabled,
-		usenetsearch.KeyBackfillEnabled, usenetsearch.KeyPreDBHTTPEnabled,
+		usenetsearch.KeyBackfillEnabled,
 		usenetsearch.KeySRRDBEnabled, usenetsearch.KeyNZBPasswordEnabled,
 		usenetsearch.KeyCollectionDriftEnabled,
 	} {
@@ -60,7 +53,7 @@ func TestNNTPGapFill_KillSwitchesReachConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := configFromNNTPResponse(r)
-	if cfg.RepairEnabled || cfg.NameFixEnabled || cfg.BackfillEnabled || r.GapFill.PreDBHTTPEnabled || r.GapFill.SRRDBEnabled || r.GapFill.NZBPasswordEnabled || cfg.CollectionDriftEnabled {
+	if cfg.RepairEnabled || cfg.NameFixEnabled || cfg.BackfillEnabled || r.GapFill.SRRDBEnabled || r.GapFill.NZBPasswordEnabled || cfg.CollectionDriftEnabled {
 		t.Fatalf("kill switches ignored: %+v / %+v", cfg, r.GapFill)
 	}
 	if cfg.BackfillDays != 30 {
@@ -91,53 +84,6 @@ func TestNNTPGapFill_PutPreservesKnobs(t *testing.T) {
 	}
 }
 
-func TestNNTPGapFill_PutDumpPathSetsKVAndPreservesWhenOmitted(t *testing.T) {
-	store := newSettingsStore(t)
-	ctx := context.Background()
-	h := putUsenetNNTPNativeHandler(store, nil)
-	const dump = "/data/predb/predb.tsv.gz"
-
-	put := func(body string) usenetNNTPNativeResponse {
-		t.Helper()
-		req := httptest.NewRequest(http.MethodPut, "/api/settings/usenet-nntp-native", strings.NewReader(body))
-		rr := httptest.NewRecorder()
-		h.ServeHTTP(rr, req)
-		if rr.Code != http.StatusOK {
-			t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
-		}
-		var resp usenetNNTPNativeResponse
-		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		return resp
-	}
-
-	resp := put(`{"predbDumpPath":"` + dump + `"}`)
-	if resp.GapFill.PreDBDumpPath != dump {
-		t.Fatalf("dump path = %q", resp.GapFill.PreDBDumpPath)
-	}
-	got, err := store.Get(ctx, usenetsearch.KeyPreDBDumpPath)
-	if err != nil || got != dump {
-		t.Fatalf("kv = %q err=%v", got, err)
-	}
-
-	resp = put(`{"crawlIntervalSeconds":30}`)
-	if resp.GapFill.PreDBDumpPath != dump {
-		t.Fatalf("omitted dump path clobbered: %q", resp.GapFill.PreDBDumpPath)
-	}
-
-	rr := httptest.NewRecorder()
-	h.ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/api/settings/usenet-nntp-native", strings.NewReader(`{"predbDumpPath":"https://api.predb.net/?type=pre&q=x"}`)))
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("search API dump path status=%d body=%s", rr.Code, rr.Body.String())
-	}
-
-	resp = put(`{"predbDumpPath":""}`)
-	if resp.GapFill.PreDBDumpPath != "" {
-		t.Fatalf("empty dump path = %q", resp.GapFill.PreDBDumpPath)
-	}
-}
-
 func TestNNTPGapFill_StatusEmptyWithoutIndex(t *testing.T) {
 	store := newSettingsStore(t)
 	svc := usenetsearch.NewService(nil, nil)
@@ -157,56 +103,5 @@ func TestNNTPGapFill_StatusEmptyWithoutIndex(t *testing.T) {
 		if _, ok := resp.GapFillStatus[k]; !ok {
 			t.Fatalf("status missing %q: %v", k, resp.GapFillStatus)
 		}
-	}
-}
-
-func TestNNTPPreDB_IRCPasswordStoredEncryptedNeverReturned(t *testing.T) {
-	sqlDB := dbtest.New(t)
-	store := settings.New(sqlDB)
-	sec, err := secrets.New(make([]byte, 32))
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	rt := StartNNTPPreDB(ctx, sqlDB, store, sec, usenetsearch.NewService(nil, sqlDB))
-	SetNNTPPreDB(rt)
-	t.Cleanup(func() { SetNNTPPreDB(nil) })
-
-	const secret = "hunter2-not-a-real-password"
-	req := httptest.NewRequest(http.MethodPut, "/x", strings.NewReader(`{"password":"`+secret+`"}`))
-	rr := httptest.NewRecorder()
-	putUsenetNNTPPreDBIRCPasswordHandler(store).ServeHTTP(rr, req)
-	if rr.Code != http.StatusOK || strings.Contains(rr.Body.String(), secret) {
-		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
-	}
-	enc, err := store.Get(context.Background(), usenetsearch.KeyPreDBIRCPasswordEnc)
-	if err != nil || enc == "" || strings.Contains(enc, secret) {
-		t.Fatalf("stored value must be ciphertext: %q err=%v", enc, err)
-	}
-	if got, err := sec.Decrypt(enc); err != nil || got != secret {
-		t.Fatalf("round trip: %q err=%v", got, err)
-	}
-	r, _ := loadNNTPNativeSettings(context.Background(), store, nil)
-	if !r.GapFill.IRCPasswordSet {
-		t.Fatal("passwordSet not reported")
-	}
-	if b, _ := json.Marshal(r); strings.Contains(string(b), secret) || strings.Contains(string(b), enc) {
-		t.Fatal("settings response leaks the password or its ciphertext")
-	}
-
-	rr = httptest.NewRecorder()
-	putUsenetNNTPPreDBIRCPasswordHandler(store).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/x", strings.NewReader(`{"password":""}`)))
-	if enc, _ := store.Get(context.Background(), usenetsearch.KeyPreDBIRCPasswordEnc); rr.Code != http.StatusOK || enc != "" {
-		t.Fatalf("clear failed: status=%d enc=%q", rr.Code, enc)
-	}
-}
-
-func TestNNTPPreDB_PasswordEndpointWithoutRuntime(t *testing.T) {
-	SetNNTPPreDB(nil)
-	rr := httptest.NewRecorder()
-	putUsenetNNTPPreDBIRCPasswordHandler(newSettingsStore(t)).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/x", strings.NewReader(`{}`)))
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status=%d", rr.Code)
 	}
 }

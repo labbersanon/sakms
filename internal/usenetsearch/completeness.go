@@ -40,16 +40,25 @@ const (
 // missing from recomputeOne. Review if: 2160p-only tags or WEB-DL without p.
 // Claude 2026-10-20: parhash/sfv/srrdb are recovered sources like par2/rar.
 // Reason: identNameSQL omitted them, so an 80–94% srrdb/sfv rename would not
-//   be searchable until 95%. Review if: a new name_source is added.
-const identNameSQL = `(name_source IN ('predb','par2','parhash','rar','ybegin','nfo','sfv','srrdb') OR (display_name ~* '(1080|720|2160|480)p|1280x720|3840x2160|1920x[0-9]+' AND (display_name ~ '[12][0-9]{3}' OR display_name ~* 'S[0-9]{1,2}([^0-9]|$)' OR (display_name ~ '[A-Za-z]{3,}' AND display_name ~ '[ .]'))))`
+//
+//	be searchable until 95%. Review if: a new name_source is added.
+//
+// Claude 2026-10-22: drop name_source=predb; add file/nzb.
+// Reason: PreDB/IRC decommissioned. Header filenames and NZB-password titles
+//
+//	are recovered sources. Review if: a new name_source is added.
+const identNameSQL = `(name_source IN ('par2','parhash','rar','ybegin','nfo','file','sfv','srrdb','nzb') OR (display_name ~* '(1080|720|2160|480)p|1280x720|3840x2160|1920x[0-9]+' AND (display_name ~ '[12][0-9]{3}' OR display_name ~* 'S[0-9]{1,2}([^0-9]|$)' OR (display_name ~ '[A-Za-z]{3,}' AND display_name ~ '[ .]'))))`
 
 // junkNameSQL is named subject rows indexers would not list as a title:
 // `(????)` / `(Els1212)` mega-buckets, "Description — N GB", single tokens.
 // Claude 2026-10-20: `_` is a word separator in junk (Metropolis_Magazine_2026).
 // Reason: ingest names quotedReleaseName keys as name_source=subject; junk
-//   required `[ .]` so underscore magazines were named but not searchable.
+//
+//	required `[ .]` so underscore magazines were named but not searchable.
+//
 // Review if: a hash token with `_` is ingested as subject (quotedReleaseName
-//   must keep rejecting those).
+//
+//	must keep rejecting those).
 const junkNameSQL = `(state='named' AND name_source='subject' AND (display_name ~ '^\(' OR display_name ~* '^description' OR (display_name !~ '[ ._]' AND display_name !~* '(1080|720|2160|480)p|1920x1080')))`
 
 // ClampMinCompletenessPct maps 0/unset to the default and clamps to 80-100.

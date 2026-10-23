@@ -14,8 +14,8 @@ import (
 )
 
 // Claude 2026-10-16: wire ChatJSON + HTTP fetch into NNTP collection drift.
-// Reason: usenetsearch must not import identify/mode; api already owns PreDB
-//   wiring the same way. BuildAIClient is nil unless AI fallback is on.
+// Reason: usenetsearch must not import identify/mode; api owns settings
+//   and secrets. BuildAIClient is nil unless AI fallback is on.
 // Troubleshooting: drift pass no-ops → ai_fallback_enabled false or no model.
 // Review if: Settings grows a collection-drift toggle beyond the KV kill switch.
 // Related files: internal/usenetsearch/drift.go, cmd/sakms/main.go

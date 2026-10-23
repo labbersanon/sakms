@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/labbersanon/sakms/internal/settings"
 	"github.com/labbersanon/sakms/internal/usenetsearch"
-	"github.com/labbersanon/sakms/internal/usenetsearch/predb"
 )
 
 // Claude 2026-09-18: per-mode group multi-select + LIST ACTIVE picker.
@@ -42,42 +40,26 @@ type usenetNNTPNativeResponse struct {
 	//   true) on every read so a PUT save never clobbers it — no request
 	//   field exists to set it; see usenetsearch.KeyAdmissionEnabled.
 	// Review if: a Settings UI toggle for this ships.
-	AdmissionEnabled bool `json:"admissionEnabled"`
-	// Claude 2026-10-19: dump path is the one writable gap-fill knob on PUT
-	//   (`predbDumpPath` on the request). Other gap-fill keys stay GET-only so
-	//   a Settings save cannot clobber them.
-	// Reason: dumpLoop starts in NNTPPreDB.Reload (boot / this PUT / IRC-password
-	//   PUT). SQL-only KV left the importer inert until a container restart.
-	// Troubleshooting: dump path set but no "predb dump" log → Reload did not
-	//   run (nntpPreDB nil) or the URL failed IsFetchURL.
-	// Review if: a Settings UI for the rest of gap-fill ships.
-	GapFill       usenetNNTPGapFill           `json:"gapFill"`
-	GapFillStatus *usenetsearch.GapFillStatus `json:"gapFillStatus,omitempty"`
+	AdmissionEnabled bool                        `json:"admissionEnabled"`
+	GapFill          usenetNNTPGapFill           `json:"gapFill"`
+	GapFillStatus    *usenetsearch.GapFillStatus `json:"gapFillStatus,omitempty"`
 }
 
-// usenetNNTPGapFill mirrors the gap-fill fields of usenetsearch.Config plus the
-// PreDB provider state. IRCPasswordSet reports presence only — the password
-// never leaves the server.
+// usenetNNTPGapFill mirrors the gap-fill fields of usenetsearch.Config.
 type usenetNNTPGapFill struct {
-	NameFixEnabled         bool              `json:"namefixEnabled"`
-	NameFixBodyMBPerHour   int               `json:"namefixBodyMbPerHour"`
-	UnnamedTTLDays         int               `json:"unnamedTtlDays"`
-	UnnamedMaxPct          int               `json:"unnamedMaxPct"`
-	PreDBHTTPEnabled       bool              `json:"predbHttpEnabled"`
-	PreDBHTTPURL           string            `json:"predbHttpUrl"`
-	SRRDBEnabled           bool              `json:"srrdbEnabled"`
-	NZBPasswordEnabled     bool              `json:"nzbPasswordEnabled"`
-	PreDBIRCEnabled        bool              `json:"predbIrcEnabled"`
-	IRCPasswordSet         bool              `json:"predbIrcPasswordSet"`
-	PreDBIRCExtra          []predb.IRCConfig `json:"predbIrcExtra"`
-	PreDBDumpPath          string            `json:"predbDumpPath"`
-	MinCompletenessPct     int               `json:"minCompletenessPct"`
-	IncompleteTTLDays      int               `json:"incompleteTtlDays"`
-	RepairEnabled          bool              `json:"repairEnabled"`
-	BackfillEnabled        bool              `json:"backfillEnabled"`
-	BackfillDays           int               `json:"backfillDays"`
-	BackfillBudgetPct      int               `json:"backfillBudgetPct"`
-	CollectionDriftEnabled bool              `json:"collectionDriftEnabled"`
+	NameFixEnabled         bool `json:"namefixEnabled"`
+	NameFixBodyMBPerHour   int  `json:"namefixBodyMbPerHour"`
+	UnnamedTTLDays         int  `json:"unnamedTtlDays"`
+	UnnamedMaxPct          int  `json:"unnamedMaxPct"`
+	SRRDBEnabled           bool `json:"srrdbEnabled"`
+	NZBPasswordEnabled     bool `json:"nzbPasswordEnabled"`
+	MinCompletenessPct     int  `json:"minCompletenessPct"`
+	IncompleteTTLDays      int  `json:"incompleteTtlDays"`
+	RepairEnabled          bool `json:"repairEnabled"`
+	BackfillEnabled        bool `json:"backfillEnabled"`
+	BackfillDays           int  `json:"backfillDays"`
+	BackfillBudgetPct      int  `json:"backfillBudgetPct"`
+	CollectionDriftEnabled bool `json:"collectionDriftEnabled"`
 }
 
 type usenetNNTPNativeRequest struct {
@@ -95,8 +77,6 @@ type usenetNNTPNativeRequest struct {
 	IndexMaxGB    *int    `json:"indexMaxGb"`
 	WindowDays    *int    `json:"windowDays"`
 	CrawlInterval *int    `json:"crawlIntervalSeconds"`
-	// Claude 2026-10-19: optional; omitted leaves the dump KV unchanged.
-	PredbDumpPath *string `json:"predbDumpPath"`
 }
 
 type usenetNNTPGroupsResponse struct {
@@ -362,13 +342,6 @@ func putUsenetNNTPNativeHandler(settingsStore *settings.Store, svc *usenetsearch
 		if req.CrawlInterval != nil {
 			cur.CrawlInterval = *req.CrawlInterval
 		}
-		if req.PredbDumpPath != nil {
-			cur.GapFill.PreDBDumpPath = strings.TrimSpace(*req.PredbDumpPath)
-			if strings.Contains(cur.GapFill.PreDBDumpPath, "://") && !predb.IsFetchURL(cur.GapFill.PreDBDumpPath) {
-				http.Error(w, "predbDumpPath must be a local TSV/gz path or an http(s) dump file URL, not a search API", http.StatusBadRequest)
-				return
-			}
-		}
 		if cur.IndexMaxGB <= 0 {
 			cur.IndexMaxGB = usenetsearch.DefaultIndexMaxGB
 		}
@@ -414,9 +387,6 @@ func putUsenetNNTPNativeHandler(settingsStore *settings.Store, svc *usenetsearch
 			{usenetsearch.KeyWindowDays, strconv.Itoa(cur.WindowDays)},
 			{usenetsearch.KeyCrawlInterval, strconv.Itoa(cur.CrawlInterval)},
 		}
-		if req.PredbDumpPath != nil {
-			sets = append(sets, struct{ k, v string }{usenetsearch.KeyPreDBDumpPath, cur.GapFill.PreDBDumpPath})
-		}
 		for _, kv := range sets {
 			if err := settingsStore.Set(ctx, kv.k, kv.v); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -432,11 +402,6 @@ func putUsenetNNTPNativeHandler(settingsStore *settings.Store, svc *usenetsearch
 			_ = settingsStore.Set(ctx, usenetsearch.KeyProbeDetail, probe.Detail)
 			cur.ProbeState = probe.State
 			cur.ProbeDetail = probe.Detail
-		}
-		if req.PredbDumpPath != nil {
-			if rt := getNNTPPreDB(); rt != nil {
-				rt.Reload(ctx)
-			}
 		}
 		writeJSON(w, cur)
 	}
@@ -666,14 +631,8 @@ func configFromNNTPResponse(r usenetNNTPNativeResponse) usenetsearch.Config {
 }
 
 // loadNNTPGapFill reads the gap-fill KV knobs. Defaults make every feature on
-// (including repair, whose Go zero value is false, and the synIRC PRE feed);
-// each bool key is its feature's kill switch.
-// Claude 2026-10-18: PreDB IRC defaults on (random nick, no NickServ).
-// Reason: synIRC confirm mail never arrived; #PreNNTmux allows unregistered
-// JOIN. Kill switch remains usenet_nntp_predb_irc_enabled=false.
-// Troubleshooting: no "predb irc connected" → this default did not apply or
-// outbound 6697 is blocked.
-// Review if: the feed is disabled per-deploy via KV.
+// (including repair, whose Go zero value is false); each bool key is its
+// feature's kill switch.
 func loadNNTPGapFill(ctx context.Context, st *settings.Store) (usenetNNTPGapFill, error) {
 	var g usenetNNTPGapFill
 	var err error
@@ -683,8 +642,6 @@ func loadNNTPGapFill(ctx context.Context, st *settings.Store) (usenetNNTPGapFill
 		def bool
 	}{
 		{&g.NameFixEnabled, usenetsearch.KeyNameFixEnabled, true},
-		{&g.PreDBHTTPEnabled, usenetsearch.KeyPreDBHTTPEnabled, true},
-		{&g.PreDBIRCEnabled, usenetsearch.KeyPreDBIRCEnabled, true},
 		{&g.SRRDBEnabled, usenetsearch.KeySRRDBEnabled, true},
 		{&g.NZBPasswordEnabled, usenetsearch.KeyNZBPasswordEnabled, true},
 		{&g.RepairEnabled, usenetsearch.KeyRepairEnabled, true},
@@ -713,31 +670,6 @@ func loadNNTPGapFill(ctx context.Context, st *settings.Store) (usenetNNTPGapFill
 		if *i.dst, err = getSettingInt(ctx, st, i.key, i.def); err != nil {
 			return g, err
 		}
-	}
-	if g.PreDBHTTPURL, err = st.Get(ctx, usenetsearch.KeyPreDBHTTPURL); err != nil && !isSettingsNotFound(err) {
-		return g, err
-	}
-	if strings.TrimSpace(g.PreDBHTTPURL) == "" {
-		g.PreDBHTTPURL = predb.DefaultHTTPURL
-	}
-	enc, err := st.Get(ctx, usenetsearch.KeyPreDBIRCPasswordEnc)
-	if err != nil && !isSettingsNotFound(err) {
-		return g, err
-	}
-	g.IRCPasswordSet = enc != ""
-	if g.PreDBDumpPath, err = st.Get(ctx, usenetsearch.KeyPreDBDumpPath); err != nil && !isSettingsNotFound(err) {
-		return g, err
-	}
-	g.PreDBDumpPath = strings.TrimSpace(g.PreDBDumpPath)
-	extraRaw, err := st.Get(ctx, usenetsearch.KeyPreDBIRCExtra)
-	if err != nil && !isSettingsNotFound(err) {
-		return g, err
-	}
-	feeds, err := predb.ParseExtraIRCFeeds(extraRaw)
-	if err != nil {
-		log.Printf("usenetsearch: predb irc extra: %v", err)
-	} else {
-		g.PreDBIRCExtra = feeds
 	}
 	return g, nil
 }

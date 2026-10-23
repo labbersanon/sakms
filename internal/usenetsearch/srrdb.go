@@ -15,7 +15,7 @@ import (
 
 // Claude 2026-10-20: srrdb archive-crc lookup (use, do not scrape).
 // Reason: remaining hash.par2 FileDesc names are random tokens; nZEDb 2652
-//   says hashed rename needs PreDB/IRC, and commercial indexers scrape NZBs
+//   says hashed rename needed a title corpus, and commercial indexers scrape NZBs
 //   (forbidden). srrdb documents GET /v1/search/archive-crc:XXXXXXXX as the
 //   public reverse lookup for an inner-file CRC32 (RAR FILE_CRC / SFV / ZIP).
 // Troubleshooting: name_source=srrdb stays 0 with rar BODY → CRC extract
@@ -26,7 +26,7 @@ import (
 // page this endpoint to build a catalog (provider: "Use but don't scrape").
 const DefaultSRRDBURL = "https://api.srrdb.com/v1/search/"
 
-// MinSRRDBInterval spaces CRC lookups the same way as PreDB HTTP (≤30/min).
+// MinSRRDBInterval spaces CRC lookups at ≤30/min.
 const MinSRRDBInterval = 2 * time.Second
 
 const (

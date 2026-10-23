@@ -2,7 +2,6 @@ package usenetsearch
 
 import (
 	"context"
-	"crypto/md5"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
@@ -19,7 +18,6 @@ import (
 	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/quality"
 	"github.com/labbersanon/sakms/internal/usenet"
-	"github.com/labbersanon/sakms/internal/usenetsearch/predb"
 )
 
 func par2Packet(typ string, body []byte) []byte {
@@ -216,50 +214,6 @@ func TestParsesAsRelease(t *testing.T) {
 	}
 }
 
-type fakePreDB struct {
-	hashes     map[string]PreDBHit
-	names      map[string]PreDBHit
-	filenames  map[string]PreDBHit
-	requestIDs map[int64]PreDBHit
-}
-
-func (f *fakePreDB) ByHash(_ context.Context, h string) (PreDBHit, bool) {
-	v, ok := f.hashes[h]
-	return v, ok
-}
-func (f *fakePreDB) ByName(_ context.Context, n string) (PreDBHit, bool) {
-	v, ok := f.names[n]
-	return v, ok
-}
-func (f *fakePreDB) ByFilename(_ context.Context, n string) (PreDBHit, bool) {
-	v, ok := f.filenames[strings.ToLower(n)]
-	return v, ok
-}
-func (f *fakePreDB) Search(ctx context.Context, q string) (PreDBHit, bool) {
-	if hit, ok := f.ByFilename(ctx, q); ok {
-		return hit, true
-	}
-	cleaned := predb.CleanForMatching(q)
-	if cleaned != "" {
-		if hit, ok := f.ByFilename(ctx, cleaned); ok {
-			return hit, true
-		}
-		if hit, ok := f.ByName(ctx, cleaned); ok {
-			return hit, true
-		}
-	}
-	for _, h := range predb.HashTokens(q) {
-		if hit, ok := f.ByHash(ctx, h); ok {
-			return hit, true
-		}
-	}
-	return f.ByName(ctx, q)
-}
-func (f *fakePreDB) ByRequestID(_ context.Context, id int64, _ string) (PreDBHit, bool) {
-	v, ok := f.requestIDs[id]
-	return v, ok
-}
-
 type fakeSRRDB struct {
 	crcs map[string]PreDBHit
 }
@@ -397,6 +351,47 @@ func par2Body(names ...string) usenet.BodySample {
 	return usenet.BodySample{Data: data, YencName: nfHash + ".par2", WireBytes: int64(len(data))}
 }
 
+func usenetBodyNFO(name string) usenet.BodySample {
+	data := []byte("  RELEASE INFO\n  Name: " + name + "\n  Size: 4GB\n")
+	return usenet.BodySample{Data: data, WireBytes: int64(len(data))}
+}
+
+func nfoHeaderAsNFO(t *testing.T, f *nfFixture, msgid, name string) {
+	t.Helper()
+	f.src.bodies[msgid] = usenetBodyNFO(name)
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_headers SET subject=REPLACE(subject, '.par2', '.nfo'), filename=REPLACE(filename, '.par2', '.nfo') WHERE msgid=?`, msgid); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNameFix_NFOSceneRenamesWithoutPreDB(t *testing.T) {
+	const name = "Nfo.Movie.2020.1080p.WEB-DL.x264-GRP"
+	f := newNFFixture(t, obfuscatedSet("n", nfHash, 1, 45), nil)
+	f.crawlAndRecompute(t)
+	nfoHeaderAsNFO(t, f, "npar2", name)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Renamed != 1 || res.BySource[sourceNFO] != 1 {
+		t.Fatalf("scene NFO must rename: %+v", res)
+	}
+}
+
+func TestNameFix_GarbageNFODoesNotRename(t *testing.T) {
+	const name = "Nfo.Movie.2020-GRP"
+	f := newNFFixture(t, obfuscatedSet("n", nfHash, 1, 45), nil)
+	f.crawlAndRecompute(t)
+	nfoHeaderAsNFO(t, f, "npar2", name)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Renamed != 0 || res.Unresolved != 1 {
+		t.Fatalf("garbage NFO must not rename: %+v", res)
+	}
+}
+
 func TestNameFix_StagedThenRenamedFromPar2ThenSearchable(t *testing.T) {
 	rows := obfuscatedSet("o", nfHash, 1, 45)
 	f := newNFFixture(t, rows, nil)
@@ -451,45 +446,6 @@ func TestNameFix_StagedThenRenamedFromPar2ThenSearchable(t *testing.T) {
 	c, err := f.idx.LoadBySeed(ctx, nfGroup, cs[0].SeedMsgID)
 	if err != nil || c.Name != cs[0].Name {
 		t.Fatalf("locator round-trip = %q err=%v", c.Name, err)
-	}
-}
-
-func TestNameFix_Par2FileDescHashHitsPreDB(t *testing.T) {
-	const title = "FileDesc.Movie.2021.1080p.BluRay.x264-GRP"
-	sum := md5.Sum([]byte(title))
-	h := hex.EncodeToString(sum[:])
-	f := newNFFixture(t, obfuscatedSet("fd", nfHash, 1, 1), nil)
-	f.nf.PreDB = &fakePreDB{hashes: map[string]PreDBHit{h: {Title: title}}}
-	f.crawlAndRecompute(t)
-	f.src.bodies["fdpar2"] = par2Body(h + ".part01.rar")
-	res, err := f.nf.Run(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.HashHits != 1 || res.Renamed != 1 || res.BySource[sourcePreDB] != 1 || res.BodyFetches < 1 {
-		t.Fatalf("PAR2 FileDesc hash must PreDB-rename: %+v", res)
-	}
-	if _, _, display, _ := f.release(t); display != title {
-		t.Fatalf("display = %q", display)
-	}
-}
-
-func TestNameFix_Md5SubjectResolvesWithZeroBodyFetches(t *testing.T) {
-	const title = "Another.Movie.2020.1080p.WEB-DL.x264-GRP"
-	sum := md5.Sum([]byte(title))
-	h := hex.EncodeToString(sum[:])
-	f := newNFFixture(t, obfuscatedSet("m", h, 1, 45), nil)
-	f.nf.PreDB = &fakePreDB{hashes: map[string]PreDBHit{h: {Title: title}}}
-	f.crawlAndRecompute(t)
-	res, err := f.nf.Run(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.HashHits != 1 || res.Renamed != 1 || res.BodyFetches != 0 || len(f.src.bodyCalls) != 0 {
-		t.Fatalf("result = %+v bodyCalls=%v", res, f.src.bodyCalls)
-	}
-	if _, _, display, _ := f.release(t); display != title {
-		t.Fatalf("display = %q", display)
 	}
 }
 
@@ -827,34 +783,6 @@ func TestDuePendingNames_PrefersMkvPar2OverRar(t *testing.T) {
 		t.Fatalf("due=%d, want mkv + rar pending", len(sets))
 	}
 	assertPendingHeaderHas(t, f.idx, sets[0], ".mkv", "mkv+par2 (ahead of hash-rar)")
-}
-
-func TestFilenameCandidates_KeepsHexAndRandom(t *testing.T) {
-	hex := []HeaderRow{
-		{Filename: nfHash + ".part01.rar"},
-		{Filename: nfHash + ".par2"},
-		{Subject: `[01/2] - "` + nfHash + `.mkv" yEnc (1/1)`},
-	}
-	got := filenameCandidates(hex)
-	want := nfHash + ".part01.rar"
-	found := false
-	for _, n := range got {
-		if n == want {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("hex hash filenames = %v, want %q for Search", got, want)
-	}
-	const tok = "v1AAqzDH11LfEAAN9yuzTJ.part01.rar"
-	got = filenameCandidates([]HeaderRow{{Filename: tok}})
-	for _, n := range got {
-		if n == tok {
-			return
-		}
-	}
-	t.Fatalf("random archive = %v, want %q", got, tok)
 }
 
 func TestNameFix_MkvPar2BodyBeforeHashRar(t *testing.T) {
@@ -1311,6 +1239,9 @@ func TestStaging_YieldGroupEmptyIndexStages(t *testing.T) {
 // With namefix off the crawl keeps today's behavior: nothing is staged (no
 // obf-keyed headers, no pending_name release rows); rows are parsed exactly as
 // ParseSubject always did.
+// With namefix off the crawl keeps today's behavior: nothing is staged (no
+// obf-keyed headers, no pending_name release rows); rows are parsed exactly as
+// ParseSubject always did.
 func TestNameFixOff_ObfuscatedRowsNotStaged(t *testing.T) {
 	rows := obfuscatedSet("g", nfHash, 1, 5)
 	f := newNFFixture(t, rows, nil)
@@ -1513,194 +1444,6 @@ func leadTokenHashSet(prefix, token, hash string, startNum, files int) []usenet.
 	return out
 }
 
-func TestNameFix_FilenameHashResolvesFromPreDB(t *testing.T) {
-	const title = "Lead.Token.2021.1080p.WEB-DL.x264-GRP"
-	const token = "ah63jka93jf0jh26ahjas558"
-	sum := md5.Sum([]byte(title))
-	h := hex.EncodeToString(sum[:])
-	rows := leadTokenHashSet("lh", token, h, 1, 45)
-	if hashCore(obfSkeleton(rows[0].Subject)) == h {
-		t.Fatal("setup: grouping skeleton must be the lead token, not the filename hash")
-	}
-	f := newNFFixture(t, rows, nil)
-	f.nf.PreDB = &fakePreDB{hashes: map[string]PreDBHit{h: {Title: title}}}
-	f.crawlAndRecompute(t)
-	res, err := f.nf.Run(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.HashHits != 1 || res.Renamed != 1 || res.BodyFetches != 0 || len(f.src.bodyCalls) != 0 {
-		t.Fatalf("result = %+v bodyCalls=%v", res, f.src.bodyCalls)
-	}
-	if _, _, display, _ := f.release(t); display != title {
-		t.Fatalf("display = %q", display)
-	}
-}
-
-func TestNameFix_PreDBFilenameResolvesRandomArchiveName(t *testing.T) {
-	const title = "Named.From.File.2020.1080p.BluRay.x264-GRP"
-	const token = "KLoSR1zOTNoaex3x"
-	rows := leadTokenHashSet("fn", token, "v1AAqzDH11LfEAAN9yuzTJ", 1, 45)
-	f := newNFFixture(t, rows, nil)
-	f.nf.PreDB = &fakePreDB{filenames: map[string]PreDBHit{
-		"v1aaqzdh11lfeaan9yuztj.part01.rar": {Title: title},
-	}}
-	f.crawlAndRecompute(t)
-	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET next_name_at=?`, time.Now().Add(time.Hour).Unix()); err != nil {
-		t.Fatal(err)
-	}
-	res, err := f.nf.Run(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.HashHits != 1 || res.Renamed != 1 || res.BodyFetches != 0 || len(f.src.bodyCalls) != 0 {
-		t.Fatalf("match:prefiles must name before BODY and ignore next_name_at: %+v bodyCalls=%v", res, f.src.bodyCalls)
-	}
-}
-
-func TestNameFix_RequestIDResolvesFromPreDB(t *testing.T) {
-	const title = "Grey.S21E03.720p.HDTV.x264-GRP"
-	const id int64 = 23051509
-	rows := requestIDSet("rq", id, 1, 45)
-	f := newNFFixture(t, rows, nil)
-	f.nf.PreDB = &fakePreDB{requestIDs: map[int64]PreDBHit{id: {Title: title}}}
-	f.crawlAndRecompute(t)
-	key, state, display, _ := f.release(t)
-	if !isObfKey(key) || state != statePendingName || display != "" {
-		t.Fatalf("staged = %q %q %q", key, state, display)
-	}
-	res, err := f.nf.Run(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.HashHits != 1 || res.Renamed != 1 || res.BodyFetches != 0 || len(f.src.bodyCalls) != 0 {
-		t.Fatalf("result = %+v bodyCalls=%v", res, f.src.bodyCalls)
-	}
-	if _, _, display, _ := f.release(t); display != title {
-		t.Fatalf("display = %q", display)
-	}
-}
-
-func requestIDSet(prefix string, id int64, startNum, files int) []usenet.MessageOverview {
-	var out []usenet.MessageOverview
-	n := startNum
-	for f := 1; f <= files; f++ {
-		for p := 1; p <= 2; p++ {
-			out = append(out, usenet.MessageOverview{
-				Number: n,
-				Subject: fmt.Sprintf(`[%d]-[FULL]-[#a.b.teevee@EFNet]-[ ]-[%02d/%d] - "%s.part%02d.rar" yEnc (%d/2)`,
-					id, f, files+1, prefix, f, p),
-				From:      "poster@req",
-				MessageID: fmt.Sprintf("%s%d_%d@t", prefix, f, p),
-				Bytes:     2_000_000,
-				DateUnix:  1700000000,
-			})
-			n++
-		}
-	}
-	out = append(out, usenet.MessageOverview{
-		Number: n,
-		Subject: fmt.Sprintf(`[%d]-[FULL]-[#a.b.teevee@EFNet]-[ ]-[%02d/%d] - "%s.par2" yEnc (1/1)`,
-			id, files+1, files+1, prefix),
-		From:      "poster@req",
-		MessageID: prefix + "par2",
-		Bytes:     40_000,
-		DateUnix:  1700000000,
-	})
-	return out
-}
-
-func dropPayloadParts(t *testing.T, idx *Index, n int) {
-	t.Helper()
-	if n <= 0 {
-		return
-	}
-	res, err := idx.db.Exec(`
-DELETE FROM usenet_nntp_headers
-WHERE msgid IN (
-  SELECT msgid FROM usenet_nntp_headers
-  WHERE is_meta=FALSE AND part_n=2
-  ORDER BY msg_num
-  LIMIT ?
-)`, n)
-	if err != nil {
-		t.Fatal(err)
-	}
-	deleted, _ := res.RowsAffected()
-	if deleted != int64(n) {
-		t.Fatalf("deleted payload parts=%d, want %d", deleted, n)
-	}
-	var key string
-	if err := idx.db.QueryRow(`SELECT release_key FROM usenet_nntp_releases LIMIT 1`).Scan(&key); err != nil {
-		t.Fatal(err)
-	}
-	if err := idx.markDirty(context.Background(), []releaseKey{{nfGroup, key}}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := idx.RecomputeDirty(context.Background(), 10); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestDuePendingPreDB_IncludesBelowGatePending(t *testing.T) {
-	f := newNFFixture(t, obfuscatedSet("bg", nfHash, 1, 45), nil)
-	f.crawlAndRecompute(t)
-	dropPayloadParts(t, f.idx, 9) // 81/90 = 90%
-	ctx := context.Background()
-	due, err := f.idx.DuePendingNames(ctx, []string{nfGroup}, 40)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(due) != 0 {
-		t.Fatalf("DuePendingNames=%d, want 0 (BODY stays at 95%%)", len(due))
-	}
-	sets, err := f.idx.DuePendingPreDB(ctx, 40)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(sets) != 1 || !sets[0].PreDBOnly {
-		t.Fatalf("DuePendingPreDB=%+v, want one PreDB-only 90%% set", sets)
-	}
-}
-
-func TestNameFix_PreDBBelowGateSearchableNotGrabReady(t *testing.T) {
-	const title = "Below.Gate.2021.1080p.WEB-DL.x264-GRP"
-	sum := md5.Sum([]byte(title))
-	h := hex.EncodeToString(sum[:])
-	f := newNFFixture(t, obfuscatedSet("bg", h, 1, 45), nil)
-	f.nf.PreDB = &fakePreDB{hashes: map[string]PreDBHit{h: {Title: title}}}
-	f.crawlAndRecompute(t)
-	dropPayloadParts(t, f.idx, 9)
-	ctx := context.Background()
-	res, err := f.nf.Run(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.HashHits != 1 || res.Renamed != 1 || res.BodyFetches != 0 || len(f.src.bodyCalls) != 0 {
-		t.Fatalf("result=%+v bodyCalls=%v", res, f.src.bodyCalls)
-	}
-	var searchable bool
-	var source string
-	var bp int
-	if err := f.idx.db.QueryRow(`SELECT searchable, name_source, completeness_bp FROM usenet_nntp_releases`).Scan(&searchable, &source, &bp); err != nil {
-		t.Fatal(err)
-	}
-	if !searchable || source != sourcePreDB || bp < spanRepairFloorBP || bp >= f.idx.MinCompletenessPct()*100 {
-		t.Fatalf("searchable=%v source=%s bp=%d", searchable, source, bp)
-	}
-	cs, err := f.idx.SearchReleases(ctx, Query{Terms: []string{"Below.Gate"}})
-	if err != nil || len(cs) != 1 || cs[0].Complete || cs[0].Name != title {
-		t.Fatalf("search=%+v err=%v", cs, err)
-	}
-	if _, err := ToNZB(cs[0]); !errors.Is(err, ErrIncomplete) {
-		t.Fatalf("ToNZB err=%v, want ErrIncomplete", err)
-	}
-	grab, err := f.idx.SearchReleases(ctx, Query{Terms: []string{"Below.Gate"}, GrabReady: true})
-	if err != nil || len(grab) != 0 {
-		t.Fatalf("GrabReady search=%+v err=%v, want empty", grab, err)
-	}
-}
-
 func TestRenameRelease_Par2BelowGateIsIdentified(t *testing.T) {
 	f := newNFFixture(t, obfuscatedSet("p2", nfHash, 1, 45), nil)
 	f.crawlAndRecompute(t)
@@ -1727,69 +1470,6 @@ func TestRenameRelease_Par2BelowGateIsIdentified(t *testing.T) {
 	}
 }
 
-func TestDuePendingPreDB_IncludesBoneless(t *testing.T) {
-	f := newNFFixture(t, obfuscatedSet("bo", nfHash, 1, 45), nil)
-	f.crawlAndRecompute(t)
-	ctx := context.Background()
-	const fire = "alt.binaries.boneless"
-	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET group_name=?`, fire); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_headers SET group_name=?`, fire); err != nil {
-		t.Fatal(err)
-	}
-	due, err := f.idx.DuePendingNames(ctx, []string{fire, nfGroup}, 40)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(due) != 0 {
-		t.Fatalf("DuePendingNames boneless=%d, want 0 (BODY stays yield-only)", len(due))
-	}
-	sets, err := f.idx.DuePendingPreDB(ctx, 40)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(sets) != 1 || sets[0].Group != fire || !sets[0].PreDBOnly {
-		t.Fatalf("DuePendingPreDB=%+v, want boneless PreDB-only", sets)
-	}
-}
-
-func TestNameFix_ExhaustedYieldPreDBRetryNoBody(t *testing.T) {
-	const title = "Later.Irc.2022.1080p.WEB-DL.x264-GRP"
-	sum := md5.Sum([]byte(title))
-	h := hex.EncodeToString(sum[:])
-	f := newNFFixture(t, obfuscatedSet("ex", h, 1, 45), nil)
-	f.crawlAndRecompute(t)
-	ctx := context.Background()
-	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET name_attempts=?, next_name_at=0, dirty=FALSE, parhash_sampled=TRUE`, maxNameAttempts); err != nil {
-		t.Fatal(err)
-	}
-	res, err := f.nf.Run(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Renamed != 0 || res.BodyFetches != 0 || len(f.src.bodyCalls) != 0 {
-		t.Fatalf("miss must not BODY: %+v bodyCalls=%v", res, f.src.bodyCalls)
-	}
-	if res.Sets != 1 {
-		t.Fatalf("exhausted yield should still be tried: %+v", res)
-	}
-	f.nf.PreDB = &fakePreDB{hashes: map[string]PreDBHit{h: {Title: title}}}
-	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET next_name_at=0`); err != nil {
-		t.Fatal(err)
-	}
-	res, err = f.nf.Run(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.HashHits != 1 || res.Renamed != 1 || len(f.src.bodyCalls) != 0 {
-		t.Fatalf("later PreDB hit = %+v bodyCalls=%v", res, f.src.bodyCalls)
-	}
-	if _, _, display, _ := f.release(t); display != title {
-		t.Fatalf("display = %q", display)
-	}
-}
-
 func TestDuePendingIdentBody_IncludesBelowGatePar2(t *testing.T) {
 	f := newNFFixture(t, obfuscatedSet("ib", nfHash, 1, 45), nil)
 	f.crawlAndRecompute(t)
@@ -1806,7 +1486,7 @@ func TestDuePendingIdentBody_IncludesBelowGatePar2(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ident) != 1 || ident[0].PreDBOnly || !ident[0].HasPar2 {
+	if len(ident) != 1 || !ident[0].HasPar2 {
 		t.Fatalf("DuePendingIdentBody=%+v, want one BODY-capable 90%% PAR2 set", ident)
 	}
 }
@@ -1840,27 +1520,6 @@ func TestNameFix_Par2BelowGateBODYSearchable(t *testing.T) {
 	grab, err := f.idx.SearchReleases(ctx, Query{Terms: []string{"Guessed.Movie"}, GrabReady: true})
 	if err != nil || len(grab) != 0 {
 		t.Fatalf("GrabReady=%+v err=%v", grab, err)
-	}
-}
-
-func TestNameFix_SkipBodyStillHitsPreDB(t *testing.T) {
-	const title = "Quiet.Movie.2022.1080p.WEB-DL.x264-GRP"
-	sum := md5.Sum([]byte(title))
-	h := hex.EncodeToString(sum[:])
-	f := newNFFixture(t, obfuscatedSet("qb", h, 1, 45), nil)
-	f.nf.PreDB = &fakePreDB{hashes: map[string]PreDBHit{h: {Title: title}}}
-	f.nf.SkipBody = true
-	f.src.bodies["qbpar2"] = par2Body("Would.Body.2021.1080p.BluRay.x264-GRP.part01.rar")
-	f.crawlAndRecompute(t)
-	res, err := f.nf.Run(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.HashHits != 1 || res.Renamed != 1 || len(f.src.bodyCalls) != 0 {
-		t.Fatalf("SkipBody must PreDB without BODY: %+v bodyCalls=%v", res, f.src.bodyCalls)
-	}
-	if _, _, display, _ := f.release(t); display != title {
-		t.Fatalf("display=%q", display)
 	}
 }
 
@@ -1906,7 +1565,7 @@ func TestNameFixPhaseBudget_BodyIs90s(t *testing.T) {
 	if got := n.phaseBudget("body"); got != 90*time.Second {
 		t.Fatalf("body default=%s", got)
 	}
-	for _, phase := range []string{"header", "parhash", "predb"} {
+	for _, phase := range []string{"header", "parhash"} {
 		if got := n.phaseBudget(phase); got != 20*time.Second {
 			t.Fatalf("%s default=%s", phase, got)
 		}
@@ -1918,29 +1577,15 @@ func TestNameFixPhaseBudget_BodyIs90s(t *testing.T) {
 }
 
 func TestNameFix_BodyLeftoverOnDeadline(t *testing.T) {
-	const title = "Parked.Predb.2022.1080p.WEB-DL.x264-GRP"
-	const fire = "alt.binaries.boneless"
-	sum := md5.Sum([]byte(title))
-	h := hex.EncodeToString(sum[:])
 	a := obfuscatedSet("la", nfHash, 1, 5)
 	b := obfuscatedSet("lb", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", len(a)+1, 5)
-	bo := obfuscatedSet("bo", h, len(a)+len(b)+1, 5)
-	rows := append(a, b...)
-	f := newNFFixture(t, append(rows, bo...), nil)
+	f := newNFFixture(t, append(a, b...), nil)
 	f.nf.BodyWorkers = 1
 	f.nf.PassBudget = 50 * time.Millisecond
 	f.src.bodyDelay = 200 * time.Millisecond
 	f.src.bodies["lapar2"] = par2Body(nfHash + ".part01.rar")
 	f.src.bodies["lbpar2"] = par2Body("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.part01.rar")
-	f.nf.PreDB = &fakePreDB{hashes: map[string]PreDBHit{h: {Title: title}}}
 	f.crawlAndRecompute(t)
-	boKey := ObfKey(nfGroup, "poster@obf", bo[0].Subject)
-	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET group_name=? WHERE release_key=?`, fire, boKey); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_headers SET group_name=? WHERE release_name=?`, fire, boKey); err != nil {
-		t.Fatal(err)
-	}
 	res, err := f.nf.Run(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -1950,9 +1595,6 @@ func TestNameFix_BodyLeftoverOnDeadline(t *testing.T) {
 	}
 	if !res.Advanced() {
 		t.Fatalf("leftover must count as advanced: %+v", res)
-	}
-	if res.HashHits < 1 {
-		t.Fatalf("leftover must not park dump/IRC PreDB: %+v", res)
 	}
 }
 
@@ -1996,50 +1638,6 @@ func TestSkipForwardCrawl(t *testing.T) {
 	}
 	if skipForwardCrawl(38, namefixSkipCrawlMax) {
 		t.Fatal("cap must force one OVER so HIGH cannot starve")
-	}
-}
-
-func TestNameFix_PreDBOnlyBeforeSlowBODY(t *testing.T) {
-	// Claude 2026-10-22: same-pass dump/IRC rename after overtime BODY.
-	// Reason: Run() is header → BODY → parhash → preOnly (2026-10-21).
-	//   50ms vs 200ms used to mean "PreDB first or a shared 50ms is gone."
-	//   Per-phase budgets still start preOnly after BODY; lookup+promote on
-	//   the phase ctx flaked under go test -p 4 (HashHits=1 Renamed=0
-	//   leftover=1). Persist the hash hit on work ctx instead of reordering.
-	// Troubleshooting: boneless unnamed while bodyCalls has mvpar2 →
-	//   lookupPreDB/promote still on phase ctx. Review if: PassBudget is
-	//   no longer per-phase.
-	const title = "Boneless.Hit.2022.1080p.WEB-DL.x264-GRP"
-	sum := md5.Sum([]byte(title))
-	h := hex.EncodeToString(sum[:])
-	mv := obfuscatedSet("mv", nfHash, 1, 45)
-	bo := obfuscatedSet("bo", h, len(mv)+1, 45)
-	f := newNFFixture(t, append(mv, bo...), nil)
-	f.nf.PreDB = &fakePreDB{hashes: map[string]PreDBHit{h: {Title: title}}}
-	f.nf.PassBudget = 50 * time.Millisecond
-	f.src.bodyDelay = 200 * time.Millisecond
-	f.src.bodies["mvpar2"] = par2Body(nfHash + ".part01.rar")
-	f.crawlAndRecompute(t)
-	boKey := ObfKey(nfGroup, "poster@obf", bo[0].Subject)
-	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET group_name=? WHERE release_key=?`, "alt.binaries.boneless", boKey); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_headers SET group_name=? WHERE release_name=?`, "alt.binaries.boneless", boKey); err != nil {
-		t.Fatal(err)
-	}
-	res, err := f.nf.Run(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.HashHits != 1 || res.Renamed != 1 || len(f.src.bodyCalls) == 0 {
-		t.Fatalf("PreDB-only must finish after overtime BODY: %+v bodyCalls=%v", res, f.src.bodyCalls)
-	}
-	var display, src string
-	if err := f.idx.db.QueryRow(`SELECT display_name, name_source FROM usenet_nntp_releases WHERE release_key=?`, boKey).Scan(&display, &src); err != nil {
-		t.Fatal(err)
-	}
-	if display != title || src != sourcePreDB {
-		t.Fatalf("boneless display=%q source=%s", display, src)
 	}
 }
 
@@ -2192,7 +1790,7 @@ func TestNameFix_HeaderRecoversUnderscore1080pPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(due) != 1 {
-		t.Fatalf("DuePendingHeaderNames after PreDB backoff=%d, want 1", len(due))
+		t.Fatalf("DuePendingHeaderNames after next_name_at backoff=%d, want 1", len(due))
 	}
 	budget := &bodyBudget{}
 	budget.setCapMB(0)

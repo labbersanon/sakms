@@ -173,7 +173,7 @@ func (idx *Index) rebuildReleasesFromHeaders(ctx context.Context) error {
 	}
 	defer tx.Rollback()
 	// Claude 2026-10-19: do not wipe recovered names on keys that stayed.
-	// Reason: v2 DELETE+INSERT reset ybegin/predb display_name to subject.
+	// Reason: v2 DELETE+INSERT reset ybegin display_name to subject.
 	//   v3 only drops orphan pack/obf keys and inserts missing episode keys.
 	if _, err := tx.ExecContext(ctx, `
 DELETE FROM usenet_nntp_releases r

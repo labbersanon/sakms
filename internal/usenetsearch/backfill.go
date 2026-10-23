@@ -12,7 +12,7 @@ import (
 
 // Claude 2026-10-15: retention backfill (plan D6).
 // Reason: the forward crawl only starts ~100k articles behind the group head,
-//   so history (and the names/PAR2 sets the PreDB can recover) is never indexed.
+//   so history (and the names/PAR2 sets namefix can recover) is never indexed.
 //   Backfill walks a separate `low` cursor from the oldest indexed article down
 //   to provider retention, through the SAME ingest path (parse -> staging /
 //   admission+STAT -> upsert -> gap capture), under the same tryOnly OVER,

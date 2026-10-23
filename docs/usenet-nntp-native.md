@@ -30,7 +30,7 @@ and prune passes (window days + max GiB).
 
 - NNTP has no `SEARCH`. Discovery is local index search only.
 - Obfuscated subjects are not recoverable from headers alone; see "Gap fill" for the
-  bounded BODY/PreDB recovery (some sets stay unnamed and are deleted).
+  bounded BODY recovery (some sets stay unnamed and are deleted).
 - Crawl shares the subscription connection pool and yields under download load.
 - Eweka account ceiling may be 50; live `max_conns` is independent.
 - Full `LIST ACTIVE` without wildmats is impractical on large providers — the picker uses mode-scoped wildmats.
@@ -68,54 +68,15 @@ NNTmux-inspired ingest (membership still full LIST ACTIVE):
   name, so firehose hashes cannot fill `unnamed_max_pct`. Already-staged
   keys still receive continuation rows.
 
-## PreDB provider (name recovery)
+## PreDB / IRC (removed)
 
-Claude 2026-10-15: obfuscated sets are renamed from a local PreDB table
-(`usenet_nntp_predb`) fed by an on-demand HTTP lookup (default on) and an
-IRC announce feed (default on: synIRC `#PreNNTmux`).
-
-**Default HTTP provider: `https://api.predb.net/`** (setting
-`usenet_nntp_predb_http_url`). Verified live on 2026-10-16:
-
-- JSON API: `GET /?type=pre&q=<release>` returns
-  `{"status":"success","data":[{"release","size"(MB),"files","section","pretime","status"}]}`.
-  The query is a loose match, so the client keeps only the exact
-  (case-insensitive) release name. A release with no match returns
-  `status:"success"` with zero results (a cacheable miss).
-- No API key is required, so there is no secret to store for HTTP.
-- Published limit: 30 requests/minute. The client spaces requests at
-  least 2 seconds apart, caches hits locally, and caches confirmed misses for
-  30 days. Errors, non-200 responses, and malformed JSON are *not* cached and
-  never rename anything.
-- `predb.ovh` was a candidate but did not resolve (DNS) during verification.
-- If the provider changes its ToS or response shape, set
-  `usenet_nntp_predb_http_enabled=false` (or an empty URL: the adapter goes
-  inert and logs once); name recovery then relies on PAR2/RAR/yEnc names that
-  pass the title + (year|episode) + (resolution|source) check.
-
-A name-lookup HTTP API cannot reverse a hash. Reverse lookups use the local
-table: IRC announces (forward-only, including NOTICE hashed `[FN:]` filenames
-from TmuxPREBot on `#PreNNTmux` and `[RQ:]` request ids) plus an
-operator-supplied nZEDb dump (`usenet_nntp_predb_dump_path`, local TSV/gz or
-an http(s) dump *file* URL). Do not scrape `api.predb.net` to populate that
-table. nZEDbPre_Dumps stopped publishing new daily files in
-2024-05; historical `dumps/*/*_predb_dump.csv.gz` are still on GitHub and
-import as quoted MySQL TSV (`\N` nulls). There is no default dump URL.
-A dump that upserts any row runs `VACUUM (PARALLEL 0, ANALYZE)` on
-`usenet_nntp_predb` so dump `ON CONFLICT` dead rows are reclaimed.
-`PARALLEL 0` because sakms-db `/dev/shm` is 64MiB (SQLSTATE 53100). The
-table also has per-table autovacuum (scale 0.02, vacuum threshold 1000)
-and a daily 05:15 America/New_York `VACUUM (SKIP_LOCKED, PARALLEL 0,
-ANALYZE)` so IRC churn and deploy stats-resets are not waiting on the
-default 20% trip (~1.44M dead). Do not `VACUUM FULL`.
-Default IRC is on: synIRC `#PreNNTmux`, TLS 6697, a random unregistered
-nick, client PING heartbeat, plus a second client on Corrupt-net `#pre`
-(`irc.corrupt-net.org:6697` TLS). NickServ is optional and unused by default
-(synIRC confirm mail does not arrive). The NickServ password, if set, is
-stored encrypted (`secrets.Store`) and is never logged. `#nZEDbPRE` is dead;
-do not point the scraper there. Extra feeds: KV
-`usenet_nntp_predb_irc_extra` JSON `[{server,port,tls,channels}]`. Empty =
-Corrupt-net default. `[]` or `none` turns extras off (primary synIRC stays).
+Claude 2026-10-22: PreDB HTTP, IRC (synIRC `#PreNNTmux`, Corrupt-net `#pre`),
+dump import, and `usenet_nntp_predb` are gone. Live dump/IRC reverse-lookup
+never named ngPost random `.mkv` stems (join key miss vs 6.9M dump rows).
+Namefix is PAR2 FileDesc, scene NFO/file, yEnc, parhash donors, srrdb CRC,
+and NZB-password titles. Do not scrape `api.predb.net` or indexer HTML to
+replace the table. Migration `0052` drops the table and `usenet_nntp_predb%`
+settings. Host dump files under `/mnt/iscsi/sakms/predb/` are deleted on ship.
 
 ## Gap fill (completeness, repair, name recovery, backfill)
 
@@ -136,8 +97,8 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   mkv is not scored as 12 missing files. Hash.par2 quotes stay staged. Leading `[#a.b.teevee]` /
   `[Group]` tags are stripped. EFNet `[id]-[FULL]-[#a.b…@EFNet]-[ Title ]` and
   `www.Bin-Req.net Presents: #id - Title` wrappers are stripped to the title;
-  a request-id-only leftover (`23051509 ]`) is staged, not searchable, so dump
-  `requestid` / IRC `[RQ:]` can still name it. Obfuscated sets hash `(group, poster, skeleton)`;
+  a request-id-only leftover (`23051509 ]`) is staged, not searchable, so
+  namefix stages it rather than listing a request id. Obfuscated sets hash `(group, poster, skeleton)`;
   a 16+ character token before `[k/N]` is the skeleton (NNTmux hash-token
   capture) so per-file random quoted names still cluster. Skeletons shorter
   than 8 characters are not staged. Existing headers are rewritten in place
@@ -154,8 +115,8 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   PAR2/NFO/SFV and trailer names (`Movie.sample.mkv`, `-sample.`) do not
   count as payload or steal a namefix BODY slot. Computed per release into
   `usenet_nntp_releases` (`searchable`,
-  `completeness_bp`, `gate_reason`). Identification is separate: a PreDB,
-  PAR2/RAR/yEnc/NFO, or a title with resolution plus year, season, or a
+  `completeness_bp`, `gate_reason`). Identification is separate: a PAR2/RAR/yEnc/NFO/file/srrdb/nzb
+  name, or a title with resolution plus year, season, or a
   multi-word name is searchable at ≥80%; `Query.GrabReady` and `ToNZB` still
   refuse it until the set meets the gate. Picture-date buckets, hash
   tokens, and junk mega-buckets (`(Els1212)`, description-GB, single tokens)
@@ -172,38 +133,22 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   with backoff, then the range is dropped). The forward watermark never waits
   on a gap.
 - **Name recovery.** Obfuscated binary sets are staged under
-  `release_name='obf:<key>'` instead of dropped. Recovery copies NNTmux
-  `match:prefiles` / `fixNamesWithFiles` / `fixNamesWithNfo` as the base:
-  each pass first joins ≥80% pending header `filename` to local
-  `usenet_nntp_predb.filename` (exact, indexed) and `Store.Search` (cleaned
-  stem, title-md5/sha1, then exact title). That join ignores `next_name_at`
-  so a dump/IRC `[FN:]` is not parked behind leftover BODY. Then local PreDB by
-  md5 / md5(md5(title)) / sha1 tokens taken from every header subject and
-  filename (suffix-stripped), then PreDB `filename` / IRC `[FN:]` via the same
-  Search on BODY and PreDB-only paths, then dump/IRC
-  request id (EFNet/Bin-Req wrappers), then a
-  quoted or scene-shaped header filename (fansub `" [UQW] Title…1080p.par2 "`
-  included; stored `filename` is `name_source=file`; `reFileTok` cannot match
-  spaces/`+`/`[]`), then at most 3
-  first-segment BODY fetches per
-  set (PAR2 `FileDesc` → RAR/ZIP member names → yEnc `=ybegin` name → NFO scene
-  name). Scene-shaped NFO/file names are accepted without a PreDB hit; garbage
-  NFO still needs one. PreDB (no BODY) also runs on ≥80% pending sets in **any** group
-  (including boneless), 200 per pass, even when OVER is busy (BODY waits).
-  Each pass runs match:prefiles, then quoted ident-shaped header names (no BODY; ignores
-  `next_name_at`), then 95% BODY, then ident BODY, then a one-shot hash_16K
-  seed of named/shelved PAR2, then PreDB-only keys. BODY has a 90s phase
-  budget; header/parhash/predb/prefiles stay 20s. Namefix runs before OVER. While
-  BODY leftover>0, OVER/repair/backfill skip (cap 4 consecutive skips so
-  HIGH cannot starve). ErrBusy from downloads still skips crawl.
-  BODY fetches up to 4 sets in parallel (tryOnly borrow; ErrBusy yields the
-  rest of the phase). Header/parhash/predb stay sequential. When BODY leftover
-  is >0, parhash seed is parked (NNTP); dump/IRC PreDB-only still runs.
+  `release_name='obf:<key>'` instead of dropped. Each pass runs quoted
+  ident-shaped header names (no BODY; ignores `next_name_at`), then 95% BODY,
+  then ident BODY, then a one-shot hash_16K seed of named/shelved PAR2.
+  A quoted or scene-shaped header filename (fansub `" [UQW] Title…1080p.par2 "`
+  included; stored `filename` is `name_source=file`) is accepted without BODY.
+  BODY is at most 3 first-segment fetches per set (PAR2 `FileDesc` → RAR/ZIP
+  member names → yEnc `=ybegin` name → NFO scene name). Scene-shaped NFO/file
+  names are accepted; garbage NFO is ignored. BODY has a 90s phase budget;
+  header/parhash stay 20s. Namefix runs before OVER. While BODY leftover>0,
+  OVER/repair/backfill skip (cap 4 consecutive skips so HIGH cannot starve).
+  ErrBusy from downloads still skips crawl. BODY fetches up to 4 sets in
+  parallel (tryOnly borrow; ErrBusy yields the rest of the phase). Header and
+  parhash stay sequential. When BODY leftover is >0, parhash seed is parked.
   Each BODY article is capped at 8s (dial included) and does not inherit leftover
-  phase crumbs, so setRows eating the phase still fetches one PAR2. A hung fetch
-  logs `namefix body msgid=` and continues to the next PAR2/NFO pick unless the
-  phase is already gone. PAR2 FileDesc / yEnc names that are md5/sha1 tokens
-  are reverse-looked up in the local PreDB (they are not in the header rows).
+  phase crumbs. A hung fetch logs `namefix body msgid=` and continues to the
+  next PAR2/NFO pick unless the phase is already gone.
   FileDesc `hash_16K` (MD5 of the first 16 KiB) is stored in
   `usenet_nntp_par_hashes` and matched to already-named releases within ±5%
   size (NNTmux `fixNamesWithParHash`). A named PAR2 set can copy its title onto
@@ -212,14 +157,7 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   pending so named donors cannot starve hash.par2. The due queue ranks SFV,
   then `has_par2` without rar/zip/7z (hash.mkv+PAR2), then RAR/ZIP, then other
   PAR2. Split 7z is not a prefer rank. ngPost hash.7z and UUID `.7z.enc`
-  are dropped from BODY queues (password is only in the NZB); PreDB may
-  hash-lookup then shelve.   Hex-hash filenames are searched (exact filename, then title-md5 `ByHash`,
-  hashed queries skip the title step). Stem matches (`hash.mkv` →
-  `hash.part1.rar`) use a btree range on `lower(filename)`, not `LIKE` (the
-  equality index cannot serve LIKE without `text_pattern_ops`). Both exact and
-  stem SQL include `filename <> ''` so the partial index is eligible; without
-  it the planner seq-scans the table. Do not scrape predb.net to grow that
-  table.
+  are dropped from BODY queues (password is only in the NZB) and shelved.
   BODY picks SFV, then the main `.par2` (FileDesc / hash_16K), then the
   first-volume RAR/7z (`part01` / `.7z.001` / bare `.rar`) for srrdb CRC
   after a hash FileDesc. Last-volume RAR is skipped when a main PAR2
@@ -229,7 +167,7 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   7z end-header CRC / SFV CRC32 is looked up on srrdb
   `archive-crc:` when that CRC is unique
   (`resultsCount==1`, size ±15%); srrdb ToS is use-don't-scrape (no catalog
-  paging). Native namefix (PAR2 / PreDB / srrdb / SFV) does not query
+  paging). Native namefix (PAR2 / srrdb / SFV) does not query
   Newznab — NZB indexers do not recover ngPost passwords. The Settings
   NZB host (`connections` service `newznab`) is an alternate Usenet
   **grab** search after native NNTP and before Prowlarr (`t=search` title
@@ -238,19 +176,17 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   An `.sfv` whose payload filename already parses as a scene title is
   accepted as `name_source=sfv` without HTTP.
   Yield-group BODY is 40/pass at 95% plus 20/pass at ≥80% when PAR2 is present.
-  A BODY whose FileDesc is the same hash is not retried (PreDB-only from then on).
-  Sets with PAR2 are BODY-sampled even under 100 MiB. Accepted: a
-  PreDB-confirmed name (size within ±15% when PreDB reports one), or a
-  PAR2/RAR/yEnc name that parses as title + (year|episode) +
-  (resolution|source), or an ident-shaped name (resolution plus year, season,
-  or a multi-word title such as fansub `Ep170` / spaces), even on a PreDB miss.
+  A BODY whose FileDesc is the same hash is not retried. Sets with PAR2 are
+  BODY-sampled even under 100 MiB. Accepted: a PAR2/RAR/yEnc/NFO/file name
+  that parses as title + (year|episode) + (resolution|source), or an
+  ident-shaped name (resolution plus year, season, or a multi-word title
+  such as fansub `Ep170` / spaces).
   Spaced HD ident-shaped header names (snapped ≥720) skip the quality gate so a
   2160p movies floor cannot delete a complete 1080p quoted set. SD ident (480p)
-  still faces MinRes. NFO-only names need a PreDB hit.
+  still faces MinRes.
   Sets under 100 MiB without PAR2 are never BODY-fetched; after 3 attempts or
   `unnamed_ttl_days` a set is finalized and deleted, except ≥80% yield-group
-  sets which stay for PreDB-only retries so a later IRC line or dump
-  import can still name them. Staged header occupancy (pending_name rows × ~200 B,
+  sets which stay (keepCompleteYield). Staged header occupancy (pending_name rows × ~200 B,
   same units as `index_max_gb`) is capped at `unnamed_max_pct` of `index_max_gb`
   **per group**; BODY volume is `namefix_body_mb_per_hour`.
   New obfuscated headers stage on yield groups (step ≤4 + anime) even with
@@ -259,9 +195,6 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   Claude 2026-10-19: occupancy, not yEnc payload_bytes — that mismatch was
   skip_obf_cap on every yield core.
   Review if: ApproxBytes stops using ~200 B/row.
-  Historical names come from an operator-supplied nZEDb TSV dump
-  (`usenet_nntp_predb_dump_path`, local file or dump-file URL); sakms does not
-  scrape `api.predb.net` to build that table.
 - **Retention backfill.** A per-group `low` cursor (`usenet_nntp_watermarks.low`)
   walks from the oldest indexed article down to provider retention in 2000-article
   chunks, through the same parse → admission → upsert path. It pauses at
@@ -272,22 +205,15 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
 ### Knobs and kill switches
 
 All settings are KV rows (`settings` table), read on every settings GET/PUT and
-at boot; no UI. The two PreDB/IRC groups are read when the PreDB runtime starts
-(boot, or after the IRC-password PUT). With every switch below set to `false`
-the crawl behaves as before this feature, except that staged/obfuscated subjects
-are dropped again and completeness is still recorded.
+at boot; no UI. With every switch below set to `false` the crawl behaves as
+before this feature, except that staged/obfuscated subjects are dropped again
+and completeness is still recorded.
 
 | Key (`usenet_nntp_…`) | Default | Effect |
 |---|---|---|
 | `namefix_enabled` | true | Stage + recover obfuscated sets (off = drop them) |
 | `namefix_body_mb_per_hour` | 512 | Hourly BODY budget |
 | `unnamed_ttl_days` / `unnamed_max_pct` | 7 / 25 | Staging TTL / header-occupancy cap |
-| `predb_http_enabled` / `predb_http_url` | true / `https://api.predb.net/` | HTTP lookup |
-| `predb_irc_enabled` | true | All IRC feeds (primary + extras) |
-| `predb_irc_server`, `_port`, `_tls`, `_nick`, `_channels` | `irc.synirc.net`, 6697, true, generated, `#PreNNTmux` | Primary IRC connection (channels comma-separated; empty nick is generated) |
-| `predb_irc_extra` | Corrupt-net `#pre` | JSON extra feeds on other networks. Empty = default. `[]`/`none` = primary only |
-| `predb_irc_password_enc` | — | NickServ password, `secrets.Store` ciphertext; set via `PUT /api/settings/usenet-nntp-native/predb-irc-password` `{"password":"…"}` (empty clears) |
-| `predb_dump_path` | empty | nZEDb PreDB dump file, directory, or http(s) dump *file* URL (`\t\t` TSV, optional `.gz`; quoted MySQL fields and `\N` are stripped). PUT `predbDumpPath` reloads the importer; SQL still needs a restart. Imported on boot/reload and every 15 minutes when mtime/size (or URL ETag) changes. Search APIs (`api.predb.net`, `?type=pre`) are rejected. Live file: `/data/predb/predb.tsv.gz` (host `/mnt/iscsi/sakms/predb/predb.tsv.gz`, nZEDb dailies through 2024-05-02). |
 | `srrdb_enabled` | true | CRC-only lookup at `https://api.srrdb.com/v1/search/archive-crc:XXXXXXXX` (2s spacing). Unique hit + size ±15% → `name_source=srrdb`. Kill switch; do not scrape the catalog. |
 | `nzb_password_enabled` | true | Unused on the live path. Newznab is grab-search, not namefix. |
 | `min_completeness_pct` / `incomplete_ttl_days` | 95 / 3 | Completeness gate / reap |
@@ -303,7 +229,7 @@ counters under `gapFillStatus` (`releasesSearchable`, `releasesBelowGate`,
 ### Operating notes
 
 - O2 queries: `o2cli grep "collection rewrite"`, `"collection drift"`, `"namefix pass"`, `"namefix timing"`, `"nzb-password"`, `"repair pass"`,
-  `"backfill group="`, `"completeness recompute"`, `"predb"`.
+  `"backfill group="`, `"completeness recompute"`.
   `namefix timing` is per-set stage ms (`body_ms`, `stat_ms`, `rename_ms`, …).
   `namefix body elapsed_ms` is BodyHead wall time (not the 8s cap).
   `backfill ... state=paused reason=budget` means the index is at the budget.
@@ -313,20 +239,15 @@ counters under `gapFillStatus` (`releasesSearchable`, `releasesBelowGate`,
   `UPDATE usenet_nntp_releases SET display_name='', state='pending_name', name_source='', name_attempts=0, next_name_at=0, dirty=TRUE WHERE group_name='…' AND release_key='obf:…';`
 - Migration `0044` has a Down that drops the new tables/columns; the `release_name`
   grouping key on headers is unchanged, so rolling back loses only recovered names.
-- **IRC format.** `#PreNNTmux` lines are tagged (`[TT:]` title, `[CT:]` category,
-  `[SZ:]`/`[FL:]` size/files, `[FN:]`/`[FILE:]`/`[FILENAME:]` hashed inner name,
-  nuke tags). A hashed `[FN:]` line without `[TT:]` updates the last title.
-  Logs emit tag letters only (`predb irc tags keys=`), never titles. NNTmux-style
-  `NEW:`/`NUKE:` lines still parse. Keepalive `INFO:` lines have no `TT` and are
-  ignored. The feed is on by default.
+  Migration `0052` drops `usenet_nntp_predb`.
 - With `namefix_enabled=false`, legacy subjects like `"<hash>.part01.rar"` can
   still produce bogus per-filename release names (pre-existing behavior).
 - **ngPost** (compress + gen_name + gen_pass + 7z): overview is
   `[001/136] "random.7z.001" (10/732)` — no `yEnc` token, default article
   716800 bytes, last article is a remainder. From is `N@ngPost.com`; msgid
   `uuid@ngPost`. ObfKey omits group so GROUP_POLICY ALL does not split the
-  set. ngPost hash.7z is not BODY-fetched (password locked); PreDB miss
-  shelves BODY attempts so hash.mkv+PAR2 sets get the BODY phase budget.
+  set. ngPost hash.7z is not BODY-fetched (password locked); BODY attempts
+  are shelved so hash.mkv+PAR2 sets get the BODY phase budget.
   Title and password are in the NZB, not on NNTP; native namefix does not
   query Newznab (passwords are not recoverable from NZB indexers). `-x` UUID subjects have no
   filename in OVERVIEW and stay skip_unparsed.

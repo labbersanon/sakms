@@ -48,33 +48,15 @@ const (
 	// Claude 2026-10-15: gap-fill kill switches and knobs (plan nntp-gap-fill).
 	// Reason: every feature has an independent off switch so all-off ≈ the
 	//   pre-gap-fill crawl. KV-only (no Settings UI); read by
-	//   api.loadNNTPNativeSettings on every GET/PUT/boot. PreDB/IRC keys are
-	//   read when the PreDB runtime starts (boot, or after the IRC password PUT).
+	//   api.loadNNTPNativeSettings on every GET/PUT/boot.
 	// Troubleshooting: knob ignored → check it is stored under exactly this key.
 	// Review if: a Settings UI for these ships.
 	KeyNameFixEnabled       = "usenet_nntp_namefix_enabled"
 	KeyNameFixBodyMBPerHour = "usenet_nntp_namefix_body_mb_per_hour"
 	KeyUnnamedTTLDays       = "usenet_nntp_unnamed_ttl_days"
 	KeyUnnamedMaxPct        = "usenet_nntp_unnamed_max_pct"
-	KeyPreDBHTTPEnabled     = "usenet_nntp_predb_http_enabled"
-	KeyPreDBHTTPURL         = "usenet_nntp_predb_http_url"
-	KeyPreDBIRCEnabled      = "usenet_nntp_predb_irc_enabled"
-	KeyPreDBIRCServer       = "usenet_nntp_predb_irc_server"
-	KeyPreDBIRCPort         = "usenet_nntp_predb_irc_port"
-	KeyPreDBIRCTLS          = "usenet_nntp_predb_irc_tls"
-	KeyPreDBIRCNick         = "usenet_nntp_predb_irc_nick"
-	KeyPreDBIRCChannels     = "usenet_nntp_predb_irc_channels"
-	KeyPreDBIRCPasswordEnc  = "usenet_nntp_predb_irc_password_enc" // secrets.Store ciphertext, never plaintext
-	// Claude 2026-10-19: extra IRC feeds besides the primary synIRC client.
-	// Reason: dump file ends 2024-05; api.predb.net forbids building a local DB;
-	//   a second network keeps reverse-lookup fresh if synIRC drops.
-	// Troubleshooting: empty KV uses Corrupt-net #pre; "[]" or "none" disables extras.
-	// Review if: Corrupt-net #pre requires a key or goes invite-only.
-	KeyPreDBIRCExtra     = "usenet_nntp_predb_irc_extra"     // JSON []{server,port,tls,channels}; empty = default
-	KeyPreDBDumpPath     = "usenet_nntp_predb_dump_path"     // local nZEDb TSV or http(s) dump file URL; empty = off
-	KeyPreDBDumpImported = "usenet_nntp_predb_dump_imported" // path|mtime|size stamp, not a knob
 	// Claude 2026-10-20: srrdb archive-crc kill switch (CRC lookup only).
-	// Reason: remaining hash.par2 FileDesc names miss PreDB; srrdb ToS is
+	// Reason: remaining hash.par2 FileDesc names miss PAR2 titles; srrdb ToS is
 	//   "Use but don't scrape" — CRC queries, never catalog paging.
 	// Troubleshooting: name_source=srrdb stays 0 → this key false or SRRDB
 	//   client nil. Review if: provider rate-limits sakms-srrdb/1.
@@ -339,8 +321,6 @@ type Service struct {
 	// the first crawl pass after admission is enabled.
 	admit      *admitter
 	prunedOnce map[string]bool
-	// predb resolves recovered names/hashes during name-fix (nil = no PreDB).
-	predb PreDBLookup
 	// srrdb resolves RAR/ZIP/SFV inner-file CRC32 (nil disables it).
 	srrdb ArchiveCRCLookup
 	// nzbpw looks up NZB unpack passwords by obfuscated filename (nil = off).
@@ -362,13 +342,6 @@ type Service struct {
 	driftFetch       DriftFetchFunc
 	driftLastAt      time.Time
 	driftLastCluster string
-}
-
-// SetPreDB wires the PreDB lookup used by name recovery (nil disables it).
-func (s *Service) SetPreDB(p PreDBLookup) {
-	s.mu.Lock()
-	s.predb = p
-	s.mu.Unlock()
 }
 
 // SetSRRDB wires the srrdb CRC lookup used by name recovery (nil disables it).
@@ -998,13 +971,12 @@ func (s *Service) SearchGroupsForMode(ctx context.Context, mode string) []string
 func (s *Service) runNameFix(ctx context.Context, c *Crawler, budget *bodyBudget) NameFixResult {
 	s.mu.Lock()
 	cfg := s.cfg
-	predb := s.predb
 	srrdb := s.srrdb
 	nzbpw := s.nzbpw
 	s.mu.Unlock()
 	budget.setCapMB(cfg.NameFixBodyMBPerHour)
 	nf := &NameFixer{
-		Src: c.Src, Index: c.Index, Crawler: c, PreDB: predb, SRRDB: srrdb,
+		Src: c.Src, Index: c.Index, Crawler: c, SRRDB: srrdb,
 		NZBPassword: nzbpw,
 		Groups:      c.Groups, Budget: budget,
 		UnnamedTTL: time.Duration(cfg.UnnamedTTLDays) * 24 * time.Hour,

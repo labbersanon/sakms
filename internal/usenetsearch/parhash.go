@@ -8,7 +8,7 @@ import (
 
 // Claude 2026-10-20: PAR2 hash_16K donor index (NNTmux fixNamesWithParHash).
 // Reason: remaining complete hash.par2 sets have FileDesc names that are also
-//   hashes; PreDB/IRC FN miss; the 16KiB content MD5 still matches a named
+//   hashes; FileDesc is a random token; the 16KiB content MD5 still matches a named
 //   sibling (other group / earlier FileDesc title).
 // Troubleshooting: parhash_sampled=true and table empty → BODY had no FileDesc
 //   hash field (zeros). named par2 with sampled=false → DueParHashSeed.
@@ -169,7 +169,7 @@ ORDER BY ingested_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
-	sets, err := scanPendingSets(rows, false)
+	sets, err := scanPendingSets(rows)
 	for i := range sets {
 		sets[i].AlreadyNamed = true
 	}
@@ -191,7 +191,7 @@ ORDER BY ingested_at DESC LIMIT ?`, args...)
 	if err != nil {
 		return nil, err
 	}
-	return scanPendingSets(rows, false)
+	return scanPendingSets(rows)
 }
 
 func (idx *Index) namedParHashDonors(ctx context.Context, hashes []string, excludeGroup, excludeKey string) ([]parHashDonor, error) {

@@ -7,17 +7,18 @@ import (
 )
 
 // ErrIncomplete is returned by ToNZB when Candidate.Complete is false.
-// Search may still list PreDB-named titles below the completeness gate;
+// Search may still list ident-named titles below the completeness gate;
 // autograb and dispatch must not assemble an NZB from those rows.
 var ErrIncomplete = errors.New("release is below the completeness gate")
 
 // ToNZB synthesizes an in-memory NZB from a Candidate. Pure, no I/O.
 //
 // Claude 2026-10-19: refuse !Complete (docs already required this re-check).
-// Reason: PreDB names are searchable below 95%; grabbing those NZBs would
-//   dispatch a holey article set. Troubleshooting: grab 502 on a listed
-//   native title → CompletenessPct / GrabReady. Review if: operator opts
-//   into grabbing below-gate PreDB names.
+// Reason: ident names are searchable below 95%; grabbing those NZBs would
+//
+//	dispatch a holey article set. Troubleshooting: grab 502 on a listed
+//	native title → CompletenessPct / GrabReady. Review if: operator opts
+//	into grabbing below-gate ident names.
 func ToNZB(c Candidate) (*usenet.NZB, error) {
 	if !c.Complete {
 		return nil, ErrIncomplete

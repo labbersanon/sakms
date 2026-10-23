@@ -8,9 +8,6 @@
 // internal/searchterm for title-token parsing and quality-tier/resolution
 // gating. None of those four import internal/api, internal/grabs,
 // internal/prowlarr, or internal/mode, so the layering below still holds.
-// The predb subpackage (HTTP lookup, IRC feed, local store) imports only
-// stdlib + database/sql; it is wired in from internal/api, which owns settings
-// and secrets, via the PreDBLookup interface defined here.
 // Must NOT import modernc.org/sqlite (banned from cmd/sakms), internal/api,
 // internal/grabs, internal/prowlarr, or internal/mode — adapters live on the api side.
 //

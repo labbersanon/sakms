@@ -70,13 +70,13 @@ var (
 	// Reason: overnight searchable climbed on subject names like
 	//   `[23051509]-[FULL]-[#a.b.teevee@EFNet]-[ Greys.Anatomy… ]` (wrapper
 	//   left in display_name) and `23051509 ]` (request id admitted because
-	//   yEnc/filename made ParseSubject.OK). Dump requestid / IRC [RQ:] cannot
+	//   yEnc/filename made ParseSubject.OK). A request-id leftover cannot
 	//   join those rows while the stem is the wrapper.
 	// Troubleshooting: display_name still starts with digits]-[FULL] → this
 	//   strip missed a new wrapper; searchable junk that is only digits →
 	//   looksLikeRequestID.
 	// Review if: a poster uses 4-digit request ids or omits [FULL].
-	// Related files: namefix.go, predb/parse.go, predb/dump.go
+	// Related files: namefix.go
 	reReqTitleBrackets = regexp.MustCompile(`(?i)^(?:\[\s*)?(\d{5,10})\s*\]?\s*-\s*\[(?:FULL|PART)\]\s*-\s*\[[^\]]+\]\s*-\s*\[\s*([^\[\]]*?)(?:\s*\])`)
 	reReqPrefix        = regexp.MustCompile(`(?i)^(?:\[\s*)?(\d{5,10})\s*\]?\s*-\s*\[(?:FULL|PART)\]\s*-\s*\[[^\]]+\]\s*-?\s*`)
 	reBinReqPrefix     = regexp.MustCompile(`(?i)^(?:https?://)?(?:www\.)?bin-?req(?:uest)?\.net\s+presents:\s*#?(\d{5,10})\s*[-:]\s*`)

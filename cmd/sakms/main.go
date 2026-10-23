@@ -271,14 +271,11 @@ func run() error {
 	// Claude 2026-10-16: SetNNTPNativeService moved above LoadUsenetSearchConfig
 	// so boot LIST ACTIVE can expand mode groups. Duplicate register omitted.
 	// api.SetNNTPNativeService(nntpSearch)
-	// Claude 2026-10-15: PreDB (HTTP + optional IRC) for NNTP name recovery.
-	// Reason: name recovery confirms/reverses names via the PreDB; the IRC
-	//   password is decrypted from secretStore inside the api runtime only.
-	// Troubleshooting: names never recovered → o2cli grep "predb"; this line
-	//   missing means SetPreDB was never called (name-fix runs PreDB-less).
-	// Review if: PreDB settings move into usenetsearch.Config.
-	nntpPreDB := api.StartNNTPPreDB(context.Background(), sqlDB, settingsStore, secretStore, nntpSearch)
-	api.SetNNTPPreDB(nntpPreDB)
+	// Claude 2026-10-22: PreDB HTTP + IRC removed (dump/IRC never named live
+	//   ngPost random stems). Namefix is PAR2/NFO/file/yEnc/srrdb/NZB-password.
+	// Reason: 6.9M dump rows + IRC had 0 name_source=predb on 24M headers.
+	// Troubleshooting: namefix still logging predb → leftover wiring.
+	// Review if: a new local title corpus is added (do not restore this).
 	// Claude 2026-10-16: collection-drift ChatJSON + NNTmux seeder fetch.
 	// Reason: usenetsearch only sees DriftAI/DriftFetch; nil AI (fallback off)
 	//   makes the idle pass a no-op. Kill switch is KV default-true.

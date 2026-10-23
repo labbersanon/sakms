@@ -17,39 +17,21 @@ import (
 	"github.com/labbersanon/sakms/internal/usenet"
 )
 
-// Claude 2026-10-19: obfuscated-set name recovery (plan D2/D3 + PreDB reverse).
-// Reason: obfuscated posts carry no release name; a staged set is renamed from
-//   a local PreDB hash (md5/md5md5/sha1 in subject or filename), PreDB
-//   filename / IRC [FN:], a scene-shaped header filename, or first-segment
-//   PAR2/RAR/yEnc/NFO sampling, then the same admission gate + STAT as crawl.
-//   PreDB-only also runs on ≥80% sets still below the 95% BODY/autograb gate
-//   so the real title is searchable (NewsLeecher SuperSearch) before grab.
+// Claude 2026-10-22: obfuscated-set name recovery without PreDB/IRC.
+// Reason: dump/IRC reverse-lookup never named live ngPost random stems
+//   (join key miss vs 6.9M dump rows). A staged set is renamed from a
+//   scene-shaped header filename, first-segment PAR2/RAR/yEnc/NFO, parhash
+//   donors, srrdb CRC, or NZB-password titles, then the same admission gate
+//   + STAT as crawl.
 // Troubleshooting: sets never renamed → o2cli grep "namefix pass"; check
-//   body_fetches (0 = nothing due, or PreDB-only exhausted/below-gate yield),
-//   hash_hits, unresolved, and namefix_body_mb_per_hour.
+//   body_fetches, unresolved, and namefix_body_mb_per_hour.
 //   Undo: docs/usenet-nntp-native.md.
 // Review if: BODY traffic needs download-activity-aware (bytes) throttling.
 
-// PreDBHit is one scene-release record resolved from the local PreDB.
+// PreDBHit is a scene title+size used by srrdb CRC lookup (historical name).
 type PreDBHit struct {
 	Title     string
-	SizeBytes int64 // 0 when the PreDB did not record a size
-}
-
-// PreDBLookup resolves names against the local PreDB (HTTP lookups cached in
-// the local table). Implementations must never return an error to the pass:
-// outages and malformed responses are misses.
-type PreDBLookup interface {
-	// ByHash resolves a bare md5/sha1 hex string to a release title.
-	ByHash(ctx context.Context, hash string) (PreDBHit, bool)
-	// ByName confirms a recovered release name exists.
-	ByName(ctx context.Context, name string) (PreDBHit, bool)
-	// ByFilename resolves a PreDB inner/archive filename.
-	ByFilename(ctx context.Context, filename string) (PreDBHit, bool)
-	// Search is NNTmux match:prefiles: filename, hash, then cleaned title.
-	Search(ctx context.Context, query string) (PreDBHit, bool)
-	// ByRequestID resolves an nZEDb/IRC request id, preferring group.
-	ByRequestID(ctx context.Context, id int64, group string) (PreDBHit, bool)
+	SizeBytes int64 // 0 when the source did not record a size
 }
 
 const (
@@ -59,8 +41,7 @@ const (
 	// Review if: BODY budget (namefix_body_mb_per_hour) starts hitting BudgetStop.
 	namefixSetsPerPass      = 40
 	namefixIdentBodyPerPass = 20
-	namefixPreDBPerPass     = 200
-	// Header-ident quoted titles (no BODY/PreDB HTTP). Run before PreDB.
+	// Header-ident quoted titles (no BODY). Run before BODY.
 	namefixHeaderPerPass = 40
 	// Claude 2026-10-20: re-BODY named/shelved PAR2 once for hash_16K.
 	// Reason: 65 live par2 titles and 225 shelved hash.par2 had FileDesc
@@ -70,12 +51,11 @@ const (
 	namefixParHashSeedPerPass = 20
 	namefixBodiesPerSet       = 3
 	namefixMaxDuration        = 20 * time.Second
-	// Claude 2026-10-22: BODY phase 90s; header/parhash/predb stay 20s.
-	// Reason: live leftover=42 after one PAR2 FileDesc; setRows+PreDB miss+
-	//   8s BodyHead already exceeded 20s so searchable moved at 1 rename/loop.
-	// Troubleshooting: deadline phase=body leftover=40 with 90s and
-	//   body_fetches=1 → lookupPreDB still eating the phase. Review if:
-	//   namefix pass >2min starves OVER, or BudgetStop starts hitting.
+	// Claude 2026-10-22: BODY phase 90s; header/parhash stay 20s.
+	// Reason: live leftover=42 after one PAR2 FileDesc; 8s BodyHead already
+	//   exceeded 20s so searchable moved at 1 rename/loop.
+	// Troubleshooting: deadline phase=body leftover=40 with 90s → BodyHead
+	//   still serial. Review if: namefix pass >2min starves OVER.
 	namefixBodyPhaseDuration = 90 * time.Second
 	// Claude 2026-10-22: BODY sets in parallel; ErrBusy still yields.
 	// Reason: live leftover=38 with 5 sequential 8s FileDesc fetches / 90s
@@ -88,8 +68,6 @@ const (
 	//   phase was already gone (live remain_ms=-1 on a 43KB par2). Replaced
 	//   by WithoutCancel+8s so one overtime article still runs.
 	// namefixMinBodyRemain = 200 * time.Millisecond
-	// PreDB-only needs hash/filename tokens, not every header.
-	namefixPreDBHeaderSample = 64
 	// namefixMinPayload: smaller sets without PAR2 are finalized (no BODY).
 	namefixMinPayload = 100 << 20
 	// namefixHeadBytes caps the decoded bytes kept from one BODY.
@@ -111,7 +89,6 @@ const (
 	DefaultNameFixBodyMBPerHour = 512
 	namefixSizeTolerance        = 0.15
 	namefixMaxCandidates        = 6
-	exhaustedPreDBRetry         = time.Hour
 )
 
 // namefixBodyArticleTimeout caps one BodyHead (dial + BODY). Tests shrink it.
@@ -130,7 +107,6 @@ var namefixBodyArticleTimeout = 8 * time.Second
 
 // Name sources / confidences (usenet_nntp_releases.name_source/name_confidence).
 const (
-	sourcePreDB   = "predb"
 	sourcePar2    = "par2"
 	sourceParHash = "parhash"
 	sourceRar     = "rar"
@@ -140,7 +116,6 @@ const (
 	sourceSFV     = "sfv"
 	sourceSRRDB   = "srrdb"
 	sourceNZB     = "nzb"
-	confPreDB     = "predb_exact"
 	confMedium    = "medium"
 	verdictNamed  = "namefix"
 )
@@ -182,7 +157,6 @@ func (b *bodyBudget) add(n int64) {
 // NameFixResult is one name-fix pass's aggregate counters.
 type NameFixResult struct {
 	Sets        int
-	HashHits    int
 	BodyFetches int
 	BodyBytes   int64
 	Renamed     int
@@ -219,7 +193,7 @@ func (r NameFixResult) Advanced() bool {
 //
 // Review if: a stage is identified and fixed (then drop or sample this log).
 type namefixTiming struct {
-	setrows, predb, body, donor, predbnames, accept, crc, snapshot, stat, rename, siblings int64
+	setrows, body, donor, accept, crc, snapshot, stat, rename, siblings int64
 }
 
 func (t *namefixTiming) add(dst *int64, start time.Time) int64 {
@@ -229,8 +203,8 @@ func (t *namefixTiming) add(dst *int64, start time.Time) int64 {
 }
 
 func (t *namefixTiming) log(set PendingSet) {
-	log.Printf("usenetsearch: namefix timing group=%s key=%s setrows_ms=%d predb_ms=%d body_ms=%d donor_ms=%d predbnames_ms=%d accept_ms=%d crc_ms=%d snapshot_ms=%d stat_ms=%d rename_ms=%d siblings_ms=%d",
-		set.Group, set.Key, t.setrows, t.predb, t.body, t.donor, t.predbnames, t.accept, t.crc, t.snapshot, t.stat, t.rename, t.siblings)
+	log.Printf("usenetsearch: namefix timing group=%s key=%s setrows_ms=%d body_ms=%d donor_ms=%d accept_ms=%d crc_ms=%d snapshot_ms=%d stat_ms=%d rename_ms=%d siblings_ms=%d",
+		set.Group, set.Key, t.setrows, t.body, t.donor, t.accept, t.crc, t.snapshot, t.stat, t.rename, t.siblings)
 }
 
 // NameFixer runs the bounded name-recovery pass over staged sets.
@@ -238,7 +212,6 @@ type NameFixer struct {
 	Src     usenet.HeaderSource
 	Index   *Index
 	Crawler *Crawler // admission snapshot, group modes, statVerdict
-	PreDB   PreDBLookup
 	// SRRDB resolves RAR/ZIP/SFV inner-file CRC32 (nil disables it).
 	SRRDB ArchiveCRCLookup
 	// NZBPassword is an optional Newznab supplement after a local 7z-aes miss
@@ -246,7 +219,7 @@ type NameFixer struct {
 	NZBPassword NZBPasswordLookup
 	Groups      []string
 	Budget      *bodyBudget
-	// SkipBody runs PreDB-only (OVER/download busy). PAR2 BODY waits.
+	// SkipBody skips BODY when OVER/download is busy. Header names still run.
 	SkipBody bool
 	// PassBudget caps every phase; zero uses 90s BODY / 20s other. Tests shorten it.
 	PassBudget time.Duration
@@ -287,21 +260,7 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 	statBudget := statReleasesPerChunk
 	keyOf := func(set PendingSet) string { return set.Group + "\x00" + set.Key }
 	done := map[string]bool{}
-	// Claude 2026-10-22: NNTmux match:prefiles before BODY.
-	// Reason: local filename/title join does not need NNTP and must not wait
-	//   on leftover park. NNTmux php artisan match:prefiles walks unnamed
-	//   hashed/misc that already have files.
-	// Troubleshooting: o2cli grep "namefix prefiles"; matched=0 with dump
-	//   filenames present → join lower(filename) or completeness filter.
-	// Review if: a proc_files column stops re-scanning misses.
-	if err := n.matchPrefiles(ctx, &res, &statBudget, done, keyOf); err != nil {
-		return res, err
-	}
 	headerSets, err := n.Index.DuePendingHeaderNames(ctx, namefixHeaderPerPass)
-	if err != nil {
-		return res, err
-	}
-	predbSets, err := n.Index.DuePendingPreDB(ctx, namefixPreDBPerPass)
 	if err != nil {
 		return res, err
 	}
@@ -327,29 +286,9 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 		}
 		parSeed = keep
 	}
-	// Claude 2026-10-21: BODY before PreDB/parhash.
-	// Reason: live leftover predb=197 then parhash=1 then body leftover=41
-	//   with renamed=0. Hash.mkv+PAR2 waited behind 200 PreDB LIKE scans
-	//   and named-PAR2 seed BODYs. BODY keys still lookupPreDB before
-	//   BodyHead; preOnly is dump/IRC only.
-	// Troubleshooting: namefix deadline phase=body leftover=40 after
-	//   phase=predb leftover≈200 → this order reversed. Review if: PreDB
-	//   HTTP needs its own cadence off the crawl loop.
-	skipPre := map[string]bool{}
-	for _, list := range [][]PendingSet{sets, ident, headerSets} {
-		for _, set := range list {
-			skipPre[keyOf(set)] = true
-		}
-	}
-	var preOnly []PendingSet
-	for _, set := range predbSets {
-		if !skipPre[keyOf(set)] {
-			preOnly = append(preOnly, set)
-		}
-	}
-	if len(sets)+len(ident)+len(predbSets)+len(headerSets)+len(parSeed) > 0 {
-		log.Printf("usenetsearch: namefix starting header=%d body=%d ident=%d predb=%d parhash=%d skip_body=%t",
-			len(headerSets), len(sets), len(ident), len(predbSets), len(parSeed), n.SkipBody)
+	if len(sets)+len(ident)+len(headerSets)+len(parSeed) > 0 {
+		log.Printf("usenetsearch: namefix starting header=%d body=%d ident=%d parhash=%d skip_body=%t",
+			len(headerSets), len(sets), len(ident), len(parSeed), n.SkipBody)
 	}
 	// Claude 2026-10-19: each phase's context is passed into BodyHead.
 	// Reason: live namefix starting body=2 sat 3.5 min; the budget only
@@ -368,10 +307,9 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 			// Claude 2026-10-22: always start the first set of a phase.
 			// Reason: CI leftover=1 at i=0 when 50ms elapsed between
 			//   WithTimeout and this check under go test -p 4. BODY already
-			//   overruns via WithoutCancel; dump/IRC PreDB-only never entered
-			//   fixSet so HashHits stayed 0 or a hit died on crumbs.
-			// Troubleshooting: namefix deadline phase=predb leftover=N at
-			//   the start of a non-empty queue → this i==0 skip restored.
+			//   overruns via WithoutCancel.
+			// Troubleshooting: namefix deadline leftover=N at the start of
+			//   a non-empty queue → this i==0 skip restored.
 			// Review if: PassBudget is no longer per-phase.
 			if i > 0 && phaseCtx.Err() != nil {
 				return deadline(i)
@@ -396,10 +334,9 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 		}
 		return nil
 	}
-	// Claude 2026-10-19: quoted ident titles before PreDB HTTP / BODY.
-	// Reason: live 95% Black Clover/Yameii were in the BODY queue, stripped
-	//   from preOnly; one hash SetRows+ByHash burned PreDB (leftover=162,
-	//   i=0) and BODY leftover=59, renamed=0. Header quotes need no BODY.
+	// Claude 2026-10-19: quoted ident titles before BODY.
+	// Reason: live 95% Black Clover/Yameii were in the BODY queue; header
+	//   quotes need no BODY.
 	// Troubleshooting: header=0 while pending95 subjects quote 1080p titles
 	//   → DuePendingHeaderNames regex. Review if: 4K-without-p.
 	if err := run(headerSets, "header"); err != nil {
@@ -416,99 +353,22 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 	if err := n.runBodyPhase(ctx, body, &res, done, keyOf); err != nil {
 		return res, err
 	}
-	// Claude 2026-10-22: park parhash BODY only; dump/IRC PreDB still runs.
-	// Reason: NNTmux match:prefiles/predb:check is local and must not wait
-	//   on leftover. Parhash competes for NNTP; filename Search does not.
-	// Troubleshooting: o2cli grep "namefix park"; phase=predb leftover=
-	//   after body leftover>0 → preOnly still skipped. Review if: leftover
-	//   stays >0 and parhash starves named donors (then a skip-crawl seed).
+	// Claude 2026-10-22: park parhash BODY when leftover remains.
+	// Reason: parhash competes for NNTP; header names already ran.
+	// Troubleshooting: o2cli grep "namefix park"; leftover stays >0 and
+	//   parhash starves named donors → then a skip-crawl seed.
 	if res.BodyLeftover > 0 {
 		log.Printf("usenetsearch: namefix park parhash=%d leftover=%d",
 			len(parSeed), res.BodyLeftover)
 	} else if err := run(parSeed, "parhash"); err != nil {
 		return res, err
 	}
-	if err := run(preOnly, "predb"); err != nil {
-		return res, err
-	}
 	if res.Sets > 0 || res.Finalized > 0 || res.BodyFetches > 0 || res.Renamed > 0 {
-		log.Printf("usenetsearch: namefix pass sets=%d hash_hits=%d body_fetches=%d body_bytes=%d renamed=%d by_source=%s reject_gate=%d reject_stat=%d unresolved=%d finalized=%d leftover=%d busy=%t",
-			res.Sets, res.HashHits, res.BodyFetches, res.BodyBytes, res.Renamed, formatBySource(res.BySource),
+		log.Printf("usenetsearch: namefix pass sets=%d body_fetches=%d body_bytes=%d renamed=%d by_source=%s reject_gate=%d reject_stat=%d unresolved=%d finalized=%d leftover=%d busy=%t",
+			res.Sets, res.BodyFetches, res.BodyBytes, res.Renamed, formatBySource(res.BySource),
 			res.RejectGate, res.RejectStat, res.Unresolved, res.Finalized, res.BodyLeftover, res.Busy)
 	}
 	return res, nil
-}
-
-// matchPrefiles is NNTmux php artisan match:prefiles: join pending ≥80%
-// header filenames to the local PreDB (exact SQL, then Search) and promote
-// before BODY. Ignores next_name_at so a dump/IRC [FN:] hit is not parked.
-func (n *NameFixer) matchPrefiles(ctx context.Context, res *NameFixResult, statBudget *int, done map[string]bool, keyOf func(PendingSet) string) error {
-	if n.PreDB == nil {
-		return nil
-	}
-	phaseCtx, cancel := context.WithTimeout(ctx, n.phaseBudget("prefiles"))
-	defer cancel()
-	work := context.WithoutCancel(phaseCtx)
-	expired := func() bool { return phaseCtx.Err() != nil && len(done) > 0 }
-	promoteHit := func(set PendingSet, hit PreDBHit) (bool, error) {
-		if done[keyOf(set)] || !preDBHitOK(hit, true, set.PayloadBytes) {
-			return false, nil
-		}
-		rows, err := n.Index.setRows(work, set.Group, set.Key, namefixPreDBHeaderSample)
-		if err != nil {
-			return false, err
-		}
-		res.HashHits++
-		stop, err := n.promote(work, set, rows, hit.Title, sourcePreDB, confPreDB, "hit", res, statBudget, nil)
-		if err != nil {
-			return false, err
-		}
-		done[keyOf(set)] = true
-		return stop, nil
-	}
-	hits, err := n.Index.matchPrefileExactHits(phaseCtx, namefixPreDBPerPass)
-	if err != nil {
-		return err
-	}
-	for _, h := range hits {
-		if expired() {
-			break
-		}
-		stop, err := promoteHit(h.PendingSet, PreDBHit{Title: h.Title, SizeBytes: h.SizeBytes})
-		if err != nil {
-			return err
-		}
-		if stop {
-			break
-		}
-	}
-	cands, err := n.Index.pendingPrefileFilenames(phaseCtx, namefixPreDBPerPass)
-	if err != nil {
-		return err
-	}
-	for _, c := range cands {
-		if expired() {
-			break
-		}
-		if done[keyOf(c.PendingSet)] {
-			continue
-		}
-		hit, ok := n.PreDB.Search(work, c.Filename)
-		if !ok {
-			continue
-		}
-		stop, err := promoteHit(c.PendingSet, hit)
-		if err != nil {
-			return err
-		}
-		if stop {
-			break
-		}
-	}
-	if len(done) > 0 {
-		log.Printf("usenetsearch: namefix prefiles matched=%d", len(done))
-	}
-	return nil
 }
 
 func formatBySource(m map[string]int) string {
@@ -526,7 +386,6 @@ func formatBySource(m map[string]int) string {
 
 func mergeNameFixResult(dst *NameFixResult, src NameFixResult) {
 	dst.Sets += src.Sets
-	dst.HashHits += src.HashHits
 	dst.BodyFetches += src.BodyFetches
 	dst.BodyBytes += src.BodyBytes
 	dst.Renamed += src.Renamed
@@ -642,12 +501,7 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 	//   a few hundred ms (then cap it, still fetch part01).
 	work := context.WithoutCancel(ctx)
 	tRows := time.Now()
-	var rows []HeaderRow
-	if set.PreDBOnly {
-		rows, err = n.Index.setRows(work, set.Group, set.Key, namefixPreDBHeaderSample)
-	} else {
-		rows, err = n.Index.setRowsBodyTargets(work, set.Group, set.Key)
-	}
+	rows, err := n.Index.setRowsBodyTargets(work, set.Group, set.Key)
 	tm.add(&tm.setrows, tRows)
 	if err != nil {
 		return false, err
@@ -660,41 +514,22 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 
 	for _, cand := range headerNameCandidates(rows) {
 		tAccept := time.Now()
-		name, source, conf, predb, ok := n.accept(ctx, cand.name, cand.source, set.PayloadBytes)
+		name, source, conf, via, ok := n.accept(cand.name, cand.source)
 		tm.add(&tm.accept, tAccept)
 		if ok {
-			return n.promote(ctx, set, rows, name, source, conf, predb, res, statBudget, tm)
+			return n.promote(ctx, set, rows, name, source, conf, via, res, statBudget, tm)
 		}
 	}
-	// Claude 2026-10-22: dump/IRC hash hits persist after leftover phase crumbs.
-	// Reason: TestNameFix_PreDBOnlyBeforeSlowBODY flaked HashHits=1 Renamed=0
-	//   leftover=1 under go test -p 4. BODY already promotes on `work`;
-	//   lookupPreDB+promote still used the 50ms/20s phase ctx, so a local
-	//   hash hit died in RenameRelease. Live next_name_at stayed due, but
-	//   CI 50ms vs 200ms BODY overtime missed the rename in-pass.
-	// Troubleshooting: namefix deadline phase=predb leftover=1 hash_hits>0
-	//   renamed=0 → this still on phase ctx. Review if: ByName HTTP should
-	//   also ignore crumbs (accept() stays on ctx so HTTP can still die).
-	tPre := time.Now()
-	hit, ok := n.lookupPreDB(work, set, rows)
-	tm.add(&tm.predb, tPre)
-	if ok {
-		res.HashHits++
-		return n.promote(work, set, rows, hit.Title, sourcePreDB, confPreDB, "hit", res, statBudget, tm)
-	}
-	// Claude 2026-10-21: password packs never BODY; PreDB miss shelves them.
+	// Claude 2026-10-21: password packs never BODY; titles are not on NNTP.
 	// Reason: live skip_7z still charged 7z Tail on attempts=0 and ranked
-	//   ahead of 434 anime hash.mkv+PAR2. Titles are not on NNTP.
+	//   ahead of 434 anime hash.mkv+PAR2.
 	// Troubleshooting: body_fetches>0 on ngPost hash.7z / .7z.enc → this
 	//   return missing. Review if: a non-ngPost 7z still needs srrdb CRC.
 	if passwordLockedPack(rows) {
 		if err := n.Index.ShelveBodyAttempts(ctx, set.Group, set.Key); err != nil {
 			return false, err
 		}
-		return false, n.Index.ScheduleNameRetry(ctx, set.Group, set.Key, exhaustedPreDBRetry)
-	}
-	if set.PreDBOnly {
-		return false, n.Index.ScheduleNameRetry(work, set.Group, set.Key, exhaustedPreDBRetry)
+		return false, nil
 	}
 
 	if set.PayloadBytes < namefixMinPayload && !set.HasPar2 {
@@ -744,7 +579,7 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		}
 		// Claude 2026-10-19: 8s article ctx is not the leftover phase crumbs.
 		// Reason: live after #222, first BODY set skipped a 43KB par2 with
-		//   remain_ms=-1 (setRows/lookupPreDB ate the 20s) and leftover=40
+		//   remain_ms=-1 (setRows ate the 20s) and leftover=40
 		//   with body_fetches=0. Hash.par2 never moved.
 		// Troubleshooting: o2cli grep "namefix body skip" → this WithoutCancel
 		//   missing. Review if: one overtime BODY delays crawl (>30s/pass).
@@ -830,29 +665,16 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		}
 		allHash := true
 		if len(cands) > 0 {
-			// Claude 2026-10-19: FileDesc/yEnc hashes are not in header rows.
-			// Reason: live BODY now returns par2=true cands=1–2 renamed=0;
-			//   subjects are random tokens, PAR2 FileDesc is often md5(title).
-			// Troubleshooting: body_bytes>0 par2=true hash_hits=0 → this
-			//   ByHash/ByFilename on sample names not called. Review if:
-			//   FileDesc is a non-hex random token (then IRC FN only).
-			tNames := time.Now()
-			hit, ok := n.lookupPreDBNames(work, set, cands)
-			tm.add(&tm.predbnames, tNames)
-			if ok {
-				res.HashHits++
-				return n.promote(work, set, rows, hit.Title, sourcePreDB, confPreDB, "hit", res, statBudget, tm)
-			}
 			for _, cand := range cands {
 				if recoveredUnusable(cand.name) {
 					continue
 				}
 				allHash = false
 				tAccept := time.Now()
-				name, source, conf, predb, ok := n.accept(work, cand.name, cand.source, set.PayloadBytes)
+				name, source, conf, via, ok := n.accept(cand.name, cand.source)
 				tm.add(&tm.accept, tAccept)
 				if ok {
-					return n.promote(work, set, rows, name, source, conf, predb, res, statBudget, tm)
+					return n.promote(work, set, rows, name, source, conf, via, res, statBudget, tm)
 				}
 			}
 		}
@@ -886,7 +708,7 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 		// Claude 2026-10-21: Newznab is supplemental after a local 7z-aes miss.
 		// Reason: NZBGeek (and peers) do not ingest ngPost hash.7z NZBs;
 		//   header-first lookup + heldPW stalled name_attempts on miss.
-		//   Native PAR2/PreDB/srrdb stay the path; t=search is optional.
+		//   Native PAR2/srrdb stay the path; t=search is optional.
 		// Troubleshooting: nzb-password on skip_7z ngPost → this block
 		//   must not run (no 7z BODY). Review if: an indexer lists x264.
 		if kind == "7z-aes" && len(crcs) == 0 {
@@ -910,10 +732,10 @@ func (n *NameFixer) fixSet(ctx context.Context, set PendingSet, res *NameFixResu
 	res.Unresolved++
 	// Claude 2026-10-20: one hash_16K BODY, even when the article is not PAR2.
 	// Reason: DueParHashSeed would re-fetch shelved sets every pass (backoff
-	//   tests and PreDB-only retries). Live 225 still seed because the
-	//   column defaults false until this runs once after 0049.
+	//   tests). Live 225 still seed because the column defaults false until
+	//   this runs once after 0049.
 	// Troubleshooting: parhash=N on every pass for the same keys → sampled
-	//   not set after BodyHead. Review if: 430 should retry after dump import.
+	//   not set after BodyHead. Review if: BODY is retried after a new name source.
 	if triedBody {
 		_ = n.Index.MarkParHashSampled(work, set.Group, set.Key)
 	}
@@ -1072,29 +894,16 @@ func recoveredUnusable(raw string) bool {
 	return looksObfuscated(norm) || tokenLooksObfuscated(norm)
 }
 
-// accept normalizes a recovered name and applies the D2 acceptance rules:
-// PreDB exact (size within ±15%) is always accepted; par2/rar/ybegin/file/NFO
-// names that parse as a quoted/scene title are accepted without a PreDB match
-// (NNTmux fixNamesWithNfo / files). Garbage NFO still needs a PreDB hit.
-func (n *NameFixer) accept(ctx context.Context, raw, source string, payload int64) (name, src, conf, predb string, ok bool) {
+// accept normalizes a recovered name. par2/rar/ybegin/file/NFO names that
+// parse as a quoted/scene title are accepted (NNTmux fixNamesWithNfo / files).
+// Garbage NFO is ignored.
+func (n *NameFixer) accept(raw, source string) (name, src, conf, via string, ok bool) {
 	if recoveredUnusable(raw) {
 		return "", "", "", "", false
 	}
 	norm := normalizeRecovered(raw)
-	predb = "n/a"
-	// Only release-shaped names are worth a (rate-limited) PreDB lookup.
-	if n.PreDB != nil && hasTitleAndMarker(norm) {
-		if hit, found := n.PreDB.ByName(ctx, norm); found && sizeWithin(hit.SizeBytes, payload) {
-			title := hit.Title
-			if title == "" {
-				title = norm
-			}
-			return title, sourcePreDB, confPreDB, "hit", true
-		}
-		predb = "miss"
-	}
 	if quotedReleaseName(norm) {
-		return norm, source, confMedium, predb, true
+		return norm, source, confMedium, "n/a", true
 	}
 	return "", "", "", "", false
 }
@@ -1128,7 +937,7 @@ func identShapedName(name string) bool {
 
 // quotedReleaseName is a destemmed quoted filename that is already a title:
 // ident-shaped (resolution), a scene parse, or a multi-word / bracketed name
-// that is not a hash token. Hash.par2 stays unnamed (IRC/PAR2).
+// that is not a hash token. Hash.par2 stays unnamed (PAR2/srrdb).
 func quotedReleaseName(name string) bool {
 	n := normalizeRecovered(name)
 	if n == "" || hashCore(n) != "" {
@@ -1187,7 +996,7 @@ func letterCount(s string) int {
 // promote runs an accepted name through the admission gate and STAT (when
 // admission is on), then renames the set. A gate reject or confirmed-missing
 // STAT deletes the set (same irreversibility as crawl admission).
-func (n *NameFixer) promote(ctx context.Context, set PendingSet, rows []HeaderRow, name, source, conf, predb string, res *NameFixResult, statBudget *int, tm *namefixTiming) (bool, error) {
+func (n *NameFixer) promote(ctx context.Context, set PendingSet, rows []HeaderRow, name, source, conf, via string, res *NameFixResult, statBudget *int, tm *namefixTiming) (bool, error) {
 	if tm == nil {
 		tm = &namefixTiming{}
 	}
@@ -1250,8 +1059,8 @@ func (n *NameFixer) promote(ctx context.Context, set PendingSet, rows []HeaderRo
 	tm.add(&tm.rename, tRename)
 	res.Renamed++
 	res.BySource[source]++
-	log.Printf("usenetsearch: renamed group=%s key=%s name=%s source=%s confidence=%s predb=%s pct=%.1f",
-		set.Group, set.Key, name, source, conf, predb, float64(set.CompletenessBP)/100)
+	log.Printf("usenetsearch: renamed group=%s key=%s name=%s source=%s confidence=%s via=%s pct=%.1f",
+		set.Group, set.Key, name, source, conf, via, float64(set.CompletenessBP)/100)
 	tSib := time.Now()
 	n.promoteParHashSiblings(ctx, set, name, res, statBudget)
 	tm.add(&tm.siblings, tSib)
@@ -1259,42 +1068,6 @@ func (n *NameFixer) promote(ctx context.Context, set PendingSet, rows []HeaderRo
 		res.Busy = true
 	}
 	return busy, nil
-}
-
-// lookupPreDB tries nZEDb-style reverse lookups: md5/sha1/md5md5 tokens from
-// every header's subject and filename, then dump/IRC request ids from
-// EFNet/Bin-Req wrappers. PreDB.filename / IRC [FN:] is PreDB-only.
-func preDBHitOK(hit PreDBHit, ok bool, payload int64) bool {
-	return ok && hit.Title != "" && sizeWithin(hit.SizeBytes, payload)
-}
-
-func (n *NameFixer) lookupPreDB(ctx context.Context, set PendingSet, rows []HeaderRow) (PreDBHit, bool) {
-	if n.PreDB == nil {
-		return PreDBHit{}, false
-	}
-	for _, h := range hashCandidates(rows) {
-		if hit, ok := n.PreDB.ByHash(ctx, h); preDBHitOK(hit, ok, set.PayloadBytes) {
-			return hit, true
-		}
-	}
-	for _, id := range requestIDCandidates(rows) {
-		if hit, ok := n.PreDB.ByRequestID(ctx, id, set.Group); preDBHitOK(hit, ok, set.PayloadBytes) {
-			return hit, true
-		}
-	}
-	// Claude 2026-10-22: BODY and PreDB-only both Search filenames.
-	// Reason: NNTmux match:prefiles / fixNamesWithFiles is local indexed
-	//   filename+title, not HTTP. Live hash_hits=0 skipped ByFilename on
-	//   BODY so dump [FN:] never ran until leftover parked PreDB-only.
-	// Troubleshooting: TestNameFix_PreDBFilenameResolvesRandomArchiveName
-	//   BodyFetches>0 → Search not called here. Review if: hashed stems
-	//   seq-scan (then keep LooksLikeHashed skip inside Store.Search).
-	for _, fn := range filenameCandidates(rows) {
-		if hit, ok := n.PreDB.Search(ctx, fn); preDBHitOK(hit, ok, set.PayloadBytes) {
-			return hit, true
-		}
-	}
-	return PreDBHit{}, false
 }
 
 func (n *NameFixer) fetchNZBPassword(ctx context.Context, set PendingSet, rows []HeaderRow) (NZBPasswordHit, bool) {
@@ -1334,8 +1107,8 @@ func (n *NameFixer) fetchNZBPassword(ctx context.Context, set PendingSet, rows [
 }
 
 func (n *NameFixer) applyNZBHit(ctx context.Context, set PendingSet, rows []HeaderRow, sample usenet.BodySample, zstart []byte, hit NZBPasswordHit, res *NameFixResult, statBudget *int, tm *namefixTiming) (stop bool, done bool, err error) {
-	try := func(name, source, conf, predb string) (bool, bool, error) {
-		stop, err := n.promote(ctx, set, rows, name, source, conf, predb, res, statBudget, tm)
+	try := func(name, source, conf, via string) (bool, bool, error) {
+		stop, err := n.promote(ctx, set, rows, name, source, conf, via, res, statBudget, tm)
 		return stop, true, err
 	}
 	if len(hit.Passwords) > 0 && len(zstart) == 32 {
@@ -1352,20 +1125,16 @@ func (n *NameFixer) applyNZBHit(ctx context.Context, set PendingSet, rows []Head
 		if srr, ok := n.lookupCRCs(ctx, set, crcs); ok {
 			return try(srr.Title, sourceSRRDB, confMedium, "srrdb")
 		}
-		if pre, ok := n.lookupPreDBNames(ctx, set, cands); ok {
-			res.HashHits++
-			return try(pre.Title, sourcePreDB, confPreDB, "hit")
-		}
 		for _, cand := range cands {
-			name, source, conf, predb, ok := n.accept(ctx, cand.name, cand.source, set.PayloadBytes)
+			name, source, conf, via, ok := n.accept(cand.name, cand.source)
 			if ok {
-				return try(name, source, conf, predb)
+				return try(name, source, conf, via)
 			}
 		}
 	}
-	name, source, conf, predb, ok := n.accept(ctx, hit.Title, sourceNZB, set.PayloadBytes)
+	name, source, conf, via, ok := n.accept(hit.Title, sourceNZB)
 	if ok {
-		return try(name, source, conf, predb)
+		return try(name, source, conf, via)
 	}
 	return false, false, nil
 }
@@ -1413,97 +1182,6 @@ func sampleCRCs(s usenet.BodySample) []string {
 	return out
 }
 
-func (n *NameFixer) lookupPreDBNames(ctx context.Context, set PendingSet, cands []nameCand) (PreDBHit, bool) {
-	if n.PreDB == nil {
-		return PreDBHit{}, false
-	}
-	for _, cand := range cands {
-		// Claude 2026-10-22: FileDesc uses Search (hash + cleaned filename).
-		// Reason: NNTmux fixNamesWithFiles looks up the inner name in PreDB;
-		//   skipping 32-hex dropped dump filenames that are md5(title).mkv.
-		// Troubleshooting: par2=true cands=1 hash_hits=0 → Search miss or
-		//   sizeWithin. Review if: pg_trgm is added.
-		if hit, ok := n.PreDB.Search(ctx, cand.name); preDBHitOK(hit, ok, set.PayloadBytes) {
-			return hit, true
-		}
-	}
-	return PreDBHit{}, false
-}
-
-func hashCandidates(rows []HeaderRow) []string {
-	seen := map[string]bool{}
-	var out []string
-	add := func(s string) {
-		for _, t := range hashTokens(s) {
-			if seen[t] {
-				continue
-			}
-			seen[t] = true
-			out = append(out, t)
-		}
-	}
-	for _, r := range rows {
-		add(obfSkeleton(r.Subject))
-		add(r.Subject)
-		add(r.Filename)
-	}
-	if len(out) > 8 {
-		out = out[:8]
-	}
-	return out
-}
-
-func requestIDCandidates(rows []HeaderRow) []int64 {
-	seen := map[int64]bool{}
-	var out []int64
-	for _, r := range rows {
-		id := requestIDFromSubject(r.Subject)
-		if id == 0 || seen[id] {
-			continue
-		}
-		seen[id] = true
-		out = append(out, id)
-		if len(out) >= 4 {
-			break
-		}
-	}
-	return out
-}
-
-func filenameCandidates(rows []HeaderRow) []string {
-	seen := map[string]bool{}
-	var out []string
-	add := func(s string) {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			return
-		}
-		// Claude 2026-10-22: keep md5/sha1 archive names for Search.
-		// Reason: dump/IRC [FN:] is often hash.mkv / hash.part1.rar; skipping
-		//   hex made filenameCandidates empty so ByFilename never ran.
-		// Troubleshooting: Search still seq-scans → Store.ByFilename missing
-		//   filename<>''. Review if: hashed stems need a separate ByHash-only
-		//   path (then skip LooksLikeHashed here again).
-		key := strings.ToLower(s)
-		if seen[key] {
-			return
-		}
-		seen[key] = true
-		out = append(out, s)
-	}
-	for _, r := range rows {
-		q := quotedFilename(r.Subject)
-		add(r.Filename)
-		add(normalizeRecovered(r.Filename))
-		add(q)
-		add(normalizeRecovered(q))
-		if len(out) >= 8 {
-			break
-		}
-	}
-	return out
-}
-
 func headerNameCandidates(rows []HeaderRow) []nameCand {
 	seen := map[string]bool{}
 	var out []nameCand
@@ -1533,8 +1211,8 @@ func headerNameCandidates(rows []HeaderRow) []nameCand {
 	return out
 }
 
-// sizeWithin reports whether payload is within ±15% of a PreDB-reported size
-// (unknown on either side passes).
+// sizeWithin reports whether payload is within ±15% of a reported size
+// (unknown on either side passes). Used by srrdb CRC matching.
 func sizeWithin(preSize, payload int64) bool {
 	if preSize <= 0 || payload <= 0 {
 		return true

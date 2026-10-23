@@ -12874,3 +12874,20 @@ status stays active.
 | `internal/usenetsearch/namefix.go` | match:prefiles, Search, NFO/file accept |
 | `internal/usenetsearch/namefix_index.go` | exact filename join; pending filenames |
 | `docs/usenet-nntp-native.md` | match:prefiles before BODY |
+
+## 2026-10-22 — Remove PreDB dump, HTTP, and IRC
+
+**Problem:** Live dump (~6.9M rows) plus IRC (synIRC `#PreNNTmux`, Corrupt-net `#pre`) produced `name_source=predb=0` on 24M headers. Join keys were `md5(title)` / dump `filename`; live pending names were ngPost random `.mkv` stems not in the dump. Namefix still spent pass time on PreDB-only queues, dump import, and IRC.
+**Root cause:** Reverse-lookup cannot name posts whose OVER/FileDesc tokens never appear as PreDB titles or filenames. Copying NNTmux `match:prefiles` did not change the join-key miss.
+**Fix:** Delete `internal/usenetsearch/predb`, the adapter, IRC-password PUT, and PreDB namefix queues. Keep PAR2/NFO/file/yEnc/parhash/srrdb/NZB-password. `PreDBHit` stays as the srrdb CRC DTO name. Migration `0052` drops `usenet_nntp_predb` and `usenet_nntp_predb%` settings. Host dump dir `/mnt/iscsi/sakms/predb/` is deleted on ship. Do not scrape `api.predb.net` or indexer HTML.
+**Outcome:** `TestMigration0052DropsPredb`, `TestNameFix_NFOSceneRenamesWithoutPreDB`. Gap-fill GET no longer returns PreDB/IRC knobs.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/predb/*`, `predb_adapter.go` | removed dump/HTTP/IRC/store |
+| `internal/api/usenetnntp_predb.go` | removed runtime + IRC password PUT |
+| `internal/usenetsearch/namefix.go` | drop PreDB lookup/queues; keep srrdb `PreDBHit` |
+| `internal/db/migrations/0052_drop_usenet_nntp_predb.sql` | DROP table + settings |
+| `docs/usenet-nntp-native.md` | PreDB/IRC removed |

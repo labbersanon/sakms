@@ -18,7 +18,7 @@ type Query struct {
 	MaxBytes    int64
 	Limit       int
 	// GrabReady keeps only Complete candidates (autograb / NZB). Manual search
-	// omits it so PreDB-named titles below the completeness gate still match.
+	// omits it so ident-named titles below the completeness gate still match.
 	GrabReady bool
 }
 

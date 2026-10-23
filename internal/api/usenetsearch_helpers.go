@@ -91,7 +91,7 @@ func nativeAutoGrabSearch(ctx context.Context, deps AutoGrabDeps, req AutoGrabRe
 		Terms:     usenetsearch.NormalizeTitleTerms(req.Title),
 		Limit:     40,
 		Groups:    svc.SearchGroupsForMode(ctx, string(req.Mode)),
-		GrabReady: true, // listed PreDB titles may be below 95%; autograb stays gated
+		GrabReady: true, // ident titles may be below 95%; autograb stays gated
 	}
 	if req.ReleaseTitle != "" {
 		q.Terms = append(q.Terms, usenetsearch.NormalizeTitleTerms(req.ReleaseTitle)...)

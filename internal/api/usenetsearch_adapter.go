@@ -16,7 +16,7 @@ import (
 func adaptNativeCandidates(cs []usenetsearch.Candidate) []prowlarr.Release {
 	out := make([]prowlarr.Release, 0, len(cs))
 	for _, c := range cs {
-		// Claude 2026-10-19: drop !Complete even if Search listed a PreDB name.
+		// Claude 2026-10-19: drop !Complete even if Search listed an ident name.
 		// Reason: autograb must stay on the 95% gate. Review if: GrabReady is
 		//   the only filter and this skip is redundant.
 		if !c.Complete {

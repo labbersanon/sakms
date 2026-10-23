@@ -30,8 +30,6 @@ type PendingSet struct {
 	CompletenessBP int
 	// HasPar2 is true when the last recompute saw a PAR2/meta row.
 	HasPar2 bool
-	// PreDBOnly skips BODY: exhausted keepCompleteYield waiting on dump/IRC.
-	PreDBOnly bool
 	// AlreadyNamed is a hash_16K seed of a titled set (extract donors only).
 	AlreadyNamed bool
 }
@@ -52,7 +50,7 @@ func (idx *Index) StagedBytes(ctx context.Context, group string) (int64, error) 
 	// Reason: hash-named PAR2/RAR sets sit at name_attempts>=3 (keepCompleteYield
 	// skipped the sweep) and used to keep every group in skip_obf_cap.
 	// Troubleshooting: skip_obf_cap with only shelved complete pending → this
-	// filter not applied. Review if: PreDB starts naming those hashes (retry).
+	// filter not applied. Review if: a later name source retries those hashes.
 	//
 	// Claude 2026-10-19: unnamed cap uses header occupancy, not yEnc payload.
 	// Reason: SUM(payload_bytes) is media size (one 20 GiB x264 set) while
@@ -75,8 +73,7 @@ WHERE r.state='pending_name' AND r.group_name=? AND r.name_attempts < ?`,
 
 // DuePendingNames returns up to limit staged sets in groups whose retry time
 // has passed, recomputed, and at/above the completeness gate (a BODY fetch is
-// only spent on sets that could become grab-complete). PreDB-only below-gate
-// sets go through DuePendingPreDB instead. Only yield groups are
+// only spent on sets that could become grab-complete). Only yield groups are
 // queried (staging cores, package step ≤4, plus anime); within that set,
 // staging cores are filled before the rest, newest first.
 //
@@ -98,12 +95,11 @@ func (idx *Index) duePendingNamesIn(ctx context.Context, groups []string, limit 
 	if len(groups) == 0 || limit <= 0 {
 		return nil, nil
 	}
-	// Claude 2026-10-18: BODY retries stop at maxNameAttempts; PreDB continues
-	// via DuePendingPreDB (no BODY).
+	// Claude 2026-10-18: BODY retries stop at maxNameAttempts.
 	// Reason: keepCompleteYield left hash-named 100% sets on a 10m<<n backoff
 	//   forever; namefix spent 12–17 slots/pass re-fetching the same PAR2.
 	// Troubleshooting: namefix unresolved=N with the same keys every loop →
-	//   this filter missing. Review if: BODY is retried after a dump import.
+	//   this filter missing. Review if: BODY is retried after a new name source.
 	in, args := groupLimitArgs([]any{idx.MinCompletenessPct() * 100, time.Now().Unix(), maxNameAttempts}, groups, limit)
 	// Claude 2026-10-20: RAR/SFV pending before mkv-only.
 	// Reason: live duePendingNames ORDER BY ingested_at DESC filled the 40
@@ -123,7 +119,7 @@ ORDER BY `+crcPreferOrderSQL+`, declared_segs ASC, ingested_at DESC LIMIT ?`, ar
 	if err != nil {
 		return nil, err
 	}
-	return scanPendingSets(rows, false)
+	return scanPendingSets(rows)
 }
 
 // DuePendingIdentBody returns ≥80% yield pending_name sets still below the
@@ -158,7 +154,7 @@ ORDER BY `+crcPreferOrderSQL+`, declared_segs ASC, completeness_bp DESC, ingeste
 	if err != nil {
 		return nil, err
 	}
-	return scanPendingSets(rows, false)
+	return scanPendingSets(rows)
 }
 
 func (idx *Index) dueYieldPrefixed(ctx context.Context, groups []string, limit int, query func(context.Context, []string, int) ([]PendingSet, error)) ([]PendingSet, error) {
@@ -180,7 +176,7 @@ func (idx *Index) dueYieldPrefixed(ctx context.Context, groups []string, limit i
 	return append(out, more...), nil
 }
 
-func scanPendingSets(rows *sql.Rows, preDBOnly bool) ([]PendingSet, error) {
+func scanPendingSets(rows *sql.Rows) ([]PendingSet, error) {
 	defer rows.Close()
 	var out []PendingSet
 	for rows.Next() {
@@ -188,7 +184,6 @@ func scanPendingSets(rows *sql.Rows, preDBOnly bool) ([]PendingSet, error) {
 		if err := rows.Scan(&p.Group, &p.Key, &p.PayloadBytes, &p.Attempts, &p.CompletenessBP, &p.HasPar2); err != nil {
 			return nil, err
 		}
-		p.PreDBOnly = preDBOnly
 		out = append(out, p)
 	}
 	return out, rows.Err()
@@ -222,7 +217,7 @@ const crcPreferOrderSQL = `CASE WHEN EXISTS (
 
 // passwordLockedSQL is true when headers are ngPost hash.7z or UUID .7z.enc.
 // Those need an NZB password; BODY cannot recover a title. Dropped from the
-// BODY due queues; PreDB may still hash-lookup then shelve.
+// BODY due queues.
 // Claude 2026-10-21: keep password packs off DuePendingNames.
 // Reason: live 1157 pending95 included .7z.enc + ngPost 7z with has_par2;
 //
@@ -255,27 +250,25 @@ const passwordLockedSQL = `EXISTS (
 const quotedIdentSubjectSQL = `(h.subject ~ '"[^"]*(1080|720|2160|480)p[^"]*"' OR h.subject ~ '"[^"]* [A-Za-z][^"]{6,}"' OR h.subject ~ '"[^"]*_[^"]*(19|20)[0-9]{2}[^"]*"' OR h.subject ~ '"\[[^"]{3,}\][^"]+"')`
 
 // DuePendingHeaderNames returns ≥80% pending sets whose headers already quote
-// a readable title. Namefix recovers those without PreDB HTTP or BODY.
+// a readable title. Namefix recovers those without BODY.
 //
-// Claude 2026-10-19: own queue, ahead of PreDB/BODY.
-// Reason: 95% yield quoted titles were DuePendingNames (BODY) and stripped
+// Claude 2026-10-19: own queue, ahead of BODY.
+// Reason: 95% yield quoted titles were DuePendingNames (BODY). Header quotes
 //
-//	from preOnly; hash ByHash HTTP then burned both 20s windows (renamed=0).
+//	need no BODY.
 //
 // Troubleshooting: header=0 with Black Clover still pending95 → regex missed the quote shape.
 // Review if: 576p / 4K-without-p quoted titles appear in HIGH.
 //
 // Claude 2026-10-19: ignore next_name_at on this queue.
-// Reason: a PreDB miss calls ScheduleNameRetry(+1h). Live Madoka /
+// Reason: live Madoka / Suikoden quotes sat pending_name at 100% with
 //
-//	Suikoden quotes sat pending_name at 100% with next_name_at ~30m ahead
-//	while Searchable stalled after the first header=10 pass.
+//	next_name_at ~30m ahead while Searchable stalled after the first
+//	header=10 pass.
 //
 // Troubleshooting: header=0, quoted 1080p still pending, next_name_at in
 //
 //	the future → this still filtering on backoff.
-//
-// Review if: BODY/PreDB queues should share this exception.
 func (idx *Index) DuePendingHeaderNames(ctx context.Context, limit int) ([]PendingSet, error) {
 	if limit <= 0 {
 		return nil, nil
@@ -294,133 +287,7 @@ LIMIT ?`, spanRepairFloorBP, limit)
 	if err != nil {
 		return nil, err
 	}
-	return scanPendingSets(rows, true)
-}
-
-// DuePendingPreDB returns ≥80% pending_name sets in any group for a local
-// PreDB lookup (no BODY). Boneless and other firehose groups are included:
-// a hash hit is free and is what NZB indexers do at ingest.
-//
-// Claude 2026-10-19: all groups, 200/pass, no payload floor.
-// Reason: yield-only PreDB left 1883 complete boneless pending unnamed;
-//
-//	namefix ran twice in 2h with hash_hits=1.
-//
-// Claude 2026-10-21: Run() now processes these after yield BODY.
-// Reason: live PreDB leftover=197 burned the first 20s; BODY leftover=41.
-// Review if: firehose PreDB needs its own loop off crawl.
-func (idx *Index) DuePendingPreDB(ctx context.Context, limit int) ([]PendingSet, error) {
-	if limit <= 0 {
-		return nil, nil
-	}
-	rows, err := idx.db.QueryContext(ctx, `
-SELECT group_name, release_key, payload_bytes, name_attempts, completeness_bp, has_par2
-FROM usenet_nntp_releases
-WHERE state='pending_name' AND dirty=FALSE AND declared_segs>0 AND completeness_bp>=?
-  AND next_name_at<=?
-ORDER BY completeness_bp DESC, ingested_at DESC
-LIMIT ?`, spanRepairFloorBP, time.Now().Unix(), limit)
-	if err != nil {
-		return nil, err
-	}
-	return scanPendingSets(rows, true)
-}
-
-type prefileHit struct {
-	PendingSet
-	Title     string
-	SizeBytes int64
-}
-
-type prefileName struct {
-	PendingSet
-	Filename string
-}
-
-// matchPrefileExactHits is the bulk half of NNTmux match:prefiles: pending
-// ≥80% header.filename = predb.filename. Ignores next_name_at.
-//
-// Claude 2026-10-22: indexed join, not LIKE, not COUNT(*) of headers.
-// Reason: dump/IRC [FN:] never reached BODY-path ByFilename; PreDB-only
-//
-//	waited on leftover park and next_name_at. Nested loop from pending_name
-//	(thousands) into idx_usenet_nntp_predb_filename.
-//
-// Troubleshooting: matched=0 with a known dump filename on a pending set →
-//
-//	lower(filename) vs empty filename<>''. Review if: a proc_files column
-//	stops re-scanning misses.
-func (idx *Index) matchPrefileExactHits(ctx context.Context, limit int) ([]prefileHit, error) {
-	if limit <= 0 {
-		return nil, nil
-	}
-	rows, err := idx.db.QueryContext(ctx, `
-SELECT group_name, release_key, payload_bytes, name_attempts, completeness_bp, has_par2, title, size_bytes
-FROM (
-  SELECT DISTINCT ON (r.group_name, r.release_key)
-    r.group_name, r.release_key, r.payload_bytes, r.name_attempts, r.completeness_bp, r.has_par2,
-    p.title, p.size_bytes
-  FROM usenet_nntp_releases r
-  INNER JOIN usenet_nntp_headers h
-    ON h.group_name=r.group_name AND h.release_name=r.release_key AND h.filename<>''
-  INNER JOIN usenet_nntp_predb p
-    ON p.filename<>'' AND p.source<>'miss' AND lower(p.filename)=lower(h.filename)
-  WHERE r.state='pending_name' AND r.dirty=FALSE AND r.declared_segs>0 AND r.completeness_bp>=?
-  ORDER BY r.group_name, r.release_key, r.completeness_bp DESC
-) x
-ORDER BY completeness_bp DESC
-LIMIT ?`, spanRepairFloorBP, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []prefileHit
-	for rows.Next() {
-		var h prefileHit
-		if err := rows.Scan(&h.Group, &h.Key, &h.PayloadBytes, &h.Attempts, &h.CompletenessBP, &h.HasPar2, &h.Title, &h.SizeBytes); err != nil {
-			return nil, err
-		}
-		h.PreDBOnly = true
-		out = append(out, h)
-	}
-	return out, rows.Err()
-}
-
-// pendingPrefileFilenames returns up to 8 stored filenames per ≥80% pending
-// set for Store.Search (cleaned stem / title). Ignores next_name_at.
-func (idx *Index) pendingPrefileFilenames(ctx context.Context, limit int) ([]prefileName, error) {
-	if limit <= 0 {
-		return nil, nil
-	}
-	rows, err := idx.db.QueryContext(ctx, `
-SELECT p.group_name, p.release_key, p.payload_bytes, p.name_attempts, p.completeness_bp, p.has_par2, h.filename
-FROM (
-  SELECT group_name, release_key, payload_bytes, name_attempts, completeness_bp, has_par2
-  FROM usenet_nntp_releases
-  WHERE state='pending_name' AND dirty=FALSE AND declared_segs>0 AND completeness_bp>=?
-  ORDER BY completeness_bp DESC, ingested_at DESC
-  LIMIT ?
-) p
-JOIN LATERAL (
-  SELECT filename FROM usenet_nntp_headers h
-  WHERE h.group_name=p.group_name AND h.release_name=p.release_key AND h.filename<>''
-  GROUP BY filename
-  LIMIT 8
-) h ON true`, spanRepairFloorBP, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []prefileName
-	for rows.Next() {
-		var c prefileName
-		if err := rows.Scan(&c.Group, &c.Key, &c.PayloadBytes, &c.Attempts, &c.CompletenessBP, &c.HasPar2, &c.Filename); err != nil {
-			return nil, err
-		}
-		c.PreDBOnly = true
-		out = append(out, c)
-	}
-	return out, rows.Err()
+	return scanPendingSets(rows)
 }
 
 func groupLimitArgs(prefix []any, groups []string, limit int) (string, []any) {
@@ -432,18 +299,6 @@ func groupLimitArgs(prefix []any, groups []string, limit int) (string, []any) {
 		args = append(args, g)
 	}
 	return strings.Join(ph, ","), append(args, limit)
-}
-
-// ScheduleNameRetry sets next_name_at without incrementing name_attempts
-// (PreDB-only exhausted yield waiting on dump/IRC).
-func (idx *Index) ScheduleNameRetry(ctx context.Context, group, key string, wait time.Duration) error {
-	if wait <= 0 {
-		wait = exhaustedPreDBRetry
-	}
-	_, err := idx.db.ExecContext(ctx, `
-UPDATE usenet_nntp_releases SET next_name_at=?, updated_at=? WHERE group_name=? AND release_key=?`,
-		time.Now().Add(wait).Unix(), time.Now().Unix(), group, key)
-	return err
 }
 
 // SetRows loads every header row of one release/staged-set key.
@@ -507,7 +362,7 @@ func (idx *Index) scanHeaderRows(ctx context.Context, group, key, q string, args
 }
 
 // RenameRelease sets the recovered display name on a staged set and recomputes
-// completeness. A 95%+ set, or a PreDB-exact name at ≥80%, becomes searchable
+// completeness. A 95%+ set, or an ident-shaped recovered name at ≥80%, becomes searchable
 // in this pass. Headers are untouched, so the rename is reversible (undo SQL
 // in docs/usenet-nntp-native.md).
 //
@@ -528,13 +383,12 @@ UPDATE usenet_nntp_releases SET display_name=?, name_source=?, name_confidence=?
 }
 
 // ShelveBodyAttempts stops further BODY on a complete yield set whose PAR2/RAR
-// FileDesc is the same hash. DuePendingNames filters name_attempts>=max;
-// DuePendingPreDB does not, so dump/IRC can still rename.
+// FileDesc is the same hash. DuePendingNames filters name_attempts>=max.
 //
 // Claude 2026-10-19: one hash BODY, not three.
 // Reason: live namefix spent 2×~750KB/pass on FileDesc that accept() already
 //
-//	rejects, then retried until maxNameAttempts while PreDB never ran.
+//	rejects, then retried until maxNameAttempts.
 //
 // Troubleshooting: body_fetches=2 unresolved=1 on the same hash key every
 //
@@ -593,7 +447,7 @@ func keepCompleteYield(group string, completenessBP int, payload int64) bool {
 // (hash-named PAR2/RAR) and would be swept on attempt 3 — searchable bursted
 // then stopped. Firehose/junk still TTL.
 // Troubleshooting: namefix finalized=N while yield complete pending vanishes
-// → this filter not applied. Review if: PreDB names those hashes (then TTL).
+// → this filter not applied. Review if: a later name source recovers those hashes (then TTL).
 func (idx *Index) SweepUnnamed(ctx context.Context, ttl time.Duration) (int, error) {
 	cutoff := time.Now().Add(-ttl).Unix()
 	rows, err := idx.db.QueryContext(ctx, `

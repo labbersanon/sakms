@@ -174,6 +174,39 @@ func TestStore_DoesNotRequeueLosslessBitrate(t *testing.T) {
 	}
 }
 
+func TestStore_CountByKind(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	ctx := context.Background()
+	st := NewStore(sqlDB)
+	for _, row := range []Row{
+		{Indexer: "newznab2", GUID: "v1", Kind: newznabcatalog.KindMovies, Title: "A", Status: StatusVerified, Streamable: true},
+		{Indexer: "newznab2", GUID: "v2", Kind: newznabcatalog.KindMovies, Title: "B", Status: StatusVerified, Streamable: true},
+		{Indexer: "newznab2", GUID: "f1", Kind: newznabcatalog.KindMovies, Title: "C", Status: StatusFetched, Streamable: true},
+		{Indexer: "newznab2", GUID: "s1", Kind: newznabcatalog.KindMovies, Title: "D", Status: StatusStatSkipped, Streamable: true},
+		{Indexer: "newznab2", GUID: "tv1", Kind: newznabcatalog.KindSeries, Title: "E", Status: StatusFetched, Streamable: true},
+	} {
+		if err := st.Save(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := st.CountByKind(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0].Kind != newznabcatalog.KindMovies || got[1].Kind != newznabcatalog.KindSeries || got[2].Kind != newznabcatalog.KindAdult {
+		t.Fatalf("kinds=%+v", got)
+	}
+	if got[0].Verified != 2 || got[0].Fetched != 1 || got[0].Skipped != 1 {
+		t.Fatalf("movies=%+v", got[0])
+	}
+	if got[1].Verified != 0 || got[1].Fetched != 1 || got[1].Skipped != 0 {
+		t.Fatalf("series=%+v", got[1])
+	}
+	if got[2].Verified != 0 || got[2].Fetched != 0 || got[2].Skipped != 0 {
+		t.Fatalf("adult=%+v", got[2])
+	}
+}
+
 func TestLooksLikeURL(t *testing.T) {
 	if !looksLikeURL("apikey=x") || looksLikeURL(filepath.Join("ondemand", "nzb", "newznab", "a.nzb")) {
 		t.Fatal("looksLikeURL")

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/labbersanon/sakms/internal/newznab"
+	"github.com/labbersanon/sakms/internal/newznabcatalog"
 	"github.com/labbersanon/sakms/internal/usenet"
 )
 
@@ -64,6 +65,58 @@ func NewStore(db *sql.DB) *Store {
 		return nil
 	}
 	return &Store{db: db}
+}
+
+// KindCount is On Demand row counts for one Discover mode.
+type KindCount struct {
+	Kind     string
+	Verified int
+	Fetched  int
+	Skipped  int
+}
+
+// Claude 2026-10-23: Dock card On Demand counts are per mode, not title tokens.
+// Reason: movies/series/adult pipelines differ; the catalog card already splits kinds.
+// Troubleshooting: zeros while STAT runs → fetched is in progress, not verified.
+// Review if: Play starts-while-downloading (keep these as cache counts).
+func (s *Store) CountByKind(ctx context.Context) ([]KindCount, error) {
+	out := []KindCount{
+		{Kind: newznabcatalog.KindMovies},
+		{Kind: newznabcatalog.KindSeries},
+		{Kind: newznabcatalog.KindAdult},
+	}
+	if s == nil || s.db == nil {
+		return out, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT kind,
+			COUNT(*) FILTER (WHERE status = $1),
+			COUNT(*) FILTER (WHERE status = $2),
+			COUNT(*) FILTER (WHERE status = $3)
+		FROM newznab_ondemand
+		GROUP BY kind`, StatusVerified, StatusFetched, StatusStatSkipped)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	byKind := map[string]KindCount{}
+	for rows.Next() {
+		var k KindCount
+		if err := rows.Scan(&k.Kind, &k.Verified, &k.Fetched, &k.Skipped); err != nil {
+			return out, err
+		}
+		byKind[k.Kind] = k
+	}
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	for i, k := range out {
+		if got, ok := byKind[k.Kind]; ok {
+			got.Kind = k.Kind
+			out[i] = got
+		}
+	}
+	return out, nil
 }
 
 func (s *Store) NextFromCatalog(ctx context.Context) (CatalogRef, bool, error) {

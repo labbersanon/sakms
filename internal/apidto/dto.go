@@ -1946,13 +1946,22 @@ type NewznabCatalogOverlap struct {
 	OnlyHost2 int    `json:"onlyHost2"`
 }
 
+// NewznabCatalogOndemand is On Demand NZB counts for one mode.
+type NewznabCatalogOndemand struct {
+	Kind     string `json:"kind"`
+	Verified int    `json:"verified"`
+	Fetched  int    `json:"fetched"`
+	Skipped  int    `json:"skipped"`
+}
+
 // NewznabCatalogReport is GET /api/admin/newznab-catalog. No enclosure URLs.
 type NewznabCatalogReport struct {
-	IntervalSeconds int                     `json:"intervalSeconds"`
-	PageSize        int                     `json:"pageSize"`
-	Cursors         []NewznabCatalogCursor  `json:"cursors"`
-	Counts          []NewznabCatalogCount   `json:"counts"`
-	Overlap         []NewznabCatalogOverlap `json:"overlap"`
+	IntervalSeconds int                      `json:"intervalSeconds"`
+	PageSize        int                      `json:"pageSize"`
+	Cursors         []NewznabCatalogCursor   `json:"cursors"`
+	Counts          []NewznabCatalogCount    `json:"counts"`
+	Overlap         []NewznabCatalogOverlap  `json:"overlap"`
+	Ondemand        []NewznabCatalogOndemand `json:"ondemand"`
 }
 
 // Claude 2026-10-23: Discover On Demand list (verified NZBs only).

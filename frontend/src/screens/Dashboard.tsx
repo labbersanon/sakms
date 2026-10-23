@@ -37,6 +37,7 @@ import { A } from "@solidjs/router";
 import type {
   NewznabCatalogCount,
   NewznabCatalogCursor,
+  NewznabCatalogOndemand,
   NewznabCatalogOverlap,
   NewznabCatalogReport,
   StorageAllocationCell,
@@ -108,6 +109,17 @@ function sortCatalogKinds<T extends { kind: string }>(rows: T[] | undefined): T[
     if (d !== 0) return d;
     return a.kind.localeCompare(b.kind);
   });
+}
+
+function ondemandCounts(row: NewznabCatalogOndemand): string {
+  const parts = [`${formatCount(row.verified)} verified`];
+  if (row.fetched) {
+    parts.push(`${formatCount(row.fetched)} in progress`);
+  }
+  if (row.skipped) {
+    parts.push(`${formatCount(row.skipped)} skipped`);
+  }
+  return parts.join(" · ");
 }
 
 function catalogNZBs(
@@ -356,6 +368,16 @@ const NewznabCatalogCard: Component<{ report: NewznabCatalogReport }> = (
 ) => {
   const overlap = () => sortCatalogKinds(props.report.overlap);
   const cursors = () => sortCatalogKinds(props.report.cursors);
+  const ondemand = () => sortCatalogKinds(props.report.ondemand);
+  const ondemandFor = (kind: string) =>
+    ondemand().find((row) => row.kind === kind);
+  const extraOndemand = () => {
+    const seen = new Set(overlap().map((row) => row.kind));
+    return ondemand().filter(
+      (row) =>
+        !seen.has(row.kind) && (row.verified > 0 || row.fetched > 0 || row.skipped > 0),
+    );
+  };
   const idle = () => overlap().length === 0 && cursors().length === 0;
   const cursorLine = (c: NewznabCatalogCursor) => {
     const prefix = `${indexerLabel(c.indexer)} ${c.kind}`;
@@ -385,11 +407,28 @@ const NewznabCatalogCard: Component<{ report: NewznabCatalogReport }> = (
                 <li>
                   <div class="font-medium text-fg">{titleCase(row.kind)}</div>
                   <div class="text-fg">
-                    {`Same NZBs on both indexers: ${formatCount(row.both)} · NZBGeek only: ${formatCount(row.onlyHost1)} · NZB.life only: ${formatCount(row.onlyHost2)}`}
+                    {`Same NZBs on both indexers: ${formatCount(row.both)} · NZBGeek: ${formatCount(row.onlyHost1)} · NZB.life: ${formatCount(row.onlyHost2)}`}
                   </div>
                   <div class="text-xs text-muted">
                     {`NZBGeek: ${formatCount(catalogNZBs(props.report.counts, "newznab", row.kind))} NZBs · NZB.life: ${formatCount(catalogNZBs(props.report.counts, "newznab2", row.kind))} NZBs`}
                   </div>
+                  <Show when={ondemandFor(row.kind)}>
+                    {(od) => (
+                      <div class="text-fg">{`On Demand: ${ondemandCounts(od())}`}</div>
+                    )}
+                  </Show>
+                </li>
+              )}
+            </For>
+          </ul>
+        </Show>
+        <Show when={extraOndemand().length > 0}>
+          <ul class="mt-3 flex flex-col gap-1 text-sm">
+            <For each={extraOndemand()}>
+              {(row: NewznabCatalogOndemand) => (
+                <li>
+                  <span class="font-medium text-fg">{titleCase(row.kind)}</span>
+                  <span class="text-fg">{` · On Demand: ${ondemandCounts(row)}`}</span>
                 </li>
               )}
             </For>

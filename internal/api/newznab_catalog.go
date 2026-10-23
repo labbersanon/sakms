@@ -8,10 +8,10 @@ import (
 	"github.com/labbersanon/sakms/internal/newznabcatalog"
 )
 
-// Claude 2026-10-23: Dock card reads the Newznab catalog overlap report.
-// Reason: Lighthouse Mainstream filter is later; this pass only indexes and counts at 1 page / 5s / host.
-// Troubleshooting: empty card → AttachNewznabCatalog not called, or both hosts unset.
-// Review if: Lighthouse availability filter ships.
+// Claude 2026-10-23: Dock card reads catalog overlap plus On Demand counts per mode.
+// Reason: Lighthouse filter is later; On Demand is verified/fetched/skipped per movies/series/adult.
+// Troubleshooting: empty card → AttachNewznabCatalog; ondemand zeros → AttachNewznabOndemand.
+// Review if: Lighthouse availability filter or Play ships.
 var (
 	catalogMu    sync.RWMutex
 	catalogStore *newznabcatalog.Store
@@ -47,12 +47,20 @@ type newznabCatalogOverlap struct {
 	OnlyHost2 int    `json:"onlyHost2"`
 }
 
+type newznabCatalogOndemand struct {
+	Kind     string `json:"kind"`
+	Verified int    `json:"verified"`
+	Fetched  int    `json:"fetched"`
+	Skipped  int    `json:"skipped"`
+}
+
 type newznabCatalogReport struct {
-	IntervalSeconds int                     `json:"intervalSeconds"`
-	PageSize        int                     `json:"pageSize"`
-	Cursors         []newznabCatalogCursor  `json:"cursors"`
-	Counts          []newznabCatalogCount   `json:"counts"`
-	Overlap         []newznabCatalogOverlap `json:"overlap"`
+	IntervalSeconds int                      `json:"intervalSeconds"`
+	PageSize        int                      `json:"pageSize"`
+	Cursors         []newznabCatalogCursor   `json:"cursors"`
+	Counts          []newznabCatalogCount    `json:"counts"`
+	Overlap         []newznabCatalogOverlap  `json:"overlap"`
+	Ondemand        []newznabCatalogOndemand `json:"ondemand"`
 }
 
 func newznabCatalogHandler() http.HandlerFunc {
@@ -67,6 +75,7 @@ func newznabCatalogHandler() http.HandlerFunc {
 				Cursors:         []newznabCatalogCursor{},
 				Counts:          []newznabCatalogCount{},
 				Overlap:         []newznabCatalogOverlap{},
+				Ondemand:        []newznabCatalogOndemand{},
 			})
 			return
 		}
@@ -81,6 +90,7 @@ func newznabCatalogHandler() http.HandlerFunc {
 			Cursors:         make([]newznabCatalogCursor, 0, len(rep.Cursors)),
 			Counts:          make([]newznabCatalogCount, 0, len(rep.Counts)),
 			Overlap:         make([]newznabCatalogOverlap, 0, len(rep.Overlap)),
+			Ondemand:        []newznabCatalogOndemand{},
 		}
 		for _, c := range rep.Cursors {
 			out.Cursors = append(out.Cursors, newznabCatalogCursor{
@@ -96,6 +106,22 @@ func newznabCatalogHandler() http.HandlerFunc {
 				Kind: o.Kind, Host1Nzbs: o.Host1Nzbs, Host2Nzbs: o.Host2Nzbs,
 				Both: o.Both, OnlyHost1: o.OnlyHost1, OnlyHost2: o.OnlyHost2,
 			})
+		}
+		ondemandMu.RLock()
+		od := ondemandStore
+		ondemandMu.RUnlock()
+		if od != nil {
+			kinds, err := od.CountByKind(r.Context())
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			out.Ondemand = make([]newznabCatalogOndemand, 0, len(kinds))
+			for _, k := range kinds {
+				out.Ondemand = append(out.Ondemand, newznabCatalogOndemand{
+					Kind: k.Kind, Verified: k.Verified, Fetched: k.Fetched, Skipped: k.Skipped,
+				})
+			}
 		}
 		writeJSON(w, out)
 	}

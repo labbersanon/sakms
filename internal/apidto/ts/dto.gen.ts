@@ -1929,6 +1929,15 @@ export interface NewznabCatalogOverlap {
   onlyHost2: number /* int */;
 }
 /**
+ * NewznabCatalogOndemand is On Demand NZB counts for one mode.
+ */
+export interface NewznabCatalogOndemand {
+  kind: string;
+  verified: number /* int */;
+  fetched: number /* int */;
+  skipped: number /* int */;
+}
+/**
  * NewznabCatalogReport is GET /api/admin/newznab-catalog. No enclosure URLs.
  */
 export interface NewznabCatalogReport {
@@ -1937,6 +1946,7 @@ export interface NewznabCatalogReport {
   cursors: NewznabCatalogCursor[];
   counts: NewznabCatalogCount[];
   overlap: NewznabCatalogOverlap[];
+  ondemand: NewznabCatalogOndemand[];
 }
 /**
  * Claude 2026-10-23: Discover On Demand list (verified NZBs only).

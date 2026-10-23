@@ -98,6 +98,7 @@ const catalogReport = (
   cursors: [],
   counts: [],
   overlap: [],
+  ondemand: [],
   ...over,
 });
 
@@ -519,6 +520,11 @@ describe("Dashboard view", () => {
                   onlyHost2: 3,
                 },
               ],
+              ondemand: [
+                { kind: "movies", verified: 18, fetched: 13, skipped: 1 },
+                { kind: "series", verified: 0, fetched: 2, skipped: 0 },
+                { kind: "adult", verified: 0, fetched: 0, skipped: 0 },
+              ],
             }),
           );
         }
@@ -528,11 +534,18 @@ describe("Dashboard view", () => {
     renderDashboard();
     expect(await screen.findByText("NZB catalog")).toBeInTheDocument();
     expect(
-      screen.getByText(/Same NZBs on both indexers: 5 · NZBGeek only: 5 · NZB.life only: 3/),
+      screen.getByText(/Same NZBs on both indexers: 5 · NZBGeek: 5 · NZB.life: 3/),
     ).toBeInTheDocument();
     expect(
       screen.getByText(/NZBGeek: 1.?200 NZBs · NZB.life: 980 NZBs/),
     ).toBeInTheDocument();
+    expect(
+      screen.getByText(/On Demand: 18 verified · 13 in progress · 1 skipped/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/On Demand: 0 verified · 2 in progress/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Adult · On Demand/)).not.toBeInTheDocument();
     expect(
       screen.getByText(/NZBGeek movies · 150 indexed · last page \+40/),
     ).toBeInTheDocument();

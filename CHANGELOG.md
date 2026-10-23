@@ -13159,6 +13159,21 @@ status stays active.
 | `internal/usenet/precheck_test.go` | remux budget must not clamp; hung STAT ≤ article timeout |
 | `docs/usenet-precheck.md` | 12m cap retired; per-article hang bound |
 
+## 2026-10-23 — Dock NZB card shows On Demand counts per mode
+
+**Problem:** The NZB catalog Dock card had no On Demand pipeline numbers, and exclusive indexer counts said "only".
+**Root cause:** `/api/admin/newznab-catalog` returned overlap/cursors only; the card copy used "NZBGeek only".
+**Fix:** Report `ondemand` verified/fetched/skipped per movies/series/adult. Card copy is `NZBGeek:` / `NZB.life:` without "only".
+**Outcome:** `TestStore_CountByKind`, `TestNewznabCatalogHandler_ReportsOndemandCounts`, Dashboard NZB catalog test.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/newznabondemand/store.go` | `CountByKind` |
+| `internal/api/newznab_catalog.go` | `ondemand` on the Dock report |
+| `frontend/src/screens/Dashboard.tsx` | On Demand lines; drop "only" |
+
 ## 2026-10-23 — On Demand quality is implied bitrate, not the title
 
 **Problem:** Skip and the quality picker treated `Remux` / `2160p` in the release name as quality.

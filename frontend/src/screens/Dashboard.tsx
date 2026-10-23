@@ -392,6 +392,10 @@ const Sparkline: Component<{ values: number[] }> = (props) => {
   );
 };
 
+// Claude 2026-10-23: Indexer health is crawl cursors, not a live t=caps.
+// Reason: 30s Dock poll must not spend NZBGeek/NZB.life quota.
+// Troubleshooting: always Waiting → no newznab_catalog_cursors rows yet.
+// Review if: a dedicated probe is added that is not on this poll.
 const IndexerHealthCard: Component<{ report: NewznabCatalogReport }> = (
   props,
 ) => {

@@ -116,7 +116,7 @@ func TestSkipOnDemandStat_BitrateNotTitle(t *testing.T) {
 	}
 }
 
-func TestStatRow_SkipsOverBudgetWithoutSTAT(t *testing.T) {
+func TestStatRow_SkipsLosslessWithoutSTAT(t *testing.T) {
 	sqlDB := dbtest.New(t)
 	ctx := context.Background()
 	st := NewStore(sqlDB)
@@ -138,7 +138,7 @@ func TestStatRow_SkipsOverBudgetWithoutSTAT(t *testing.T) {
 	}
 }
 
-func TestStep_SkipOverBudgetUnblocksCatalog(t *testing.T) {
+func TestStep_SkipLosslessUnblocksCatalog(t *testing.T) {
 	sqlDB := dbtest.New(t)
 	ctx := context.Background()
 	cat := newznabcatalog.NewStore(sqlDB)

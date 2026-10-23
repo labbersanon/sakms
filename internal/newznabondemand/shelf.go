@@ -207,13 +207,7 @@ func bitrateLabel(mbps float64) string {
 }
 
 func bitrateRank(label string) float64 {
-	if label == "" || label == "Unknown" {
-		return 0
-	}
-	n, err := strconv.ParseFloat(strings.TrimSuffix(label, " Mbps"), 64)
-	if err != nil {
-		return 0
-	}
+	n, _ := strconv.ParseFloat(strings.TrimSuffix(label, " Mbps"), 64)
 	return n
 }
 

@@ -225,10 +225,7 @@ func fetchRow(ctx context.Context, store *Store, client *newznab.Client, idx new
 // Troubleshooting: skip-stat on a WEB-DL under the cap → bitrate was already lossless.
 // Review if: Play streams lossless.
 func skipOnDemandStat(segs int, mbps float64) bool {
-	if mbps >= onDemandLosslessMbps {
-		return true
-	}
-	return !usenet.StatFitsDeadline(segs)
+	return mbps >= onDemandLosslessMbps || !usenet.StatFitsDeadline(segs)
 }
 
 func skipStatBudget(ctx context.Context, store *Store, row Row) error {

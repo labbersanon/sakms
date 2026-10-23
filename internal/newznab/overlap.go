@@ -9,10 +9,7 @@ import (
 var titleYear = regexp.MustCompile(`(?:^|[.\s_\-])((?:19|20)\d{2})(?:[.\s_\-]|$)`)
 
 // Claude 2026-10-23: overlap joins NZB release names, not IMDB titles.
-// Reason: Dock overlap is "same NZB on both indexers." IMDB collapsed every
-//
-//	quality of one movie into one key. imdb_id stays on the row for Lighthouse.
-//
+// Reason: Dock overlap is "same NZB on both indexers." IMDB collapsed every quality of one movie into one key. imdb_id stays on the row for Lighthouse.
 // Troubleshooting: both≈movie count → overlap_key still imdb:/tvdb:/tmdb:.
 // Review if: Lighthouse filters TMDB by imdb_id (do not reuse this key).
 func OverlapKey(h CatalogHit) string {
@@ -40,7 +37,6 @@ func NormalizeIMDB(raw string) string {
 	return "tt" + s
 }
 
-// DigitsOnly keeps decimal digits from s.
 func DigitsOnly(s string) string {
 	var b strings.Builder
 	for _, r := range s {

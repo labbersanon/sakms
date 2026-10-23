@@ -126,8 +126,7 @@ func (s *Store) RecomputeOverlapKeys(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT indexer, guid, title, imdb_id, tvdb_id, tmdb_id, year
-		FROM newznab_catalog`)
+		SELECT indexer, guid, title FROM newznab_catalog`)
 	if err != nil {
 		return 0, err
 	}
@@ -135,7 +134,7 @@ func (s *Store) RecomputeOverlapKeys(ctx context.Context) (int, error) {
 	n := 0
 	for rows.Next() {
 		var h newznab.CatalogHit
-		if err := rows.Scan(&h.Indexer, &h.GUID, &h.Title, &h.ImdbID, &h.TvdbID, &h.TmdbID, &h.Year); err != nil {
+		if err := rows.Scan(&h.Indexer, &h.GUID, &h.Title); err != nil {
 			return n, err
 		}
 		key := newznab.OverlapKey(h)

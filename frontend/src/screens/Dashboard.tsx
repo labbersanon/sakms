@@ -350,7 +350,7 @@ const NewznabCatalogCard: Component<{ report: NewznabCatalogReport }> = (
   props,
 ) => {
   const pace = () =>
-    `1 page / ${props.report.intervalSeconds || 5}s per indexer · ${props.report.pageSize || 50} NZBs / page`;
+    `1 page / ${props.report.intervalSeconds || 5}s per indexer · ${props.report.pageSize || 100} NZBs / page`;
   const overlap = () => sortCatalogKinds(props.report.overlap);
   const cursors = () => sortCatalogKinds(props.report.cursors);
   const idle = () => overlap().length === 0 && cursors().length === 0;

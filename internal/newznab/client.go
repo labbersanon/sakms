@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -39,7 +40,8 @@ const (
 	browseSizeTol      = 0.15
 	userAgent          = "sakms-newznab/1"
 	minInterval        = time.Second
-	catalogPageSize    = 50
+	// catalogPageSize is NZB.life's max t=search limit (1–100, default 100).
+	catalogPageSize = 100
 )
 
 // Indexer is a Newznab API endpoint. APIKey must not be logged.
@@ -94,10 +96,12 @@ func (c *Client) interval() time.Duration {
 
 // Claude 2026-10-23: throttle per indexer host, not process-wide.
 // Reason: NZBGeek and NZBFinder are independent APIs; a shared last-call
-//   timestamp serialized t=search by minInterval even when both hosts are
-//   configured. Same-host spacing stays.
+//
+//	timestamp serialized t=search by minInterval even when both hosts are
+//	configured. Same-host spacing stays.
+//
 // Troubleshooting: host 2 always ~1s behind host 1 → last is still one Time.
-// Review if: an indexer documents a stricter per-key rate than minInterval.
+// Review if: NZB.life documents a stricter per-key rate than minInterval.
 func (c *Client) throttle(ctx context.Context, host string) error {
 	wait := time.Duration(0)
 	c.mu.Lock()
@@ -646,6 +650,11 @@ func mergeUnique(a, b []string) []string {
 // NormalizeEndpoint turns a Newznab base (site origin or /api URL) into the
 // API endpoint used for t=search / t=caps. Query strings are dropped so an
 // apikey never stays in the stored URL.
+//
+// Claude 2026-10-23: NZB.su/NZB.life must hit api.nzb.life, not nzb.su.
+// Reason: helpapi says the wrong domain returns Missing parameter on every call.
+// Troubleshooting: error 200 with a nzb.su URL → this rewrite missed a host alias.
+// Review if: NZB.life publishes a new API host.
 func NormalizeEndpoint(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -657,6 +666,11 @@ func NormalizeEndpoint(raw string) string {
 	}
 	if u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return raw
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "nzb.su", "www.nzb.su", "nzb.life", "www.nzb.life":
+		u.Scheme = "https"
+		u.Host = "api.nzb.life"
 	}
 	if u.Path == "" || u.Path == "/" {
 		u.Path = "/api"
@@ -672,11 +686,13 @@ type apiError struct {
 	Description string   `xml:"description,attr"`
 }
 
-func parseAPIError(body []byte) error {
-	var e apiError
-	if err := xml.Unmarshal(body, &e); err != nil || e.XMLName.Local != "error" {
-		return nil
-	}
+// APIError is a Newznab <error code="…"> payload.
+type APIError struct {
+	Code        string
+	Description string
+}
+
+func (e APIError) Error() string {
 	desc := strings.TrimSpace(e.Description)
 	if desc == "" {
 		desc = strings.TrimSpace(e.Code)
@@ -684,7 +700,55 @@ func parseAPIError(body []byte) error {
 	if desc == "" {
 		desc = "error"
 	}
-	return fmt.Errorf("newznab: %s", desc)
+	if e.Code == "" {
+		return "newznab: " + desc
+	}
+	return fmt.Sprintf("newznab: %s (%s)", desc, e.Code)
+}
+
+func (e APIError) NoItems() bool { return e.Code == "300" }
+func (e APIError) Quota() bool   { return e.Code == "500" }
+
+func parseAPIError(body []byte) error {
+	var e apiError
+	if err := xml.Unmarshal(body, &e); err != nil || e.XMLName.Local != "error" {
+		return nil
+	}
+	return APIError{Code: strings.TrimSpace(e.Code), Description: strings.TrimSpace(e.Description)}
+}
+
+// HTTPStatusError is a non-2xx response. 429 may carry Retry-After.
+type HTTPStatusError struct {
+	Host       string
+	Status     int
+	RetryAfter time.Duration
+}
+
+func (e *HTTPStatusError) Error() string {
+	if e == nil {
+		return "indexer status"
+	}
+	if e.Status == http.StatusTooManyRequests && e.RetryAfter > 0 {
+		return fmt.Sprintf("%s returned status %d retry-after %s", e.Host, e.Status, e.RetryAfter)
+	}
+	return fmt.Sprintf("%s returned status %d", e.Host, e.Status)
+}
+
+// RetryAfter is the 429 wait from the response, or 0.
+func RetryAfter(err error) time.Duration {
+	var e *HTTPStatusError
+	if errors.As(err, &e) {
+		return e.RetryAfter
+	}
+	return 0
+}
+
+func parseRetryAfter(h string) time.Duration {
+	n, err := strconv.Atoi(strings.TrimSpace(h))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return time.Duration(n) * time.Second
 }
 
 type capsInfo struct {
@@ -800,7 +864,14 @@ func (c *Client) get(ctx context.Context, u *url.URL) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("%s returned status %d", u.Host, resp.StatusCode)
+		ra := time.Duration(0)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			ra = parseRetryAfter(resp.Header.Get("Retry-After"))
+			if ra <= 0 {
+				ra = 5 * time.Second
+			}
+		}
+		return nil, &HTTPStatusError{Host: u.Host, Status: resp.StatusCode, RetryAfter: ra}
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, httpx.MaxResponseBodySize))
 	if err != nil {

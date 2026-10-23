@@ -94,11 +94,11 @@ export const UsenetSection: Component = () => (
 // Review if: Prowlarr already includes the same indexer.
 // Related files: internal/api/newznabgrab.go
 //
-// Claude 2026-10-22: second host `newznab2` for an indexer that lists obfuscated NZBs.
-// Reason: NZBGeek does not list ngPost hash NZBs. Paste URL+key only — no secret in git.
-//   NZBFinder is the recommended second host (real email; films first).
-// Troubleshooting: grab never queries host 2 → connections.service newznab2 empty.
-// Review if: Prowlarr already includes both hosts.
+// Claude 2026-10-23: second host `newznab2` is NZB.life (api.nzb.life).
+// Reason: helpapi — host must be https://api.nzb.life/ not nzb.su; q is required.
+// Troubleshooting: Missing parameter on every call → wrong domain.
+// Review if: NZB.life publishes a new API host.
+// Paste URL+key only — no secret in git.
 // Claude 2026-10-23: both hosts are queried in parallel, not host-1-then-2.
 // Reason: sequential t=search hid NZBFinder behind NZBGeek. Prowlarr stays last.
 const NewznabHostCard: Component = () => {
@@ -122,7 +122,7 @@ const NewznabHostCard: Component = () => {
         title="NZB host API 2"
         urlAria="newznab2 URL"
         keyAria="newznab2 API key"
-        help="Optional second Newznab indexer (NZBFinder recommended: https://nzbfinder.ws/api). Sign up with a real email, then paste URL and API key. Films first. Queried in parallel with host 1, before Prowlarr. Nothing is stored in the repo."
+        help="Optional second Newznab indexer. NZB.life API base is https://api.nzb.life/ (not nzb.su — wrong host returns Missing parameter). Queried in parallel with host 1, before Prowlarr. Nothing is stored in the repo."
         rows={conns}
         rowsError={conns.error}
         onChanged={() => void refetch()}

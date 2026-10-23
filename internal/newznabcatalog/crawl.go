@@ -20,9 +20,14 @@ const (
 	Interval = 5 * time.Second
 	// idleRecheck is how often Run looks for a newly saved host after every
 	// configured indexer has finished (or none are configured).
-	idleRecheck    = time.Minute
-	rateLimitMin   = time.Minute
+	idleRecheck = time.Minute
+	// Claude 2026-10-23: NZB.life 429 Retry-After is 5s; error 500 is quota.
+	// Reason: helpapi says wait ≥5s on 429; 500 is daily/hourly, not a 5s blip.
+	// Troubleshooting: Cloudflare challenge HTML instead of XML → 429 path.
+	// Review if: NZB.life publishes a different Retry-After.
+	rateLimitMin   = 5 * time.Second
 	rateLimitMax   = 10 * time.Minute
+	quotaBackoff   = time.Hour
 	zeroInsertStop = 3
 )
 
@@ -83,12 +88,26 @@ func crawlHost(ctx context.Context, store *Store, client *newznab.Client, idx ne
 				if ctx.Err() != nil {
 					return
 				}
+				if isQuota(err) {
+					log.Printf("newznab catalog: indexer=%s kind=%s quota backoff=%s", idx.Name, lane.Kind, quotaBackoff)
+					cur.LastError = "request limit reached"
+					cur.UpdatedAt = time.Now().Unix()
+					_ = store.SaveCursor(ctx, cur)
+					if !sleepCtx(ctx, quotaBackoff) {
+						return
+					}
+					continue
+				}
 				if isRateLimit(err) {
-					log.Printf("newznab catalog: indexer=%s kind=%s rate-limit backoff=%s", idx.Name, lane.Kind, backoff)
+					wait := backoff
+					if ra := newznab.RetryAfter(err); ra > wait {
+						wait = ra
+					}
+					log.Printf("newznab catalog: indexer=%s kind=%s rate-limit backoff=%s", idx.Name, lane.Kind, wait)
 					cur.LastError = "rate limited"
 					cur.UpdatedAt = time.Now().Unix()
 					_ = store.SaveCursor(ctx, cur)
-					if !sleepCtx(ctx, backoff) {
+					if !sleepCtx(ctx, wait) {
 						return
 					}
 					backoff *= 2
@@ -166,15 +185,30 @@ func indexersFromStore(ctx context.Context, store *connections.Store) []newznab.
 	return out
 }
 
-func isRateLimit(err error) bool {
+func isQuota(err error) bool {
+	var ae newznab.APIError
+	if errors.As(err, &ae) && ae.Quota() {
+		return true
+	}
 	if err == nil {
 		return false
 	}
 	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "request limit reached")
+}
+
+func isRateLimit(err error) bool {
+	if err == nil || isQuota(err) {
+		return false
+	}
+	var se *newznab.HTTPStatusError
+	if errors.As(err, &se) && se.Status == http.StatusTooManyRequests {
+		return true
+	}
+	s := strings.ToLower(err.Error())
 	return strings.Contains(s, "429") ||
 		strings.Contains(s, "rate limit") ||
-		strings.Contains(s, "too many request") ||
-		strings.Contains(s, "request limit")
+		strings.Contains(s, "too many request")
 }
 
 func trimErr(err error) string {

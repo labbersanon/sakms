@@ -36,7 +36,7 @@ func TestNewznabCatalogHandler_EmptyWhenUnattached(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatal(err)
 	}
-	if got.IntervalSeconds != 5 || got.PageSize != 50 {
+	if got.IntervalSeconds != 5 || got.PageSize != 100 {
 		t.Fatalf("pace=%+v", got)
 	}
 	if got.Cursors == nil || got.Counts == nil || got.Overlap == nil {

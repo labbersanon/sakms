@@ -242,7 +242,7 @@ func run() error {
 	api.AttachNewznabGrabSearch(connStore, &http.Client{Timeout: outboundTimeout})
 	// Claude 2026-10-23: paced Newznab catalog crawl for overlap (Dock card).
 	// Reason: 1 page / 5s / host, both hosts in parallel. Not OVER. No HTML.
-	// Troubleshooting: catalog logs rate-limit backoff → NZBFinder quota.
+	// Troubleshooting: catalog logs rate-limit backoff → NZB.life 429 Retry-After.
 	// Review if: Lighthouse availability filter reads newznab_catalog.
 	catalogStore := newznabcatalog.NewStore(sqlDB)
 	api.AttachNewznabCatalog(catalogStore)

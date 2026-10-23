@@ -95,10 +95,22 @@ func TestInterval_IsFiveSecondsPerHost(t *testing.T) {
 }
 
 func TestIsRateLimit(t *testing.T) {
-	if !isRateLimit(fmt.Errorf("host returned status 429")) {
+	if !isRateLimit(&newznab.HTTPStatusError{Host: "api.nzb.life", Status: 429, RetryAfter: 5 * time.Second}) {
 		t.Fatal("429")
 	}
 	if isRateLimit(fmt.Errorf("search xml")) {
 		t.Fatal("xml")
+	}
+	if isRateLimit(newznab.APIError{Code: "500", Description: "Request limit reached"}) {
+		t.Fatal("quota is not 429")
+	}
+}
+
+func TestIsQuota(t *testing.T) {
+	if !isQuota(newznab.APIError{Code: "500", Description: "Request limit reached"}) {
+		t.Fatal("500")
+	}
+	if isQuota(&newznab.HTTPStatusError{Host: "api.nzb.life", Status: 429}) {
+		t.Fatal("429")
 	}
 }

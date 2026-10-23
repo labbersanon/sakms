@@ -2,6 +2,7 @@ package newznab
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 )
@@ -20,14 +21,17 @@ type CatalogHit struct {
 	Year     int
 }
 
-// CatalogPageSize is the catalog crawl page length. Smaller than grab
-// search so each paced request stays cheap for the indexer.
+// CatalogPageSize is the catalog crawl page length. NZB.life allows 1–100
+// (default 100); 100 halves request count vs 50 at the same 5s pace.
 func CatalogPageSize() int { return catalogPageSize }
 
-// Claude 2026-10-23: category-only t=search pages for the local catalog.
-// Reason: grab search requires q=; overlap indexing pages cat=2000/5000/6000 with offset. Do not scrape HTML. Do not fetch NZBs.
-// Troubleshooting: empty search error → catalog flag not set on searchReq.
-// Review if: an indexer requires q=* for latest-in-cat (retry in the crawler).
+// Claude 2026-10-23: catalog t=search is cat + q=*.
+// Reason: NZB.life helpapi marks q required; cat-only returns error 200.
+//
+//	q=* is still a catalog page, not HTML and not an NZB fetch.
+//
+// Troubleshooting: Missing parameter → q stripped or catalog flag off.
+// Review if: an indexer documents a different latest-in-cat query.
 func (c *Client) SearchCatalog(ctx context.Context, idx Indexer, cat, offset, limit int) ([]CatalogHit, error) {
 	if cat <= 0 {
 		return nil, nil
@@ -40,27 +44,18 @@ func (c *Client) SearchCatalog(ctx context.Context, idx Indexer, cat, offset, li
 	}
 	idx.Endpoint = NormalizeEndpoint(idx.Endpoint)
 	items, err := c.search(ctx, idx, searchReq{
+		q:       "*",
 		cats:    []int{cat},
 		offset:  offset,
 		limit:   limit,
 		catalog: true,
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "429") {
-			return nil, err
+		var ae APIError
+		if errors.As(err, &ae) && ae.NoItems() {
+			return nil, nil
 		}
-		// Some hosts reject cat-only latest; q=* is still a catalog page,
-		// not HTML and not an NZB fetch.
-		items, err = c.search(ctx, idx, searchReq{
-			q:       "*",
-			cats:    []int{cat},
-			offset:  offset,
-			limit:   limit,
-			catalog: true,
-		})
-		if err != nil {
-			return nil, err
-		}
+		return nil, err
 	}
 	out := make([]CatalogHit, 0, len(items))
 	for _, it := range items {

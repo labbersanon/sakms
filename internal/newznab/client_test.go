@@ -210,6 +210,9 @@ func TestNormalizeEndpoint(t *testing.T) {
 		{"https://api.nzbgeek.info/", "https://api.nzbgeek.info/api"},
 		{"https://api.nzbgeek.info/api", "https://api.nzbgeek.info/api"},
 		{"https://api.nzbgeek.info/api?apikey=secret", "https://api.nzbgeek.info/api"},
+		{"https://nzb.su/api", "https://api.nzb.life/api"},
+		{"https://www.nzb.life/", "https://api.nzb.life/api"},
+		{"https://api.nzb.life/", "https://api.nzb.life/api"},
 		{"http://prowlarr:9696/5/", "http://prowlarr:9696/5"},
 		{"", ""},
 	}

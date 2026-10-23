@@ -12974,3 +12974,19 @@ status stays active.
 | `internal/api/newznab_catalog.go` | GET `/api/admin/newznab-catalog` |
 | `frontend/src/screens/Dashboard.tsx` | NZB catalog Dock card |
 | `docs/ROADMAP.md` | Lighthouse filter follow-up |
+
+## 2026-10-23 — NZB.life API base, required q, 429 Retry-After 5s
+
+**Problem:** NZB.life helpapi: wrong host (`nzb.su`) returns Missing parameter; `t=search` requires `q`; Cloudflare 429 sends Retry-After: 5; error 300 is empty results; error 500 is quota.
+**Root cause:** Catalog sent cat-only first (then retried `q=*`), 429 backoff started at 1m, page size 50, no `nzb.su` → `api.nzb.life` rewrite.
+**Fix:** Always catalog `q=*`. Page size 100 (their max). Normalize `nzb.su` / `nzb.life` to `https://api.nzb.life/api`. Honor Retry-After (default 5s, cap 10m). Error 300 → empty page. Error 500 → 1h wait. Grab stays 1s. Catalog stays 5s/host. No API key in git.
+**Outcome:** `TestNormalizeEndpoint` nzb.su rewrite, `TestSearchCatalog_QStarNoHTMLNoNZB`, `TestSearchCatalog_Code300IsEmptyPage`, `TestSearchCatalog_429HonorsRetryAfter`. Live host 2 URL was already `https://api.nzb.life/api`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/newznab/client.go` | host rewrite, 429 Retry-After, APIError codes |
+| `internal/newznab/catalog.go` | catalog `q=*`, page 100 |
+| `internal/newznabcatalog/crawl.go` | 5s 429 min, 1h quota |
+| `frontend/src/screens/settings/Usenet.tsx` | host 2 help: api.nzb.life |

@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func TestSearchCatalog_CatOnlyNoHTMLNoNZB(t *testing.T) {
+func TestSearchCatalog_QStarNoHTMLNoNZB(t *testing.T) {
 	var gotQ, gotT, gotCat, gotOff, gotLim string
 	var sawHTML, fetchedNZB bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -52,8 +52,8 @@ func TestSearchCatalog_CatOnlyNoHTMLNoNZB(t *testing.T) {
 	if gotT != "search" || gotCat != "2000" || gotOff != "50" || gotLim != "50" {
 		t.Fatalf("t=%q cat=%q off=%q lim=%q", gotT, gotCat, gotOff, gotLim)
 	}
-	if gotQ != "" {
-		t.Fatalf("q=%q want empty first page", gotQ)
+	if gotQ != "*" {
+		t.Fatalf("q=%q want *", gotQ)
 	}
 	if sawHTML || fetchedNZB {
 		t.Fatalf("html=%v nzb=%v", sawHTML, fetchedNZB)
@@ -83,6 +83,35 @@ func TestSearchCatalog_429DoesNotRetryStar(t *testing.T) {
 	}
 	if n.Load() != 1 {
 		t.Fatalf("calls=%d want 1 (no q=* retry on 429)", n.Load())
+	}
+}
+
+func TestSearchCatalog_Code300IsEmptyPage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `<?xml version="1.0"?><error code="300" description="No items found"/>`)
+	}))
+	defer srv.Close()
+	c := &Client{HTTP: srv.Client(), Interval: time.Nanosecond}
+	hits, err := c.SearchCatalog(context.Background(), Indexer{
+		Name: "newznab", Endpoint: srv.URL + "/api", APIKey: "k",
+	}, 2000, 0, 50)
+	if err != nil || len(hits) != 0 {
+		t.Fatalf("hits=%d err=%v", len(hits), err)
+	}
+}
+
+func TestSearchCatalog_429HonorsRetryAfter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+	c := &Client{HTTP: srv.Client(), Interval: time.Nanosecond}
+	_, err := c.SearchCatalog(context.Background(), Indexer{
+		Name: "newznab", Endpoint: srv.URL + "/api", APIKey: "k",
+	}, 2000, 0, 50)
+	if RetryAfter(err) != 5*time.Second {
+		t.Fatalf("retry-after=%s err=%v", RetryAfter(err), err)
 	}
 }
 

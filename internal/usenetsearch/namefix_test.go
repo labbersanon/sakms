@@ -19,6 +19,7 @@ import (
 	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/quality"
 	"github.com/labbersanon/sakms/internal/usenet"
+	"github.com/labbersanon/sakms/internal/usenetsearch/predb"
 )
 
 func par2Packet(typ string, body []byte) []byte {
@@ -233,6 +234,29 @@ func (f *fakePreDB) ByName(_ context.Context, n string) (PreDBHit, bool) {
 func (f *fakePreDB) ByFilename(_ context.Context, n string) (PreDBHit, bool) {
 	v, ok := f.filenames[strings.ToLower(n)]
 	return v, ok
+}
+func (f *fakePreDB) Search(_ context.Context, q string) (PreDBHit, bool) {
+	if v, ok := f.filenames[strings.ToLower(q)]; ok {
+		return v, true
+	}
+	cleaned := predb.CleanForMatching(q)
+	if cleaned != "" {
+		if v, ok := f.filenames[strings.ToLower(cleaned)]; ok {
+			return v, true
+		}
+		if v, ok := f.names[cleaned]; ok {
+			return v, true
+		}
+	}
+	for _, h := range predb.HashTokens(q) {
+		if v, ok := f.hashes[h]; ok {
+			return v, true
+		}
+	}
+	if v, ok := f.names[q]; ok {
+		return v, true
+	}
+	return PreDBHit{}, false
 }
 func (f *fakePreDB) ByRequestID(_ context.Context, id int64, _ string) (PreDBHit, bool) {
 	v, ok := f.requestIDs[id]
@@ -808,17 +832,26 @@ func TestDuePendingNames_PrefersMkvPar2OverRar(t *testing.T) {
 	assertPendingHeaderHas(t, f.idx, sets[0], ".mkv", "mkv+par2 (ahead of hash-rar)")
 }
 
-func TestFilenameCandidates_SkipsHexHashKeepsRandom(t *testing.T) {
+func TestFilenameCandidates_KeepsHexAndRandom(t *testing.T) {
 	hex := []HeaderRow{
 		{Filename: nfHash + ".part01.rar"},
 		{Filename: nfHash + ".par2"},
 		{Subject: `[01/2] - "` + nfHash + `.mkv" yEnc (1/1)`},
 	}
-	if got := filenameCandidates(hex); len(got) != 0 {
-		t.Fatalf("hex hash filenames = %v, want none (ByHash)", got)
+	got := filenameCandidates(hex)
+	want := nfHash + ".part01.rar"
+	found := false
+	for _, n := range got {
+		if n == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("hex hash filenames = %v, want %q for Search", got, want)
 	}
 	const tok = "v1AAqzDH11LfEAAN9yuzTJ.part01.rar"
-	got := filenameCandidates([]HeaderRow{{Filename: tok}})
+	got = filenameCandidates([]HeaderRow{{Filename: tok}})
 	for _, n := range got {
 		if n == tok {
 			return
@@ -1515,15 +1548,16 @@ func TestNameFix_PreDBFilenameResolvesRandomArchiveName(t *testing.T) {
 	f.nf.PreDB = &fakePreDB{filenames: map[string]PreDBHit{
 		"v1aaqzdh11lfeaan9yuztj.part01.rar": {Title: title},
 	}}
-	// Claude 2026-10-22: ByFilename LIKE is PreDB-only (not in front of BODY).
-	f.nf.SkipBody = true
 	f.crawlAndRecompute(t)
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET next_name_at=?`, time.Now().Add(time.Hour).Unix()); err != nil {
+		t.Fatal(err)
+	}
 	res, err := f.nf.Run(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.HashHits != 1 || res.Renamed != 1 || len(f.src.bodyCalls) != 0 {
-		t.Fatalf("result = %+v bodyCalls=%v", res, f.src.bodyCalls)
+	if res.HashHits != 1 || res.Renamed != 1 || res.BodyFetches != 0 || len(f.src.bodyCalls) != 0 {
+		t.Fatalf("match:prefiles must name before BODY and ignore next_name_at: %+v bodyCalls=%v", res, f.src.bodyCalls)
 	}
 }
 
@@ -1920,8 +1954,8 @@ func TestNameFix_BodyLeftoverOnDeadline(t *testing.T) {
 	if !res.Advanced() {
 		t.Fatalf("leftover must count as advanced: %+v", res)
 	}
-	if res.HashHits != 0 {
-		t.Fatalf("BODY leftover must park PreDB-only: %+v", res)
+	if res.HashHits < 1 {
+		t.Fatalf("leftover must not park dump/IRC PreDB: %+v", res)
 	}
 }
 

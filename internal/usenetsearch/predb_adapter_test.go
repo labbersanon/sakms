@@ -42,6 +42,32 @@ func TestNameFix_Md5SubjectResolvesFromLocalPreDBStore(t *testing.T) {
 	}
 }
 
+func TestNameFix_MatchPrefilesExactDumpFilename(t *testing.T) {
+	const title = "Dump.File.2020.1080p.BluRay.x264-GRP"
+	const fn = "v1aaqzdh11lfeaan9yuztj.part01.rar"
+	rows := leadTokenHashSet("df", "KLoSR1zOTNoaex3x", "v1AAqzDH11LfEAAN9yuzTJ", 1, 45)
+	f := newNFFixture(t, rows, nil)
+	store := predb.NewStore(f.idx.db)
+	if err := store.Upsert(context.Background(), predb.Entry{Title: title, Filename: fn}, predb.SourceDump); err != nil {
+		t.Fatal(err)
+	}
+	f.nf.PreDB = &PreDBService{Store: store}
+	f.crawlAndRecompute(t)
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_releases SET next_name_at=?`, time.Now().Add(time.Hour).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.HashHits != 1 || res.Renamed != 1 || res.BodyFetches != 0 {
+		t.Fatalf("exact predb.filename join must name before BODY: %+v", res)
+	}
+	if _, _, display, _ := f.release(t); display != title {
+		t.Fatalf("display = %q", display)
+	}
+}
+
 func TestPreDBService_HTTPHitCachesAndMissIsCached(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -88,17 +114,35 @@ func TestPreDBService_HTTPHitCachesAndMissIsCached(t *testing.T) {
 	}
 }
 
-// A PAR2-derived name that fails the quality-shape check is accepted only via a
-// PreDB exact hit, and a size mismatch beyond +-15% rejects the hit.
-func TestNameFix_NFOOnlyNeedsPreDBAndSizeMustMatch(t *testing.T) {
+func nfoHeaderAsNFO(t *testing.T, f *nfFixture, msgid, name string) {
+	t.Helper()
+	f.src.bodies[msgid] = usenetBodyNFO(name)
+	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_headers SET subject=REPLACE(subject, '.par2', '.nfo'), filename=REPLACE(filename, '.par2', '.nfo') WHERE msgid=?`, msgid); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNameFix_NFOSceneRenamesWithoutPreDB(t *testing.T) {
 	const name = "Nfo.Movie.2020.1080p.WEB-DL.x264-GRP"
 	f := newNFFixture(t, obfuscatedSet("n", nfHash, 1, 45), nil)
 	f.crawlAndRecompute(t)
-	f.src.bodies["npar2"] = usenetBodyNFO(name)
-	// Make the smallest file an NFO so the NFO branch is exercised.
-	if _, err := f.idx.db.Exec(`UPDATE usenet_nntp_headers SET subject=REPLACE(subject, '.par2', '.nfo'), filename=REPLACE(filename, '.par2', '.nfo') WHERE msgid='npar2'`); err != nil {
+	nfoHeaderAsNFO(t, f, "npar2", name)
+	res, err := f.nf.Run(context.Background())
+	if err != nil {
 		t.Fatal(err)
 	}
+	if res.Renamed != 1 || res.BySource[sourceNFO] != 1 {
+		t.Fatalf("scene NFO must rename without PreDB: %+v", res)
+	}
+}
+
+// A garbage NFO name that is not scene-shaped still needs a PreDB hit, and a
+// size mismatch beyond +-15% rejects the hit.
+func TestNameFix_NFOOnlyNeedsPreDBAndSizeMustMatch(t *testing.T) {
+	const name = "Nfo.Movie.2020-GRP"
+	f := newNFFixture(t, obfuscatedSet("n", nfHash, 1, 45), nil)
+	f.crawlAndRecompute(t)
+	nfoHeaderAsNFO(t, f, "npar2", name)
 	ctx := context.Background()
 	res, err := f.nf.Run(ctx)
 	if err != nil {

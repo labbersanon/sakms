@@ -53,6 +53,14 @@ func (p *PreDBService) ByFilename(ctx context.Context, filename string) (PreDBHi
 	return asHit(p.Store.ByFilename(ctx, filename))
 }
 
+// Search is NNTmux match:prefiles against the local table (no HTTP).
+func (p *PreDBService) Search(ctx context.Context, query string) (PreDBHit, bool) {
+	if p == nil || p.Store == nil {
+		return PreDBHit{}, false
+	}
+	return asHit(p.Store.Search(ctx, query))
+}
+
 // ByRequestID resolves an nZEDb/IRC request id against the local table.
 func (p *PreDBService) ByRequestID(ctx context.Context, id int64, group string) (PreDBHit, bool) {
 	if p == nil || p.Store == nil {

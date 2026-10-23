@@ -172,26 +172,33 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   with backoff, then the range is dropped). The forward watermark never waits
   on a gap.
 - **Name recovery.** Obfuscated binary sets are staged under
-  `release_name='obf:<key>'` instead of dropped. Recovery order: local PreDB by
+  `release_name='obf:<key>'` instead of dropped. Recovery copies NNTmux
+  `match:prefiles` / `fixNamesWithFiles` / `fixNamesWithNfo` as the base:
+  each pass first joins ≥80% pending header `filename` to local
+  `usenet_nntp_predb.filename` (exact, indexed) and `Store.Search` (cleaned
+  stem, title-md5/sha1, then exact title). That join ignores `next_name_at`
+  so a dump/IRC `[FN:]` is not parked behind leftover BODY. Then local PreDB by
   md5 / md5(md5(title)) / sha1 tokens taken from every header subject and
-  filename (suffix-stripped), then PreDB `filename` / IRC `[FN:]`, then dump/IRC
+  filename (suffix-stripped), then PreDB `filename` / IRC `[FN:]` via the same
+  Search on BODY and PreDB-only paths, then dump/IRC
   request id (EFNet/Bin-Req wrappers), then a
   quoted or scene-shaped header filename (fansub `" [UQW] Title…1080p.par2 "`
-  included; `reFileTok` cannot match spaces/`+`/`[]`), then at most 3
+  included; stored `filename` is `name_source=file`; `reFileTok` cannot match
+  spaces/`+`/`[]`), then at most 3
   first-segment BODY fetches per
   set (PAR2 `FileDesc` → RAR/ZIP member names → yEnc `=ybegin` name → NFO scene
-  name). PreDB (no BODY) also runs on ≥80% pending sets in **any** group
+  name). Scene-shaped NFO/file names are accepted without a PreDB hit; garbage
+  NFO still needs one. PreDB (no BODY) also runs on ≥80% pending sets in **any** group
   (including boneless), 200 per pass, even when OVER is busy (BODY waits).
-  Each pass runs quoted ident-shaped header names first (no BODY; ignores
+  Each pass runs match:prefiles, then quoted ident-shaped header names (no BODY; ignores
   `next_name_at`), then 95% BODY, then ident BODY, then a one-shot hash_16K
   seed of named/shelved PAR2, then PreDB-only keys. BODY has a 90s phase
-  budget; header/parhash/predb stay 20s. Namefix runs before OVER. While
+  budget; header/parhash/predb/prefiles stay 20s. Namefix runs before OVER. While
   BODY leftover>0, OVER/repair/backfill skip (cap 4 consecutive skips so
   HIGH cannot starve). ErrBusy from downloads still skips crawl.
   BODY fetches up to 4 sets in parallel (tryOnly borrow; ErrBusy yields the
   rest of the phase). Header/parhash/predb stay sequential. When BODY leftover
-  is >0, parhash seed and PreDB-only are parked until leftover drains so the
-  next 90s BODY is not delayed 40s.
+  is >0, parhash seed is parked (NNTP); dump/IRC PreDB-only still runs.
   Each BODY article is capped at 8s (dial included) and does not inherit leftover
   phase crumbs, so setRows eating the phase still fetches one PAR2. A hung fetch
   logs `namefix body msgid=` and continues to the next PAR2/NFO pick unless the
@@ -206,12 +213,13 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   then `has_par2` without rar/zip/7z (hash.mkv+PAR2), then RAR/ZIP, then other
   PAR2. Split 7z is not a prefer rank. ngPost hash.7z and UUID `.7z.enc`
   are dropped from BODY queues (password is only in the NZB); PreDB may
-  hash-lookup then shelve.   Hex-hash filenames skip PreDB `ByFilename` LIKE
-  (those are `ByHash`). Stem matches (`hash.mkv` → `hash.part1.rar`) use a
-  btree range on `lower(filename)`, not `LIKE` (the equality index cannot
-  serve LIKE without `text_pattern_ops`). Both exact and stem SQL include
-  `filename <> ''` so the partial index is eligible; without it the planner
-  seq-scans the table.
+  hash-lookup then shelve.   Hex-hash filenames are searched (exact filename, then title-md5 `ByHash`,
+  hashed queries skip the title step). Stem matches (`hash.mkv` →
+  `hash.part1.rar`) use a btree range on `lower(filename)`, not `LIKE` (the
+  equality index cannot serve LIKE without `text_pattern_ops`). Both exact and
+  stem SQL include `filename <> ''` so the partial index is eligible; without
+  it the planner seq-scans the table. Do not scrape predb.net to grow that
+  table.
   BODY picks SFV, then the main `.par2` (FileDesc / hash_16K), then the
   first-volume RAR/7z (`part01` / `.7z.001` / bare `.rar`) for srrdb CRC
   after a hash FileDesc. Last-volume RAR is skipped when a main PAR2

@@ -46,6 +46,8 @@ type PreDBLookup interface {
 	ByName(ctx context.Context, name string) (PreDBHit, bool)
 	// ByFilename resolves a PreDB inner/archive filename.
 	ByFilename(ctx context.Context, filename string) (PreDBHit, bool)
+	// Search is NNTmux match:prefiles: filename, hash, then cleaned title.
+	Search(ctx context.Context, query string) (PreDBHit, bool)
 	// ByRequestID resolves an nZEDb/IRC request id, preferring group.
 	ByRequestID(ctx context.Context, id int64, group string) (PreDBHit, bool)
 }
@@ -134,6 +136,7 @@ const (
 	sourceRar     = "rar"
 	sourceYenc    = "ybegin"
 	sourceNFO     = "nfo"
+	sourceFile    = "file"
 	sourceSFV     = "sfv"
 	sourceSRRDB   = "srrdb"
 	sourceNZB     = "nzb"
@@ -282,6 +285,16 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 	}
 	res.Finalized += swept
 	statBudget := statReleasesPerChunk
+	// Claude 2026-10-22: NNTmux match:prefiles before BODY.
+	// Reason: local filename/title join does not need NNTP and must not wait
+	//   on leftover park. NNTmux php artisan match:prefiles walks unnamed
+	//   hashed/misc that already have files.
+	// Troubleshooting: o2cli grep "namefix prefiles"; matched=0 with dump
+	//   filenames present → join lower(filename) or completeness filter.
+	// Review if: a proc_files column stops re-scanning misses.
+	if err := n.matchPrefiles(ctx, &res, &statBudget); err != nil {
+		return res, err
+	}
 	headerSets, err := n.Index.DuePendingHeaderNames(ctx, namefixHeaderPerPass)
 	if err != nil {
 		return res, err
@@ -396,20 +409,19 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 	if err := n.runBodyPhase(ctx, body, &res, done, keyOf); err != nil {
 		return res, err
 	}
-	// Claude 2026-10-22: park parhash/PreDB-only while BODY leftover remains.
-	// Reason: live leftover=22 after 20 FileDesc renames still spent 20s
-	//   parhash BODY + 20s PreDB LIKE (predb leftover=198) before the next
-	//   90s BODY. Parhash competes for NNTP; LIKE is local but 20s.
+	// Claude 2026-10-22: park parhash BODY only; dump/IRC PreDB still runs.
+	// Reason: NNTmux match:prefiles/predb:check is local and must not wait
+	//   on leftover. Parhash competes for NNTP; filename Search does not.
 	// Troubleshooting: o2cli grep "namefix park"; phase=predb leftover=
-	//   after body leftover>0 → this skip missing. Review if: leftover
-	//   stays >0 for days and dump/IRC titles never get a PreDB-only pass
-	//   (then run predb on the skip-crawl cap loop).
+	//   after body leftover>0 → preOnly still skipped. Review if: leftover
+	//   stays >0 and parhash starves named donors (then a skip-crawl seed).
 	if res.BodyLeftover > 0 {
-		log.Printf("usenetsearch: namefix park parhash=%d predb=%d leftover=%d",
-			len(parSeed), len(preOnly), res.BodyLeftover)
+		log.Printf("usenetsearch: namefix park parhash=%d leftover=%d",
+			len(parSeed), res.BodyLeftover)
 	} else if err := run(parSeed, "parhash"); err != nil {
 		return res, err
-	} else if err := run(preOnly, "predb"); err != nil {
+	}
+	if err := run(preOnly, "predb"); err != nil {
 		return res, err
 	}
 	if res.Sets > 0 || res.Finalized > 0 || res.BodyFetches > 0 || res.Renamed > 0 {
@@ -418,6 +430,79 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 			res.RejectGate, res.RejectStat, res.Unresolved, res.Finalized, res.BodyLeftover, res.Busy)
 	}
 	return res, nil
+}
+
+// matchPrefiles is NNTmux php artisan match:prefiles: join pending ≥80%
+// header filenames to the local PreDB (exact SQL, then Search) and promote
+// before BODY. Ignores next_name_at so a dump/IRC [FN:] hit is not parked.
+func (n *NameFixer) matchPrefiles(ctx context.Context, res *NameFixResult, statBudget *int) error {
+	if n == nil || n.PreDB == nil || n.Index == nil {
+		return nil
+	}
+	phaseCtx, cancel := context.WithTimeout(ctx, n.phaseBudget("prefiles"))
+	defer cancel()
+	work := context.WithoutCancel(phaseCtx)
+	done := map[string]bool{}
+	keyOf := func(set PendingSet) string { return set.Group + "\x00" + set.Key }
+	promoteHit := func(set PendingSet, hit PreDBHit) (bool, error) {
+		if done[keyOf(set)] || !preDBHitOK(hit, true, set.PayloadBytes) {
+			return false, nil
+		}
+		rows, err := n.Index.setRows(work, set.Group, set.Key, namefixPreDBHeaderSample)
+		if err != nil {
+			return false, err
+		}
+		res.HashHits++
+		stop, err := n.promote(work, set, rows, hit.Title, sourcePreDB, confPreDB, "hit", res, statBudget, nil)
+		if err != nil {
+			return false, err
+		}
+		done[keyOf(set)] = true
+		return stop, nil
+	}
+	hits, err := n.Index.matchPrefileExactHits(phaseCtx, namefixPreDBPerPass)
+	if err != nil {
+		return err
+	}
+	for _, h := range hits {
+		if phaseCtx.Err() != nil && len(done) > 0 {
+			break
+		}
+		stop, err := promoteHit(h.PendingSet, PreDBHit{Title: h.Title, SizeBytes: h.SizeBytes})
+		if err != nil {
+			return err
+		}
+		if stop {
+			break
+		}
+	}
+	cands, err := n.Index.pendingPrefileFilenames(phaseCtx, namefixPreDBPerPass)
+	if err != nil {
+		return err
+	}
+	for _, c := range cands {
+		if phaseCtx.Err() != nil && len(done) > 0 {
+			break
+		}
+		if done[keyOf(c.PendingSet)] {
+			continue
+		}
+		hit, ok := n.PreDB.Search(work, c.Filename)
+		if !ok {
+			continue
+		}
+		stop, err := promoteHit(c.PendingSet, hit)
+		if err != nil {
+			return err
+		}
+		if stop {
+			break
+		}
+	}
+	if matched := len(done); matched > 0 {
+		log.Printf("usenetsearch: namefix prefiles matched=%d", matched)
+	}
+	return nil
 }
 
 func formatBySource(m map[string]int) string {
@@ -982,9 +1067,9 @@ func recoveredUnusable(raw string) bool {
 }
 
 // accept normalizes a recovered name and applies the D2 acceptance rules:
-// PreDB exact (size within ±15%) is always accepted; par2/rar/ybegin names that
-// parse as title + (year|episode) + (resolution|source) are accepted without a
-// PreDB match; NFO-only names need a PreDB hit.
+// PreDB exact (size within ±15%) is always accepted; par2/rar/ybegin/file/NFO
+// names that parse as a quoted/scene title are accepted without a PreDB match
+// (NNTmux fixNamesWithNfo / files). Garbage NFO still needs a PreDB hit.
 func (n *NameFixer) accept(ctx context.Context, raw, source string, payload int64) (name, src, conf, predb string, ok bool) {
 	if recoveredUnusable(raw) {
 		return "", "", "", "", false
@@ -1002,7 +1087,7 @@ func (n *NameFixer) accept(ctx context.Context, raw, source string, payload int6
 		}
 		predb = "miss"
 	}
-	if source != sourceNFO && quotedReleaseName(norm) {
+	if quotedReleaseName(norm) {
 		return norm, source, confMedium, predb, true
 	}
 	return "", "", "", "", false
@@ -1191,18 +1276,15 @@ func (n *NameFixer) lookupPreDB(ctx context.Context, set PendingSet, rows []Head
 			return hit, true
 		}
 	}
-	// Claude 2026-10-22: BODY path skips ByFilename LIKE.
-	// Reason: live leftover=41 after 90s with ~45s before the first BodyHead.
-	//   Dump hash_hits=0 for hours; FileDesc still lookupPreDBNames after BODY.
-	//   LIKE stem+".%" on 6.9M rows belongs on PreDB-only, not in front of NNTP.
+	// Claude 2026-10-22: BODY and PreDB-only both Search filenames.
+	// Reason: NNTmux match:prefiles / fixNamesWithFiles is local indexed
+	//   filename+title, not HTTP. Live hash_hits=0 skipped ByFilename on
+	//   BODY so dump [FN:] never ran until leftover parked PreDB-only.
 	// Troubleshooting: TestNameFix_PreDBFilenameResolvesRandomArchiveName
-	//   BodyFetches>0 → this still on the BODY path. Review if: IRC [FN:]
-	//   titles never reach preOnly (then exact ByFilename on BODY is enough).
-	if !set.PreDBOnly {
-		return PreDBHit{}, false
-	}
+	//   BodyFetches>0 → Search not called here. Review if: hashed stems
+	//   seq-scan (then keep LooksLikeHashed skip inside Store.Search).
 	for _, fn := range filenameCandidates(rows) {
-		if hit, ok := n.PreDB.ByFilename(ctx, fn); preDBHitOK(hit, ok, set.PayloadBytes) {
+		if hit, ok := n.PreDB.Search(ctx, fn); preDBHitOK(hit, ok, set.PayloadBytes) {
 			return hit, true
 		}
 	}
@@ -1330,25 +1412,13 @@ func (n *NameFixer) lookupPreDBNames(ctx context.Context, set PendingSet, cands 
 		return PreDBHit{}, false
 	}
 	for _, cand := range cands {
-		for _, h := range hashTokens(cand.name) {
-			if hit, ok := n.PreDB.ByHash(ctx, h); preDBHitOK(hit, ok, set.PayloadBytes) {
-				return hit, true
-			}
-		}
-		// Claude 2026-10-21: FileDesc hashes use ByHash, not ByFilename LIKE.
-		// Reason: live leftover=197; hash.part5.rar LIKE per candidate.
-		// Troubleshooting: lookupPreDBNames still LIKE on 32-hex → this
-		//   continue missing. Review if: IRC [FN:] is filename-only.
-		if hashCore(normalizeRecovered(cand.name)) != "" {
-			continue
-		}
-		if hit, ok := n.PreDB.ByFilename(ctx, cand.name); preDBHitOK(hit, ok, set.PayloadBytes) {
+		// Claude 2026-10-22: FileDesc uses Search (hash + cleaned filename).
+		// Reason: NNTmux fixNamesWithFiles looks up the inner name in PreDB;
+		//   skipping 32-hex dropped dump filenames that are md5(title).mkv.
+		// Troubleshooting: par2=true cands=1 hash_hits=0 → Search miss or
+		//   sizeWithin. Review if: pg_trgm is added.
+		if hit, ok := n.PreDB.Search(ctx, cand.name); preDBHitOK(hit, ok, set.PayloadBytes) {
 			return hit, true
-		}
-		if recovered := normalizeRecovered(cand.name); recovered != cand.name {
-			if hit, ok := n.PreDB.ByFilename(ctx, recovered); preDBHitOK(hit, ok, set.PayloadBytes) {
-				return hit, true
-			}
 		}
 	}
 	return PreDBHit{}, false
@@ -1402,15 +1472,12 @@ func filenameCandidates(rows []HeaderRow) []string {
 		if s == "" {
 			return
 		}
-		// Claude 2026-10-21: skip md5/sha1 archive names for ByFilename.
-		// Reason: live PreDB leftover=197 in 20s; each hash-rar issued
-		//   LIKE per part (45+). Hex stems are ByHash (title_md5 index).
-		// Troubleshooting: namefix deadline phase=predb leftover≈200 with
-		//   hash_hits=0 → this skip missing. Review if: IRC [FN:] is only
-		//   on filename and not title_md5 (then one stem LIKE, not 45).
-		if hashCore(normalizeRecovered(s)) != "" {
-			return
-		}
+		// Claude 2026-10-22: keep md5/sha1 archive names for Search.
+		// Reason: dump/IRC [FN:] is often hash.mkv / hash.part1.rar; skipping
+		//   hex made filenameCandidates empty so ByFilename never ran.
+		// Troubleshooting: Search still seq-scans → Store.ByFilename missing
+		//   filename<>''. Review if: hashed stems need a separate ByHash-only
+		//   path (then skip LooksLikeHashed here again).
 		key := strings.ToLower(s)
 		if seen[key] {
 			return
@@ -1434,23 +1501,28 @@ func filenameCandidates(rows []HeaderRow) []string {
 func headerNameCandidates(rows []HeaderRow) []nameCand {
 	seen := map[string]bool{}
 	var out []nameCand
-	add := func(raw string) {
+	add := func(raw, source string) {
 		key := strings.ToLower(normalizeRecovered(raw))
 		if key == "" || hashCore(key) != "" || seen[key] {
 			return
 		}
 		seen[key] = true
-		out = append(out, nameCand{raw, sourceYenc})
+		out = append(out, nameCand{raw, source})
 	}
 	for _, r := range rows {
-		add(r.Filename)
+		// Claude 2026-10-22: header filename is NNTmux files, not yEnc.
+		// Reason: fixNamesWithFiles promotes a scene-shaped stored filename
+		//   without BODY. Hash.par2 still skipped (hashCore).
+		// Troubleshooting: name_source=ybegin on a .mkv header → this still
+		//   sourceYenc. Review if: quoted subject should stay ybegin only.
+		add(r.Filename, sourceFile)
 		// Claude 2026-10-19: quoted subject even when Filename is `01.par2`.
 		// Reason: rows ingested before quotedFilename keep the reFileTok
 		//   stub; live pending95 still has the title in Subject quotes.
 		// Troubleshooting: header namefix misses Black Clover while
 		//   ParseSubject on a fresh crawl would store it. Review if:
 		//   headers are rewritten on re-OVER (then Filename is enough).
-		add(quotedFilename(r.Subject))
+		add(quotedFilename(r.Subject), sourceYenc)
 	}
 	return out
 }

@@ -326,6 +326,103 @@ LIMIT ?`, spanRepairFloorBP, time.Now().Unix(), limit)
 	return scanPendingSets(rows, true)
 }
 
+type prefileHit struct {
+	PendingSet
+	Title     string
+	SizeBytes int64
+}
+
+type prefileName struct {
+	PendingSet
+	Filename string
+}
+
+// matchPrefileExactHits is the bulk half of NNTmux match:prefiles: pending
+// ≥80% header.filename = predb.filename. Ignores next_name_at.
+//
+// Claude 2026-10-22: indexed join, not LIKE, not COUNT(*) of headers.
+// Reason: dump/IRC [FN:] never reached BODY-path ByFilename; PreDB-only
+//
+//	waited on leftover park and next_name_at. Nested loop from pending_name
+//	(thousands) into idx_usenet_nntp_predb_filename.
+//
+// Troubleshooting: matched=0 with a known dump filename on a pending set →
+//
+//	lower(filename) vs empty filename<>''. Review if: a proc_files column
+//	stops re-scanning misses.
+func (idx *Index) matchPrefileExactHits(ctx context.Context, limit int) ([]prefileHit, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := idx.db.QueryContext(ctx, `
+SELECT group_name, release_key, payload_bytes, name_attempts, completeness_bp, has_par2, title, size_bytes
+FROM (
+  SELECT DISTINCT ON (r.group_name, r.release_key)
+    r.group_name, r.release_key, r.payload_bytes, r.name_attempts, r.completeness_bp, r.has_par2,
+    p.title, p.size_bytes
+  FROM usenet_nntp_releases r
+  INNER JOIN usenet_nntp_headers h
+    ON h.group_name=r.group_name AND h.release_name=r.release_key AND h.filename<>''
+  INNER JOIN usenet_nntp_predb p
+    ON p.filename<>'' AND p.source<>'miss' AND lower(p.filename)=lower(h.filename)
+  WHERE r.state='pending_name' AND r.dirty=FALSE AND r.declared_segs>0 AND r.completeness_bp>=?
+  ORDER BY r.group_name, r.release_key, r.completeness_bp DESC
+) x
+ORDER BY completeness_bp DESC
+LIMIT ?`, spanRepairFloorBP, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []prefileHit
+	for rows.Next() {
+		var h prefileHit
+		if err := rows.Scan(&h.Group, &h.Key, &h.PayloadBytes, &h.Attempts, &h.CompletenessBP, &h.HasPar2, &h.Title, &h.SizeBytes); err != nil {
+			return nil, err
+		}
+		h.PreDBOnly = true
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// pendingPrefileFilenames returns up to 8 stored filenames per ≥80% pending
+// set for Store.Search (cleaned stem / title). Ignores next_name_at.
+func (idx *Index) pendingPrefileFilenames(ctx context.Context, limit int) ([]prefileName, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := idx.db.QueryContext(ctx, `
+SELECT p.group_name, p.release_key, p.payload_bytes, p.name_attempts, p.completeness_bp, p.has_par2, h.filename
+FROM (
+  SELECT group_name, release_key, payload_bytes, name_attempts, completeness_bp, has_par2
+  FROM usenet_nntp_releases
+  WHERE state='pending_name' AND dirty=FALSE AND declared_segs>0 AND completeness_bp>=?
+  ORDER BY completeness_bp DESC, ingested_at DESC
+  LIMIT ?
+) p
+JOIN LATERAL (
+  SELECT filename FROM usenet_nntp_headers h
+  WHERE h.group_name=p.group_name AND h.release_name=p.release_key AND h.filename<>''
+  GROUP BY filename
+  LIMIT 8
+) h ON true`, spanRepairFloorBP, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []prefileName
+	for rows.Next() {
+		var c prefileName
+		if err := rows.Scan(&c.Group, &c.Key, &c.PayloadBytes, &c.Attempts, &c.CompletenessBP, &c.HasPar2, &c.Filename); err != nil {
+			return nil, err
+		}
+		c.PreDBOnly = true
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 func groupLimitArgs(prefix []any, groups []string, limit int) (string, []any) {
 	ph := make([]string, len(groups))
 	args := make([]any, 0, len(prefix)+len(groups)+1)

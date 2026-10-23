@@ -12856,3 +12856,21 @@ status stays active.
 | `internal/grabs/grabs.go` / `internal/apidto/dto.go` | `episodeTitle` on grab JSON (read-time) |
 | `frontend/src/screens/grabTitle.ts` | Activity/History label |
 | `frontend/src/screens/Activity.tsx` / `Downloads.tsx` / `calendar/History.tsx` | show formatted title |
+
+## 2026-10-22 — Namefix copies NNTmux match:prefiles / files / NFO
+
+**Problem:** Searchable sat near 4500 while 24M headers were in the index. BODY leftover parked dump/IRC PreDB; filename lookup skipped hex and the BODY path; NFO scene titles required a PreDB hit.
+**Root cause:** sakms only reverse-looked up `md5(title)` and treated leftover BODY as a reason to skip local PreDB. NNTmux names unnamed releases from cleaned `release_files` plus NFO, then PreDB title/filename, without waiting on NNTP.
+**Fix:** `Store.Search` (exact/stem filename, hash tokens, cleaned title; hashed queries skip title). `matchPrefiles` joins pending ≥80% `headers.filename` to `predb.filename` (ignores `next_name_at`) then Search. BODY and PreDB-only use Search. Scene NFO/file names accept without PreDB. Leftover parks parhash BODY only. No leftover/COUNT(*)/VACUUM FULL/predb.net scrape.
+**Outcome:** `TestNameFix_MatchPrefilesExactDumpFilename`, `TestNameFix_PreDBFilenameResolvesRandomArchiveName` (before BODY), `TestNameFix_NFOSceneRenamesWithoutPreDB`, `TestStore_SearchFilenameAndTitle`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenetsearch/predb/clean.go` | NNTmux FileNameCleaner subset |
+| `internal/usenetsearch/predb/search.go` | `Store.Search` |
+| `internal/usenetsearch/predb_adapter.go` | `PreDBLookup.Search` |
+| `internal/usenetsearch/namefix.go` | match:prefiles, Search, NFO/file accept |
+| `internal/usenetsearch/namefix_index.go` | exact filename join; pending filenames |
+| `docs/usenet-nntp-native.md` | match:prefiles before BODY |

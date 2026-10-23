@@ -10,7 +10,8 @@ import (
 var sceneNameRe = regexp.MustCompile(`[A-Za-z0-9][A-Za-z0-9_()-]*(?:\.[A-Za-z0-9_()-]+){2,}`)
 
 // nfoSceneNames extracts scene-name candidates from an NFO head, in order of
-// appearance. Callers still validate each (NFO-only names need a PreDB hit).
+// appearance. Scene-shaped names are accepted by accept(); garbage still
+// needs a PreDB hit (NNTmux fixNamesWithNfo).
 func nfoSceneNames(data []byte) []string {
 	if len(data) > 64<<10 {
 		data = data[:64<<10]

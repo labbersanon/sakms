@@ -272,16 +272,58 @@ func TestIsMetaSubject_Par2IsNotDecorative(t *testing.T) {
 	}
 }
 
+func TestFullPrecheckTimeout_ScalesWithSegments(t *testing.T) {
+	if fullPrecheckTimeout(0) != precheckTimeoutBase {
+		t.Fatal(fullPrecheckTimeout(0))
+	}
+	got := fullPrecheckTimeout(32810)
+	want := precheckTimeoutBase + 32810*precheckTimeoutPerSeg
+	if got != want {
+		t.Fatalf("got %s want %s (must not clamp to 12m)", got, want)
+	}
+	if got <= 12*time.Minute {
+		t.Fatalf("remux budget %s still looks like the old cap", got)
+	}
+}
+
+func TestStatPayload_HungSTATTimesOutPerArticle(t *testing.T) {
+	orig := statArticleTimeout
+	statArticleTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { statArticleTimeout = orig })
+
+	p := makePayload(t, 1, 256)
+	srv := newFakeNNTP(t)
+	srv.statAllow = make(chan struct{})
+	t.Cleanup(func() { close(srv.statAllow) })
+	srv.serveAll(p)
+	m := New(Config{Servers: []ServerConfig{srv.cfgWith(1)}, StagingDir: t.TempDir()})
+	start := time.Now()
+	res, err := m.StatPayload(context.Background(), parsePayloadNZB(t, p), 1)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("StatPayload: %v", err)
+	}
+	if !res.Inconclusive {
+		t.Fatalf("want inconclusive hung STAT, got %+v", res)
+	}
+	if elapsed < 150*time.Millisecond {
+		t.Fatalf("returned in %s — article timeout did not engage", elapsed)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("hung STAT took %s, want ~%s not BODY 60s", elapsed, orig)
+	}
+}
+
 func TestStatFitsDeadline(t *testing.T) {
 	if !StatFitsDeadline(0) || !StatFitsDeadline(2797) || !StatFitsDeadline(6283) {
 		t.Fatal("verified NZB sizes must fit")
 	}
 	if StatFitsDeadline(32810) {
-		t.Fatal("Mutiny-sized remux must not start a STAT the 12m cap aborts")
+		t.Fatal("Mutiny-sized remux stays off On Demand")
 	}
-	// 15s + n*100ms <= 12m → n <= 7050
-	if !StatFitsDeadline(7050) || StatFitsDeadline(7051) {
-		t.Fatalf("boundary 7050/7051: %v %v", StatFitsDeadline(7050), StatFitsDeadline(7051))
+	if !StatFitsDeadline(OnDemandStatMaxSegments) || StatFitsDeadline(OnDemandStatMaxSegments+1) {
+		t.Fatalf("boundary %d: %v %v", OnDemandStatMaxSegments,
+			StatFitsDeadline(OnDemandStatMaxSegments), StatFitsDeadline(OnDemandStatMaxSegments+1))
 	}
 }
 

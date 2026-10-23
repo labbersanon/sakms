@@ -13143,3 +13143,18 @@ status stays active.
 | `internal/usenet/precheck.go` | `StatFitsDeadline` |
 | `internal/newznabondemand/crawl.go` | skip-stat + inconclusive unblocks t=get |
 | `internal/newznabondemand/store.go` | `StatusStatSkipped` |
+
+## 2026-10-23 — STAT timeout is per-segment, not a 12-minute cap
+
+**Problem:** The 12-minute STAT cap aborted remux AddNZB precheck and was the same clock On Demand used to skip Mutiny.
+**Root cause:** `fullPrecheckTimeout` clamped `15s + n×100ms` at 12m. A wedged STAT could still pin a socket for BODY's 60s.
+**Fix:** Total STAT budget is `15s + n×100ms` with no cap (fan-out finishes earlier). Each article has a 5s ctx + socket deadline. On Demand skip stays an explicit 7050-segment ceiling (not lossless streaming), independent of the STAT clock.
+**Outcome:** `TestFullPrecheckTimeout_ScalesWithSegments`, `TestStatPayload_HungSTATTimesOutPerArticle`, `TestStatFitsDeadline` uses `OnDemandStatMaxSegments`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/precheck.go` | drop 12m clamp; `statArticleTimeout`; STAT socket uses article ctx |
+| `internal/usenet/precheck_test.go` | remux budget must not clamp; hung STAT ≤ article timeout |
+| `docs/usenet-precheck.md` | 12m cap retired; per-article hang bound |

@@ -12,8 +12,9 @@ import (
 	"github.com/Tensai75/nntp"
 )
 
-// articleIOTimeout bounds one NNTP BODY or STAT round-trip, including the
-// article payload. NZBGet's ArticleTimeout default is 60s. 0 disables the
+// articleIOTimeout bounds one NNTP BODY round-trip, including the article
+// payload. NZBGet's ArticleTimeout default is 60s. STAT uses the article
+// ctx deadline when it is sooner (statArticleTimeout). 0 disables the
 // deadline (tests only).
 //
 // Claude 2026-10-10: per-socket read/write deadline around BODY/STAT.

@@ -68,50 +68,48 @@ type precheckPolicy struct {
 // 	MaxWorkers:       4,
 // }
 
-// Claude 2026-09-22: full-check timeout scales with segment count.
-// Reason: STAT is one RTT per article; a 50k-segment NZB cannot finish in the
+// Claude 2026-10-23: STAT total timeout is n×100ms, hang bound is per article.
+// Reason: the 12m cap aborted remux AddNZB precheck while articles were still
 //
-//	old 15s sample timeout. Budget is sequential (base + per-seg) so fan-out
-//	only makes us finish earlier; the cap keeps a wedged provider from hanging
-//	AddNZB for hours.
+//	present (Mutiny.2026). Fan-out only finishes earlier than sequential.
 //
-// Troubleshooting: huge NZB precheck aborted with DeadlineExceeded while
-//
-//	articles were present — raise the max, not the sample timeout.
-//
-// Review if: operators need a settings knob for precheck timeout.
+// Troubleshooting: remux precheck DeadlineExceeded with holes=0 → cap came back.
+// Review if: Play or a settings knob changes OnDemandStatMaxSegments.
 const (
 	precheckTimeoutBase   = 15 * time.Second
 	precheckTimeoutPerSeg = 100 * time.Millisecond
-	precheckTimeoutMax    = 12 * time.Minute
+	// precheckTimeoutMax = 12 * time.Minute // retired 2026-10-23: hard cap; hang is statArticleTimeout
+
+	// On Demand is not lossless streaming. Skip remux-sized payloads so two
+	// STAT sockets are not occupied for tens of thousands of segments.
+	OnDemandStatMaxSegments = 7050
 )
+
+// Claude 2026-10-23: var so tests can shorten the hang bound like articleIOTimeout.
+// Reason: a wedged STAT must not wait BODY's 60s; production stays 5s per article.
+var statArticleTimeout = 5 * time.Second
 
 func fullPrecheckTimeout(n int) time.Duration {
 	if n < 1 {
 		return precheckTimeoutBase
 	}
-	d := precheckTimeoutBase + time.Duration(n)*precheckTimeoutPerSeg
-	if d > precheckTimeoutMax {
-		return precheckTimeoutMax
-	}
-	return d
+	return precheckTimeoutBase + time.Duration(n)*precheckTimeoutPerSeg
 }
 
-// Claude 2026-10-23: On Demand must not start a STAT the 12-minute cap will abort.
+// Claude 2026-10-23: On Demand skip is OnDemandStatMaxSegments, not the STAT clock.
+// Reason: remux/lossless stay off the shelf; Downloads still STAT them with
+//
+//	15s+n×100ms and a 5s per-article hang bound.
+//
+// Troubleshooting: skip-stat logs + status=stat_skipped.
+// Review if: Play uses a different On Demand STAT budget.
+//
+// Claude 2026-10-23: previous skip used 15s+n×100ms vs 12m (retired with the cap).
 // Reason: Mutiny.2026 (32810 segs) STATed for 12m, returned inconclusive
 //
 //	(leftover jobs counted as checked), and NextFetched retried it forever.
-//
-// Troubleshooting: skip-stat logs + status=stat_skipped. checked==payload with
-//
-//	inconclusive is the drain-on-cancel, not a successful full STAT.
-//
-// Review if: Play uses a longer On Demand STAT budget.
 func StatFitsDeadline(n int) bool {
-	if n < 1 {
-		return true
-	}
-	return precheckTimeoutBase+time.Duration(n)*precheckTimeoutPerSeg <= precheckTimeoutMax
+	return n <= OnDemandStatMaxSegments
 }
 
 type sampledSeg struct {
@@ -433,7 +431,9 @@ func (m *Manager) statBatch(ctx context.Context, segs []sampledSeg, progressGID 
 					continue
 				default:
 				}
-				found, rem, serr := m.statArticleAny(ctx, s.msgID)
+				segCtx, cancel := context.WithTimeout(ctx, statArticleTimeout)
+				found, rem, serr := m.statArticleAny(segCtx, s.msgID)
+				cancel()
 				switch {
 				case serr != nil:
 					out <- outcome{msgID: s.msgID, inconc: true, err: serr}
@@ -514,12 +514,15 @@ func (m *Manager) statArticleAny(ctx context.Context, msgID string) (found, remo
 				}
 				break
 			}
-			// Claude 2026-10-10: STAT uses the same socket deadline as BODY.
-			// Reason: a hung STAT would pin a precheckSem slot the same way a
-			//   hung BODY pins the download semaphore.
-			// Troubleshooting: precheck never finishing while Downloads is idle.
+			// Claude 2026-10-23: STAT socket deadline follows the article ctx
+			//   (5s), not BODY's 60s. A wedged STAT must not pin the batch.
+			// Troubleshooting: one hung STAT burns the whole NZB budget.
 			// Review if: Tensai75/nntp exports SetDeadline.
-			disarm := armNNTPDeadline(conn)
+			until := time.Now().Add(articleIOTimeout)
+			if deadline, ok := ctx.Deadline(); ok && deadline.Before(until) {
+				until = deadline
+			}
+			disarm := armNNTPDeadlineUntil(conn, until)
 			_, _, serr := conn.Stat(ensureAngleMsgID(msgID))
 			mapped := mapNNTPError(serr)
 			// 430/451 are valid STAT answers — keep the connection.

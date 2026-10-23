@@ -22,7 +22,10 @@ Precheck is also the **source-selection** gate: when one NZB fails STAT (or late
 1. After NZB parse, register the Downloads row as `phase=precheck`, then STAT.
 2. Acquire the **precheck job semaphore** (capacity = `MaxConcurrentDownloads`, independent of the download semaphore). Overlapping prechecks wait here; they do not steal BODY download slots.
 3. STAT **all** remaining payload and PAR2 segments (skip decorative nfo/image meta; skip MsgIDs already in the resume sidecar).
-4. Timeout scales with segment count: `15s + 100ms×N`, capped at **12 minutes** (sequential budget; worker fan-out only finishes earlier).
+<!-- Claude 2026-10-23: 12m cap retired.
+Reason: remux AddNZB aborted while articles were present; hang bound is per article.
+4. Timeout scales with segment count: `15s + 100ms×N`, capped at **12 minutes** (sequential budget; worker fan-out only finishes earlier). -->
+4. Total STAT budget is `15s + 100ms×N` with no cap (sequential; fan-out finishes earlier). Each article has a 5s ctx + socket deadline so a wedged STAT cannot pin a socket for BODY's 60s. On Demand skip of remux is `OnDemandStatMaxSegments` (7050), not this clock.
 5. STAT workers = `concurrencyBudget()` (sum of per-server `MaxConns`). Pool sockets are still shared with in-flight BODY fetches; download jobs already hold live tokens. Tradeoff: under `MaxConns=1` plus an active download, STAT waits on `pool.getCtx`.
 6. Abort (`ErrArticlesUnavailable`) if **any** confirmed missing (430 after BODY confirm) or removed (451) article — row cleaned (`dropPrecheckFailed`), no Failed pill. Callers try the next Usenet alternate.
 7. On STAT ok: first-segment video peek (see below). If a BODY slot is free → `downloading`; if `MaxConcurrentDownloads` is full → `waiting`, then `downloading` when a slot opens.

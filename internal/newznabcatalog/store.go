@@ -137,20 +137,21 @@ func (s *Store) RecomputeOverlapKeys(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	defer rows.Close()
 	var hits []newznab.CatalogHit
 	for rows.Next() {
 		var h newznab.CatalogHit
 		if err := rows.Scan(&h.Indexer, &h.GUID, &h.Title); err != nil {
-			rows.Close()
 			return 0, err
 		}
 		hits = append(hits, h)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return 0, err
 	}
-	rows.Close()
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

@@ -13265,3 +13265,16 @@ status stays active.
 | `internal/newznabondemand/store.go` | `CountDeadByIndexer` |
 | `internal/api/newznab_catalog.go` | `missingNzbs` / `missingArticles` overlay |
 | `frontend/src/screens/Dashboard.tsx` | Missing articles line on Indexer health |
+
+## 2026-10-23 — Backfill On Demand bitrate from catalog size + TMDB runtime
+
+**Problem:** Discover On Demand chips said Unknown on films that had indexer size and a TMDB id.
+**Root cause:** `bitrate_mbps` is written only at STAT; XML article bytes were 0 so applyBitrate stored 0 even when `newznab_catalog.size` existed.
+**Fix:** One-shot `cmd/ondemand-bitrate-backfill` (run inside the sakms container) writes `payload_bytes` from catalog size and Mbps from TMDB runtime. Concerts with `tmdb_id=0` are left alone.
+**Outcome:** 16 verified rows wrote Mbps; 9 remaining zeros are concerts / unmatched IMDb.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `cmd/ondemand-bitrate-backfill/main.go` | one-shot size+runtime backfill |

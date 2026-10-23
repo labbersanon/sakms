@@ -117,8 +117,16 @@ func step(ctx context.Context, store *Store, client *newznab.Client, idxs []newz
 		return false, err
 	}
 	if ok {
-		return true, statRow(ctx, store, nntp, dataDir, row, finder)
+		inconc, err := statRow(ctx, store, nntp, dataDir, row, finder)
+		if err != nil || !inconc {
+			return true, err
+		}
+		// Inconclusive STAT must not HOL-block t=get on the same fetched row.
 	}
+	return fetchNext(ctx, store, client, idxs, dataDir)
+}
+
+func fetchNext(ctx context.Context, store *Store, client *newznab.Client, idxs []newznab.Indexer, dataDir string) (bool, error) {
 	ref, ok, err := store.NextFromCatalog(ctx)
 	if err != nil {
 		return false, err
@@ -180,18 +188,34 @@ func fetchRow(ctx context.Context, store *Store, client *newznab.Client, idx new
 		log.Printf("newznab ondemand: xml-reject indexer=%s kind=%s reason=%s", ref.Indexer, ref.Kind, a.Reason)
 		return store.Save(ctx, row)
 	}
+	if !usenet.StatFitsDeadline(a.Segments) {
+		return skipStatBudget(ctx, store, row)
+	}
 	row.Status = StatusFetched
 	log.Printf("newznab ondemand: fetched indexer=%s kind=%s files=%d segs=%d", ref.Indexer, ref.Kind, a.Files, a.Segments)
 	return store.Save(ctx, row)
 }
 
-func statRow(ctx context.Context, store *Store, nntp *usenet.Manager, dataDir string, row Row, finder IMDBFinder) error {
+func skipStatBudget(ctx context.Context, store *Store, row Row) error {
+	row.Status = StatusStatSkipped
+	row.RejectReason = "stat budget exceeded"
+	row.UpdatedAt = time.Now().Unix()
+	log.Printf("newznab ondemand: skip-stat indexer=%s kind=%s segs=%d", row.Indexer, row.Kind, row.PayloadSegments)
+	return store.Save(ctx, row)
+}
+
+// statRow STATs one fetched NZB. inconclusive means the caller should t=get
+// another catalog row instead of retrying this guid immediately.
+func statRow(ctx context.Context, store *Store, nntp *usenet.Manager, dataDir string, row Row, finder IMDBFinder) (inconclusive bool, err error) {
+	if !usenet.StatFitsDeadline(row.PayloadSegments) {
+		return false, skipStatBudget(ctx, store, row)
+	}
 	nzb, err := loadNZB(dataDir, row.NZBRelPath)
 	if err != nil {
 		row.Status = StatusError
 		row.RejectReason = "nzb cache missing"
 		row.UpdatedAt = time.Now().Unix()
-		return store.Save(ctx, row)
+		return false, store.Save(ctx, row)
 	}
 	res, err := nntp.StatPayload(ctx, nzb, usenet.OnDemandStatWorkers)
 	now := time.Now().Unix()
@@ -201,29 +225,26 @@ func statRow(ctx context.Context, store *Store, nntp *usenet.Manager, dataDir st
 	if res.Inconclusive && err == nil {
 		_ = store.Save(ctx, row)
 		log.Printf("newznab ondemand: stat inconclusive indexer=%s checked=%d", row.Indexer, res.Checked)
-		if !sleepCtx(ctx, idleRecheck) {
-			return ctx.Err()
-		}
-		return nil
+		return true, nil
 	}
 	if err != nil {
 		row.Status = StatusDead
 		row.RejectReason = "articles missing"
 		log.Printf("newznab ondemand: dead indexer=%s missing=%d/%d worst=%q",
 			row.Indexer, res.Missing, res.Checked, res.WorstFile)
-		return store.Save(ctx, row)
+		return false, store.Save(ctx, row)
 	}
 	row.Status = StatusVerified
 	row.VerifiedAt = now
 	row.RejectReason = ""
 	log.Printf("newznab ondemand: verified indexer=%s kind=%s checked=%d", row.Indexer, row.Kind, res.Checked)
 	if err := store.Save(ctx, row); err != nil {
-		return err
+		return false, err
 	}
 	if err := resolveCatalogTMDB(ctx, store, finder, row); err != nil && !errors.Is(err, ErrTMDBUnset) {
-		return err
+		return false, err
 	}
-	return nil
+	return false, nil
 }
 
 func writeNZB(dataDir, indexer, guid string, data []byte) (string, error) {

@@ -97,6 +97,23 @@ func fullPrecheckTimeout(n int) time.Duration {
 	return d
 }
 
+// Claude 2026-10-23: On Demand must not start a STAT the 12-minute cap will abort.
+// Reason: Mutiny.2026 (32810 segs) STATed for 12m, returned inconclusive
+//
+//	(leftover jobs counted as checked), and NextFetched retried it forever.
+//
+// Troubleshooting: skip-stat logs + status=stat_skipped. checked==payload with
+//
+//	inconclusive is the drain-on-cancel, not a successful full STAT.
+//
+// Review if: Play uses a longer On Demand STAT budget.
+func StatFitsDeadline(n int) bool {
+	if n < 1 {
+		return true
+	}
+	return precheckTimeoutBase+time.Duration(n)*precheckTimeoutPerSeg <= precheckTimeoutMax
+}
+
 type sampledSeg struct {
 	fileIdx int
 	msgID   string

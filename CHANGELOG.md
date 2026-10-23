@@ -13128,3 +13128,18 @@ status stays active.
 | File | Change |
 |---|---|
 | `internal/newznabondemand/crawl.go` | TMDB backfill before NextFetched |
+
+## 2026-10-23 — On Demand parks NZBs that cannot finish STAT in 12 minutes
+
+**Problem:** Mutiny.2026 (32810 segs) STATed for 12 minutes, returned inconclusive (`checked=32810` from drain-on-cancel), and `NextFetched` retried it forever. Catalog t=get stopped.
+**Root cause:** `fullPrecheckTimeout` caps at 12m. Leftover jobs after deadline are counted as checked+inconclusive, not missing. The crawler treated that as "try again" and HOL-blocked.
+**Fix:** `StatFitsDeadline` — skip STAT when `15s + segs×100ms` exceeds 12m (`status=stat_skipped`, not `error`). Already-fetched oversized rows park on the next step. Inconclusive STAT t=gets the next catalog row instead of retrying the same guid immediately.
+**Outcome:** `TestStatFitsDeadline`, `TestStatRow_SkipsOverBudgetWithoutSTAT`, `TestStep_SkipOverBudgetUnblocksCatalog`, `TestStore_StatSkippedIsNotRetried`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/precheck.go` | `StatFitsDeadline` |
+| `internal/newznabondemand/crawl.go` | skip-stat + inconclusive unblocks t=get |
+| `internal/newznabondemand/store.go` | `StatusStatSkipped` |

@@ -21,6 +21,7 @@ const (
 	StatusVerified    = "verified"
 	StatusDead        = "dead"
 	StatusError       = "error"
+	StatusStatSkipped = "stat_skipped"
 )
 
 // Row is one catalog NZB's On Demand cache + STAT result.

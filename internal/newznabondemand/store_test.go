@@ -111,6 +111,31 @@ func TestStore_NextVerifiedNeedingTMDB(t *testing.T) {
 	}
 }
 
+func TestStore_StatSkippedIsNotRetried(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	ctx := context.Background()
+	cat := newznabcatalog.NewStore(sqlDB)
+	if _, err := cat.InsertHits(ctx, newznabcatalog.KindMovies, []newznab.CatalogHit{
+		{Indexer: "newznab2", GUID: "mutiny", Title: "Mutiny.2026"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	st := NewStore(sqlDB)
+	if err := st.Save(ctx, Row{
+		Indexer: "newznab2", GUID: "mutiny", Kind: newznabcatalog.KindMovies,
+		Status: StatusStatSkipped, RejectReason: "stat budget exceeded",
+		PayloadSegments: 32810,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := st.NextFromCatalog(ctx); err != nil || ok {
+		t.Fatalf("skipped row must not t=get again ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := st.NextFetched(ctx); err != nil || ok {
+		t.Fatalf("skipped row must not STAT again ok=%v err=%v", ok, err)
+	}
+}
+
 func TestLooksLikeURL(t *testing.T) {
 	if !looksLikeURL("apikey=x") || looksLikeURL(filepath.Join("ondemand", "nzb", "newznab", "a.nzb")) {
 		t.Fatal("looksLikeURL")

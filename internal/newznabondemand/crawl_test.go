@@ -82,3 +82,55 @@ func TestFetchRow_CachesNZBAndMarksStreamable(t *testing.T) {
 		t.Fatalf("cached nzb=%v err=%v", nzb, err)
 	}
 }
+
+func TestStatRow_SkipsOverBudgetWithoutSTAT(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	ctx := context.Background()
+	st := NewStore(sqlDB)
+	row := Row{
+		Indexer: "newznab2", GUID: "mutiny", Kind: newznabcatalog.KindMovies,
+		Title: "Mutiny.2026", Status: StatusFetched, Streamable: true,
+		PayloadSegments: 32810,
+	}
+	if err := st.Save(ctx, row); err != nil {
+		t.Fatal(err)
+	}
+	inconc, err := statRow(ctx, st, nil, t.TempDir(), row, nil)
+	if err != nil || inconc {
+		t.Fatalf("inconc=%v err=%v", inconc, err)
+	}
+	if _, ok, err := st.NextFetched(ctx); err != nil || ok {
+		t.Fatalf("over-budget row must leave the STAT queue ok=%v err=%v", ok, err)
+	}
+}
+
+func TestStep_SkipOverBudgetUnblocksCatalog(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	ctx := context.Background()
+	cat := newznabcatalog.NewStore(sqlDB)
+	if _, err := cat.InsertHits(ctx, newznabcatalog.KindMovies, []newznab.CatalogHit{
+		{Indexer: "newznab2", GUID: "mutiny", Title: "Mutiny.2026"},
+		{Indexer: "newznab", GUID: "g-next", Title: "Next.Movie.2021"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	st := NewStore(sqlDB)
+	if err := st.Save(ctx, Row{
+		Indexer: "newznab2", GUID: "mutiny", Kind: newznabcatalog.KindMovies,
+		Title: "Mutiny.2026", Status: StatusFetched, Streamable: true,
+		PayloadSegments: 32810,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	worked, err := step(ctx, st, nil, nil, nil, t.TempDir(), nil)
+	if err != nil || !worked {
+		t.Fatalf("worked=%v err=%v", worked, err)
+	}
+	if _, ok, err := st.NextFetched(ctx); err != nil || ok {
+		t.Fatalf("still queued ok=%v err=%v", ok, err)
+	}
+	ref, ok, err := st.NextFromCatalog(ctx)
+	if err != nil || !ok || ref.GUID != "g-next" {
+		t.Fatalf("catalog still blocked ref=%+v ok=%v err=%v", ref, ok, err)
+	}
+}

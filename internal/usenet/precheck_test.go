@@ -272,6 +272,19 @@ func TestIsMetaSubject_Par2IsNotDecorative(t *testing.T) {
 	}
 }
 
+func TestStatFitsDeadline(t *testing.T) {
+	if !StatFitsDeadline(0) || !StatFitsDeadline(2797) || !StatFitsDeadline(6283) {
+		t.Fatal("verified NZB sizes must fit")
+	}
+	if StatFitsDeadline(32810) {
+		t.Fatal("Mutiny-sized remux must not start a STAT the 12m cap aborts")
+	}
+	// 15s + n*100ms <= 12m → n <= 7050
+	if !StatFitsDeadline(7050) || StatFitsDeadline(7051) {
+		t.Fatalf("boundary 7050/7051: %v %v", StatFitsDeadline(7050), StatFitsDeadline(7051))
+	}
+}
+
 func TestStatPayload_NoSubscriptionsIsInconclusive(t *testing.T) {
 	m := New(Config{})
 	nzb := &NZB{Files: []NZBFile{subjectFile("Movie.mkv", 2)}}

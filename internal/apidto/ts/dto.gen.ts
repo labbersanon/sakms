@@ -1938,6 +1938,15 @@ export interface NewznabCatalogOndemand {
   skipped: number /* int */;
 }
 /**
+ * NewznabIndexerHealth is one Newznab host's crawl health (not a live probe).
+ */
+export interface NewznabIndexerHealth {
+  indexer: string;
+  status: string;
+  detail: string;
+  updatedAt: number /* int64 */;
+}
+/**
  * NewznabCatalogReport is GET /api/admin/newznab-catalog. No enclosure URLs.
  */
 export interface NewznabCatalogReport {
@@ -1947,6 +1956,7 @@ export interface NewznabCatalogReport {
   counts: NewznabCatalogCount[];
   overlap: NewznabCatalogOverlap[];
   ondemand: NewznabCatalogOndemand[];
+  indexers: NewznabIndexerHealth[];
 }
 /**
  * Claude 2026-10-23: Discover On Demand list (verified NZBs only).

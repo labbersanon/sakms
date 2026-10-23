@@ -8,9 +8,9 @@ import (
 	"github.com/labbersanon/sakms/internal/newznabcatalog"
 )
 
-// Claude 2026-10-23: Dock card reads catalog overlap plus On Demand counts per mode.
-// Reason: Lighthouse filter is later; On Demand is verified/fetched/skipped per movies/series/adult.
-// Troubleshooting: empty card → AttachNewznabCatalog; ondemand zeros → AttachNewznabOndemand.
+// Claude 2026-10-23: Dock card reads catalog overlap, On Demand counts, indexer health.
+// Reason: Lighthouse filter is later; health is crawl cursors, not a live t=caps.
+// Troubleshooting: empty card → AttachNewznabCatalog; always Waiting → no cursor rows.
 // Review if: Lighthouse availability filter or Play ships.
 var (
 	catalogMu    sync.RWMutex
@@ -54,6 +54,13 @@ type newznabCatalogOndemand struct {
 	Skipped  int    `json:"skipped"`
 }
 
+type newznabIndexerHealth struct {
+	Indexer   string `json:"indexer"`
+	Status    string `json:"status"`
+	Detail    string `json:"detail"`
+	UpdatedAt int64  `json:"updatedAt"`
+}
+
 type newznabCatalogReport struct {
 	IntervalSeconds int                      `json:"intervalSeconds"`
 	PageSize        int                      `json:"pageSize"`
@@ -61,6 +68,7 @@ type newznabCatalogReport struct {
 	Counts          []newznabCatalogCount    `json:"counts"`
 	Overlap         []newznabCatalogOverlap  `json:"overlap"`
 	Ondemand        []newznabCatalogOndemand `json:"ondemand"`
+	Indexers        []newznabIndexerHealth   `json:"indexers"`
 }
 
 func newznabCatalogHandler() http.HandlerFunc {
@@ -69,14 +77,7 @@ func newznabCatalogHandler() http.HandlerFunc {
 		st := catalogStore
 		catalogMu.RUnlock()
 		if st == nil {
-			writeJSON(w, newznabCatalogReport{
-				IntervalSeconds: int(newznabcatalog.Interval.Seconds()),
-				PageSize:        newznab.CatalogPageSize(),
-				Cursors:         []newznabCatalogCursor{},
-				Counts:          []newznabCatalogCount{},
-				Overlap:         []newznabCatalogOverlap{},
-				Ondemand:        []newznabCatalogOndemand{},
-			})
+			writeJSON(w, emptyCatalogReport())
 			return
 		}
 		rep, err := st.Report(r.Context())
@@ -91,6 +92,7 @@ func newznabCatalogHandler() http.HandlerFunc {
 			Counts:          make([]newznabCatalogCount, 0, len(rep.Counts)),
 			Overlap:         make([]newznabCatalogOverlap, 0, len(rep.Overlap)),
 			Ondemand:        []newznabCatalogOndemand{},
+			Indexers:        copyIndexerHealth(rep.Indexers),
 		}
 		for _, c := range rep.Cursors {
 			out.Cursors = append(out.Cursors, newznabCatalogCursor{
@@ -125,4 +127,26 @@ func newznabCatalogHandler() http.HandlerFunc {
 		}
 		writeJSON(w, out)
 	}
+}
+
+func emptyCatalogReport() newznabCatalogReport {
+	return newznabCatalogReport{
+		IntervalSeconds: int(newznabcatalog.Interval.Seconds()),
+		PageSize:        newznab.CatalogPageSize(),
+		Cursors:         []newznabCatalogCursor{},
+		Counts:          []newznabCatalogCount{},
+		Overlap:         []newznabCatalogOverlap{},
+		Ondemand:        []newznabCatalogOndemand{},
+		Indexers:        copyIndexerHealth(newznabcatalog.IndexerHealthFromCursors(nil)),
+	}
+}
+
+func copyIndexerHealth(in []newznabcatalog.IndexerHealth) []newznabIndexerHealth {
+	out := make([]newznabIndexerHealth, 0, len(in))
+	for _, h := range in {
+		out = append(out, newznabIndexerHealth{
+			Indexer: h.Indexer, Status: h.Status, Detail: h.Detail, UpdatedAt: h.UpdatedAt,
+		})
+	}
+	return out
 }

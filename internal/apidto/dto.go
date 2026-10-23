@@ -1954,6 +1954,14 @@ type NewznabCatalogOndemand struct {
 	Skipped  int    `json:"skipped"`
 }
 
+// NewznabIndexerHealth is one Newznab host's crawl health (not a live probe).
+type NewznabIndexerHealth struct {
+	Indexer   string `json:"indexer"`
+	Status    string `json:"status"`
+	Detail    string `json:"detail"`
+	UpdatedAt int64  `json:"updatedAt"`
+}
+
 // NewznabCatalogReport is GET /api/admin/newznab-catalog. No enclosure URLs.
 type NewznabCatalogReport struct {
 	IntervalSeconds int                      `json:"intervalSeconds"`
@@ -1962,6 +1970,7 @@ type NewznabCatalogReport struct {
 	Counts          []NewznabCatalogCount    `json:"counts"`
 	Overlap         []NewznabCatalogOverlap  `json:"overlap"`
 	Ondemand        []NewznabCatalogOndemand `json:"ondemand"`
+	Indexers        []NewznabIndexerHealth   `json:"indexers"`
 }
 
 // Claude 2026-10-23: Discover On Demand list (verified NZBs only).

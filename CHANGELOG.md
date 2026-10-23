@@ -13159,6 +13159,21 @@ status stays active.
 | `internal/usenet/precheck_test.go` | remux budget must not clamp; hung STAT ≤ article timeout |
 | `docs/usenet-precheck.md` | 12m cap retired; per-article hang bound |
 
+## 2026-10-23 — Dock Indexer health card
+
+**Problem:** NZBGeek / NZB.life crawl health was buried in muted cursor lines.
+**Root cause:** Dock had overlap and On Demand counts, no per-indexer status.
+**Fix:** Derive health from catalog cursors (waiting / indexing / OK / rate limited / request limit / error). No live t=caps on the 30s poll.
+**Outcome:** `TestIndexerHealthFromCursors_*`, Dashboard Indexer health assertions.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/newznabcatalog/health.go` | `IndexerHealthFromCursors` |
+| `internal/api/newznab_catalog.go` | `indexers` on the catalog report |
+| `frontend/src/screens/Dashboard.tsx` | Indexer health card |
+
 ## 2026-10-23 — Dock NZB card shows On Demand counts per mode
 
 **Problem:** The NZB catalog Dock card had no On Demand pipeline numbers, and exclusive indexer counts said "only".

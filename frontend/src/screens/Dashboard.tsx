@@ -40,6 +40,7 @@ import type {
   NewznabCatalogOndemand,
   NewznabCatalogOverlap,
   NewznabCatalogReport,
+  NewznabIndexerHealth,
   StorageAllocationCell,
   SysinfoSnapshot,
 } from "@dto";
@@ -116,6 +117,44 @@ function ondemandCounts(row: NewznabCatalogOndemand): string {
   if (row.fetched > 0) parts.push(`${formatCount(row.fetched)} in progress`);
   if (row.skipped > 0) parts.push(`${formatCount(row.skipped)} skipped`);
   return parts.join(" · ");
+}
+
+function healthLabel(status: string): string {
+  switch (status) {
+    case "ok":
+      return "OK";
+    case "crawling":
+      return "Indexing";
+    case "rate_limited":
+      return "Rate limited";
+    case "quota":
+      return "Request limit";
+    case "error":
+      return "Error";
+    default:
+      return "Waiting";
+  }
+}
+
+function healthClass(status: string): string {
+  switch (status) {
+    case "ok":
+    case "crawling":
+      return "text-ok";
+    case "unset":
+      return "text-muted";
+    default:
+      return "text-warn";
+  }
+}
+
+function formatAgo(unix: number): string {
+  if (unix <= 0) return "";
+  const sec = Math.max(0, Math.floor(Date.now() / 1000 - unix));
+  if (sec < 60) return "just now";
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+  return `${Math.floor(sec / 86400)}d ago`;
 }
 
 function catalogNZBs(
@@ -352,6 +391,44 @@ const Sparkline: Component<{ values: number[] }> = (props) => {
     </Show>
   );
 };
+
+const IndexerHealthCard: Component<{ report: NewznabCatalogReport }> = (
+  props,
+) => {
+  const rows = () =>
+    props.report.indexers?.length
+      ? props.report.indexers
+      : ([
+          { indexer: "newznab", status: "unset", detail: "waiting", updatedAt: 0 },
+          { indexer: "newznab2", status: "unset", detail: "waiting", updatedAt: 0 },
+        ] satisfies NewznabIndexerHealth[]);
+  return (
+    <Card title="Indexer health">
+      <ul class="flex flex-col gap-3 text-sm">
+        <For each={rows()}>
+          {(row: NewznabIndexerHealth) => (
+            <li>
+              <div class="font-medium text-fg">{indexerLabel(row.indexer)}</div>
+              <div class={healthClass(row.status)}>
+                {healthLine(row)}
+              </div>
+            </li>
+          )}
+        </For>
+      </ul>
+    </Card>
+  );
+};
+
+function healthLine(row: NewznabIndexerHealth): string {
+  const label = healthLabel(row.status);
+  if (row.status === "unset") return label;
+  const parts = [label];
+  if (row.detail) parts.push(row.detail);
+  const ago = formatAgo(row.updatedAt);
+  if (ago) parts.push(ago);
+  return parts.join(" · ");
+}
 
 // Claude 2026-10-23: NZB catalog overlap on the Dock, outside the SSE gate.
 // Reason: 1 page / 5s per indexer; poll 30s (not 10s COUNT). Not OVER.
@@ -761,7 +838,7 @@ export const Dashboard: Component = () => {
         )}
       </Show>
 
-      {/* NZB catalog — REST-backed, outside the SSE gate like Storage Allocation. */}
+      {/* NZB catalog + indexer health — REST-backed, outside the SSE gate. */}
       <div class="mt-4">
         <Show when={catalog.error}>
           <div class="mb-4 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-warn">
@@ -773,7 +850,12 @@ export const Dashboard: Component = () => {
             when={catalog()}
             fallback={<Muted>Loading NZB catalog…</Muted>}
           >
-            {(rep) => <NewznabCatalogCard report={rep()} />}
+            {(rep) => (
+              <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                <IndexerHealthCard report={rep()} />
+                <NewznabCatalogCard report={rep()} />
+              </div>
+            )}
           </Show>
         </Show>
       </div>

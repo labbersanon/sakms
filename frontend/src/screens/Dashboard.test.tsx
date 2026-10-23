@@ -99,6 +99,7 @@ const catalogReport = (
   counts: [],
   overlap: [],
   ondemand: [],
+  indexers: [],
   ...over,
 });
 
@@ -466,10 +467,12 @@ describe("Dashboard view", () => {
       screen.getByText(/Waiting for the first live reading/i),
     ).toBeInTheDocument();
     expect(await screen.findByText("NZB catalog")).toBeInTheDocument();
+    expect(screen.getByText("Indexer health")).toBeInTheDocument();
     expect(
       screen.getByText(/Each indexer: 100 NZBs every 5 seconds/i),
     ).toBeInTheDocument();
     expect(screen.getByText(/Waiting for NZBGeek and NZB.life/i)).toBeInTheDocument();
+    expect(screen.getAllByText("Waiting").length).toBeGreaterThanOrEqual(2);
   });
 
   it("renders NZB catalog overlap and cursor progress", async () => {
@@ -525,6 +528,20 @@ describe("Dashboard view", () => {
                 { kind: "series", verified: 0, fetched: 2, skipped: 0 },
                 { kind: "adult", verified: 0, fetched: 0, skipped: 0 },
               ],
+              indexers: [
+                {
+                  indexer: "newznab",
+                  status: "crawling",
+                  detail: "movies",
+                  updatedAt: Math.floor(Date.now() / 1000) - 90,
+                },
+                {
+                  indexer: "newznab2",
+                  status: "ok",
+                  detail: "finished",
+                  updatedAt: Math.floor(Date.now() / 1000) - 3600,
+                },
+              ],
             }),
           );
         }
@@ -533,6 +550,9 @@ describe("Dashboard view", () => {
     );
     renderDashboard();
     expect(await screen.findByText("NZB catalog")).toBeInTheDocument();
+    expect(screen.getByText("Indexer health")).toBeInTheDocument();
+    expect(screen.getByText(/Indexing · movies · 1m ago/)).toBeInTheDocument();
+    expect(screen.getByText(/OK · finished · 1h ago/)).toBeInTheDocument();
     expect(
       screen.getByText(/Same NZBs on both indexers: 5 · NZBGeek: 5 · NZB.life: 3/),
     ).toBeInTheDocument();

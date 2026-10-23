@@ -40,11 +40,14 @@ func TestNewznabCatalogHandler_EmptyWhenUnattached(t *testing.T) {
 	if got.IntervalSeconds != 5 || got.PageSize != 100 {
 		t.Fatalf("pace=%+v", got)
 	}
-	if got.Cursors == nil || got.Counts == nil || got.Overlap == nil || got.Ondemand == nil {
+	if got.Cursors == nil || got.Counts == nil || got.Overlap == nil || got.Ondemand == nil || got.Indexers == nil {
 		t.Fatalf("nil slices: %+v", got)
 	}
 	if len(got.Cursors) != 0 || len(got.Counts) != 0 || len(got.Overlap) != 0 || len(got.Ondemand) != 0 {
 		t.Fatalf("want empty, got %+v", got)
+	}
+	if len(got.Indexers) != 2 || got.Indexers[0].Status != "unset" || got.Indexers[1].Indexer != "newznab2" {
+		t.Fatalf("indexers=%+v", got.Indexers)
 	}
 }
 

@@ -912,8 +912,10 @@ func (n *NameFixer) accept(raw, source string) (name, src, conf, via string, ok 
 	return "", "", "", "", false
 }
 
-// identShapedName is the Go form of identNameSQL: a resolution plus a year,
-// season, or multi-word title, or a multi-word title without a resolution tag.
+// identShapedName is the Go form of the resolution branch of identNameSQL:
+// a resolution plus a year, season, or multi-word title. Space-separated
+// titles without 1080p are ident in SQL only (searchable gate), not here —
+// ingest still rejects hash stems with `_`.
 // Claude 2026-10-19: fansub `Ep170` / spaces, not only SxxEyy.
 // Reason: hasTitleAndMarker only counts SxxEyy/year, so a Black Clover 1080p
 // quoted name failed accept() after recoveredUnusable was fixed.
@@ -921,24 +923,22 @@ func (n *NameFixer) accept(raw, source string) (name, src, conf, via string, ok 
 // (need 720/1080/2160/480p).
 // Review if: 576p / 4K-without-p.
 func identShapedName(name string) bool {
-	if strings.HasPrefix(strings.TrimSpace(name), "(") {
+	if release.Parse(name).Resolution == 0 {
 		return false
 	}
-	multiword := strings.ContainsAny(name, ". _") && letterCount(name) >= 3
-	if release.Parse(name).Resolution != 0 {
-		if hasTitleAndMarker(name) {
-			return true
-		}
-		return multiword
+	if hasTitleAndMarker(name) {
+		return true
 	}
-	// Claude 2026-10-22: multiword titles are ident without a resolution tag.
-	// Reason: live "SpankMonster - Ivy Mayhem" sat named_hidden at 94%
-	//   because ident required 1080p. junkNameSQL still excludes `(????)`
-	//   and single hash tokens. Review if: date folders with letters match.
-	// Troubleshooting: named ≥80% multiword still hidden → identNameSQL
-	//   third OR missing, or this still returns false at Resolution==0.
-	// if release.Parse(name).Resolution == 0 { return false }
-	return multiword
+	// Claude 2026-10-19: '_' is a word separator (underscore fansubs).
+	// Reason: live `[Fancutfags]_Puella_Magi_…1080p…` is pending_name at 100%
+	//   because ContainsAny(". ") failed and header SQL required a space
+	//   inside the quotes. Searchable sat at 115.
+	// Troubleshooting: 100% quoted 1080p still pending → this still
+	//   requiring space/dot. Review if: 576p / 4K-without-p.
+	if !strings.ContainsAny(name, ". _") {
+		return false
+	}
+	return letterCount(name) >= 3
 }
 
 // quotedReleaseName is a destemmed quoted filename that is already a title:

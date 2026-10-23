@@ -1741,13 +1741,13 @@ func TestNameFix_QuotedHashFilenameDoesNotRename(t *testing.T) {
 	}
 }
 
-func TestIdentShapedName_MultiwordWithoutRes(t *testing.T) {
+func TestIdentShapedName_StillRequiresResolution(t *testing.T) {
 	for name, want := range map[string]bool{
-		"SpankMonster - Ivy Mayhem": true,
-		"Metropolis_Magazine_2026":  true,
-		"ANVsksfkfslfslf":           false,
-		"(Els1212)":                 false,
-		"190513_15_59_18":           false,
+		"SpankMonster - Ivy Mayhem":                         false,
+		"SpankMonster - Ivy Mayhem 1080p":                   true,
+		"Nfo.Movie.2020-GRP":                                false,
+		"0G6IJMEdZG_f-Evmq":                                 false,
+		"[UQW] Black Clover - Ep170 [BDRip 1080p HEVC FLAC]": true,
 	} {
 		if got := identShapedName(name); got != want {
 			t.Errorf("identShapedName(%q) = %v, want %v", name, got, want)

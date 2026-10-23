@@ -44,15 +44,16 @@ const (
 //
 //	are recovered sources. Review if: a new name_source is added.
 //
-// Claude 2026-10-22: multiword subjects are ident without 1080p.
+// Claude 2026-10-22: space-separated multiword subjects are ident without 1080p.
 // Reason: live "SpankMonster - Ivy Mayhem" sat named_hidden at 94%
-//   (below_gate) because ident required a resolution tag. junkNameSQL still
-//   excludes `(Els1212)` / single tokens. Review if: date folders with
-//   letters start matching (then tighten the third OR).
-// Troubleshooting: named ≥80% multiword still hidden → this third OR
-//   missing from recomputeOne, or Go identShapedName drifted.
+//   (below_gate) because ident required a resolution tag. Require a space so
+//   dotted hashes (`Span.Rel.2020`, `0G6IJMEdZG_f-Evmq`) stay non-ident.
+//   junkNameSQL still excludes `(Els1212)` / single tokens.
+// Troubleshooting: named ≥80% spaced title still hidden → this third OR
+//   missing from recomputeOne. Review if: underscore magazines without
+//   1080p should also match (then add `_` here without admitting hashes).
 // const identNameSQL = `(name_source IN ('par2','parhash','rar','ybegin','nfo','file','sfv','srrdb','nzb') OR (display_name ~* '(1080|720|2160|480)p|1280x720|3840x2160|1920x[0-9]+' AND (display_name ~ '[12][0-9]{3}' OR display_name ~* 'S[0-9]{1,2}([^0-9]|$)' OR (display_name ~ '[A-Za-z]{3,}' AND display_name ~ '[ .]'))))`
-const identNameSQL = `(name_source IN ('par2','parhash','rar','ybegin','nfo','file','sfv','srrdb','nzb') OR (display_name ~* '(1080|720|2160|480)p|1280x720|3840x2160|1920x[0-9]+' AND (display_name ~ '[12][0-9]{3}' OR display_name ~* 'S[0-9]{1,2}([^0-9]|$)' OR (display_name ~ '[A-Za-z]{3,}' AND display_name ~ '[ .]'))) OR (display_name ~ '[A-Za-z]{3,}' AND display_name ~ '[ ._]' AND display_name !~ '^\('))`
+const identNameSQL = `(name_source IN ('par2','parhash','rar','ybegin','nfo','file','sfv','srrdb','nzb') OR (display_name ~* '(1080|720|2160|480)p|1280x720|3840x2160|1920x[0-9]+' AND (display_name ~ '[12][0-9]{3}' OR display_name ~* 'S[0-9]{1,2}([^0-9]|$)' OR (display_name ~ '[A-Za-z]{3,}' AND display_name ~ '[ .]'))) OR (display_name ~ '[A-Za-z]{3,}' AND display_name ~ ' ' AND display_name !~ '^\('))`
 
 // junkNameSQL is named subject rows indexers would not list as a title:
 // `(????)` / `(Els1212)` mega-buckets, "Description — N GB", single tokens.

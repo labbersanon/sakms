@@ -400,20 +400,19 @@ func (c *Client) search(ctx context.Context, idx Indexer, req searchReq) ([]rssI
 	q := strings.TrimSpace(req.q)
 	poster := strings.TrimSpace(req.poster)
 	group := strings.TrimSpace(req.group)
+	parts := make([]string, 0, len(req.cats))
+	for _, cat := range req.cats {
+		if cat > 0 {
+			parts = append(parts, strconv.Itoa(cat))
+		}
+	}
 	// Claude 2026-10-23: catalog t=search may omit q.
 	// Reason: NZB.life pages cat=2000 without q; q=* is a literal
 	//   asterisk search. Grab still requires a query.
 	// Troubleshooting: empty search on catalog → q=* first request.
 	// Review if: NZB.life documents a real latest-in-cat query.
 	if req.catalog {
-		hasCat := false
-		for _, cat := range req.cats {
-			if cat > 0 {
-				hasCat = true
-				break
-			}
-		}
-		if !hasCat {
+		if len(parts) == 0 {
 			return nil, fmt.Errorf("catalog category required")
 		}
 	} else if q == "" && poster == "" && (group == "" || req.maxage <= 0) {
@@ -437,16 +436,8 @@ func (c *Client) search(ctx context.Context, idx Indexer, req searchReq) ([]rssI
 	if req.offset > 0 {
 		vals.Set("offset", strconv.Itoa(req.offset))
 	}
-	if len(req.cats) > 0 {
-		parts := make([]string, 0, len(req.cats))
-		for _, cat := range req.cats {
-			if cat > 0 {
-				parts = append(parts, strconv.Itoa(cat))
-			}
-		}
-		if len(parts) > 0 {
-			vals.Set("cat", strings.Join(parts, ","))
-		}
+	if len(parts) > 0 {
+		vals.Set("cat", strings.Join(parts, ","))
 	}
 	limit := req.limit
 	if limit <= 0 {
@@ -715,16 +706,10 @@ func (e APIError) Quota() bool   { return e.Code == "500" }
 
 // Claude 2026-10-23: error 200 is missing q/apikey/t or the wrong domain.
 // Reason: catalog retries q=* only on this; 429 and 300 must not retry.
-// Troubleshooting: q=* on every catalog error doubled 429s and marked
-//
-//	NZB.life series/adult complete on a literal asterisk search.
-//
+// Troubleshooting: q=* on every catalog error doubled 429s and marked the NZB.life series/adult lanes complete on a literal asterisk search.
 // Review if: NZB.life splits missing-q from wrong-domain into new codes.
 func (e APIError) MissingParam() bool {
-	if e.Code == "200" {
-		return true
-	}
-	return strings.Contains(strings.ToLower(e.Description), "missing parameter")
+	return e.Code == "200" || strings.Contains(strings.ToLower(e.Description), "missing parameter")
 }
 
 func parseAPIError(body []byte) error {

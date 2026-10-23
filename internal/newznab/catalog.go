@@ -26,15 +26,8 @@ type CatalogHit struct {
 func CatalogPageSize() int { return catalogPageSize }
 
 // Claude 2026-10-23: catalog t=search is cat-only; q=* only on missing-q.
-// Reason: NZB.life pages cat=2000 without q (helpapi q=Required is the
-//
-//	wrong-domain 200). q=* is a literal asterisk search and returned 0
-//	series/adult hits, which marked those lanes complete.
-//
-// Troubleshooting: Missing parameter → retry q=* did not fire. Empty
-//
-//	host 2 series on first page → q=* is back as the first request.
-//
+// Reason: NZB.life pages cat=2000 without q (helpapi q=Required is wrong-domain 200). q=* is a literal asterisk search and returned 0 series/adult hits, which marked those lanes complete.
+// Troubleshooting: Missing parameter retry q=* did not fire. Empty host-2 series on first page means q=* came back as the first request.
 // Review if: NZB.life documents a real latest-in-cat query.
 func (c *Client) SearchCatalog(ctx context.Context, idx Indexer, cat, offset, limit int) ([]CatalogHit, error) {
 	if cat <= 0 {
@@ -47,33 +40,21 @@ func (c *Client) SearchCatalog(ctx context.Context, idx Indexer, cat, offset, li
 		offset = 0
 	}
 	idx.Endpoint = NormalizeEndpoint(idx.Endpoint)
-	items, err := c.search(ctx, idx, searchReq{
-		cats:    []int{cat},
-		offset:  offset,
-		limit:   limit,
-		catalog: true,
-	})
+	req := searchReq{cats: []int{cat}, offset: offset, limit: limit, catalog: true}
+	items, err := c.search(ctx, idx, req)
+	var ae APIError
+	if errors.As(err, &ae) && ae.NoItems() {
+		return nil, nil
+	}
+	if errors.As(err, &ae) && ae.MissingParam() {
+		req.q = "*"
+		items, err = c.search(ctx, idx, req)
+	}
 	if err != nil {
-		var ae APIError
 		if errors.As(err, &ae) && ae.NoItems() {
 			return nil, nil
 		}
-		if !errors.As(err, &ae) || !ae.MissingParam() {
-			return nil, err
-		}
-		items, err = c.search(ctx, idx, searchReq{
-			q:       "*",
-			cats:    []int{cat},
-			offset:  offset,
-			limit:   limit,
-			catalog: true,
-		})
-		if err != nil {
-			if errors.As(err, &ae) && ae.NoItems() {
-				return nil, nil
-			}
-			return nil, err
-		}
+		return nil, err
 	}
 	out := make([]CatalogHit, 0, len(items))
 	for _, it := range items {

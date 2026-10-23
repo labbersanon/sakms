@@ -12990,3 +12990,19 @@ status stays active.
 | `internal/newznab/catalog.go` | catalog `q=*`, page 100 |
 | `internal/newznabcatalog/crawl.go` | 5s 429 min, 1h quota |
 | `frontend/src/screens/settings/Usenet.tsx` | host 2 help: api.nzb.life |
+
+## 2026-10-23 — Catalog t=search is cat-only; q=* only on missing parameter
+
+**Problem:** Forcing catalog `q=*` first made NZB.life (`newznab2`) series and adult complete on page 0 with 0 hits. Movies had already paged cat-only to offset ~12700 before that ship.
+**Root cause:** NZB.life helpapi marks `q` Required, but that error 200 is the wrong-domain case (`nzb.su`). Cat-only `t=search` already worked. `q=*` is a literal asterisk search, not latest-in-cat.
+**Fix:** Restore cat-only catalog search. Retry `q=*` only on API error 200 / "missing parameter". 429 and error 300 do not retry. Keep page 100, 5s/host, `api.nzb.life` rewrite. Do not wipe catalog rows; live `newznab2` cursors must be un-completed after deploy.
+**Outcome:** `TestSearchCatalog_CatOnlyNoHTMLNoNZB`, `TestSearchCatalog_MissingParamRetriesStar`, `TestSearchCatalog_429DoesNotRetryStar`, `TestSearchCatalog_Code300IsEmptyPage`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/newznab/catalog.go` | cat-only first; `q=*` only on MissingParam |
+| `internal/newznab/client.go` | restore catalog empty-q gate; `APIError.MissingParam` |
+| `internal/newznab/catalog_test.go` | empty q first; missing-param retry |
+| `docs/usenet-nntp-native.md` | cat-only catalog; `q=*` is fallback |

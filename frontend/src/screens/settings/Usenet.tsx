@@ -95,7 +95,8 @@ export const UsenetSection: Component = () => (
 // Related files: internal/api/newznabgrab.go
 //
 // Claude 2026-10-23: second host `newznab2` is NZB.life (api.nzb.life).
-// Reason: helpapi — host must be https://api.nzb.life/ not nzb.su; q is required.
+// Reason: helpapi — host must be https://api.nzb.life/ not nzb.su
+//   (wrong host is error 200). Catalog is cat-only; grab still sends q.
 //   Paste URL+key only — no secret in git.
 // Troubleshooting: Missing parameter on every call → wrong domain.
 // Review if: NZB.life publishes a new API host.

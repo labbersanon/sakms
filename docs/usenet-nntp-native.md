@@ -5,8 +5,9 @@ Claude 2026-10-23: the native `OVER` crawler, header index, namefix, and
 not an indexer catalog. ngPost random filenames never joined PreDB.
 
 **Grab catalog:** Newznab (`newznab` + optional `newznab2`) then Prowlarr.
-Host 2 is NZB.life: base `https://api.nzb.life/` (not `nzb.su`). `t=search`
-requires `q`; catalog sends `q=*`. Limit 1–100.
+Host 2 is NZB.life: base `https://api.nzb.life/` (not `nzb.su`). Catalog
+`t=search` is cat-only; `q=*` only if the host returns missing parameter
+(helpapi marks q required because the wrong domain is error 200). Limit 1–100.
 
 **Overlap index:** background `t=search` pages of cat 2000/5000/6000 into
 `newznab_catalog` at 1 page / 5s per host, 100/page (Dock card). Grab search

@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func TestSearchCatalog_QStarNoHTMLNoNZB(t *testing.T) {
+func TestSearchCatalog_CatOnlyNoHTMLNoNZB(t *testing.T) {
 	var gotQ, gotT, gotCat, gotOff, gotLim string
 	var sawHTML, fetchedNZB bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -52,8 +52,8 @@ func TestSearchCatalog_QStarNoHTMLNoNZB(t *testing.T) {
 	if gotT != "search" || gotCat != "2000" || gotOff != "50" || gotLim != "50" {
 		t.Fatalf("t=%q cat=%q off=%q lim=%q", gotT, gotCat, gotOff, gotLim)
 	}
-	if gotQ != "*" {
-		t.Fatalf("q=%q want *", gotQ)
+	if gotQ != "" {
+		t.Fatalf("q=%q want empty", gotQ)
 	}
 	if sawHTML || fetchedNZB {
 		t.Fatalf("html=%v nzb=%v", sawHTML, fetchedNZB)
@@ -63,6 +63,40 @@ func TestSearchCatalog_QStarNoHTMLNoNZB(t *testing.T) {
 	}
 	if OverlapKey(hits[0]) != "imdb:tt0111161" {
 		t.Fatalf("key=%q", OverlapKey(hits[0]))
+	}
+}
+
+func TestSearchCatalog_MissingParamRetriesStar(t *testing.T) {
+	var qs []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		qs = append(qs, r.URL.Query().Get("q"))
+		if r.URL.Query().Get("q") == "" {
+			io.WriteString(w, `<?xml version="1.0"?><error code="200" description="Missing parameter"/>`)
+			return
+		}
+		io.WriteString(w, `<?xml version="1.0"?>
+<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2007/feeds/attributes/">
+<channel><item>
+<title>Some.Show.S01E01.1080p</title>
+<guid>star-1</guid>
+<newznab:attr name="size" value="1"/>
+<newznab:attr name="category" value="5000"/>
+</item></channel></rss>`)
+	}))
+	defer srv.Close()
+
+	c := &Client{HTTP: srv.Client(), Interval: time.Nanosecond}
+	hits, err := c.SearchCatalog(context.Background(), Indexer{
+		Name: "newznab", Endpoint: srv.URL + "/api", APIKey: "k",
+	}, 5000, 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(qs) != 2 || qs[0] != "" || qs[1] != "*" {
+		t.Fatalf("qs=%v want [\"\", \"*\"]", qs)
+	}
+	if len(hits) != 1 || hits[0].GUID != "star-1" {
+		t.Fatalf("hits=%+v", hits)
 	}
 }
 

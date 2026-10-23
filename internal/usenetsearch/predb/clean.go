@@ -11,7 +11,7 @@ import (
 //   yEnc/NZB names then searches PreDB title+filename. Random ngPost stems
 //   stay hashed (LooksLikeHashed) and still need [FN:] / FileDesc.
 // Troubleshooting: hash_hits=0 with a scene-shaped .mkv in headers →
-//   CleanForMatching emptied it or LooksLikeSceneRelease is too strict.
+//   CleanForMatching emptied it.
 // Review if: pg_trgm Search is added (then keep this cleaner as the query).
 
 var (
@@ -20,10 +20,6 @@ var (
 	rePartVol    = regexp.MustCompile(`(?i)[.\-_]?(part|vol|cd|dvd|disc|disk)\d*$`)
 	reSampleSfx  = regexp.MustCompile(`(?i)[.\-_](sample|proof|subs?|thumbs?|cover)[.\-_]?$`)
 	reHexName    = regexp.MustCompile(`(?i)^[a-f0-9]{16,}$`)
-	reSceneTag   = regexp.MustCompile(`(?i)(720p|1080p|2160p|4k|x264|x265|hevc|web-?dl|webrip|bluray|hdtv|bdrip|dvdrip)`)
-	reTVEp       = regexp.MustCompile(`(?i)s\d{1,2}e\d{1,3}`)
-	reYearSep    = regexp.MustCompile(`(?i)[._-](19|20)\d{2}[._-]`)
-	reGroupSfx   = regexp.MustCompile(`-[A-Za-z0-9]{2,15}$`)
 	reHashTok    = regexp.MustCompile(`(?i)(?:^|[^a-f0-9])([a-f0-9]{40}|[a-f0-9]{32})(?:[^a-f0-9]|$)`)
 )
 
@@ -67,20 +63,6 @@ func LooksLikeHashed(name string) bool {
 	return mixedChurn(base)
 }
 
-// LooksLikeSceneRelease is NNTmux's "drive PreDB / fileCheck" gate.
-func LooksLikeSceneRelease(filename string) bool {
-	cleaned := CleanForMatching(filename)
-	if cleaned == "" || LooksLikeHashed(cleaned) {
-		return false
-	}
-	if reGroupSfx.MatchString(cleaned) && strings.ContainsAny(cleaned, "._-") {
-		if reSceneTag.MatchString(cleaned) || reTVEp.MatchString(cleaned) || reYearSep.MatchString(cleaned) {
-			return true
-		}
-	}
-	return reTVEp.MatchString(cleaned) && reSceneTag.MatchString(cleaned)
-}
-
 // HashTokens returns isolated 32/40-hex strings (md5/sha1 of a PreDB title).
 func HashTokens(s string) []string {
 	seen := map[string]bool{}
@@ -101,17 +83,15 @@ func looksLikeStructuralJunk(fileName string) bool {
 	if n == "" || n == "audio_ts" || n == "video_ts" {
 		return true
 	}
-	if len(n) <= 3 {
-		allDigit := true
-		for _, r := range n {
-			if !unicode.IsDigit(r) {
-				allDigit = false
-				break
-			}
-		}
-		return allDigit
+	if len(n) > 3 {
+		return false
 	}
-	return false
+	for _, r := range n {
+		if !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return true
 }
 
 func mixedChurn(s string) bool {

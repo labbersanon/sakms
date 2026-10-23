@@ -235,28 +235,25 @@ func (f *fakePreDB) ByFilename(_ context.Context, n string) (PreDBHit, bool) {
 	v, ok := f.filenames[strings.ToLower(n)]
 	return v, ok
 }
-func (f *fakePreDB) Search(_ context.Context, q string) (PreDBHit, bool) {
-	if v, ok := f.filenames[strings.ToLower(q)]; ok {
-		return v, true
+func (f *fakePreDB) Search(ctx context.Context, q string) (PreDBHit, bool) {
+	if hit, ok := f.ByFilename(ctx, q); ok {
+		return hit, true
 	}
 	cleaned := predb.CleanForMatching(q)
 	if cleaned != "" {
-		if v, ok := f.filenames[strings.ToLower(cleaned)]; ok {
-			return v, true
+		if hit, ok := f.ByFilename(ctx, cleaned); ok {
+			return hit, true
 		}
-		if v, ok := f.names[cleaned]; ok {
-			return v, true
+		if hit, ok := f.ByName(ctx, cleaned); ok {
+			return hit, true
 		}
 	}
 	for _, h := range predb.HashTokens(q) {
-		if v, ok := f.hashes[h]; ok {
-			return v, true
+		if hit, ok := f.ByHash(ctx, h); ok {
+			return hit, true
 		}
 	}
-	if v, ok := f.names[q]; ok {
-		return v, true
-	}
-	return PreDBHit{}, false
+	return f.ByName(ctx, q)
 }
 func (f *fakePreDB) ByRequestID(_ context.Context, id int64, _ string) (PreDBHit, bool) {
 	v, ok := f.requestIDs[id]

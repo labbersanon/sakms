@@ -26,28 +26,24 @@ func (s *Store) Search(ctx context.Context, query string) (Entry, bool, error) {
 	if q == "" {
 		return Entry{}, false, nil
 	}
-	if e, ok, err := s.ByFilename(ctx, q); err != nil || ok {
-		return e, ok, err
-	}
 	cleaned := CleanForMatching(q)
+	files := []string{q}
 	if cleaned != "" && !strings.EqualFold(cleaned, q) {
-		if e, ok, err := s.ByFilename(ctx, cleaned); err != nil || ok {
+		files = append(files, cleaned)
+	}
+	for _, fn := range files {
+		if e, ok, err := s.ByFilename(ctx, fn); err != nil || ok {
 			return e, ok, err
 		}
 	}
-	for _, h := range HashTokens(q) {
-		if e, ok, err := s.ByHash(ctx, h); err != nil || ok {
-			return e, ok, err
-		}
-	}
-	if cleaned != "" {
-		for _, h := range HashTokens(cleaned) {
+	for _, src := range []string{q, cleaned} {
+		for _, h := range HashTokens(src) {
 			if e, ok, err := s.ByHash(ctx, h); err != nil || ok {
 				return e, ok, err
 			}
 		}
 	}
-	if LooksLikeHashed(q) || (cleaned != "" && LooksLikeHashed(cleaned)) {
+	if LooksLikeHashed(q) || LooksLikeHashed(cleaned) {
 		return Entry{}, false, nil
 	}
 	for _, title := range titleQueries(q, cleaned) {

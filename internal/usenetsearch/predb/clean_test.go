@@ -13,17 +13,14 @@ func TestCleanForMatchingStripsParts(t *testing.T) {
 	}
 }
 
-func TestLooksLikeHashedAndScene(t *testing.T) {
+func TestLooksLikeHashed(t *testing.T) {
 	if !LooksLikeHashed("LDfYSlzgpWrggjClQRtBfk.part047.rar") {
 		t.Fatal("ngPost stem must be hashed")
 	}
 	if !LooksLikeHashed("abcdef0123456789abcdef0123456789.mkv") {
 		t.Fatal("md5 filename must be hashed")
 	}
-	if !LooksLikeSceneRelease("Show.Name.S01E02.1080p.WEB-DL.x264-GRP.mkv") {
-		t.Fatal("scene mkv must look like a release")
-	}
-	if LooksLikeSceneRelease("LDfYSlzgpWrggjClQRtBfk.part047.rar") {
-		t.Fatal("ngPost stem must not look like a scene release")
+	if LooksLikeHashed("Show.Name.S01E02.1080p.WEB-DL.x264-GRP.mkv") {
+		t.Fatal("scene mkv must not look hashed")
 	}
 }

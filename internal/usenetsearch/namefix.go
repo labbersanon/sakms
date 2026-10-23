@@ -285,6 +285,8 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 	}
 	res.Finalized += swept
 	statBudget := statReleasesPerChunk
+	keyOf := func(set PendingSet) string { return set.Group + "\x00" + set.Key }
+	done := map[string]bool{}
 	// Claude 2026-10-22: NNTmux match:prefiles before BODY.
 	// Reason: local filename/title join does not need NNTP and must not wait
 	//   on leftover park. NNTmux php artisan match:prefiles walks unnamed
@@ -292,7 +294,7 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 	// Troubleshooting: o2cli grep "namefix prefiles"; matched=0 with dump
 	//   filenames present → join lower(filename) or completeness filter.
 	// Review if: a proc_files column stops re-scanning misses.
-	if err := n.matchPrefiles(ctx, &res, &statBudget); err != nil {
+	if err := n.matchPrefiles(ctx, &res, &statBudget, done, keyOf); err != nil {
 		return res, err
 	}
 	headerSets, err := n.Index.DuePendingHeaderNames(ctx, namefixHeaderPerPass)
@@ -317,6 +319,13 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 		if err != nil {
 			return res, err
 		}
+		keep := parSeed[:0]
+		for _, set := range parSeed {
+			if !done[keyOf(set)] {
+				keep = append(keep, set)
+			}
+		}
+		parSeed = keep
 	}
 	// Claude 2026-10-21: BODY before PreDB/parhash.
 	// Reason: live leftover predb=197 then parhash=1 then body leftover=41
@@ -327,7 +336,6 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 	//   phase=predb leftover≈200 → this order reversed. Review if: PreDB
 	//   HTTP needs its own cadence off the crawl loop.
 	skipPre := map[string]bool{}
-	keyOf := func(set PendingSet) string { return set.Group + "\x00" + set.Key }
 	for _, list := range [][]PendingSet{sets, ident, headerSets} {
 		for _, set := range list {
 			skipPre[keyOf(set)] = true
@@ -343,7 +351,6 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 		log.Printf("usenetsearch: namefix starting header=%d body=%d ident=%d predb=%d parhash=%d skip_body=%t",
 			len(headerSets), len(sets), len(ident), len(predbSets), len(parSeed), n.SkipBody)
 	}
-	done := map[string]bool{}
 	// Claude 2026-10-19: each phase's context is passed into BodyHead.
 	// Reason: live namefix starting body=2 sat 3.5 min; the budget only
 	//   ran between sets while BodyHead used a 60s socket timeout.
@@ -435,15 +442,14 @@ func (n *NameFixer) Run(ctx context.Context) (NameFixResult, error) {
 // matchPrefiles is NNTmux php artisan match:prefiles: join pending ≥80%
 // header filenames to the local PreDB (exact SQL, then Search) and promote
 // before BODY. Ignores next_name_at so a dump/IRC [FN:] hit is not parked.
-func (n *NameFixer) matchPrefiles(ctx context.Context, res *NameFixResult, statBudget *int) error {
-	if n == nil || n.PreDB == nil || n.Index == nil {
+func (n *NameFixer) matchPrefiles(ctx context.Context, res *NameFixResult, statBudget *int, done map[string]bool, keyOf func(PendingSet) string) error {
+	if n.PreDB == nil {
 		return nil
 	}
 	phaseCtx, cancel := context.WithTimeout(ctx, n.phaseBudget("prefiles"))
 	defer cancel()
 	work := context.WithoutCancel(phaseCtx)
-	done := map[string]bool{}
-	keyOf := func(set PendingSet) string { return set.Group + "\x00" + set.Key }
+	expired := func() bool { return phaseCtx.Err() != nil && len(done) > 0 }
 	promoteHit := func(set PendingSet, hit PreDBHit) (bool, error) {
 		if done[keyOf(set)] || !preDBHitOK(hit, true, set.PayloadBytes) {
 			return false, nil
@@ -465,7 +471,7 @@ func (n *NameFixer) matchPrefiles(ctx context.Context, res *NameFixResult, statB
 		return err
 	}
 	for _, h := range hits {
-		if phaseCtx.Err() != nil && len(done) > 0 {
+		if expired() {
 			break
 		}
 		stop, err := promoteHit(h.PendingSet, PreDBHit{Title: h.Title, SizeBytes: h.SizeBytes})
@@ -481,7 +487,7 @@ func (n *NameFixer) matchPrefiles(ctx context.Context, res *NameFixResult, statB
 		return err
 	}
 	for _, c := range cands {
-		if phaseCtx.Err() != nil && len(done) > 0 {
+		if expired() {
 			break
 		}
 		if done[keyOf(c.PendingSet)] {
@@ -499,8 +505,8 @@ func (n *NameFixer) matchPrefiles(ctx context.Context, res *NameFixResult, statB
 			break
 		}
 	}
-	if matched := len(done); matched > 0 {
-		log.Printf("usenetsearch: namefix prefiles matched=%d", matched)
+	if len(done) > 0 {
+		log.Printf("usenetsearch: namefix prefiles matched=%d", len(done))
 	}
 	return nil
 }

@@ -138,10 +138,9 @@ func (s *Store) CountDeadByIndexer(ctx context.Context) ([]DeadCount, error) {
 		return out, nil
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT indexer,
-			COUNT(*) FILTER (WHERE status = $1),
-			COALESCE(SUM(stat_missing) FILTER (WHERE status = $1), 0)
+		SELECT indexer, COUNT(*), COALESCE(SUM(stat_missing), 0)
 		FROM newznab_ondemand
+		WHERE status = $1
 		GROUP BY indexer`, StatusDead)
 	if err != nil {
 		return out, err
@@ -160,7 +159,6 @@ func (s *Store) CountDeadByIndexer(ctx context.Context) ([]DeadCount, error) {
 	}
 	for i, d := range out {
 		if got, ok := by[d.Indexer]; ok {
-			got.Indexer = d.Indexer
 			out[i] = got
 		}
 	}

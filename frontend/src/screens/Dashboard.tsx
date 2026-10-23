@@ -423,22 +423,8 @@ const IndexerHealthCard: Component<{ report: NewznabCatalogReport }> = (
     props.report.indexers?.length
       ? props.report.indexers
       : ([
-          {
-            indexer: "newznab",
-            status: "unset",
-            detail: "waiting",
-            updatedAt: 0,
-            missingNzbs: 0,
-            missingArticles: 0,
-          },
-          {
-            indexer: "newznab2",
-            status: "unset",
-            detail: "waiting",
-            updatedAt: 0,
-            missingNzbs: 0,
-            missingArticles: 0,
-          },
+          { indexer: "newznab", status: "unset", detail: "waiting", updatedAt: 0, missingNzbs: 0, missingArticles: 0 },
+          { indexer: "newznab2", status: "unset", detail: "waiting", updatedAt: 0, missingNzbs: 0, missingArticles: 0 },
         ] satisfies NewznabIndexerHealth[]);
   return (
     <Card title="Indexer health">

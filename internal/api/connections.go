@@ -32,7 +32,7 @@ type ConnectionTestRequest struct {
 	// Service is a singleton connections service name OR, on the registry test
 	// routes, a serviceconn.Provider — the two vocabularies overlap on
 	// "jellyfin" deliberately (one dispatch, two callers).
-	Service  string `json:"service"` // "ollama" | "stash" | "jellyfin" | "emby" | "plex" | "stashdb" | "fansdb" | "tpdb" | "brave" | "prowlarr" | "newznab" | "nntp" | "tmdb" | "tvdb" | "trakt" | "omdb"
+	Service  string `json:"service"` // "ollama" | "stash" | "jellyfin" | "emby" | "plex" | "stashdb" | "fansdb" | "tpdb" | "brave" | "prowlarr" | "newznab" | "newznab2" | "nntp" | "tmdb" | "tvdb" | "trakt" | "omdb"
 	URL      string `json:"url"`
 	Username string `json:"username,omitempty"` // only nntp uses this (testNNTP)
 	APIKey   string `json:"apiKey,omitempty"`
@@ -99,7 +99,7 @@ func TestConnection(ctx context.Context, httpClient *http.Client, req Connection
 		return testSearXNG(ctx, httpClient, req)
 	case "prowlarr":
 		return testProwlarr(ctx, httpClient, req)
-	case "newznab":
+	case "newznab", "newznab2":
 		return testNewznab(ctx, httpClient, req)
 	// No "qbittorrent"/"nzbget" cases: the unified aria2c downloader replaced
 	// both as SAK's download engine (Unified downloader, 2026-07-18), so there

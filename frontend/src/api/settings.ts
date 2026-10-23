@@ -123,8 +123,9 @@ export const SERVICES_WITH_HOST_LOOKUP = ["prowlarr", "stash"];
 
 // API_SECTION_SERVICES are the global, mode-independent singleton connections,
 // rendered by Settings' Advanced -> "API Connections" section.
-// newznab is a singleton URL+key connection too, but it is rendered on
-// Settings → Download → Usenet (namefix only) and must not appear here.
+// newznab / newznab2 are singleton URL+key connections too, but they are
+// rendered on Settings → Download → Usenet (grab catalog) and must not
+// appear here.
 export const API_SECTION_SERVICES = ["prowlarr", "stash", "omdb"];
 
 // LIBRARY_MODE_SERVICES are the metadata-source connections that belong to one

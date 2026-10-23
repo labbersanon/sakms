@@ -1741,6 +1741,20 @@ func TestNameFix_QuotedHashFilenameDoesNotRename(t *testing.T) {
 	}
 }
 
+func TestIdentShapedName_MultiwordWithoutRes(t *testing.T) {
+	for name, want := range map[string]bool{
+		"SpankMonster - Ivy Mayhem": true,
+		"Metropolis_Magazine_2026":  true,
+		"ANVsksfkfslfslf":           false,
+		"(Els1212)":                 false,
+		"190513_15_59_18":           false,
+	} {
+		if got := identShapedName(name); got != want {
+			t.Errorf("identShapedName(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
 func TestQuotedReleaseName_UnderscoreYearVsHash(t *testing.T) {
 	for name, want := range map[string]bool{
 		"Metropolis_Magazine_-_September_2026.part1.rar": true,

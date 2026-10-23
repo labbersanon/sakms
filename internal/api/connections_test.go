@@ -240,6 +240,22 @@ func TestTestConnection_Newznab_Caps(t *testing.T) {
 	}
 }
 
+func TestTestConnection_Newznab2_Caps(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("t") != "caps" {
+			t.Errorf("t=%s", r.URL.Query().Get("t"))
+		}
+		w.Write([]byte(`<?xml version="1.0"?><caps><server title="Other"/></caps>`))
+	}))
+	defer srv.Close()
+	result := TestConnection(context.Background(), testHTTPClient(), ConnectionTestRequest{
+		Service: "newznab2", URL: srv.URL, APIKey: "idx2-key",
+	})
+	if !result.OK || result.Error != "" {
+		t.Fatalf("expected success, got %+v", result)
+	}
+}
+
 func TestTestConnection_Newznab_RequiresKey(t *testing.T) {
 	result := TestConnection(context.Background(), testHTTPClient(), ConnectionTestRequest{
 		Service: "newznab", URL: "http://127.0.0.1:9",

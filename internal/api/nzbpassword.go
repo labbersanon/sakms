@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -57,20 +56,11 @@ func (c *nzbPasswordLookup) Lookup(ctx context.Context, q usenetsearch.NZBPasswo
 			return usenetsearch.NZBPasswordHit{}, false
 		}
 	}
-	conn, err := optionalConnAPI(ctx, c.conns, "newznab")
-	if err != nil {
-		log.Printf("usenetsearch: nzb-password newznab err=%v", err)
+	idxs := newznabIndexersFromStore(ctx, c.conns)
+	if len(idxs) == 0 {
 		return usenetsearch.NZBPasswordHit{}, false
 	}
-	if conn == nil || strings.TrimSpace(conn.URL) == "" || strings.TrimSpace(conn.APIKey) == "" {
-		return usenetsearch.NZBPasswordHit{}, false
-	}
-	idx := newznab.Indexer{
-		Name:     "newznab",
-		Endpoint: conn.URL,
-		APIKey:   conn.APIKey,
-	}
-	hit, ok := c.client.Lookup(ctx, []newznab.Indexer{idx}, newznab.Query{
+	hit, ok := c.client.Lookup(ctx, idxs, newznab.Query{
 		Filename:  q.Filename,
 		Poster:    q.Poster,
 		Group:     q.Group,

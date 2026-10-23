@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -21,6 +22,13 @@ import (
 //   on Prowlarr means ScopeNewznab leaked. Review if: Prowlarr already includes
 //   the same host (duplicate NZBs are deduped by URL/title).
 // Related files: internal/newznab/client.go, frontend Usenet.tsx
+//
+// Claude 2026-10-22: optional `newznab2` is a second grab indexer.
+// Reason: NZBGeek does not list ngPost obfuscated NZBs; Discover/grab catalog
+//   is Newznab, not native Searchable. A second host that does list those
+//   NZBs can be pasted in Settings — no secret in git.
+// Troubleshooting: only host 1 is queried → connections.service newznab2
+//   URL/key empty. Review if: Prowlarr already includes both.
 
 var (
 	newznabGrabMu     sync.RWMutex
@@ -44,28 +52,49 @@ func AttachNewznabGrabSearch(connStore *connections.Store, httpClient *http.Clie
 }
 
 func newznabGrabConfigured(ctx context.Context) bool {
-	_, _, ok := newznabGrabIndexer(ctx)
-	return ok
+	idxs, _, ok := newznabGrabIndexers(ctx)
+	return ok && len(idxs) > 0
 }
 
-func newznabGrabIndexer(ctx context.Context) (newznab.Indexer, *newznab.Client, bool) {
+var newznabGrabServices = []string{"newznab", "newznab2"}
+
+func newznabIndexersFromStore(ctx context.Context, store *connections.Store) []newznab.Indexer {
+	if store == nil {
+		return nil
+	}
+	var out []newznab.Indexer
+	for _, svc := range newznabGrabServices {
+		conn, err := optionalConnAPI(ctx, store, svc)
+		if err != nil {
+			log.Printf("search: newznab %s err=%v", svc, err)
+			continue
+		}
+		if conn == nil {
+			continue
+		}
+		url := strings.TrimSpace(conn.URL)
+		key := strings.TrimSpace(conn.APIKey)
+		if url == "" || key == "" {
+			continue
+		}
+		out = append(out, newznab.Indexer{Name: svc, Endpoint: url, APIKey: key})
+	}
+	return out
+}
+
+func newznabGrabIndexers(ctx context.Context) ([]newznab.Indexer, *newznab.Client, bool) {
 	newznabGrabMu.RLock()
 	conns := newznabGrabConns
 	client := newznabGrabClient
 	newznabGrabMu.RUnlock()
 	if conns == nil || client == nil {
-		return newznab.Indexer{}, nil, false
+		return nil, nil, false
 	}
-	conn, err := optionalConnAPI(ctx, conns, "newznab")
-	if err != nil || conn == nil {
-		return newznab.Indexer{}, nil, false
+	idxs := newznabIndexersFromStore(ctx, conns)
+	if len(idxs) == 0 {
+		return nil, nil, false
 	}
-	url := strings.TrimSpace(conn.URL)
-	key := strings.TrimSpace(conn.APIKey)
-	if url == "" || key == "" {
-		return newznab.Indexer{}, nil, false
-	}
-	return newznab.Indexer{Name: "newznab", Endpoint: url, APIKey: key}, client, true
+	return idxs, client, true
 }
 
 func insertNewznabPhase(phases []prowlarr.Scope) []prowlarr.Scope {
@@ -100,15 +129,48 @@ func mergeGrabReleases(newznab, prowlarrHits []prowlarr.Release) []prowlarr.Rele
 }
 
 func newznabGrabSearch(ctx context.Context, query string, cats []int) ([]prowlarr.Release, error) {
-	idx, client, ok := newznabGrabIndexer(ctx)
+	idxs, client, ok := newznabGrabIndexers(ctx)
 	if !ok {
 		return nil, nil
 	}
-	rels, err := client.SearchGrab(ctx, idx, query, cats)
-	if err != nil {
-		return nil, err
+	var out []prowlarr.Release
+	var firstErr error
+	for _, idx := range idxs {
+		rels, err := client.SearchGrab(ctx, idx, query, cats)
+		if err != nil {
+			log.Printf("search: newznab indexer=%s err=%v", idx.Name, err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		out = append(out, adaptNewznabReleases(rels)...)
 	}
-	return adaptNewznabReleases(rels), nil
+	out = dedupeGrabReleases(out)
+	if len(out) == 0 {
+		return nil, firstErr
+	}
+	return out, nil
+}
+
+func dedupeGrabReleases(rels []prowlarr.Release) []prowlarr.Release {
+	if len(rels) < 2 {
+		return rels
+	}
+	seen := make(map[string]bool, len(rels))
+	out := make([]prowlarr.Release, 0, len(rels))
+	for _, r := range rels {
+		key := strings.TrimSpace(r.DownloadURL)
+		if key == "" {
+			key = r.GUID + "\n" + r.Title
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, r)
+	}
+	return out
 }
 
 func newznabAutoGrabSearch(ctx context.Context, m mode.Mode, req AutoGrabRequest) ([]prowlarr.Release, error) {

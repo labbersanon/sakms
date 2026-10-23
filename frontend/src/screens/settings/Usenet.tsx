@@ -14,7 +14,7 @@
 //     takedown coverage, not as a ranked chain. There is no priority field and
 //     no reorder UI beyond cosmetic sorting.
 //   - A generic "add any connection type" framework. This page adds NNTP
-//     subscriptions and one optional Newznab host (alternate Usenet grab search). Nothing else.
+//     subscriptions and optional Newznab hosts (alternate Usenet grab search). Nothing else.
 //   - A retry-interval input. The cadence is coupled to the auto-grab toggle
 //     server-side (on → 86400s, off → 0) precisely so the two can't disagree;
 //     there is deliberately no user-facing control for it.
@@ -102,32 +102,80 @@ export const UsenetSection: Component = () => (
 // Troubleshooting: operator filled URL+key, no Save visible, live connections had 0 newznab rows.
 // Review if: Prowlarr already includes the same indexer.
 // Related files: internal/api/newznabgrab.go
+//
+// Claude 2026-10-22: second host `newznab2` for an indexer that lists obfuscated NZBs.
+// Reason: Discover/grab catalog is Newznab, not native Searchable (~4.5k).
+//   NZBGeek does not list ngPost hash NZBs. Paste URL+key only — no secret in git.
+// Troubleshooting: grab never queries host 2 → connections.service newznab2 empty.
+// Review if: Prowlarr already includes both hosts.
 const NewznabHostCard: Component = () => {
   const [conns, { refetch }] = createResource(fetchConnections);
-  const existing = () =>
-    (conns() ?? []).find((c) => c.service === "newznab");
-
   return (
-    <Card title="NZB host API">
-      <Muted class="mb-3">
-        Optional Newznab indexer for Usenet grab search. Tried after native
-        NNTP and before Prowlarr. Not used for torrents or name recovery.
-        Example: https://api.nzbgeek.info/api
-      </Muted>
-      <Show when={conns.error}>
-        <ErrorText>{(conns.error as Error)?.message}</ErrorText>
+    <>
+      <NewznabHostPanel
+        service="newznab"
+        saveId="usenet-newznab"
+        title="NZB host API"
+        urlAria="newznab URL"
+        keyAria="newznab API key"
+        help="Optional Newznab indexer for Usenet grab search. Tried after native NNTP and before Prowlarr. This is the grab catalog — native Searchable is not. Not used for torrents. Example: https://api.nzbgeek.info/api"
+        rows={conns}
+        rowsError={conns.error}
+        onChanged={() => void refetch()}
+      />
+      <NewznabHostPanel
+        service="newznab2"
+        saveId="usenet-newznab2"
+        title="NZB host API 2"
+        urlAria="newznab2 URL"
+        keyAria="newznab2 API key"
+        help="Optional second Newznab indexer, tried after host 1 and before Prowlarr. Use an indexer that lists obfuscated NZBs. Paste URL and API key here — nothing is stored in the repo."
+        rows={conns}
+        rowsError={conns.error}
+        onChanged={() => void refetch()}
+      />
+    </>
+  );
+};
+
+const NewznabHostPanel: Component<{
+  service: string;
+  saveId: string;
+  title: string;
+  urlAria: string;
+  keyAria: string;
+  help: string;
+  rows: () => ConnectionSummary[] | undefined;
+  rowsError: unknown;
+  onChanged: () => void;
+}> = (props) => {
+  const existing = () =>
+    (props.rows() ?? []).find((c) => c.service === props.service);
+  return (
+    <Card title={props.title}>
+      <Muted class="mb-3">{props.help}</Muted>
+      <Show when={props.rowsError}>
+        <ErrorText>{(props.rowsError as Error)?.message}</ErrorText>
       </Show>
-      {/* Seed URL/hasApiKey only after GET /api/connections resolves — same
-          Guardrail #5 gate as ConnectionRow: mounting on undefined would treat
-          an existing key as missing and a Save would send apiKey:"". */}
-      <Show when={!conns.error && conns() !== undefined}>
-        <NewznabHostFields existing={existing()} onChanged={() => void refetch()} />
+      <Show when={!props.rowsError && props.rows() !== undefined}>
+        <NewznabHostFields
+          service={props.service}
+          saveId={props.saveId}
+          urlAria={props.urlAria}
+          keyAria={props.keyAria}
+          existing={existing()}
+          onChanged={props.onChanged}
+        />
       </Show>
     </Card>
   );
 };
 
 const NewznabHostFields: Component<{
+  service: string;
+  saveId: string;
+  urlAria: string;
+  keyAria: string;
   existing: ConnectionSummary | undefined;
   onChanged: () => void;
 }> = (props) => {
@@ -154,7 +202,7 @@ const NewznabHostFields: Component<{
       throw err;
     }
     try {
-      await upsertConnection("newznab", body());
+      await upsertConnection(props.service, body());
       status.set("✓ saved");
       setKey("");
       setKeyTouched(false);
@@ -167,8 +215,8 @@ const NewznabHostFields: Component<{
   };
 
   const batched = useSectionSaveItem({
-    id: "usenet-newznab",
-    label: "NZB host API",
+    id: props.saveId,
+    label: props.service === "newznab2" ? "NZB host API 2" : "NZB host API",
     dirty,
     save,
   });
@@ -178,7 +226,7 @@ const NewznabHostFields: Component<{
     try {
       const b = body();
       const r = await testConnection({
-        service: "newznab",
+        service: props.service,
         url: b.url,
         username: b.username,
         apiKey: b.apiKey,
@@ -191,9 +239,9 @@ const NewznabHostFields: Component<{
   };
 
   const remove = async () => {
-    if (!confirm("Remove the NZB host API connection?")) return;
+    if (!confirm("Remove this NZB host API connection?")) return;
     try {
-      await deleteConnection("newznab");
+      await deleteConnection(props.service);
       setUrl("");
       setKey("");
       setKeyTouched(false);
@@ -212,7 +260,7 @@ const NewznabHostFields: Component<{
           type="text"
           class={`${inputClass} mt-1`}
           placeholder="https://api.example.com/api"
-          aria-label="newznab URL"
+          aria-label={props.urlAria}
           value={url()}
           onInput={(e) => {
             setUrl(e.currentTarget.value);
@@ -230,7 +278,7 @@ const NewznabHostFields: Component<{
               ? `unchanged (••••${props.existing?.keySuffix ?? ""})`
               : "api key"
           }
-          aria-label="newznab API key"
+          aria-label={props.keyAria}
           value={key()}
           onInput={(e) => {
             setKey(e.currentTarget.value);

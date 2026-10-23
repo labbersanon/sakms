@@ -129,6 +129,33 @@ func TestNZBPasswordLookup_PosterAfterStemMiss(t *testing.T) {
 	}
 }
 
+func TestNZBPasswordLookup_SecondHost(t *testing.T) {
+	const stem = "o6938TxyzABCDEF"
+	idx := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `<?xml version="1.0"?>
+<rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2007/feeds/attributes/">
+<channel><item>
+<title>Some.Title.2021.1080p</title>
+<guid>`+stem+`</guid>
+<newznab:attr name="password" value="from-attr"/>
+</item></channel></rss>`)
+	}))
+	defer idx.Close()
+	connStore, _, settingsStore, _, _, _, _, _, _, _ := testStores(t)
+	if err := connStore.Upsert(context.Background(), "newznab2", idx.URL+"/api", "idx2-key"); err != nil {
+		t.Fatal(err)
+	}
+	lookup := &nzbPasswordLookup{
+		conns:    connStore,
+		settings: settingsStore,
+		client:   &newznab.Client{HTTP: idx.Client(), Interval: time.Nanosecond},
+	}
+	hit, ok := lookup.Lookup(context.Background(), usenetsearch.NZBPasswordQuery{Filename: stem})
+	if !ok || hit.Title == "" {
+		t.Fatalf("newznab2-only lookup miss hit=%+v ok=%v", hit, ok)
+	}
+}
+
 func TestNZBPasswordLookup_NoHost(t *testing.T) {
 	connStore, _, settingsStore, _, _, _, _, _, _, _ := testStores(t)
 	lookup := &nzbPasswordLookup{conns: connStore, settings: settingsStore, client: &newznab.Client{}}

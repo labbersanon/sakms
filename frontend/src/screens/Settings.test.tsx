@@ -3240,11 +3240,14 @@ describe("Usenet NZB host API — Newznab connection", () => {
     stubFetch();
     renderSettings();
     goToDownloadSubTab("Usenet");
-    expect(await screen.findByText("NZB host API")).toBeInTheDocument();
+    expect(await screen.findByText("NZB host API", { exact: true })).toBeInTheDocument();
     expect(screen.getByText(/Optional Newznab indexer for Usenet grab search/)).toBeInTheDocument();
+    expect(screen.getByText("NZB host API 2")).toBeInTheDocument();
     expect(await screen.findByLabelText("newznab URL")).toBeInTheDocument();
     expect(screen.getByLabelText("newznab API key")).toBeInTheDocument();
-    const nzbCard = screen.getByText("NZB host API").closest("div")!;
+    expect(screen.getByLabelText("newznab2 URL")).toBeInTheDocument();
+    expect(screen.getByLabelText("newznab2 API key")).toBeInTheDocument();
+    const nzbCard = screen.getByText("NZB host API", { exact: true }).closest("div")!;
     expect(within(nzbCard).getByText("URL")).toBeInTheDocument();
     expect(within(nzbCard).getByText("API key")).toBeInTheDocument();
     expect(within(nzbCard).queryByText("Service")).toBeNull();
@@ -3268,7 +3271,7 @@ describe("Usenet NZB host API — Newznab connection", () => {
     fireEvent.input(screen.getByLabelText("newznab API key"), {
       target: { value: "idx-key" },
     });
-    clickCardSave("NZB host API");
+    clickCardSave(/^NZB host API$/);
     await waitFor(() =>
       expect(
         calls.some(
@@ -3283,6 +3286,34 @@ describe("Usenet NZB host API — Newznab connection", () => {
     expect(put.body).toEqual({
       url: "https://api.nzbgeek.info/api",
       apiKey: "idx-key",
+    });
+  });
+
+  it("Save PUTs /api/connections/newznab2 with url and apiKey", async () => {
+    const calls = stubFetch();
+    renderSettings();
+    goToDownloadSubTab("Usenet");
+    fireEvent.input(await screen.findByLabelText("newznab2 URL"), {
+      target: { value: "https://api.example-indexer.test/api" },
+    });
+    fireEvent.input(screen.getByLabelText("newznab2 API key"), {
+      target: { value: "idx2-key" },
+    });
+    clickCardSave("NZB host API 2");
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.method === "PUT" && c.url.endsWith("/api/connections/newznab2"),
+        ),
+      ).toBe(true),
+    );
+    const put = calls.find(
+      (c) => c.method === "PUT" && c.url.endsWith("/api/connections/newznab2"),
+    )!;
+    expect(put.body).toEqual({
+      url: "https://api.example-indexer.test/api",
+      apiKey: "idx2-key",
     });
   });
 });

@@ -520,6 +520,58 @@ func TestRecomputeDirty_NamedZeroBeforePending(t *testing.T) {
 	}
 }
 
+func TestRecomputeDirty_MultiwordWithoutResSearchableBelowGate(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	const g = "alt.binaries.erotica"
+	const title = "SpankMonster - Ivy Mayhem"
+	// 90/100 parts: below the 95% grab gate, above the 80% ident floor.
+	if err := idx.Upsert(ctx, fileRows(g, title, title+".mkv", "sm", 0, 100, 90, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.RecomputeDirty(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	var searchable bool
+	var bp int
+	if err := sqlDB.QueryRowContext(ctx, `SELECT searchable, completeness_bp FROM usenet_nntp_releases WHERE release_key=?`, title).Scan(&searchable, &bp); err != nil {
+		t.Fatal(err)
+	}
+	if !searchable || bp < spanRepairFloorBP || bp >= DefaultMinCompletenessPct*100 {
+		t.Fatalf("searchable=%v bp=%d; 90%% multiword without 1080p must be Searchable", searchable, bp)
+	}
+}
+
+func TestRecomputeDirty_HashTokenNotSearchable(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	idx, err := OpenIndex(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	const g = "alt.binaries.multimedia.erotica"
+	const title = "ANVsksfkfslfslf"
+	if err := idx.Upsert(ctx, fileRows(g, title, title+".mkv", "anv", 0, 10, 10, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.RecomputeDirty(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	var searchable bool
+	if err := sqlDB.QueryRowContext(ctx, `SELECT searchable FROM usenet_nntp_releases WHERE release_key=?`, title).Scan(&searchable); err != nil {
+		t.Fatal(err)
+	}
+	if searchable {
+		t.Fatal("single hash token must stay hidden")
+	}
+}
+
 func TestRecomputeDirty_JunkMegaBucketNotSearchable(t *testing.T) {
 	sqlDB := dbtest.New(t)
 	idx, err := OpenIndex(sqlDB)

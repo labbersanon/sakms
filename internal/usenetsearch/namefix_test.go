@@ -1444,6 +1444,38 @@ func leadTokenHashSet(prefix, token, hash string, startNum, files int) []usenet.
 	return out
 }
 
+func dropPayloadParts(t *testing.T, idx *Index, n int) {
+	t.Helper()
+	if n <= 0 {
+		return
+	}
+	res, err := idx.db.Exec(`
+DELETE FROM usenet_nntp_headers
+WHERE msgid IN (
+  SELECT msgid FROM usenet_nntp_headers
+  WHERE is_meta=FALSE AND part_n=2
+  ORDER BY msg_num
+  LIMIT ?
+)`, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted, _ := res.RowsAffected()
+	if deleted != int64(n) {
+		t.Fatalf("deleted payload parts=%d, want %d", deleted, n)
+	}
+	var key string
+	if err := idx.db.QueryRow(`SELECT release_key FROM usenet_nntp_releases LIMIT 1`).Scan(&key); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.markDirty(context.Background(), []releaseKey{{nfGroup, key}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.RecomputeDirty(context.Background(), 10); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRenameRelease_Par2BelowGateIsIdentified(t *testing.T) {
 	f := newNFFixture(t, obfuscatedSet("p2", nfHash, 1, 45), nil)
 	f.crawlAndRecompute(t)

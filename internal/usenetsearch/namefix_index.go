@@ -291,7 +291,7 @@ LIMIT ?`, spanRepairFloorBP, limit)
 }
 
 // DuePendingPasswordLocked returns ≥80% pending ngPost hash.7z / .7z.enc
-// sets so namefix can shelve BODY without a PreDB-only queue.
+// sets so namefix can shelve BODY in the header phase.
 //
 // Claude 2026-10-22: header-phase stand-in for removed DuePendingPreDB.
 // Reason: password packs are excluded from BODY; dump/IRC never named them.
@@ -331,19 +331,10 @@ func groupLimitArgs(prefix []any, groups []string, limit int) (string, []any) {
 
 // SetRows loads every header row of one release/staged-set key.
 func (idx *Index) SetRows(ctx context.Context, group, key string) ([]HeaderRow, error) {
-	return idx.setRows(ctx, group, key, 0)
-}
-
-func (idx *Index) setRows(ctx context.Context, group, key string, limit int) ([]HeaderRow, error) {
 	q := `
 SELECT msg_num, msgid, subject, from_addr, posted_at, bytes, part_n, part_m, filename, yenc_size, is_meta, file_n, file_m
 FROM usenet_nntp_headers WHERE group_name=? AND release_name=? ORDER BY filename, part_n, msg_num`
-	args := []any{group, key}
-	if limit > 0 {
-		q += ` LIMIT ?`
-		args = append(args, limit)
-	}
-	return idx.scanHeaderRows(ctx, group, key, q, args...)
+	return idx.scanHeaderRows(ctx, group, key, q, group, key)
 }
 
 // setRowsBodyTargets loads only articles pickBodyTargets needs (main PAR2,

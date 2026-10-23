@@ -17,8 +17,8 @@ func FilterGrabReleases(query string, rels []Release) []Release {
 	// Reason: indexer RSS is noisy; they kept hits whose sanitized title tokens
 	//   cover the query (prefix-relax for 1080 vs 1080p), hid the rest, collapsed
 	//   same title within 5MB, and ranked an exact sanitized title first. Exact
-	//   means sanitized title == sanitized query. Do not scrape catalog HTML.
-	//   fetch NZBs to count PAR2.
+	//   means sanitized title == sanitized query. Do not scrape catalog HTML
+	//   or fetch NZBs to count PAR2.
 	// Troubleshooting: grab empty after a title that should match → sanitize or
 	//   prefix-relax dropped it; this falls back to the unfiltered list (still
 	//   deduped). Review if: Prowlarr already applies the same token gate.

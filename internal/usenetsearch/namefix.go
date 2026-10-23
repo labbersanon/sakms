@@ -67,7 +67,6 @@ const (
 	// Claude 2026-10-19: namefixMinBodyRemain skipped BodyHead when the 20s
 	//   phase was already gone (live remain_ms=-1 on a 43KB par2). Replaced
 	//   by WithoutCancel+8s so one overtime article still runs.
-	// namefixMinBodyRemain = 200 * time.Millisecond
 	// namefixMinPayload: smaller sets without PAR2 are finalized (no BODY).
 	namefixMinPayload = 100 << 20
 	// namefixHeadBytes caps the decoded bytes kept from one BODY.
@@ -1218,11 +1217,11 @@ func headerNameCandidates(rows []HeaderRow) []nameCand {
 
 // sizeWithin reports whether payload is within ±15% of a reported size
 // (unknown on either side passes). Used by srrdb CRC matching.
-func sizeWithin(preSize, payload int64) bool {
-	if preSize <= 0 || payload <= 0 {
+func sizeWithin(ref, payload int64) bool {
+	if ref <= 0 || payload <= 0 {
 		return true
 	}
-	return sizeWithinKnown(preSize, payload, namefixSizeTolerance)
+	return sizeWithinKnown(ref, payload, namefixSizeTolerance)
 }
 
 // sizeWithinKnown is NNTmux donor matching: both sizes known, delta/ref ≤ pct.

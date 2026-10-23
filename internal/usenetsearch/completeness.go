@@ -38,11 +38,6 @@ const (
 // folders, and 1M headers of real scene titles sitting below the gate.
 // Troubleshooting: scene-named below-gate not searchable → this predicate
 // missing from recomputeOne. Review if: 2160p-only tags or WEB-DL without p.
-// Claude 2026-10-20: parhash/sfv/srrdb are recovered sources like par2/rar.
-// Reason: identNameSQL omitted them, so an 80–94% srrdb/sfv rename would not
-//
-//	be searchable until 95%. Review if: a new name_source is added.
-//
 // Claude 2026-10-22: drop name_source=predb; add file/nzb.
 // Reason: PreDB/IRC decommissioned. Header filenames and NZB-password titles
 //

@@ -96,9 +96,9 @@ export const UsenetSection: Component = () => (
 //
 // Claude 2026-10-23: second host `newznab2` is NZB.life (api.nzb.life).
 // Reason: helpapi — host must be https://api.nzb.life/ not nzb.su; q is required.
+//   Paste URL+key only — no secret in git.
 // Troubleshooting: Missing parameter on every call → wrong domain.
 // Review if: NZB.life publishes a new API host.
-// Paste URL+key only — no secret in git.
 // Claude 2026-10-23: both hosts are queried in parallel, not host-1-then-2.
 // Reason: sequential t=search hid NZBFinder behind NZBGeek. Prowlarr stays last.
 const NewznabHostCard: Component = () => {

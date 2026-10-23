@@ -96,10 +96,8 @@ func (c *Client) interval() time.Duration {
 
 // Claude 2026-10-23: throttle per indexer host, not process-wide.
 // Reason: NZBGeek and NZBFinder are independent APIs; a shared last-call
-//
-//	timestamp serialized t=search by minInterval even when both hosts are
-//	configured. Same-host spacing stays.
-//
+// timestamp serialized t=search by minInterval even when both hosts are
+// configured. Same-host spacing stays.
 // Troubleshooting: host 2 always ~1s behind host 1 → last is still one Time.
 // Review if: NZB.life documents a stricter per-key rate than minInterval.
 func (c *Client) throttle(ctx context.Context, host string) error {
@@ -152,7 +150,6 @@ type searchReq struct {
 	offset      int
 	limit       int
 	allowSingle bool
-	catalog     bool
 }
 
 // SearchGrab runs t=search for a title and returns NZB download URLs.
@@ -401,18 +398,7 @@ func (c *Client) search(ctx context.Context, idx Indexer, req searchReq) ([]rssI
 	q := strings.TrimSpace(req.q)
 	poster := strings.TrimSpace(req.poster)
 	group := strings.TrimSpace(req.group)
-	if req.catalog {
-		hasCat := false
-		for _, cat := range req.cats {
-			if cat > 0 {
-				hasCat = true
-				break
-			}
-		}
-		if !hasCat {
-			return nil, fmt.Errorf("catalog category required")
-		}
-	} else if q == "" && poster == "" && (group == "" || req.maxage <= 0) {
+	if q == "" && poster == "" && (group == "" || req.maxage <= 0) {
 		return nil, fmt.Errorf("empty search")
 	}
 	vals := u.Query()

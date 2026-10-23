@@ -94,14 +94,13 @@ function indexerLabel(name: string): string {
 
 const CATALOG_KIND_ORDER = ["movies", "series", "adult"];
 
-function catalogKindRank(kind: string): number {
-  const i = CATALOG_KIND_ORDER.indexOf(kind);
-  return i < 0 ? CATALOG_KIND_ORDER.length : i;
-}
-
 function sortCatalogKinds<T extends { kind: string }>(rows: T[] | undefined): T[] {
+  const rank = (kind: string) => {
+    const i = CATALOG_KIND_ORDER.indexOf(kind);
+    return i < 0 ? CATALOG_KIND_ORDER.length : i;
+  };
   return [...(rows ?? [])].sort((a, b) => {
-    const d = catalogKindRank(a.kind) - catalogKindRank(b.kind);
+    const d = rank(a.kind) - rank(b.kind);
     if (d !== 0) return d;
     return a.kind.localeCompare(b.kind);
   });

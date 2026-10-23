@@ -27,10 +27,7 @@ func CatalogPageSize() int { return catalogPageSize }
 
 // Claude 2026-10-23: catalog t=search is cat + q=*.
 // Reason: NZB.life helpapi marks q required; cat-only returns error 200.
-//
-//	q=* is still a catalog page, not HTML and not an NZB fetch.
-//
-// Troubleshooting: Missing parameter → q stripped or catalog flag off.
+// Troubleshooting: Missing parameter → q stripped from the catalog request.
 // Review if: an indexer documents a different latest-in-cat query.
 func (c *Client) SearchCatalog(ctx context.Context, idx Indexer, cat, offset, limit int) ([]CatalogHit, error) {
 	if cat <= 0 {
@@ -44,11 +41,10 @@ func (c *Client) SearchCatalog(ctx context.Context, idx Indexer, cat, offset, li
 	}
 	idx.Endpoint = NormalizeEndpoint(idx.Endpoint)
 	items, err := c.search(ctx, idx, searchReq{
-		q:       "*",
-		cats:    []int{cat},
-		offset:  offset,
-		limit:   limit,
-		catalog: true,
+		q:      "*",
+		cats:   []int{cat},
+		offset: offset,
+		limit:  limit,
 	})
 	if err != nil {
 		var ae APIError

@@ -117,7 +117,11 @@ func crawlHost(ctx context.Context, store *Store, client *newznab.Client, idx ne
 					continue
 				}
 				log.Printf("newznab catalog: indexer=%s kind=%s offset=%d err=%v", idx.Name, lane.Kind, cur.PageOffset, err)
-				cur.LastError = trimErr(err)
+				msg := err.Error()
+				if len(msg) > 200 {
+					msg = msg[:200]
+				}
+				cur.LastError = msg
 				cur.UpdatedAt = time.Now().Unix()
 				_ = store.SaveCursor(ctx, cur)
 				hardErrs++
@@ -190,11 +194,7 @@ func isQuota(err error) bool {
 	if errors.As(err, &ae) && ae.Quota() {
 		return true
 	}
-	if err == nil {
-		return false
-	}
-	s := strings.ToLower(err.Error())
-	return strings.Contains(s, "request limit reached")
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "request limit reached")
 }
 
 func isRateLimit(err error) bool {
@@ -209,14 +209,6 @@ func isRateLimit(err error) bool {
 	return strings.Contains(s, "429") ||
 		strings.Contains(s, "rate limit") ||
 		strings.Contains(s, "too many request")
-}
-
-func trimErr(err error) string {
-	s := err.Error()
-	if len(s) > 200 {
-		s = s[:200]
-	}
-	return s
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) bool {

@@ -309,8 +309,8 @@ func TestStatPayload_HungSTATTimesOutPerArticle(t *testing.T) {
 	if elapsed < 150*time.Millisecond {
 		t.Fatalf("returned in %s — article timeout did not engage", elapsed)
 	}
-	if elapsed > 5*time.Second {
-		t.Fatalf("hung STAT took %s, want ~%s not BODY 60s", elapsed, orig)
+	if elapsed > orig {
+		t.Fatalf("hung STAT took %s, want ~%s not BODY 60s", elapsed, statArticleTimeout)
 	}
 }
 

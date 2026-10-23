@@ -99,15 +99,13 @@ func fullPrecheckTimeout(n int) time.Duration {
 // Claude 2026-10-23: On Demand skip is OnDemandStatMaxSegments, not the STAT clock.
 // Reason: remux/lossless stay off the shelf; Downloads still STAT them with
 //
-//	15s+n×100ms and a 5s per-article hang bound.
+//	15s+n×100ms and a 5s per-article hang bound. Previous skip used 15s+n×100ms
+//	vs 12m (retired with the cap): Mutiny.2026 (32810 segs) STATed for 12m,
+//	returned inconclusive (leftover jobs counted as checked), and NextFetched
+//	retried it forever.
 //
 // Troubleshooting: skip-stat logs + status=stat_skipped.
 // Review if: Play uses a different On Demand STAT budget.
-//
-// Claude 2026-10-23: previous skip used 15s+n×100ms vs 12m (retired with the cap).
-// Reason: Mutiny.2026 (32810 segs) STATed for 12m, returned inconclusive
-//
-//	(leftover jobs counted as checked), and NextFetched retried it forever.
 func StatFitsDeadline(n int) bool {
 	return n <= OnDemandStatMaxSegments
 }

@@ -52,8 +52,8 @@ func AttachNewznabGrabSearch(connStore *connections.Store, httpClient *http.Clie
 }
 
 func newznabGrabConfigured(ctx context.Context) bool {
-	idxs, _, ok := newznabGrabIndexers(ctx)
-	return ok && len(idxs) > 0
+	_, _, ok := newznabGrabIndexers(ctx)
+	return ok
 }
 
 var newznabGrabServices = []string{"newznab", "newznab2"}

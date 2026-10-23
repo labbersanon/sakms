@@ -167,7 +167,7 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   7z end-header CRC / SFV CRC32 is looked up on srrdb
   `archive-crc:` when that CRC is unique
   (`resultsCount==1`, size ±15%); srrdb ToS is use-don't-scrape (no catalog
-  paging).   Native namefix (PAR2 / srrdb / SFV) does not query
+  paging). Native namefix (PAR2 / srrdb / SFV) does not query
   Newznab — NZB indexers do not recover ngPost passwords. The Settings
   NZB hosts (`connections` services `newznab` and optional `newznab2`) are
   alternate Usenet **grab** search after native NNTP and before Prowlarr
@@ -181,7 +181,7 @@ collection-key rewrite (once) → forward crawl → repair → recompute → nam
   BODY-sampled even under 100 MiB. Accepted: a PAR2/RAR/yEnc/NFO/file name
   that parses as title + (year|episode) + (resolution|source), or an
   ident-shaped name (resolution plus year, season, or a multi-word title
-  such as fansub `Ep170` / spaces — resolution tag not required).
+  such as fansub `Ep170` / spaces).
   Spaced HD ident-shaped header names (snapped ≥720) skip the quality gate so a
   2160p movies floor cannot delete a complete 1080p quoted set. SD ident (480p)
   still faces MinRes.

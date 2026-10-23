@@ -77,7 +77,15 @@ func newznabCatalogHandler() http.HandlerFunc {
 		st := catalogStore
 		catalogMu.RUnlock()
 		if st == nil {
-			writeJSON(w, emptyCatalogReport())
+			writeJSON(w, newznabCatalogReport{
+				IntervalSeconds: int(newznabcatalog.Interval.Seconds()),
+				PageSize:        newznab.CatalogPageSize(),
+				Cursors:         []newznabCatalogCursor{},
+				Counts:          []newznabCatalogCount{},
+				Overlap:         []newznabCatalogOverlap{},
+				Ondemand:        []newznabCatalogOndemand{},
+				Indexers:        copyIndexerHealth(newznabcatalog.IndexerHealthFromCursors(nil)),
+			})
 			return
 		}
 		rep, err := st.Report(r.Context())
@@ -126,18 +134,6 @@ func newznabCatalogHandler() http.HandlerFunc {
 			}
 		}
 		writeJSON(w, out)
-	}
-}
-
-func emptyCatalogReport() newznabCatalogReport {
-	return newznabCatalogReport{
-		IntervalSeconds: int(newznabcatalog.Interval.Seconds()),
-		PageSize:        newznab.CatalogPageSize(),
-		Cursors:         []newznabCatalogCursor{},
-		Counts:          []newznabCatalogCount{},
-		Overlap:         []newznabCatalogOverlap{},
-		Ondemand:        []newznabCatalogOndemand{},
-		Indexers:        copyIndexerHealth(newznabcatalog.IndexerHealthFromCursors(nil)),
 	}
 }
 

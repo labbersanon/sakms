@@ -124,13 +124,9 @@ func (s *Store) InsertHits(ctx context.Context, kind string, hits []newznab.Cata
 //
 // Claude 2026-10-23: load titles, then one tx with a prepared UPDATE.
 // Reason: ~160k rows; per-row Exec blocked crawl. pq cannot UPDATE while
-//
-//	the SELECT cursor is open (conn busy).
-//
+// the SELECT cursor is open (conn busy).
 // Troubleshooting: crawl silent after boot → still updating one connection
-//
-//	round-trip per row. conn busy → SELECT was still open.
-//
+// round-trip per row. conn busy → SELECT was still open.
 // Review if: overlap_key is only nzb: and this rewrite is a no-op.
 func (s *Store) RecomputeOverlapKeys(ctx context.Context) (int, error) {
 	if s == nil || s.db == nil {
@@ -198,7 +194,7 @@ type KindOverlap struct {
 	OnlyHost2 int
 }
 
-// Report is the Dock card payload (overlap, On Demand counts, indexer health).
+// Report is the Dock card payload.
 type Report struct {
 	IntervalSeconds int
 	PageSize        int

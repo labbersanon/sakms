@@ -157,6 +157,16 @@ function formatAgo(unix: number): string {
   return `${Math.floor(sec / 86400)}d ago`;
 }
 
+function healthLine(row: NewznabIndexerHealth): string {
+  const label = healthLabel(row.status);
+  if (row.status === "unset") return label;
+  const parts = [label];
+  if (row.detail) parts.push(row.detail);
+  const ago = formatAgo(row.updatedAt);
+  if (ago) parts.push(ago);
+  return parts.join(" · ");
+}
+
 function catalogNZBs(
   counts: NewznabCatalogCount[] | undefined,
   indexer: string,
@@ -423,16 +433,6 @@ const IndexerHealthCard: Component<{ report: NewznabCatalogReport }> = (
     </Card>
   );
 };
-
-function healthLine(row: NewznabIndexerHealth): string {
-  const label = healthLabel(row.status);
-  if (row.status === "unset") return label;
-  const parts = [label];
-  if (row.detail) parts.push(row.detail);
-  const ago = formatAgo(row.updatedAt);
-  if (ago) parts.push(ago);
-  return parts.join(" · ");
-}
 
 // Claude 2026-10-23: NZB catalog overlap on the Dock, outside the SSE gate.
 // Reason: 1 page / 5s per indexer; poll 30s (not 10s COUNT). Not OVER.

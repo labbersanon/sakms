@@ -240,20 +240,21 @@ func (h *Hub) getOrStart(src string, st os.FileInfo, follow bool, growing func()
 }
 
 func (h *Hub) spawn(ctx context.Context, s *session, src string, follow bool, growing func() bool) error {
-	// Claude 2026-10-23: follow HLS always transcodes; skip probe on a growing file.
-	// Reason: Truncate-up mkv fails ffprobe (41-byte 500). HEVC 10-bit LAMA and
-	//   incomplete clusters cannot copy into fMP4. Probe-or-500 is library-only.
-	// Troubleshooting: GET .../hls/index.m3u8 500 "hls probe: ffprobe failed".
-	// Review if: follow remux of complete-enough h264+aac is added.
+	// Claude 2026-10-23: follow HLS probes when it can; Transcode only on miss.
+	// Reason: H.264 WEB-DL (playWEB) remuxes. Always-transcode picked h264_nvenc
+	//   from `-encoders` even though the driver is NVENC 12.2 vs ffmpeg 13.0.
+	// Troubleshooting: GET index.m3u8 500 "Driver does not support the required nvenc API version".
+	// Review if: GPU driver/ffmpeg NVENC versions match (then encoder-list is enough).
 	d := Transcode
 	hasAudio := true
-	if !follow {
-		v, a, err := h.probe(ctx, src)
-		if err != nil {
-			return fmt.Errorf("hls probe: %w", err)
-		}
+	v, a, err := h.probe(ctx, src)
+	if err == nil {
 		d = Decide(v, a)
 		hasAudio = a != ""
+	} else if follow {
+		log.Printf("hls follow probe %s: %v (transcode)", src, err)
+	} else {
+		return fmt.Errorf("hls probe: %w", err)
 	}
 	if h.startFake != nil {
 		go func() {
@@ -270,31 +271,35 @@ func (h *Hub) spawn(ctx context.Context, s *session, src string, follow bool, gr
 	if look == nil {
 		look = exec.LookPath
 	}
-	bin, err := look("ffmpeg")
-	if err != nil {
-		return fmt.Errorf("hls: ffmpeg not on PATH: %w", err)
-	}
 	run := h.runCmd
 	if run == nil {
 		run = exec.CommandContext
 	}
+	bin, err := look("ffmpeg")
+	if err != nil {
+		return fmt.Errorf("hls: ffmpeg not on PATH: %w", err)
+	}
 	var grow *GrowReader
+	closeGrow := func() {
+		if grow != nil {
+			grow.Close()
+		}
+	}
+	nvenc := d == Transcode && h.useNVENC()
 	var args []string
 	if follow {
 		grow, err = NewGrowReader(ctx, src, growing)
 		if err != nil {
 			return fmt.Errorf("hls follow: %w", err)
 		}
-		args = ffmpegHLSPipeArgs(src, s.dir, d, h.useNVENC(), hasAudio)
+		args = ffmpegHLSPipeArgs(src, s.dir, d, nvenc, hasAudio)
 	} else {
-		args = ffmpegHLSArgs(src, s.dir, d, h.useNVENC(), hasAudio)
+		args = ffmpegHLSArgs(src, s.dir, d, nvenc, hasAudio)
 	}
 	cmd := run(ctx, bin, args...)
 	errFile, err := os.Create(filepath.Join(s.dir, "ffmpeg.err"))
 	if err != nil {
-		if grow != nil {
-			grow.Close()
-		}
+		closeGrow()
 		return err
 	}
 	if grow != nil {
@@ -304,16 +309,12 @@ func (h *Hub) spawn(ctx context.Context, s *session, src string, follow bool, gr
 	cmd.Stdout = io.Discard
 	if err := cmd.Start(); err != nil {
 		errFile.Close()
-		if grow != nil {
-			grow.Close()
-		}
+		closeGrow()
 		return fmt.Errorf("hls ffmpeg: %w", err)
 	}
 	go func() {
 		defer errFile.Close()
-		if grow != nil {
-			defer grow.Close()
-		}
+		defer closeGrow()
 		waitErr := cmd.Wait()
 		s.mu.Lock()
 		if waitErr != nil && ctx.Err() == nil {
@@ -349,21 +350,26 @@ func ffmpegHasNVENC(look func(string) (string, error), run func(context.Context,
 	if look == nil {
 		look = exec.LookPath
 	}
+	if run == nil {
+		run = exec.CommandContext
+	}
 	bin, err := look("ffmpeg")
 	if err != nil {
 		return false
 	}
-	if run == nil {
-		run = exec.CommandContext
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Claude 2026-10-23: NVENC must encode one frame, not just list the encoder.
+	// Reason: `-encoders` still prints h264_nvenc when the driver is too old
+	//   (Required 13.0 Found 12.2). On Demand then 500s on every transcode.
+	// Troubleshooting: sakms log "Driver does not support the required nvenc API version".
+	// Review if: nvidia driver on server1 matches the container ffmpeg NVENC ABI.
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	cmd := run(ctx, bin, "-hide_banner", "-encoders")
-	out, err := cmd.Output()
-	if err != nil {
-		return false
-	}
-	return strings.Contains(string(out), "h264_nvenc")
+	cmd := run(ctx, bin,
+		"-hide_banner", "-loglevel", "error", "-nostdin",
+		"-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1",
+		"-frames:v", "1", "-c:v", "h264_nvenc", "-f", "null", "-",
+	)
+	return cmd.Run() == nil
 }
 
 func ffmpegHLSArgs(src, outDir string, d Decision, nvenc, hasAudio bool) []string {

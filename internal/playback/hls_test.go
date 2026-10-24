@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -152,8 +153,8 @@ func TestHubServeFollow_KeepsSessionWhenSizeGrows(t *testing.T) {
 		return "h264", "aac", nil
 	}
 	h.startFake = func(ctx context.Context, in, outDir string, d Decision) error {
-		if d != Transcode {
-			t.Errorf("follow decision = %s, want transcode", d)
+		if d != Remux {
+			t.Errorf("follow decision = %s, want remux", d)
 		}
 		pl := []byte("#EXTM3U\n#EXT-X-TARGETDURATION:6\n")
 		return os.WriteFile(filepath.Join(outDir, "index.m3u8"), pl, 0o644)
@@ -249,5 +250,25 @@ func TestHubServe_ProbeError(t *testing.T) {
 	h.Serve(rr, req, src, "index.m3u8")
 	if rr.Code != http.StatusInternalServerError {
 		t.Fatalf("status %d, want 500", rr.Code)
+	}
+}
+
+func TestFFmpegHasNVENC_FalseWhenEncodeFails(t *testing.T) {
+	look := func(string) (string, error) { return "/bin/ffmpeg", nil }
+	run := func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "false")
+	}
+	if ffmpegHasNVENC(look, run) {
+		t.Fatal("listed-but-broken NVENC must be false")
+	}
+}
+
+func TestFFmpegHasNVENC_TrueWhenEncodeWorks(t *testing.T) {
+	look := func(string) (string, error) { return "/bin/ffmpeg", nil }
+	run := func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "true")
+	}
+	if !ffmpegHasNVENC(look, run) {
+		t.Fatal("working NVENC encode must be true")
 	}
 }

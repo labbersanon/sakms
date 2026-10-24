@@ -13358,3 +13358,16 @@ status stays active.
 | `internal/playback/hls.go` | follow transcode; 10MB probe; restart failed session |
 | `internal/api/newznab_ondemand_play.go` | playSrc from populated prefix |
 | `frontend/src/components/PlaybackVideo.tsx` | 90s HLS manifest retry |
+
+## 2026-10-23 — On Demand HLS falls back when NVENC ABI mismatches
+
+**Problem:** Play still 500'd `index.m3u8` after the populated-prefix fix. Live title was H.264 playWEB.
+**Root cause:** Follow HLS always transcoded. `ffmpegHasNVENC` treated `-encoders` listing `h264_nvenc` as working. Container ffmpeg wants NVENC 13.0; server1 driver is 12.2. ffmpeg exited before writing a playlist.
+**Fix:** Probe follow when the prefix exists and remux/direct-stream H.264. NVENC is enabled only if a 1-frame `h264_nvenc` encode succeeds; otherwise libx264. Do not upgrade the GPU driver.
+**Outcome:** `TestHubServeFollow_KeepsSessionWhenSizeGrows` expects remux; `TestFFmpegHasNVENC_FalseWhenEncodeFails`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/playback/hls.go` | follow uses Decide; NVENC encode probe |

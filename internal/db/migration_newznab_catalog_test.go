@@ -60,3 +60,45 @@ func TestMigration0055NewznabCatalog(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 }
+
+func TestMigration0058NewznabCatalogOverlap(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	ctx := context.Background()
+	goose.SetBaseFS(migrationsFS)
+	if err := goose.SetDialect("postgres"); err != nil {
+		t.Fatalf("set dialect: %v", err)
+	}
+	if err := goose.DownTo(sqlDB, "migrations", 57); err != nil {
+		t.Fatalf("goose down to 57: %v", err)
+	}
+	var exists bool
+	if err := sqlDB.QueryRowContext(ctx, `SELECT to_regclass('newznab_catalog_overlap') IS NOT NULL`).Scan(&exists); err != nil || exists {
+		t.Fatalf("overlap exists=%v err=%v after down to 57", exists, err)
+	}
+	if err := goose.UpTo(sqlDB, "migrations", 58); err != nil {
+		t.Fatalf("goose up to 58: %v", err)
+	}
+	if err := sqlDB.QueryRowContext(ctx, `SELECT to_regclass('newznab_catalog_overlap') IS NOT NULL`).Scan(&exists); err != nil || !exists {
+		t.Fatalf("overlap exists=%v err=%v after 0058", exists, err)
+	}
+	rows, err := sqlDB.QueryContext(ctx, `
+		SELECT column_name FROM information_schema.columns
+		WHERE table_name = 'newznab_catalog_overlap'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var col string
+		if err := rows.Scan(&col); err != nil {
+			t.Fatal(err)
+		}
+		switch col {
+		case "url", "enclosure", "link", "download_url", "apikey", "api_key":
+			t.Fatalf("newznab_catalog_overlap must not store %s", col)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+}

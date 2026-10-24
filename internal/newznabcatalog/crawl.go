@@ -51,6 +51,18 @@ func Run(ctx context.Context, store *Store, conns *connections.Store, httpClient
 	} else if n > 0 {
 		log.Printf("newznab catalog: recomputed overlap keys n=%d", n)
 	}
+	// Claude 2026-10-24: backfill Dock overlap off the GET path, before crawl.
+	// Reason: GET GROUP BY timed out at 120s on 1.3M rows; crawl must wait so
+	//   InsertHits bumps cannot race this scan.
+	// Troubleshooting: Same-NZBs empty after ship with catalog rows → this
+	//   returned err (see log) or overlap table already had a stale row.
+	// Review if: summary is incremental from empty (skip rebuild).
+	start := time.Now()
+	if err := store.EnsureOverlap(ctx); err != nil {
+		log.Printf("newznab catalog: overlap backfill err=%v", err)
+	} else {
+		log.Printf("newznab catalog: overlap backfill done in %s", time.Since(start))
+	}
 	for {
 		if ctx.Err() != nil {
 			return

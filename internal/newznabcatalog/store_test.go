@@ -42,6 +42,59 @@ func TestStore_InsertAndOverlap(t *testing.T) {
 	if o.Both != 1 || o.OnlyHost1 != 1 || o.OnlyHost2 != 0 || o.Host1Nzbs != 2 || o.Host2Nzbs != 1 {
 		t.Fatalf("overlap=%+v", o)
 	}
+
+	if _, err := st.InsertHits(ctx, KindMovies, []newznab.CatalogHit{
+		{Indexer: "newznab", GUID: "d", Title: "Same.Movie.2021.1080p-GRP", ImdbID: "tt1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rep, err = st.Report(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o = rep.Overlap[0]
+	if o.Both != 1 || o.OnlyHost1 != 1 || o.Host1Nzbs != 2 {
+		t.Fatalf("dup key overlap=%+v", o)
+	}
+}
+
+func TestStore_EnsureOverlapBackfillsRawRows(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	st := NewStore(sqlDB)
+	ctx := context.Background()
+	_, err := sqlDB.ExecContext(ctx, `
+		INSERT INTO newznab_catalog (indexer, guid, title, kind, overlap_key)
+		VALUES
+			('newznab', 'a', 'Same.Movie.2021.1080p-GRP', 'movies', 'nzb:same.movie.2021.1080p.grp'),
+			('newznab2', 'b', 'Same.Movie.2021.1080p-GRP', 'movies', 'nzb:same.movie.2021.1080p.grp'),
+			('newznab', 'c', 'Other.Movie.2020', 'movies', 'nzb:other.movie.2020')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, err := st.Report(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Overlap) != 0 {
+		t.Fatalf("want empty summary, got %+v", rep.Overlap)
+	}
+	if err := st.EnsureOverlap(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rep, err = st.Report(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Overlap) != 1 || rep.Overlap[0].Kind != KindMovies {
+		t.Fatalf("overlap=%+v", rep.Overlap)
+	}
+	o := rep.Overlap[0]
+	if o.Both != 1 || o.OnlyHost1 != 1 || o.OnlyHost2 != 0 || o.Host1Nzbs != 2 || o.Host2Nzbs != 1 {
+		t.Fatalf("backfill=%+v", o)
+	}
+	if err := st.EnsureOverlap(ctx); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestStore_RecomputeOverlapKeysRewritesIMDBKeys(t *testing.T) {

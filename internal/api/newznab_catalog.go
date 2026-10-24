@@ -1,14 +1,23 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/labbersanon/sakms/internal/newznab"
 	"github.com/labbersanon/sakms/internal/newznabcatalog"
 	"github.com/labbersanon/sakms/internal/newznabondemand"
 )
 
+// Claude 2026-10-24: Dock GET must not run the catalog overlap GROUP BY.
+// Reason: that CTE exceeded 120s on ~1.3M rows; Traefik 499'd and the card
+//   stayed on "Loading NZB catalog…". Overlap is newznab_catalog_overlap;
+//   5s timeout surfaces an error instead of a hung fetch.
+// Troubleshooting: perpetual Loading → handler still calling Store.Report's
+//   old CTE, or the 5s budget is too tight for COUNT(*) under load.
+// Review if: Lighthouse overlap replaces this card.
 // Claude 2026-10-23: Dock card reads catalog overlap, On Demand counts, indexer health.
 // Reason: Lighthouse filter is later; health is crawl cursors, not a live t=caps.
 // Troubleshooting: empty card → AttachNewznabCatalog; always Waiting → no cursor rows.
@@ -91,7 +100,9 @@ func newznabCatalogHandler() http.HandlerFunc {
 			})
 			return
 		}
-		rep, err := st.Report(r.Context())
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		rep, err := st.Report(ctx)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -124,7 +135,7 @@ func newznabCatalogHandler() http.HandlerFunc {
 		od := ondemandStore
 		ondemandMu.RUnlock()
 		if od != nil {
-			kinds, err := od.CountByKind(r.Context())
+			kinds, err := od.CountByKind(ctx)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -135,7 +146,7 @@ func newznabCatalogHandler() http.HandlerFunc {
 					Kind: k.Kind, Verified: k.Verified, Fetched: k.Fetched, Skipped: k.Skipped,
 				})
 			}
-			dead, err := od.CountDeadByIndexer(r.Context())
+			dead, err := od.CountDeadByIndexer(ctx)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return

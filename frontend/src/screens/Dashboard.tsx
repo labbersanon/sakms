@@ -657,7 +657,16 @@ export const Dashboard: Component = () => {
       setError(`Metric read failed: ${(e as MessageEvent).data}`);
     });
     es.onerror = () => setReconnecting(true);
+    // Claude 2026-10-24: do not refetch while the catalog GET is in flight.
+    // Reason: overlap GROUP BY hung; 30s poll aborted the previous HTTP/2
+    //   stream (Traefik 499) so catalog() never settled and the fallback
+    //   "Loading NZB catalog…" stayed up. GET is now a summary read; skip
+    //   still prevents a 499 storm if it slows again.
+    // Troubleshooting: banner never clears with a fast Network 200 →
+    //   catalog() is still unset (resource throw) not this interval.
+    // Review if: createResource grows abort signals (keep the skip).
     const catalogPoll = setInterval(() => {
+      if (catalog.loading) return;
       void refetchCatalog();
     }, 30_000);
     onCleanup(() => clearInterval(catalogPoll));

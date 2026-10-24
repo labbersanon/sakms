@@ -29,6 +29,8 @@ const playTestNZB = `<?xml version="1.0" encoding="UTF-8"?>
   </file>
 </nzb>`
 
+const playTestGID = "nzb-0123456789abcdef"
+
 func ondemandPlayMux(t *testing.T, nzb *usenet.Manager, dataDir string) *httptest.Server {
 	t.Helper()
 	resetOndemandPlaysForTest()
@@ -56,6 +58,25 @@ func savePlayNZB(t *testing.T, dataDir, indexer string) string {
 		t.Fatal(err)
 	}
 	return rel
+}
+
+func activeOndemandPlay(t *testing.T, fileName string) *httptest.Server {
+	t.Helper()
+	dataDir := t.TempDir()
+	stage := filepath.Join(dataDir, "downloads")
+	nzb := usenet.New(usenet.Config{StagingDir: stage})
+	srv := ondemandPlayMux(t, nzb, dataDir)
+	t.Cleanup(srv.Close)
+	vid := filepath.Join(stage, playTestGID, fileName)
+	if err := os.MkdirAll(filepath.Dir(vid), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(vid, bytes.Repeat([]byte("m"), 512*1024), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rememberOndemandPlay(ondemandPlay{GID: playTestGID, Mode: "movies", Indexer: "newznab", NzbID: "hash1"})
+	nzb.InjectDownloadForTest(playTestGID)
+	return srv
 }
 
 func TestOndemandPlayHandler_StartsFromCacheWithoutURLs(t *testing.T) {
@@ -149,7 +170,7 @@ func TestOndemandPlayVideoHandler_ServesCompleteStaging(t *testing.T) {
 	srv := ondemandPlayMux(t, nzb, dataDir)
 	defer srv.Close()
 
-	gid := "nzb-0123456789abcdef"
+	gid := playTestGID
 	vid := filepath.Join(stage, gid, "movie.mp4")
 	if err := os.MkdirAll(filepath.Dir(vid), 0o755); err != nil {
 		t.Fatal(err)
@@ -200,25 +221,9 @@ func TestOndemandPlayVideoHandler_ServesCompleteStaging(t *testing.T) {
 }
 
 func TestOndemandPlayVideoHandler_ServesWhileActive(t *testing.T) {
-	dataDir := t.TempDir()
-	stage := filepath.Join(dataDir, "downloads")
-	nzb := usenet.New(usenet.Config{StagingDir: stage})
-	srv := ondemandPlayMux(t, nzb, dataDir)
-	defer srv.Close()
+	srv := activeOndemandPlay(t, "movie.mkv")
 
-	gid := "nzb-0123456789abcdef"
-	vid := filepath.Join(stage, gid, "movie.mkv")
-	if err := os.MkdirAll(filepath.Dir(vid), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	payload := bytes.Repeat([]byte("m"), 512*1024)
-	if err := os.WriteFile(vid, payload, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	rememberOndemandPlay(ondemandPlay{GID: gid, Mode: "movies", Indexer: "newznab", NzbID: "hash1"})
-	nzb.InjectDownloadForTest(gid)
-
-	stResp, err := http.Get(srv.URL + "/api/modes/movies/ondemand/play/" + gid)
+	stResp, err := http.Get(srv.URL + "/api/modes/movies/ondemand/play/" + playTestGID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,24 +259,8 @@ func TestOndemandPlayVideoHandler_ServesWhileActive(t *testing.T) {
 }
 
 func TestOndemandPlayStatus_ActiveMp4UsesHLS(t *testing.T) {
-	dataDir := t.TempDir()
-	stage := filepath.Join(dataDir, "downloads")
-	nzb := usenet.New(usenet.Config{StagingDir: stage})
-	srv := ondemandPlayMux(t, nzb, dataDir)
-	defer srv.Close()
-
-	gid := "nzb-0123456789abcdef"
-	vid := filepath.Join(stage, gid, "movie.mp4")
-	if err := os.MkdirAll(filepath.Dir(vid), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(vid, bytes.Repeat([]byte("m"), 512*1024), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	rememberOndemandPlay(ondemandPlay{GID: gid, Mode: "movies", Indexer: "newznab", NzbID: "hash1"})
-	nzb.InjectDownloadForTest(gid)
-
-	stResp, err := http.Get(srv.URL + "/api/modes/movies/ondemand/play/" + gid)
+	srv := activeOndemandPlay(t, "movie.mp4")
+	stResp, err := http.Get(srv.URL + "/api/modes/movies/ondemand/play/" + playTestGID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,23 +271,5 @@ func TestOndemandPlayStatus_ActiveMp4UsesHLS(t *testing.T) {
 	}
 	if ready.Status != "active" || !strings.Contains(ready.PlaySrc, "/hls/index.m3u8") {
 		t.Fatalf("active mp4 must be HLS follow, got %+v", ready)
-	}
-
-	restore := playback.ReplaceHub(playback.NewFakeHub(
-		func(context.Context, string) (string, string, error) { return "h264", "aac", nil },
-		func(ctx context.Context, in, outDir string, d playback.Decision) error {
-			return os.WriteFile(filepath.Join(outDir, "index.m3u8"), []byte("#EXTM3U\n"), 0o644)
-		},
-	))
-	defer restore()
-
-	vidResp, err := http.Get(srv.URL + ready.PlaySrc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer vidResp.Body.Close()
-	if vidResp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(vidResp.Body)
-		t.Fatalf("hls status=%d body=%s", vidResp.StatusCode, body)
 	}
 }

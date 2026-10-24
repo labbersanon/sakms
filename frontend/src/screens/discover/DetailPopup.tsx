@@ -831,6 +831,14 @@ export const DetailPopup: Component<{
       if (gen === ondemandPlayGen) setOndemandBusy("");
     }
   };
+  const ondemandButtonLabel = (q: OndemandQuality) => {
+    if (ondemandBusy() === q.nzbId) {
+      const phase = ondemandPhase();
+      return phase ? `Preparing (${phase})…` : "Preparing…";
+    }
+    if (ondemandPlayingId() === q.nzbId) return "Playing";
+    return "Play";
+  };
   const headerPlaySrc = () =>
     headerPlay()?.src || (props.playSrc ?? "").trim() || ondemandSrc();
 
@@ -1743,13 +1751,7 @@ export const DetailPopup: Component<{
                   disabled={!!ondemandBusy()}
                   onClick={() => void playOndemand(q)}
                 >
-                  {ondemandBusy() === q.nzbId
-                    ? ondemandPhase()
-                      ? `Preparing (${ondemandPhase()})…`
-                      : "Preparing…"
-                    : ondemandPlayingId() === q.nzbId
-                      ? "Playing"
-                      : "Play"}
+                  {ondemandButtonLabel(q)}
                 </button>
               </div>
             )}

@@ -13399,3 +13399,20 @@ status stays active.
 |---|---|
 | `internal/playback/hls.go` | EXT-X-START on index.m3u8 |
 | `frontend/src/components/PlaybackVideo.tsx` | liveSyncDurationCount 10000; seek 0 |
+
+## 2026-10-24 — Dock NZB catalog GET no longer scans overlap on the request path
+
+**Problem:** Dock stayed on "Loading NZB catalog…" forever.
+**Root cause:** GET `/api/admin/newznab-catalog` ran `GROUP BY kind, overlap_key` on `newznab_catalog` (~1.29M rows). That query exceeded 120s. Traefik logged 499 (client abort) on the 30s poll; `createResource` never settled.
+**Fix:** goose 0058 `newznab_catalog_overlap` summary (`both_nzbs`; `BOTH` is reserved). InsertHits bumps unique-key counts. Crawl `EnsureOverlap` backfills once if the table is empty. GET reads the summary + cheap COUNT(*) with a 5s timeout. Poll skips while the previous GET is in flight.
+**Outcome:** `TestStore_InsertAndOverlap`, `TestStore_EnsureOverlapBackfillsRawRows`, `TestMigration0058NewznabCatalogOverlap`, `TestNewznabCatalog*`, Dashboard vitest.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/db/migrations/0058_newznab_catalog_overlap.sql` | summary table |
+| `internal/newznabcatalog/store.go` | bump + EnsureOverlap; Report reads summary |
+| `internal/newznabcatalog/crawl.go` | backfill before crawl |
+| `internal/api/newznab_catalog.go` | 5s GET timeout |
+| `frontend/src/screens/Dashboard.tsx` | skip poll while loading |

@@ -44,7 +44,7 @@ func ondemandPlayMux(t *testing.T, nzb *usenet.Manager, dataDir string) *httptes
 	return httptest.NewServer(NewMux(testHTTPClient(), connStore, nil, propStore, testProber(t), testPHasher(t), testVideoHasher(t), settingsStore, grabsStore, libStore, slidersStore, traktStore, adultNewestRowStore, adultNewestReleaseStore, testFeedHealth(), rssFeedsStore, nil, nil, nil, nzb, nil, nil, nil, nil, nil))
 }
 
-func savePlayNZB(t *testing.T, dataDir, indexer, guid string) string {
+func savePlayNZB(t *testing.T, dataDir, indexer string) string {
 	t.Helper()
 	rel := filepath.Join("ondemand", "nzb", indexer, "play.nzb")
 	abs := filepath.Join(dataDir, rel)
@@ -59,7 +59,7 @@ func savePlayNZB(t *testing.T, dataDir, indexer, guid string) string {
 
 func TestOndemandPlayHandler_StartsFromCacheWithoutURLs(t *testing.T) {
 	dataDir := t.TempDir()
-	rel := savePlayNZB(t, dataDir, "newznab", "hash1")
+	rel := savePlayNZB(t, dataDir, "newznab")
 	nzb := usenet.New(usenet.Config{StagingDir: filepath.Join(dataDir, "downloads")})
 	srv := ondemandPlayMux(t, nzb, dataDir)
 	defer srv.Close()

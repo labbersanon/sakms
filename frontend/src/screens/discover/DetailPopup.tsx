@@ -1727,7 +1727,7 @@ export const DetailPopup: Component<{
       </div>
       </div>
 
-      <Show when={(props.ondemandQualities?.length ?? 0) > 0}>
+      <Show when={props.ondemandQualities?.length}>
         <div class="mb-3" data-testid="ondemand-play">
           <Muted class="mb-2">On Demand</Muted>
           <For each={props.ondemandQualities}>

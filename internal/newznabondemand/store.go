@@ -306,10 +306,7 @@ func (s *Store) NextRequeueableSkip(ctx context.Context, maxSegs int, losslessMb
 
 // Claude 2026-10-23: Play looks up one verified NZB by indexer + GetNZBID hash.
 // Reason: the list wire never returns catalog GUIDs or enclosure URLs.
-// Troubleshooting: 404 on Play → status not verified, kind mismatch, or hash
-//
-//	did not match GetNZBID(guid).
-//
+// Troubleshooting: 404 on Play → not verified, kind mismatch, or GetNZBID miss.
 // Review if: nzb_id is stored as its own column.
 func (s *Store) GetVerified(ctx context.Context, kind, indexer, nzbID string) (Row, bool, error) {
 	if s == nil || s.db == nil {

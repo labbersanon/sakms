@@ -54,11 +54,12 @@ func ondemandPlayKey(indexer, nzbID string) string {
 func rememberOndemandPlay(p ondemandPlay) {
 	ondemandPlayMu.Lock()
 	defer ondemandPlayMu.Unlock()
-	if prev, ok := ondemandByKey[ondemandPlayKey(p.Indexer, p.NzbID)]; ok && prev != p.GID {
+	key := ondemandPlayKey(p.Indexer, p.NzbID)
+	if prev, ok := ondemandByKey[key]; ok && prev != p.GID {
 		delete(ondemandByGID, prev)
 	}
 	ondemandByGID[p.GID] = p
-	ondemandByKey[ondemandPlayKey(p.Indexer, p.NzbID)] = p.GID
+	ondemandByKey[key] = p.GID
 }
 
 func lookupOndemandPlay(gid string) (ondemandPlay, bool) {
@@ -126,8 +127,8 @@ func ondemandPlayHandler(nzb *usenet.Manager) http.HandlerFunc {
 			return
 		}
 		if gid, ok := lookupOndemandPlayGID(req.Indexer, req.NzbID); ok {
-			if st := ondemandPlaySnapshot(m, nzb, gid); st != nil && st.Status != "error" && st.Status != "removed" {
-				writeJSON(w, *st)
+			if snap := ondemandPlaySnapshot(m, nzb, gid); snap != nil && snap.Status != "error" && snap.Status != "removed" {
+				writeJSON(w, *snap)
 				return
 			}
 		}

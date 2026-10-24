@@ -48,6 +48,32 @@ func TestFinalizeAssembled_DismissesCompleteAfterDelay(t *testing.T) {
 	t.Fatal("completed download was not dismissed from queue")
 }
 
+func TestFinalizeAssembled_PlayFirstNotDismissed(t *testing.T) {
+	old := dismissCompleteAfter
+	dismissCompleteAfter = 20 * time.Millisecond
+	t.Cleanup(func() { dismissCompleteAfter = old })
+
+	m := New(Config{StagingDir: t.TempDir(), MaxConcurrentDownloads: 1})
+	dl := registerFinalizeDL(t, m, "nzb-play-keep")
+	dl.playFirst = true
+	mkv := filepath.Join(dl.stagingDir, "movie.mkv")
+	if err := os.WriteFile(mkv, []byte("fake-video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.finalizeAssembled(context.Background(), dl.gid, dl, []string{mkv})
+	time.Sleep(50 * time.Millisecond)
+	m.mu.Lock()
+	_, stillQueued := m.downloads[dl.gid]
+	status := ""
+	if stillQueued {
+		status = m.downloads[dl.gid].status
+	}
+	m.mu.Unlock()
+	if !stillQueued || status != "complete" {
+		t.Fatalf("playFirst complete must stay queued, queued=%v status=%q", stillQueued, status)
+	}
+}
+
 func TestForget_KeepsErrors(t *testing.T) {
 	m := New(Config{StagingDir: t.TempDir(), MaxConcurrentDownloads: 1})
 	dl := registerFinalizeDL(t, m, "nzb-keep-error")

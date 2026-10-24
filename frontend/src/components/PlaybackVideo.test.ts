@@ -4,11 +4,15 @@ import { bindMediaSrc } from "./PlaybackVideo";
 const loadSource = vi.fn();
 const attachMedia = vi.fn();
 const destroy = vi.fn();
+let hlsOpts: { startPosition?: number } | undefined;
 
 vi.mock("hls.js", () => ({
   default: class MockHls {
     static isSupported() {
       return true;
+    }
+    constructor(opts: { startPosition?: number }) {
+      hlsOpts = opts;
     }
     loadSource = loadSource;
     attachMedia = attachMedia;
@@ -20,6 +24,7 @@ afterEach(() => {
   loadSource.mockClear();
   attachMedia.mockClear();
   destroy.mockClear();
+  hlsOpts = undefined;
 });
 
 function video(canPlay: CanPlayTypeResult = ""): HTMLVideoElement {
@@ -52,6 +57,7 @@ describe("bindMediaSrc", () => {
       expect(loadSource).toHaveBeenCalledWith("/api/x/video/hls/index.m3u8?fileId=1");
     });
     expect(attachMedia).toHaveBeenCalledWith(el);
+    expect(hlsOpts?.startPosition).toBe(0);
     unbind();
     expect(destroy).toHaveBeenCalled();
   });

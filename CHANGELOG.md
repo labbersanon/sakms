@@ -13371,3 +13371,17 @@ status stays active.
 | File | Change |
 |---|---|
 | `internal/playback/hls.go` | follow uses Decide; NVENC encode probe |
+
+## 2026-10-23 — On Demand HLS starts at the opening and survives complete
+
+**Problem:** After NVENC was fixed, Play fetched real segments then skipped around and 404'd.
+**Root cause:** ffmpeg EVENT playlists have no ENDLIST while BODY runs, so hls.js treated them as live and sought the edge (seg0 → seg182 in under a minute). `scheduleDismissComplete` dropped the GID 30s after complete, so FindByGID returned nil and later playlist/segment GETs were 404.
+**Fix:** hls.js `startPosition: 0`. On Demand `playFirst` jobs stay in the engine after complete so staging HLS keeps resolving. Library Grab dismiss is unchanged. 24h sweep still later.
+**Outcome:** `TestFinalizeAssembled_PlayFirstNotDismissed`; PlaybackVideo asserts `startPosition: 0`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `frontend/src/components/PlaybackVideo.tsx` | startPosition 0 |
+| `internal/usenet/manager.go` | skip dismiss for playFirst |

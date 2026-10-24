@@ -34,6 +34,13 @@ export function bindMediaSrc(el: HTMLVideoElement, src: string): () => void {
     if (Hls.isSupported()) {
       const hls = new Hls({
         maxBufferLength: 30,
+        // Claude 2026-10-23: EVENT follow playlists must start at t=0.
+        // Reason: hls.js treats EVENT without ENDLIST as live and seeks the
+        //   edge. ffmpeg remuxes faster than realtime, so Play jumped to
+        //   seg182 within a minute instead of the opening.
+        // Troubleshooting: 206 on seg0 then seg21/82/182; picture skips.
+        // Review if: follow HLS writes EXT-X-ENDLIST earlier than complete.
+        startPosition: 0,
         // Claude 2026-10-23: On Demand follow HLS can take ~90s for the first playlist.
         // Reason: ffmpeg waits for a populated prefix + first transcoded segment.
         //   Default manifest timeout is 20s and one retry — that 500s the player.

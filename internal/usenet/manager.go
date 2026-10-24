@@ -1819,26 +1819,25 @@ func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState
 		}
 		unpacked = listStagingFiles(dl.stagingDir, files)
 	} else {
-		unpacked, unpackErr = unpackArchives(dl.stagingDir, files, func(done, total int64) {
-			m.setPhaseProgress(gid, done, total)
-		}, passwords)
+		runUnpack := func() ([]string, error) {
+			return unpackArchives(dl.stagingDir, files, func(done, total int64) {
+				m.setPhaseProgress(gid, done, total)
+			}, passwords)
+		}
+		unpacked, unpackErr = runUnpack()
 		if errors.Is(unpackErr, ErrPasswordProtected) {
 			before := len(passwords)
 			m.discoverJobPasswords(ctx, gid)
 			passwords = m.unpackPasswordList(dl)
 			if len(passwords) > before {
-				unpacked, unpackErr = unpackArchives(dl.stagingDir, files, func(done, total int64) {
-					m.setPhaseProgress(gid, done, total)
-				}, passwords)
+				unpacked, unpackErr = runUnpack()
 			}
 		}
 		if errors.Is(unpackErr, ErrUnpackChecksum) {
 			if cmdErr := par2CmdRepair(dl.stagingDir); cmdErr != nil {
 				log.Printf("usenet: par2cmdline after checksum %s: %v", gid, cmdErr)
 			} else {
-				unpacked, unpackErr = unpackArchives(dl.stagingDir, files, func(done, total int64) {
-					m.setPhaseProgress(gid, done, total)
-				}, passwords)
+				unpacked, unpackErr = runUnpack()
 			}
 		}
 	}
@@ -1897,6 +1896,7 @@ func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState
 
 	m.mu.Lock()
 	markedComplete := false
+	playFirst := dl.playFirst
 	if dl.status != "removed" && dl.status != "paused" {
 		dl.status = "complete"
 		dl.setPhase("")
@@ -1921,7 +1921,12 @@ func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState
 		filesCopy := append([]string(nil), files...)
 		go m.onComplete(gid, filesCopy)
 	}
-	if markedComplete {
+	if markedComplete && !playFirst {
+		// Claude 2026-10-23: On Demand Play keeps the GID after complete.
+		// Reason: 30s dismiss made FindByGID nil, so HLS 404'd while the
+		//   player was still requesting segments (EVENT playlist, no library row).
+		// Troubleshooting: GET .../hls/index.m3u8 404 10 bytes after "dismissed completed".
+		// Review if: 24h staging sweep replaces this keep.
 		m.scheduleDismissComplete(gid)
 	}
 }
@@ -1960,13 +1965,11 @@ func (m *Manager) downloadAll(ctx context.Context, gid string, dl *dlState, nzb 
 			du = tickDirectUnpack(ctx, dl.stagingDir, du, assembled)
 		}
 	}
-	if du != nil {
-		du.Wait(ctx)
-		if du.Extracted() {
-			m.mu.Lock()
-			dl.directUnpacked = true
-			m.mu.Unlock()
-		}
+	du.Wait(ctx)
+	if du.Extracted() {
+		m.mu.Lock()
+		dl.directUnpacked = true
+		m.mu.Unlock()
 	}
 	return paths, nil
 }

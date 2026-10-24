@@ -280,7 +280,7 @@ func (s *Store) Report(ctx context.Context) (Report, error) {
 	// )
 	// SELECT kind, COUNT(*) FILTER (WHERE a), ... FROM keys GROUP BY kind
 	orows, err := s.db.QueryContext(ctx, `
-		SELECT kind, host1_nzbs, host2_nzbs, both, only_host1, only_host2
+		SELECT kind, host1_nzbs, host2_nzbs, both_nzbs, only_host1, only_host2
 		FROM newznab_catalog_overlap
 		ORDER BY kind`)
 	if err != nil {
@@ -341,12 +341,12 @@ func (s *Store) applyOverlapInsert(ctx context.Context, kind, indexer, key strin
 		return nil
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO newznab_catalog_overlap (kind, host1_nzbs, host2_nzbs, both, only_host1, only_host2)
+		INSERT INTO newznab_catalog_overlap (kind, host1_nzbs, host2_nzbs, both_nzbs, only_host1, only_host2)
 		VALUES ($1,$2,$3,$4,$5,$6)
 		ON CONFLICT (kind) DO UPDATE SET
 			host1_nzbs = newznab_catalog_overlap.host1_nzbs + EXCLUDED.host1_nzbs,
 			host2_nzbs = newznab_catalog_overlap.host2_nzbs + EXCLUDED.host2_nzbs,
-			both = newznab_catalog_overlap.both + EXCLUDED.both,
+			both_nzbs = newznab_catalog_overlap.both_nzbs + EXCLUDED.both_nzbs,
 			only_host1 = GREATEST(0, newznab_catalog_overlap.only_host1 + EXCLUDED.only_host1),
 			only_host2 = GREATEST(0, newznab_catalog_overlap.only_host2 + EXCLUDED.only_host2)`,
 		kind, h1, h2, both, o1, o2)
@@ -425,7 +425,7 @@ func (s *Store) RebuildOverlap(ctx context.Context) error {
 	}
 	for _, o := range rows {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO newznab_catalog_overlap (kind, host1_nzbs, host2_nzbs, both, only_host1, only_host2)
+			INSERT INTO newznab_catalog_overlap (kind, host1_nzbs, host2_nzbs, both_nzbs, only_host1, only_host2)
 			VALUES ($1,$2,$3,$4,$5,$6)`,
 			o.Kind, o.Host1Nzbs, o.Host2Nzbs, o.Both, o.OnlyHost1, o.OnlyHost2); err != nil {
 			return err

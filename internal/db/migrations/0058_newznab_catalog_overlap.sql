@@ -12,7 +12,7 @@ CREATE TABLE newznab_catalog_overlap (
     kind        TEXT PRIMARY KEY,
     host1_nzbs  INTEGER NOT NULL DEFAULT 0,
     host2_nzbs  INTEGER NOT NULL DEFAULT 0,
-    both        INTEGER NOT NULL DEFAULT 0,
+    both_nzbs   INTEGER NOT NULL DEFAULT 0,
     only_host1  INTEGER NOT NULL DEFAULT 0,
     only_host2  INTEGER NOT NULL DEFAULT 0
 );

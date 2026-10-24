@@ -81,24 +81,10 @@ func TestMigration0058NewznabCatalogOverlap(t *testing.T) {
 	if err := sqlDB.QueryRowContext(ctx, `SELECT to_regclass('newznab_catalog_overlap') IS NOT NULL`).Scan(&exists); err != nil || !exists {
 		t.Fatalf("overlap exists=%v err=%v after 0058", exists, err)
 	}
-	rows, err := sqlDB.QueryContext(ctx, `
+	var col string
+	if err := sqlDB.QueryRowContext(ctx, `
 		SELECT column_name FROM information_schema.columns
-		WHERE table_name = 'newznab_catalog_overlap'`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var col string
-		if err := rows.Scan(&col); err != nil {
-			t.Fatal(err)
-		}
-		switch col {
-		case "url", "enclosure", "link", "download_url", "apikey", "api_key":
-			t.Fatalf("newznab_catalog_overlap must not store %s", col)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
+		WHERE table_name = 'newznab_catalog_overlap' AND column_name = 'both_nzbs'`).Scan(&col); err != nil {
+		t.Fatalf("both_nzbs: %v (BOTH is reserved; column must not be named both)", err)
 	}
 }

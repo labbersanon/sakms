@@ -304,7 +304,7 @@ func (s *Store) Report(ctx context.Context) (Report, error) {
 // applyOverlapInsert updates unique-key overlap for one newly inserted NZB.
 // thisN is counted after the INSERT, so 1 means this indexer just gained the key.
 func (s *Store) applyOverlapInsert(ctx context.Context, kind, indexer, key string) error {
-	if s == nil || s.db == nil || strings.TrimSpace(key) == "" {
+	if s == nil || s.db == nil || key == "" {
 		return nil
 	}
 	var thisN, otherN int
@@ -361,10 +361,10 @@ func (s *Store) EnsureOverlap(ctx context.Context) error {
 		return nil
 	}
 	var hasCatalog, hasOverlap bool
-	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM newznab_catalog LIMIT 1)`).Scan(&hasCatalog); err != nil {
-		return err
-	}
-	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM newznab_catalog_overlap LIMIT 1)`).Scan(&hasOverlap); err != nil {
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT
+			EXISTS (SELECT 1 FROM newznab_catalog),
+			EXISTS (SELECT 1 FROM newznab_catalog_overlap)`).Scan(&hasCatalog, &hasOverlap); err != nil {
 		return err
 	}
 	if !hasCatalog || hasOverlap {
@@ -373,8 +373,8 @@ func (s *Store) EnsureOverlap(ctx context.Context) error {
 	return s.RebuildOverlap(ctx)
 }
 
-// RebuildOverlap scans newznab_catalog into the summary table. It is the same
-// GROUP BY GET used to run; do not call it from the request path.
+// RebuildOverlap fills the summary table from newznab_catalog. This is the
+// GROUP BY that used to run on GET; do not call it from the request path.
 func (s *Store) RebuildOverlap(ctx context.Context) error {
 	if s == nil || s.db == nil {
 		return nil

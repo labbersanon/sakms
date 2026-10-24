@@ -13341,3 +13341,20 @@ status stays active.
 | `internal/api/newznab_ondemand_play.go` | active playSrc is HLS |
 | `frontend/src/screens/discover/DetailPopup.tsx` | inline On Demand player |
 | `frontend/src/components/PlaybackVideo.tsx` | autoplay after bind |
+
+## 2026-10-23 — On Demand Play HLS follow starts on a growing HEVC file
+
+**Problem:** Quality Play mounted the player, then GET `.../hls/index.m3u8` returned 500 (41-byte probe fail, then 1078-byte ffmpeg die). The title never played.
+**Root cause:** Usenet assemble Truncates to FileSize before any yEnc WriteAt, so Stat size is the whole film while offset 0 is still NULs. playSrc used that size. Follow HLS probed the hollow file, keyed a dead ffmpeg session, and used `-probesize 65536` on a pipe of HEVC-in-mkv.
+**Fix:** playSrc requires ≥512KiB populated from offset 0. GrowReader waits at sparse holes instead of feeding NULs. Follow HLS skips probe, always transcodes, uses 10MB probesize + genpts/discardcorrupt, restarts a failed session, and logs ffmpeg stderr. hls.js waits up to 90s and retries the playlist.
+**Outcome:** `TestLeadingPopulatedBytes_HollowTruncate`, `TestGrowReader_DoesNotFeedSparseHole`, `TestHubServeFollow_StartsWhenProbeWouldFail`, `TestHubServeFollow_RestartsFailedSession`, `TestOndemandPlayStatus_HollowTruncateHasNoPlaySrc`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/playback/grow.go` | hole-aware follow-read; `LeadingPopulatedBytes` |
+| `internal/playback/grow_seek_linux.go` | SEEK_DATA / SEEK_HOLE |
+| `internal/playback/hls.go` | follow transcode; 10MB probe; restart failed session |
+| `internal/api/newznab_ondemand_play.go` | playSrc from populated prefix |
+| `frontend/src/components/PlaybackVideo.tsx` | 90s HLS manifest retry |

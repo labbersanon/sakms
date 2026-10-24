@@ -32,7 +32,30 @@ export function bindMediaSrc(el: HTMLVideoElement, src: string): () => void {
   void import("hls.js").then(({ default: Hls }) => {
     if (cancelled) return;
     if (Hls.isSupported()) {
-      const hls = new Hls({ maxBufferLength: 30 });
+      const hls = new Hls({
+        maxBufferLength: 30,
+        // Claude 2026-10-23: On Demand follow HLS can take ~90s for the first playlist.
+        // Reason: ffmpeg waits for a populated prefix + first transcoded segment.
+        //   Default manifest timeout is 20s and one retry — that 500s the player.
+        // Troubleshooting: index.m3u8 500 then the quality chip returns to Play.
+        // Review if: library HLS also needs a shorter policy again.
+        manifestLoadPolicy: {
+          default: {
+            maxTimeToFirstByteMs: 90000,
+            maxLoadTimeMs: 90000,
+            timeoutRetry: {
+              maxNumRetry: 4,
+              retryDelayMs: 1000,
+              maxRetryDelayMs: 8000,
+            },
+            errorRetry: {
+              maxNumRetry: 8,
+              retryDelayMs: 1000,
+              maxRetryDelayMs: 8000,
+            },
+          },
+        },
+      });
       hls.loadSource(src);
       hls.attachMedia(el);
       playIfAutoplay(el);

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -18,7 +19,8 @@ import (
 
 const (
 	defaultIdle = 5 * time.Minute
-	defaultWait = 45 * time.Second
+	defaultWait = 90 * time.Second
+	followProbe = "10000000"
 )
 
 var segmentName = regexp.MustCompile(`^(index\.m3u8|init\.mp4|seg\d+\.m4s)$`)
@@ -26,7 +28,7 @@ var segmentName = regexp.MustCompile(`^(index\.m3u8|init\.mp4|seg\d+\.m4s)$`)
 // Claude 2026-10-14: Jellyfin-matching HLS for in-app Play.
 // Reason: Chrome cannot Direct Play Matroska; a copy-to-pipe fMP4 cannot seek
 //   and fails on AC3/HEVC. Probe at session start → remux / AAC / H.264.
-// Troubleshooting: invalid {file} 400; ffmpeg missing 500; playlist wait 45s.
+// Troubleshooting: invalid {file} 400; ffmpeg missing 500; playlist wait 90s.
 // Review if: native TV HLS or per-seek ffmpeg restart lands.
 
 // Hub owns ffmpeg HLS sessions keyed by path+mtime+size.
@@ -185,12 +187,19 @@ func (h *Hub) getOrStart(src string, st os.FileInfo, follow bool, growing func()
 		key = followSessionKey(src)
 	}
 	h.mu.Lock()
-	if s := h.sessions[key]; s != nil {
+	s := h.sessions[key]
+	if s != nil && !s.failed() {
 		s.touchLocked()
 		h.mu.Unlock()
 		return s, nil
 	}
+	if s != nil {
+		delete(h.sessions, key)
+	}
 	h.mu.Unlock()
+	if s != nil {
+		go s.reap()
+	}
 
 	parent := h.tmpRoot
 	if parent == "" {
@@ -201,7 +210,7 @@ func (h *Hub) getOrStart(src string, st os.FileInfo, follow bool, growing func()
 		return nil, fmt.Errorf("hls session: %w", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &session{
+	s = &session{
 		hub:    h,
 		key:    key,
 		dir:    dir,
@@ -231,11 +240,21 @@ func (h *Hub) getOrStart(src string, st os.FileInfo, follow bool, growing func()
 }
 
 func (h *Hub) spawn(ctx context.Context, s *session, src string, follow bool, growing func() bool) error {
-	v, a, err := h.probe(ctx, src)
-	if err != nil {
-		return fmt.Errorf("hls probe: %w", err)
+	// Claude 2026-10-23: follow HLS always transcodes; skip probe on a growing file.
+	// Reason: Truncate-up mkv fails ffprobe (41-byte 500). HEVC 10-bit LAMA and
+	//   incomplete clusters cannot copy into fMP4. Probe-or-500 is library-only.
+	// Troubleshooting: GET .../hls/index.m3u8 500 "hls probe: ffprobe failed".
+	// Review if: follow remux of complete-enough h264+aac is added.
+	d := Transcode
+	hasAudio := true
+	if !follow {
+		v, a, err := h.probe(ctx, src)
+		if err != nil {
+			return fmt.Errorf("hls probe: %w", err)
+		}
+		d = Decide(v, a)
+		hasAudio = a != ""
 	}
-	d := Decide(v, a)
 	if h.startFake != nil {
 		go func() {
 			defer close(s.done)
@@ -266,9 +285,9 @@ func (h *Hub) spawn(ctx context.Context, s *session, src string, follow bool, gr
 		if err != nil {
 			return fmt.Errorf("hls follow: %w", err)
 		}
-		args = ffmpegHLSPipeArgs(src, s.dir, d, h.useNVENC(), a != "")
+		args = ffmpegHLSPipeArgs(src, s.dir, d, h.useNVENC(), hasAudio)
 	} else {
-		args = ffmpegHLSArgs(src, s.dir, d, h.useNVENC(), a != "")
+		args = ffmpegHLSArgs(src, s.dir, d, h.useNVENC(), hasAudio)
 	}
 	cmd := run(ctx, bin, args...)
 	errFile, err := os.Create(filepath.Join(s.dir, "ffmpeg.err"))
@@ -303,7 +322,11 @@ func (h *Hub) spawn(ctx context.Context, s *session, src string, follow bool, gr
 			if trim == "" {
 				trim = waitErr.Error()
 			}
+			if len(trim) > 2048 {
+				trim = trim[:2048]
+			}
 			s.err = fmt.Errorf("hls ffmpeg: %s", trim)
+			log.Printf("hls: %s: %v", src, s.err)
 		}
 		s.mu.Unlock()
 		close(s.done)
@@ -351,7 +374,11 @@ func ffmpegHLSArgs(src, outDir string, d Decision, nvenc, hasAudio bool) []strin
 }
 
 func ffmpegHLSPipeArgs(src, outDir string, d Decision, nvenc, hasAudio bool) []string {
-	head := []string{"-hide_banner", "-loglevel", "error", "-probesize", "65536", "-analyzeduration", "2000000"}
+	head := []string{
+		"-hide_banner", "-loglevel", "error",
+		"-fflags", "+genpts+discardcorrupt",
+		"-probesize", followProbe, "-analyzeduration", followProbe,
+	}
 	if f := ffmpegDemuxFormat(src); f != "" {
 		head = append(head, "-f", f)
 	}
@@ -381,7 +408,7 @@ func ffmpegDemuxFormat(src string) string {
 func appendHLSOutput(head []string, outDir string, d Decision, nvenc, hasAudio bool) []string {
 	args := append(head, "-map", "0:v:0")
 	if hasAudio {
-		args = append(args, "-map", "0:a:0")
+		args = append(args, "-map", "0:a:0?")
 	}
 	args = append(args, "-sn", "-dn")
 	switch d {
@@ -461,6 +488,24 @@ func (s *session) failErr() error {
 	return s.err
 }
 
+func (s *session) failed() bool {
+	select {
+	case <-s.done:
+		return s.failErr() != nil
+	default:
+		return false
+	}
+}
+
+func (s *session) reap() {
+	if s.timer != nil {
+		s.timer.Stop()
+	}
+	s.cancel()
+	<-s.done
+	os.RemoveAll(s.dir)
+}
+
 func (s *session) touch() {
 	s.hub.mu.Lock()
 	defer s.hub.mu.Unlock()
@@ -483,7 +528,5 @@ func (s *session) expire() {
 	}
 	delete(s.hub.sessions, s.key)
 	s.hub.mu.Unlock()
-	s.cancel()
-	<-s.done
-	os.RemoveAll(s.dir)
+	s.reap()
 }

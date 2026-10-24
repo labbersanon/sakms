@@ -16,7 +16,8 @@ import (
 
 // Claude 2026-10-23: On Demand Play streams from in-progress staging.
 // Reason: waiting for BODY+unpack is 5–30 min and is not Play. playSrc is set
-//   once a playable file is ≥512KiB; HLS follow-reads until the GID completes.
+//   once a playable file has ≥512KiB populated from offset 0 (not Truncate-up
+//   Stat size); HLS follow-reads until the GID completes.
 // Troubleshooting: Play waits until complete → snapshot still gated on status.
 //   HLS restarts every poll → ServeHLS size-key used instead of ServeHLSFollow.
 // Review if: 24h staging sweep lands (keep skip-STAT, no grab row).
@@ -311,11 +312,20 @@ func ondemandPlayableFile(d *usenet.Download) string {
 			return
 		}
 		st, err := os.Stat(p)
-		if err != nil || st.IsDir() || st.Size() < min {
+		if err != nil || st.IsDir() {
 			return
 		}
-		if st.Size() > bestSize {
-			best, bestSize = p, st.Size()
+		// Claude 2026-10-23: playSrc needs populated prefix, not Truncate-up size.
+		// Reason: yEnc assemble Truncates to FileSize; Stat is the whole film
+		//   while offset 0 is still NULs. HLS then 500s on ffprobe.
+		// Troubleshooting: Play at +2s GET hls/index.m3u8 41-byte 500.
+		// Review if: GrowReader-only hole skip makes this redundant.
+		n := playback.LeadingPopulatedBytes(p)
+		if n < min {
+			return
+		}
+		if n > bestSize {
+			best, bestSize = p, n
 		}
 	}
 	for _, f := range d.Files {

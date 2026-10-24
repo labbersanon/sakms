@@ -122,10 +122,18 @@ func TestHubServe_MissingSource(t *testing.T) {
 }
 
 func TestFFmpegHLSPipeArgs_NoNostdin(t *testing.T) {
-	args := ffmpegHLSPipeArgs("/src.mkv", "/tmp/s", Remux, false, true)
+	args := ffmpegHLSPipeArgs("/src.mkv", "/tmp/s", Transcode, false, true)
 	joined := strings.Join(args, " ")
-	if !strings.Contains(joined, "-i pipe:0") || !strings.Contains(joined, "-f matroska") {
-		t.Fatalf("pipe args = %q", joined)
+	for _, want := range []string{
+		"-i pipe:0",
+		"-f matroska",
+		"-fflags +genpts+discardcorrupt",
+		"-probesize " + followProbe,
+		"-map 0:a:0?",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("pipe args %q missing %q", joined, want)
+		}
 	}
 	if strings.Contains(joined, "-nostdin") {
 		t.Fatalf("pipe input cannot use -nostdin: %q", joined)
@@ -144,6 +152,9 @@ func TestHubServeFollow_KeepsSessionWhenSizeGrows(t *testing.T) {
 		return "h264", "aac", nil
 	}
 	h.startFake = func(ctx context.Context, in, outDir string, d Decision) error {
+		if d != Transcode {
+			t.Errorf("follow decision = %s, want transcode", d)
+		}
 		pl := []byte("#EXTM3U\n#EXT-X-TARGETDURATION:6\n")
 		return os.WriteFile(filepath.Join(outDir, "index.m3u8"), pl, 0o644)
 	}
@@ -166,6 +177,61 @@ func TestHubServeFollow_KeepsSessionWhenSizeGrows(t *testing.T) {
 	h.mu.Unlock()
 	if n != 1 {
 		t.Fatalf("follow sessions=%d, want 1", n)
+	}
+}
+
+func TestHubServeFollow_StartsWhenProbeWouldFail(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "clip.mkv")
+	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHub()
+	h.tmpRoot = t.TempDir()
+	h.idle = time.Hour
+	h.probe = func(context.Context, string) (string, string, error) {
+		return "", "", io.EOF
+	}
+	h.startFake = func(ctx context.Context, in, outDir string, d Decision) error {
+		if d != Transcode {
+			t.Errorf("decision = %s, want transcode", d)
+		}
+		return os.WriteFile(filepath.Join(outDir, "index.m3u8"), []byte("#EXTM3U\n"), 0o644)
+	}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/hls/index.m3u8", nil)
+	h.ServeFollow(rr, req, src, "index.m3u8", func() bool { return true })
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHubServeFollow_RestartsFailedSession(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "clip.mkv")
+	if err := os.WriteFile(src, []byte("mkv"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHub()
+	h.tmpRoot = t.TempDir()
+	h.idle = time.Hour
+	h.wait = 200 * time.Millisecond
+	tries := 0
+	h.startFake = func(ctx context.Context, in, outDir string, d Decision) error {
+		tries++
+		if tries == 1 {
+			return io.EOF
+		}
+		return os.WriteFile(filepath.Join(outDir, "index.m3u8"), []byte("#EXTM3U\n"), 0o644)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/hls/index.m3u8", nil)
+	rr := httptest.NewRecorder()
+	h.ServeFollow(rr, req, src, "index.m3u8", func() bool { return true })
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("first status %d, want 500", rr.Code)
+	}
+	rr2 := httptest.NewRecorder()
+	h.ServeFollow(rr2, req, src, "index.m3u8", func() bool { return true })
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("retry status %d body %s", rr2.Code, rr2.Body.String())
 	}
 }
 

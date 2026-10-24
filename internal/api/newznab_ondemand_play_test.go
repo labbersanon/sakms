@@ -273,3 +273,40 @@ func TestOndemandPlayStatus_ActiveMp4UsesHLS(t *testing.T) {
 		t.Fatalf("active mp4 must be HLS follow, got %+v", ready)
 	}
 }
+
+func TestOndemandPlayStatus_HollowTruncateHasNoPlaySrc(t *testing.T) {
+	dataDir := t.TempDir()
+	stage := filepath.Join(dataDir, "downloads")
+	nzb := usenet.New(usenet.Config{StagingDir: stage})
+	srv := ondemandPlayMux(t, nzb, dataDir)
+	t.Cleanup(srv.Close)
+	vid := filepath.Join(stage, playTestGID, "movie.mkv")
+	if err := os.MkdirAll(filepath.Join(stage, playTestGID), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(vid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(4 << 20); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rememberOndemandPlay(ondemandPlay{GID: playTestGID, Mode: "movies", Indexer: "newznab", NzbID: "hash1"})
+	nzb.InjectDownloadForTest(playTestGID)
+
+	stResp, err := http.Get(srv.URL + "/api/modes/movies/ondemand/play/" + playTestGID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stResp.Body.Close()
+	var ready ondemandPlayStatus
+	if err := json.NewDecoder(stResp.Body).Decode(&ready); err != nil {
+		t.Fatal(err)
+	}
+	if ready.PlaySrc != "" {
+		t.Fatalf("hollow Truncate-up file must not set playSrc, got %+v", ready)
+	}
+}

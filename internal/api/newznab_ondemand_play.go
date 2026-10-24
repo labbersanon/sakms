@@ -3,6 +3,8 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -12,14 +14,15 @@ import (
 	"github.com/labbersanon/sakms/internal/usenet"
 )
 
-// Claude 2026-10-23: On Demand Play downloads a verified NZB to staging only.
-// Reason: no grab row, so UsenetCompleteImporter does not import to the library.
-//   STAT already ran at verify; AddParsedNZB skips it. Start-while-downloading
-//   and the 24h staging sweep are later.
-// Troubleshooting: Play 404 → not verified / cache missing; Play then library
-//   row → a grab was created. Never return enclosure/apikey URLs.
-// Review if: Play streams before BODY completes (keep skip-STAT).
-// Related files: internal/usenet/manager.go AddParsedNZB, DetailPopup ondemandQualities
+// Claude 2026-10-23: On Demand Play streams from in-progress staging.
+// Reason: waiting for BODY+unpack is 5–30 min and is not Play. playSrc is set
+//   once a playable file is ≥512KiB; HLS follow-reads until the GID completes.
+// Troubleshooting: Play waits until complete → snapshot still gated on status.
+//   HLS restarts every poll → ServeHLS size-key used instead of ServeHLSFollow.
+// Review if: 24h staging sweep lands (keep skip-STAT, no grab row).
+// Related files: internal/usenet/directunpack.go, internal/playback/grow.go
+
+const ondemandPlayMinBytes = 512 * 1024
 
 type ondemandPlayRequest struct {
 	Indexer string `json:"indexer"`
@@ -203,11 +206,14 @@ func ondemandPlayVideoHandler(nzb *usenet.Manager) http.HandlerFunc {
 
 func ondemandPlayVideoHLSHandler(nzb *usenet.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		path, kind, ok := resolveOndemandPlayVideo(w, r, nzb)
+		path, _, ok := resolveOndemandPlayVideo(w, r, nzb)
 		if !ok {
 			return
 		}
-		serveResolvedHLS(w, r, path, kind)
+		gid := strings.TrimSpace(r.PathValue("gid"))
+		playback.ServeHLSFollow(w, r, path, r.PathValue("file"), func() bool {
+			return ondemandPlayStillGrowing(nzb, gid)
+		})
 	}
 }
 
@@ -239,13 +245,13 @@ func resolveOndemandPlayVideo(w http.ResponseWriter, r *http.Request, nzb *usene
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return "", "", false
 	}
-	if d == nil || d.Status != "complete" {
-		http.Error(w, "not ready", http.StatusConflict)
+	if d == nil || d.Status == "error" || d.Status == "removed" {
+		http.Error(w, "not found", http.StatusNotFound)
 		return "", "", false
 	}
 	file := ondemandPlayableFile(d)
 	if file == "" {
-		http.Error(w, "no video", http.StatusNotFound)
+		http.Error(w, "not ready", http.StatusConflict)
 		return "", "", false
 	}
 	return file, "ondemand", true
@@ -264,25 +270,58 @@ func ondemandPlaySnapshot(m mode.Mode, nzb *usenet.Manager, gid string) *ondeman
 	out.Status = d.Status
 	out.Phase = d.Phase
 	out.ErrorMessage = d.ErrorMessage
-	if d.Status == "complete" {
-		if file := ondemandPlayableFile(d); file != "" {
-			serve := "/api/modes/" + string(m) + "/ondemand/play/" + gid + "/video"
-			out.PlaySrc = playback.VideoURL(serve, file)
-		} else if out.ErrorMessage == "" {
-			out.ErrorMessage = "no video"
-		}
+	if file := ondemandPlayableFile(d); file != "" {
+		serve := "/api/modes/" + string(m) + "/ondemand/play/" + gid + "/video"
+		out.PlaySrc = playback.VideoURL(serve, file)
+	} else if d.Status == "complete" && out.ErrorMessage == "" {
+		out.ErrorMessage = "no video"
 	}
 	return out
+}
+
+func ondemandPlayStillGrowing(nzb *usenet.Manager, gid string) bool {
+	if nzb == nil || gid == "" {
+		return false
+	}
+	d, err := nzb.FindByGID(gid)
+	return err == nil && d != nil && d.Status == "active"
 }
 
 func ondemandPlayableFile(d *usenet.Download) string {
 	if d == nil {
 		return ""
 	}
-	for _, f := range d.Files {
-		if playback.PlayableInApp(f) {
-			return f
+	min := int64(ondemandPlayMinBytes)
+	if d.Status == "complete" {
+		min = 1
+	}
+	var best string
+	var bestSize int64
+	consider := func(p string) {
+		if !playback.PlayableInApp(p) {
+			return
+		}
+		st, err := os.Stat(p)
+		if err != nil || st.IsDir() || st.Size() < min {
+			return
+		}
+		if st.Size() > bestSize {
+			best, bestSize = p, st.Size()
 		}
 	}
-	return ""
+	for _, f := range d.Files {
+		consider(f)
+	}
+	if d.Dir != "" {
+		entries, err := os.ReadDir(d.Dir)
+		if err == nil {
+			for _, e := range entries {
+				if e.IsDir() {
+					continue
+				}
+				consider(filepath.Join(d.Dir, e.Name()))
+			}
+		}
+	}
+	return best
 }

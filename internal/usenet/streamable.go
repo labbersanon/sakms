@@ -1,6 +1,7 @@
 package usenet
 
 import (
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -101,6 +102,72 @@ func AssessNZB(nzb *NZB) Assessment {
 	}
 	out.Reason = "no sequential video archive"
 	return out
+}
+
+// ReorderNZB puts SequencePlan play files first and PAR2 last. On Demand Play
+// uses this so BODY fetches the video/RAR volumes before repair files.
+func ReorderNZB(nzb *NZB) {
+	if nzb == nil || len(nzb.Files) < 2 {
+		return
+	}
+	plan := AssessNZB(nzb).Plan
+	if len(plan.Play) == 0 && len(plan.Par2) == 0 {
+		return
+	}
+	playWant := make(map[string]int, len(plan.Play))
+	for i, p := range plan.Play {
+		playWant[p.Name] = i
+	}
+	par2Want := make(map[string]bool, len(plan.Par2))
+	for _, p := range plan.Par2 {
+		par2Want[p.Name] = true
+	}
+	play := make([]NZBFile, len(plan.Play))
+	playHit := make([]bool, len(plan.Play))
+	var other, par2 []NZBFile
+	for _, f := range nzb.Files {
+		name, _ := filePlan(f)
+		if i, ok := playWant[name.Name]; ok {
+			play[i] = f
+			playHit[i] = true
+			continue
+		}
+		if par2Want[name.Name] {
+			par2 = append(par2, f)
+			continue
+		}
+		other = append(other, f)
+	}
+	var ordered []NZBFile
+	for i, f := range play {
+		if playHit[i] {
+			ordered = append(ordered, f)
+		}
+	}
+	nzb.Files = append(append(ordered, other...), par2...)
+}
+
+// nextRarVolume is the volume unrar -vp will ask for after name.
+func nextRarVolume(name string) string {
+	lower := strings.ToLower(name)
+	if m := rarPartRE.FindStringSubmatch(lower); m != nil {
+		digits := m[1]
+		n := 0
+		fmt.Sscanf(digits, "%d", &n)
+		repl := fmt.Sprintf(".part%0*d.rar", len(digits), n+1)
+		return name[:len(name)-len(m[0])] + repl
+	}
+	if rarVolumeRE.MatchString(lower) {
+		ext := filepath.Ext(name)
+		numStr := strings.TrimPrefix(strings.ToLower(ext), ".r")
+		n := 0
+		fmt.Sscanf(numStr, "%d", &n)
+		return strings.TrimSuffix(name, ext) + fmt.Sprintf(".r%02d", n+1)
+	}
+	if strings.HasSuffix(lower, ".rar") {
+		return strings.TrimSuffix(name, filepath.Ext(name)) + ".r00"
+	}
+	return ""
 }
 
 func filePlan(f NZBFile) (FilePlan, int) {

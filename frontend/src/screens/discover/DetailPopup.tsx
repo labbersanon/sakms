@@ -654,10 +654,10 @@ export const DetailPopup: Component<{
   // Library in-app play URL under Watch Trailer. Movies/Adult pass a file URL.
   // Owned series computes Play/Resume from GET .../seasons. Empty hides it.
   playSrc?: string;
-  // Claude 2026-10-23: On Demand quality cells Play a verified NZB without import.
-  // Reason: Grab/download stays on AvailabilityGrab; Play uses POST .../ondemand/play.
-  // Troubleshooting: no Play buttons → parent did not pass qualities from the shelf.
-  // Review if: Play starts-while-downloading (poll still waits for playSrc).
+  // Claude 2026-10-23: On Demand Play starts the player when playSrc is set.
+  // Reason: backend sets playSrc while status=active once staging has a video.
+  // Troubleshooting: Play waits until complete → poll still requires !playSrc.
+  // Review if: SSE replaces status polling.
   ondemandQualities?: OndemandQuality[];
   // Claude 2026-09-24: library series id mounts SeriesEpisodesPanel + Play Show.
   // Reason: catalog-only popups must not grow a play list; owned detail keys by
@@ -811,7 +811,7 @@ export const DetailPopup: Component<{
       let st = await startOndemandPlay(mode(), q.indexer, q.nzbId);
       while (gen === ondemandPlayGen && st.status === "active" && !st.playSrc) {
         setOndemandPhase(st.phase || st.status);
-        await new Promise((r) => setTimeout(r, 1000));
+        await new Promise((r) => setTimeout(r, 400));
         st = await fetchOndemandPlay(mode(), st.gid);
       }
       if (gen !== ondemandPlayGen) return;

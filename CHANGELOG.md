@@ -13307,3 +13307,22 @@ status stays active.
 | `internal/newznabondemand/store.go` | `GetVerified` by indexer+nzbId |
 | `internal/api/newznab_ondemand_play.go` | POST/GET play + video/HLS |
 | `frontend/src/screens/discover/DetailPopup.tsx` | On Demand Play cells |
+
+## 2026-10-23 — On Demand Play starts while the NZB is still downloading
+
+**Problem:** Play waited until BODY+unpack finished (5–30 min) before setting `playSrc`.
+**Root cause:** video/HLS handlers and the status snapshot required `status=complete`. `SequencePlan` was never applied to BODY. Split RAR was extracted only at the end. HLS sessions were keyed by size, so a growing file restarted ffmpeg.
+**Fix:** `AddParsedNZB` reorders play files first / PAR2 last. Direct Unpack (`unrar -vp`) starts after part002 is assembled and writes Continue when the next volume is complete; RAR volumes stay until final unpack. `playSrc` is set once a playable staging file is ≥512KiB while status is still `active`. On Demand HLS uses a follow-reader keyed by path. Library HLS is unchanged. Grab is unchanged.
+**Outcome:** `TestReorderNZB_PlayFirstPar2Last`, `TestDirectUnpack_FeedsContinueWithoutDeleting`, `TestGrowReader_WaitsThenEOF`, `TestHubServeFollow_KeepsSessionWhenSizeGrows`, `TestOndemandPlayVideoHandler_ServesWhileActive`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/streamable.go` | `ReorderNZB` |
+| `internal/usenet/directunpack.go` | `unrar -vp` during Play |
+| `internal/usenet/manager.go` | play-first BODY; skip re-extract after Direct Unpack |
+| `internal/playback/grow.go` | follow-reader for growing files |
+| `internal/playback/hls.go` | `ServeHLSFollow` path-keyed sessions |
+| `internal/api/newznab_ondemand_play.go` | `playSrc` + video while `active` |
+| `frontend/src/screens/discover/DetailPopup.tsx` | poll 400ms until `playSrc` |

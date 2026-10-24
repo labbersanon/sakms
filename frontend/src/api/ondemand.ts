@@ -1,5 +1,6 @@
 // GET /api/modes/{mode}/ondemand. Verified NZBs only; nzbId is a hash, never a URL.
 // POST /api/modes/{mode}/ondemand/play starts a staging-only download.
+// playSrc is set while status=active once a playable staging file exists.
 
 import { api } from "./client";
 import type { OndemandList, OndemandPlayStatus } from "@dto";

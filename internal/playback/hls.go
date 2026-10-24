@@ -101,6 +101,12 @@ func ServeHLS(w http.ResponseWriter, r *http.Request, src, file string) {
 	defaultHub.Serve(w, r, src, file)
 }
 
+// ServeHLSFollow is On Demand Play: one ffmpeg session per path while the file
+// grows. Library ServeHLS stays size-keyed so a replaced library file remuxes.
+func ServeHLSFollow(w http.ResponseWriter, r *http.Request, src, file string, growing func() bool) {
+	defaultHub.ServeFollow(w, r, src, file, growing)
+}
+
 // AllowedSegment is the {file} allowlist: index.m3u8, init.mp4, segN.m4s.
 func AllowedSegment(name string) bool {
 	if name == "" || name != filepath.Base(name) || strings.Contains(name, "..") {
@@ -119,6 +125,16 @@ func defaultProbe(ctx context.Context, path string) (string, string, error) {
 
 // Serve writes one HLS file for src. ffmpeg is started on first request.
 func (h *Hub) Serve(w http.ResponseWriter, r *http.Request, src, file string) {
+	h.serve(w, r, src, file, false, nil)
+}
+
+// ServeFollow writes one HLS file for a growing src. Sessions are keyed by
+// path only so a size change does not restart ffmpeg.
+func (h *Hub) ServeFollow(w http.ResponseWriter, r *http.Request, src, file string, growing func() bool) {
+	h.serve(w, r, src, file, true, growing)
+}
+
+func (h *Hub) serve(w http.ResponseWriter, r *http.Request, src, file string, follow bool, growing func() bool) {
 	if !AllowedSegment(file) {
 		http.Error(w, "invalid hls file", http.StatusBadRequest)
 		return
@@ -136,7 +152,7 @@ func (h *Hub) Serve(w http.ResponseWriter, r *http.Request, src, file string) {
 		http.Error(w, "video path is a directory", http.StatusNotFound)
 		return
 	}
-	sess, err := h.getOrStart(src, st)
+	sess, err := h.getOrStart(src, st, follow, growing)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -159,8 +175,15 @@ func sessionKey(path string, st os.FileInfo) string {
 	return fmt.Sprintf("%s\x00%d\x00%d", path, st.ModTime().UnixNano(), st.Size())
 }
 
-func (h *Hub) getOrStart(src string, st os.FileInfo) (*session, error) {
+func followSessionKey(path string) string {
+	return path + "\x00follow"
+}
+
+func (h *Hub) getOrStart(src string, st os.FileInfo, follow bool, growing func() bool) (*session, error) {
 	key := sessionKey(src, st)
+	if follow {
+		key = followSessionKey(src)
+	}
 	h.mu.Lock()
 	if s := h.sessions[key]; s != nil {
 		s.touchLocked()
@@ -186,10 +209,16 @@ func (h *Hub) getOrStart(src string, st os.FileInfo) (*session, error) {
 		done:   make(chan struct{}),
 		last:   time.Now(),
 	}
-	if err := h.spawn(ctx, s, src); err != nil {
+	var spawnErr error
+	if follow {
+		spawnErr = h.spawnFollow(ctx, s, src, growing)
+	} else {
+		spawnErr = h.spawn(ctx, s, src)
+	}
+	if spawnErr != nil {
 		cancel()
 		os.RemoveAll(dir)
-		return nil, err
+		return nil, spawnErr
 	}
 
 	h.mu.Lock()
@@ -266,6 +295,73 @@ func (h *Hub) spawn(ctx context.Context, s *session, src string) error {
 	return nil
 }
 
+func (h *Hub) spawnFollow(ctx context.Context, s *session, src string, growing func() bool) error {
+	v, a, err := h.probe(ctx, src)
+	if err != nil {
+		return fmt.Errorf("hls probe: %w", err)
+	}
+	d := Decide(v, a)
+	if h.startFake != nil {
+		go func() {
+			defer close(s.done)
+			if err := h.startFake(ctx, src, s.dir, d); err != nil {
+				s.mu.Lock()
+				s.err = err
+				s.mu.Unlock()
+			}
+		}()
+		return nil
+	}
+	look := h.lookPath
+	if look == nil {
+		look = exec.LookPath
+	}
+	bin, err := look("ffmpeg")
+	if err != nil {
+		return fmt.Errorf("hls: ffmpeg not on PATH: %w", err)
+	}
+	run := h.runCmd
+	if run == nil {
+		run = exec.CommandContext
+	}
+	grow, err := NewGrowReader(ctx, src, growing)
+	if err != nil {
+		return fmt.Errorf("hls follow: %w", err)
+	}
+	args := ffmpegHLSPipeArgs(src, s.dir, d, h.useNVENC(), a != "")
+	cmd := run(ctx, bin, args...)
+	errFile, err := os.Create(filepath.Join(s.dir, "ffmpeg.err"))
+	if err != nil {
+		grow.Close()
+		return err
+	}
+	cmd.Stdin = grow
+	cmd.Stderr = errFile
+	cmd.Stdout = io.Discard
+	if err := cmd.Start(); err != nil {
+		errFile.Close()
+		grow.Close()
+		return fmt.Errorf("hls ffmpeg: %w", err)
+	}
+	go func() {
+		defer errFile.Close()
+		defer grow.Close()
+		waitErr := cmd.Wait()
+		s.mu.Lock()
+		if waitErr != nil && ctx.Err() == nil {
+			msg, _ := os.ReadFile(filepath.Join(s.dir, "ffmpeg.err"))
+			trim := strings.TrimSpace(string(msg))
+			if trim == "" {
+				trim = waitErr.Error()
+			}
+			s.err = fmt.Errorf("hls ffmpeg: %s", trim)
+		}
+		s.mu.Unlock()
+		close(s.done)
+	}()
+	return nil
+}
+
 func (h *Hub) useNVENC() bool {
 	h.nvencOnce.Do(func() {
 		if h.detectNVENC != nil {
@@ -299,11 +395,42 @@ func ffmpegHasNVENC(look func(string) (string, error), run func(context.Context,
 }
 
 func ffmpegHLSArgs(src, outDir string, d Decision, nvenc, hasAudio bool) []string {
-	args := []string{
+	return appendHLSOutput([]string{
 		"-hide_banner", "-nostdin", "-loglevel", "error",
 		"-i", src,
-		"-map", "0:v:0",
+	}, outDir, d, nvenc, hasAudio)
+}
+
+func ffmpegHLSPipeArgs(src, outDir string, d Decision, nvenc, hasAudio bool) []string {
+	head := []string{"-hide_banner", "-loglevel", "error", "-probesize", "65536", "-analyzeduration", "2000000"}
+	if f := ffmpegDemuxFormat(src); f != "" {
+		head = append(head, "-f", f)
 	}
+	head = append(head, "-i", "pipe:0")
+	return appendHLSOutput(head, outDir, d, nvenc, hasAudio)
+}
+
+func ffmpegDemuxFormat(src string) string {
+	switch strings.ToLower(filepath.Ext(src)) {
+	case ".mkv":
+		return "matroska"
+	case ".mp4", ".m4v":
+		return "mp4"
+	case ".webm":
+		return "webm"
+	case ".mov":
+		return "mov"
+	case ".avi":
+		return "avi"
+	case ".ts", ".m2ts":
+		return "mpegts"
+	default:
+		return ""
+	}
+}
+
+func appendHLSOutput(head []string, outDir string, d Decision, nvenc, hasAudio bool) []string {
+	args := append(head, "-map", "0:v:0")
 	if hasAudio {
 		args = append(args, "-map", "0:a:0")
 	}
@@ -323,7 +450,7 @@ func ffmpegHLSArgs(src, outDir string, d Decision, nvenc, hasAudio bool) []strin
 		}
 		args = append(args, "-force_key_frames", "expr:gte(t,n_forced*6)", "-sc_threshold", "0")
 	}
-	args = append(args,
+	return append(args,
 		"-f", "hls",
 		"-hls_time", "6",
 		"-hls_list_size", "0",
@@ -334,7 +461,6 @@ func ffmpegHLSArgs(src, outDir string, d Decision, nvenc, hasAudio bool) []strin
 		"-hls_segment_filename", filepath.Join(outDir, "seg%d.m4s"),
 		filepath.Join(outDir, "index.m3u8"),
 	)
-	return args
 }
 
 func videoEncodeArgs(nvenc bool) []string {

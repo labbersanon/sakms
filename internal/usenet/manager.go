@@ -250,6 +250,14 @@ type dlState struct {
 	passwords []string
 	// passwordDiscoverTried is set after one Discover/AI search for this GID.
 	passwordDiscoverTried bool
+	// Claude 2026-10-23: On Demand Play BODY order + Direct Unpack.
+	// Reason: Grab (AddNZB) stays XML order; Play (AddParsedNZB) fetches video
+	//   first and extracts while volumes land. finalizeAssembled must not
+	//   overwrite a live HLS file if Direct Unpack already wrote the mkv.
+	// Troubleshooting: library Grab extracting mid-download → playFirst was true.
+	// Review if: Grab also wants Direct Unpack.
+	playFirst      bool
+	directUnpacked bool
 }
 
 // Manager is the Usenet download engine. It starts NZB downloads, tracks
@@ -993,7 +1001,7 @@ func (m *Manager) AddNZB(ctx context.Context, url, name string) (string, error) 
 	parkName := strings.TrimSpace(name)
 	pws := collectJobPasswords(dnzb, nzb, name, nil)
 	name = preferredNZBName(name, dnzb, nzb)
-	return m.addArticleSet(ctx, nzb, name, parkName, pws, false)
+	return m.addArticleSet(ctx, nzb, name, parkName, pws, false, false)
 }
 
 // Claude 2026-10-23: On Demand Play adds a cached NZB without a second STAT.
@@ -1001,10 +1009,11 @@ func (m *Manager) AddNZB(ctx context.Context, url, name string) (string, error) 
 // Troubleshooting: journal "usenet precheck:" on Play → skipPrecheck was false.
 // Review if: start-while-downloading still needs this skip (it does).
 func (m *Manager) AddParsedNZB(ctx context.Context, nzb *NZB, name string) (string, error) {
-	return m.addArticleSet(ctx, nzb, name, name, nil, true)
+	ReorderNZB(nzb)
+	return m.addArticleSet(ctx, nzb, name, name, nil, true, true)
 }
 
-func (m *Manager) addArticleSet(ctx context.Context, nzb *NZB, name, parkName string, passwords []string, skipPrecheck bool) (string, error) {
+func (m *Manager) addArticleSet(ctx context.Context, nzb *NZB, name, parkName string, passwords []string, skipPrecheck, playFirst bool) (string, error) {
 	if nzb == nil {
 		return "", errors.New("usenet: nil article set")
 	}
@@ -1047,11 +1056,12 @@ func (m *Manager) addArticleSet(ctx context.Context, nzb *NZB, name, parkName st
 		//   minutes on large NZBs; UI looked idle while STAT ran.
 		// Troubleshooting: Downloads empty during long precheck; look for phase=precheck.
 		// Review if: precheck moves to a settings-gated background job.
-		phase:   phasePrecheck,
-		total:   totalBytes,
-		cancel:  cancel,
-		gate:    newPauseGate(),
-		addedAt: now,
+		phase:     phasePrecheck,
+		total:     totalBytes,
+		cancel:    cancel,
+		gate:      newPauseGate(),
+		addedAt:   now,
+		playFirst: playFirst,
 	}
 
 	m.mu.Lock()
@@ -1468,12 +1478,13 @@ func (m *Manager) InjectDownloadPhaseForTest(gid, phase string) {
 		return
 	}
 	m.downloads[gid] = &dlState{
-		gid:    gid,
-		name:   "test",
-		status: "active",
-		phase:  phase,
-		cancel: func() {},
-		gate:   newPauseGate(),
+		gid:        gid,
+		name:       "test",
+		status:     "active",
+		phase:      phase,
+		stagingDir: filepath.Join(m.stagingDir, gid),
+		cancel:     func() {},
+		gate:       newPauseGate(),
 	}
 }
 
@@ -1781,6 +1792,7 @@ func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState
 	if dl.status == "active" {
 		dl.setPhase(phaseUnpacking)
 	}
+	unpackedAlready := dl.directUnpacked
 	unpackStarted := dl.phaseStartedAt
 	if unpackStarted.IsZero() {
 		unpackStarted = time.Now()
@@ -1794,26 +1806,40 @@ func (m *Manager) finalizeAssembled(ctx context.Context, gid string, dl *dlState
 	//   emits its own ETA.
 	unpackSampled := unpackPhaseSampled(dl.stagingDir)
 	passwords := m.unpackPasswordList(dl)
-	unpacked, unpackErr := unpackArchives(dl.stagingDir, files, func(done, total int64) {
-		m.setPhaseProgress(gid, done, total)
-	}, passwords)
-	if errors.Is(unpackErr, ErrPasswordProtected) {
-		before := len(passwords)
-		m.discoverJobPasswords(ctx, gid)
-		passwords = m.unpackPasswordList(dl)
-		if len(passwords) > before {
-			unpacked, unpackErr = unpackArchives(dl.stagingDir, files, func(done, total int64) {
-				m.setPhaseProgress(gid, done, total)
-			}, passwords)
+	var unpacked []string
+	var unpackErr error
+	if unpackedAlready && repairErr == nil && len(videoNamesInDir(dl.stagingDir)) > 0 {
+		// Claude 2026-10-23: keep the Direct Unpack mkv; do not re-extract under HLS.
+		// Reason: unpackArchives would overwrite the growing file ffmpeg is reading.
+		// Troubleshooting: Play hitch at 100% → this skip lost and unrar ran again.
+		// Review if: PAR2 actually repaired RAR volumes (then re-extract).
+		unpackSampled = false
+		if err := deleteArchiveMembers(dl.stagingDir); err != nil {
+			log.Printf("usenet: unpack: deleting archives in %s: %v", dl.stagingDir, err)
 		}
-	}
-	if errors.Is(unpackErr, ErrUnpackChecksum) {
-		if cmdErr := par2CmdRepair(dl.stagingDir); cmdErr != nil {
-			log.Printf("usenet: par2cmdline after checksum %s: %v", gid, cmdErr)
-		} else {
-			unpacked, unpackErr = unpackArchives(dl.stagingDir, files, func(done, total int64) {
-				m.setPhaseProgress(gid, done, total)
-			}, passwords)
+		unpacked = listStagingFiles(dl.stagingDir, files)
+	} else {
+		unpacked, unpackErr = unpackArchives(dl.stagingDir, files, func(done, total int64) {
+			m.setPhaseProgress(gid, done, total)
+		}, passwords)
+		if errors.Is(unpackErr, ErrPasswordProtected) {
+			before := len(passwords)
+			m.discoverJobPasswords(ctx, gid)
+			passwords = m.unpackPasswordList(dl)
+			if len(passwords) > before {
+				unpacked, unpackErr = unpackArchives(dl.stagingDir, files, func(done, total int64) {
+					m.setPhaseProgress(gid, done, total)
+				}, passwords)
+			}
+		}
+		if errors.Is(unpackErr, ErrUnpackChecksum) {
+			if cmdErr := par2CmdRepair(dl.stagingDir); cmdErr != nil {
+				log.Printf("usenet: par2cmdline after checksum %s: %v", gid, cmdErr)
+			} else {
+				unpacked, unpackErr = unpackArchives(dl.stagingDir, files, func(done, total int64) {
+					m.setPhaseProgress(gid, done, total)
+				}, passwords)
+			}
 		}
 	}
 	m.logPhaseTiming(gid, phaseUnpacking, unpackBytes, unpackStarted, unpackSampled)
@@ -1912,6 +1938,13 @@ func (m *Manager) downloadAll(ctx context.Context, gid string, dl *dlState, nzb 
 	// Review if: posters start emitting distinct yEnc names per part again.
 	usedNames := map[string]struct{}{}
 	var paths []string
+	var assembled []string
+	var du *directUnpacker
+	defer func() {
+		if du != nil {
+			du.Stop()
+		}
+	}()
 	m.setSegmentTotals(gid, nzbSegmentCount(nzb))
 	for _, nzbFile := range nzb.Files {
 		if dl.gate != nil {
@@ -1924,6 +1957,20 @@ func (m *Manager) downloadAll(ctx context.Context, gid string, dl *dlState, nzb 
 			return nil, fmt.Errorf("%q: %w", nzbFile.Subject, err)
 		}
 		paths = append(paths, path)
+		if dl.playFirst {
+			// Claude 2026-10-23: Direct Unpack only on Play (playFirst).
+			// Reason: Grab stays extract-at-complete so PAR2 can repair first.
+			assembled = append(assembled, filepath.Base(path))
+			du = tickDirectUnpack(ctx, dl.stagingDir, du, assembled)
+		}
+	}
+	if du != nil {
+		du.Wait(ctx)
+		if du.Extracted() {
+			m.mu.Lock()
+			dl.directUnpacked = true
+			m.mu.Unlock()
+		}
 	}
 	return paths, nil
 }

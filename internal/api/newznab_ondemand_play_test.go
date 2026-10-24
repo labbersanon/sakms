@@ -15,6 +15,7 @@ import (
 	"github.com/labbersanon/sakms/internal/dbtest"
 	"github.com/labbersanon/sakms/internal/newznabcatalog"
 	"github.com/labbersanon/sakms/internal/newznabondemand"
+	"github.com/labbersanon/sakms/internal/playback"
 	"github.com/labbersanon/sakms/internal/usenet"
 )
 
@@ -195,5 +196,59 @@ func TestOndemandPlayVideoHandler_ServesCompleteStaging(t *testing.T) {
 	early.Body.Close()
 	if early.StatusCode != http.StatusNotFound {
 		t.Fatalf("unknown gid status=%d", early.StatusCode)
+	}
+}
+
+func TestOndemandPlayVideoHandler_ServesWhileActive(t *testing.T) {
+	dataDir := t.TempDir()
+	stage := filepath.Join(dataDir, "downloads")
+	nzb := usenet.New(usenet.Config{StagingDir: stage})
+	srv := ondemandPlayMux(t, nzb, dataDir)
+	defer srv.Close()
+
+	gid := "nzb-0123456789abcdef"
+	vid := filepath.Join(stage, gid, "movie.mkv")
+	if err := os.MkdirAll(filepath.Dir(vid), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	payload := bytes.Repeat([]byte("m"), 512*1024)
+	if err := os.WriteFile(vid, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rememberOndemandPlay(ondemandPlay{GID: gid, Mode: "movies", Indexer: "newznab", NzbID: "hash1"})
+	nzb.InjectDownloadForTest(gid)
+
+	stResp, err := http.Get(srv.URL + "/api/modes/movies/ondemand/play/" + gid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stResp.Body.Close()
+	var ready ondemandPlayStatus
+	if err := json.NewDecoder(stResp.Body).Decode(&ready); err != nil {
+		t.Fatal(err)
+	}
+	if ready.Status != "active" || ready.PlaySrc == "" {
+		t.Fatalf("ready=%+v", ready)
+	}
+	if !strings.Contains(ready.PlaySrc, "/hls/index.m3u8") {
+		t.Fatalf("mkv playSrc should be HLS: %q", ready.PlaySrc)
+	}
+
+	restore := playback.ReplaceHub(playback.NewFakeHub(
+		func(context.Context, string) (string, string, error) { return "h264", "aac", nil },
+		func(ctx context.Context, in, outDir string, d playback.Decision) error {
+			return os.WriteFile(filepath.Join(outDir, "index.m3u8"), []byte("#EXTM3U\n"), 0o644)
+		},
+	))
+	defer restore()
+
+	vidResp, err := http.Get(srv.URL + ready.PlaySrc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vidResp.Body.Close()
+	if vidResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(vidResp.Body)
+		t.Fatalf("hls status=%d body=%s", vidResp.StatusCode, body)
 	}
 }

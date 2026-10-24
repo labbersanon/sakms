@@ -209,16 +209,10 @@ func (h *Hub) getOrStart(src string, st os.FileInfo, follow bool, growing func()
 		done:   make(chan struct{}),
 		last:   time.Now(),
 	}
-	var spawnErr error
-	if follow {
-		spawnErr = h.spawnFollow(ctx, s, src, growing)
-	} else {
-		spawnErr = h.spawn(ctx, s, src)
-	}
-	if spawnErr != nil {
+	if err := h.spawn(ctx, s, src, follow, growing); err != nil {
 		cancel()
 		os.RemoveAll(dir)
-		return nil, spawnErr
+		return nil, err
 	}
 
 	h.mu.Lock()
@@ -236,7 +230,7 @@ func (h *Hub) getOrStart(src string, st os.FileInfo, follow bool, growing func()
 	return s, nil
 }
 
-func (h *Hub) spawn(ctx context.Context, s *session, src string) error {
+func (h *Hub) spawn(ctx context.Context, s *session, src string, follow bool, growing func() bool) error {
 	v, a, err := h.probe(ctx, src)
 	if err != nil {
 		return fmt.Errorf("hls probe: %w", err)
@@ -265,87 +259,42 @@ func (h *Hub) spawn(ctx context.Context, s *session, src string) error {
 	if run == nil {
 		run = exec.CommandContext
 	}
-	args := ffmpegHLSArgs(src, s.dir, d, h.useNVENC(), a != "")
-	cmd := run(ctx, bin, args...)
-	errFile, err := os.Create(filepath.Join(s.dir, "ffmpeg.err"))
-	if err != nil {
-		return err
-	}
-	cmd.Stderr = errFile
-	cmd.Stdout = io.Discard
-	if err := cmd.Start(); err != nil {
-		errFile.Close()
-		return fmt.Errorf("hls ffmpeg: %w", err)
-	}
-	go func() {
-		defer errFile.Close()
-		waitErr := cmd.Wait()
-		s.mu.Lock()
-		if waitErr != nil && ctx.Err() == nil {
-			msg, _ := os.ReadFile(filepath.Join(s.dir, "ffmpeg.err"))
-			trim := strings.TrimSpace(string(msg))
-			if trim == "" {
-				trim = waitErr.Error()
-			}
-			s.err = fmt.Errorf("hls ffmpeg: %s", trim)
+	var grow *GrowReader
+	var args []string
+	if follow {
+		grow, err = NewGrowReader(ctx, src, growing)
+		if err != nil {
+			return fmt.Errorf("hls follow: %w", err)
 		}
-		s.mu.Unlock()
-		close(s.done)
-	}()
-	return nil
-}
-
-func (h *Hub) spawnFollow(ctx context.Context, s *session, src string, growing func() bool) error {
-	v, a, err := h.probe(ctx, src)
-	if err != nil {
-		return fmt.Errorf("hls probe: %w", err)
+		args = ffmpegHLSPipeArgs(src, s.dir, d, h.useNVENC(), a != "")
+	} else {
+		args = ffmpegHLSArgs(src, s.dir, d, h.useNVENC(), a != "")
 	}
-	d := Decide(v, a)
-	if h.startFake != nil {
-		go func() {
-			defer close(s.done)
-			if err := h.startFake(ctx, src, s.dir, d); err != nil {
-				s.mu.Lock()
-				s.err = err
-				s.mu.Unlock()
-			}
-		}()
-		return nil
-	}
-	look := h.lookPath
-	if look == nil {
-		look = exec.LookPath
-	}
-	bin, err := look("ffmpeg")
-	if err != nil {
-		return fmt.Errorf("hls: ffmpeg not on PATH: %w", err)
-	}
-	run := h.runCmd
-	if run == nil {
-		run = exec.CommandContext
-	}
-	grow, err := NewGrowReader(ctx, src, growing)
-	if err != nil {
-		return fmt.Errorf("hls follow: %w", err)
-	}
-	args := ffmpegHLSPipeArgs(src, s.dir, d, h.useNVENC(), a != "")
 	cmd := run(ctx, bin, args...)
 	errFile, err := os.Create(filepath.Join(s.dir, "ffmpeg.err"))
 	if err != nil {
-		grow.Close()
+		if grow != nil {
+			grow.Close()
+		}
 		return err
 	}
-	cmd.Stdin = grow
+	if grow != nil {
+		cmd.Stdin = grow
+	}
 	cmd.Stderr = errFile
 	cmd.Stdout = io.Discard
 	if err := cmd.Start(); err != nil {
 		errFile.Close()
-		grow.Close()
+		if grow != nil {
+			grow.Close()
+		}
 		return fmt.Errorf("hls ffmpeg: %w", err)
 	}
 	go func() {
 		defer errFile.Close()
-		defer grow.Close()
+		if grow != nil {
+			defer grow.Close()
+		}
 		waitErr := cmd.Wait()
 		s.mu.Lock()
 		if waitErr != nil && ctx.Err() == nil {

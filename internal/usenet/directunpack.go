@@ -62,9 +62,6 @@ func isSingleRar(leader string, names []string) bool {
 	if archiveKind(leader) != "rar" || rarPartRE.MatchString(lower) || rarVolumeRE.MatchString(lower) {
 		return false
 	}
-	if !strings.HasSuffix(lower, ".rar") {
-		return false
-	}
 	key := archiveSetKey(leader)
 	for _, n := range names {
 		if n == leader {
@@ -230,9 +227,6 @@ func (du *directUnpacker) readPrompts(ctx context.Context, r io.Reader) {
 			s := acc.String()
 			if looksVolumePrompt(s) {
 				next := volumeFromPrompt(s, waiting)
-				if next == "" {
-					next = nextRarVolume(waiting)
-				}
 				if next != "" && du.waitVolume(ctx, next) {
 					if _, werr := io.WriteString(du.stdin, "C\n"); werr != nil {
 						return

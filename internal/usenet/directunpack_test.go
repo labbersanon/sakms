@@ -60,8 +60,7 @@ func TestDirectUnpack_FeedsContinueWithoutDeleting(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	var du *directUnpacker
-	du = tickDirectUnpack(ctx, dir, du, []string{"set.part01.rar"})
+	du := tickDirectUnpack(ctx, dir, nil, []string{"set.part01.rar"})
 	if du != nil {
 		t.Fatal("must not start before part02 is assembled")
 	}

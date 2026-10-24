@@ -114,33 +114,30 @@ func ReorderNZB(nzb *NZB) {
 	if len(plan.Play) == 0 && len(plan.Par2) == 0 {
 		return
 	}
-	playWant := make(map[string]int, len(plan.Play))
-	for i, p := range plan.Play {
-		playWant[p.Name] = i
+	playWant := make(map[string]bool, len(plan.Play))
+	for _, p := range plan.Play {
+		playWant[p.Name] = true
 	}
 	par2Want := make(map[string]bool, len(plan.Par2))
 	for _, p := range plan.Par2 {
 		par2Want[p.Name] = true
 	}
-	play := make([]NZBFile, len(plan.Play))
-	playHit := make([]bool, len(plan.Play))
+	found := make(map[string]NZBFile, len(plan.Play))
 	var other, par2 []NZBFile
 	for _, f := range nzb.Files {
 		name, _ := filePlan(f)
-		if i, ok := playWant[name.Name]; ok {
-			play[i] = f
-			playHit[i] = true
-			continue
-		}
-		if par2Want[name.Name] {
+		switch {
+		case playWant[name.Name]:
+			found[name.Name] = f
+		case par2Want[name.Name]:
 			par2 = append(par2, f)
-			continue
+		default:
+			other = append(other, f)
 		}
-		other = append(other, f)
 	}
 	var ordered []NZBFile
-	for i, f := range play {
-		if playHit[i] {
+	for _, p := range plan.Play {
+		if f, ok := found[p.Name]; ok {
 			ordered = append(ordered, f)
 		}
 	}
@@ -245,32 +242,17 @@ func sortPlayPlans(play []FilePlan) []FilePlan {
 func playVolumeOrder(name string) int {
 	lower := strings.ToLower(name)
 	if m := rarPartRE.FindStringSubmatch(lower); m != nil {
-		n := strings.TrimLeft(m[1], "0")
-		if n == "" {
-			return 0
-		}
-		var num int
-		for _, r := range n {
-			if r < '0' || r > '9' {
-				break
-			}
-			num = num*10 + int(r-'0')
-		}
-		return num
+		n := 0
+		fmt.Sscanf(m[1], "%d", &n)
+		return n
 	}
 	if strings.HasSuffix(lower, ".rar") {
 		return 1
 	}
 	if rarVolumeRE.MatchString(lower) {
-		ext := strings.TrimPrefix(filepath.Ext(lower), ".r")
-		var num int
-		for _, r := range ext {
-			if r < '0' || r > '9' {
-				break
-			}
-			num = num*10 + int(r-'0')
-		}
-		return num + 2
+		n := 0
+		fmt.Sscanf(strings.TrimPrefix(filepath.Ext(lower), ".r"), "%d", &n)
+		return n + 2
 	}
 	return 0
 }

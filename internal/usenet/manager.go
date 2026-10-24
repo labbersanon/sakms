@@ -1940,11 +1940,7 @@ func (m *Manager) downloadAll(ctx context.Context, gid string, dl *dlState, nzb 
 	var paths []string
 	var assembled []string
 	var du *directUnpacker
-	defer func() {
-		if du != nil {
-			du.Stop()
-		}
-	}()
+	defer du.Stop()
 	m.setSegmentTotals(gid, nzbSegmentCount(nzb))
 	for _, nzbFile := range nzb.Files {
 		if dl.gate != nil {

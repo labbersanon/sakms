@@ -1205,6 +1205,42 @@ describe("DetailPopup — Watch Trailer link", () => {
     expect(trailerCall?.url).toBe("/api/modes/series/discover/trailer?tmdbId=7");
   });
 
+  it("shows On Demand Play and POSTs indexer+nzbId without a library URL", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/ondemand/play"))
+        return jsonResponse({
+          gid: "nzb-0123456789abcdef",
+          status: "complete",
+          playSrc: "/api/modes/movies/ondemand/play/nzb-0123456789abcdef/video",
+        });
+      if (url.includes("/discover/trailer")) return jsonResponse({ url: "" });
+      if (url.includes("/discover/detail")) return jsonResponse({});
+      if (url.includes("/discover/availability")) return jsonResponse(emptyPreview());
+      if (url.includes("/quality-prefs"))
+        return jsonResponse({ tier: "high", maxResolution: 1080, protocol: "" });
+      if (url.includes("/usenet-autograb-enabled")) return jsonResponse({ enabled: false });
+      throw new Error("unexpected fetch: " + url);
+    });
+    render(() => (
+      <DetailPopup
+        target={{ mode: "movies", item: movie({ id: 42, title: "Hero Movie" }) }}
+        ondemandQualities={[
+          { indexer: "newznab", nzbId: "hash1", label: "High" },
+        ]}
+        onClose={() => {}}
+      />
+    ));
+    expect(await screen.findByTestId("ondemand-play")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Play" }));
+    await waitFor(() => {
+      const post = calls.find(
+        (c) => c.url.includes("/ondemand/play") && c.method === "POST",
+      );
+      expect(post?.body).toEqual({ indexer: "newznab", nzbId: "hash1" });
+    });
+    expect(await screen.findByText("Play Movie →")).toBeInTheDocument();
+  });
+
   it("renders Play Movie under Watch Trailer when playSrc is set", async () => {
     stubWithTrailer("https://www.youtube.com/watch?v=abc123");
     render(() => (

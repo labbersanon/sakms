@@ -993,10 +993,18 @@ func (m *Manager) AddNZB(ctx context.Context, url, name string) (string, error) 
 	parkName := strings.TrimSpace(name)
 	pws := collectJobPasswords(dnzb, nzb, name, nil)
 	name = preferredNZBName(name, dnzb, nzb)
-	return m.addArticleSet(ctx, nzb, name, parkName, pws)
+	return m.addArticleSet(ctx, nzb, name, parkName, pws, false)
 }
 
-func (m *Manager) addArticleSet(ctx context.Context, nzb *NZB, name, parkName string, passwords []string) (string, error) {
+// Claude 2026-10-23: On Demand Play adds a cached NZB without a second STAT.
+// Reason: crawler already STATd status=verified; Grab still uses AddNZB.
+// Troubleshooting: journal "usenet precheck:" on Play → skipPrecheck was false.
+// Review if: start-while-downloading still needs this skip (it does).
+func (m *Manager) AddParsedNZB(ctx context.Context, nzb *NZB, name string) (string, error) {
+	return m.addArticleSet(ctx, nzb, name, name, nil, true)
+}
+
+func (m *Manager) addArticleSet(ctx context.Context, nzb *NZB, name, parkName string, passwords []string, skipPrecheck bool) (string, error) {
 	if nzb == nil {
 		return "", errors.New("usenet: nil article set")
 	}
@@ -1061,9 +1069,11 @@ func (m *Manager) addArticleSet(ctx context.Context, nzb *NZB, name, parkName st
 	//   ranked candidate in the same cycle.
 	// Troubleshooting: AddNZB returns ErrArticlesUnavailable; journal "usenet precheck:".
 	// Review if: precheck moves behind a settings toggle (currently always on).
-	if _, err := m.precheckNZB(ctx, nzb, nil, gid); err != nil {
-		m.dropPrecheckFailed(gid, cancel, dlDir)
-		return "", err
+	if !skipPrecheck {
+		if _, err := m.precheckNZB(ctx, nzb, nil, gid); err != nil {
+			m.dropPrecheckFailed(gid, cancel, dlDir)
+			return "", err
+		}
 	}
 	// Claude 2026-09-22: leave phase=precheck until runDownload acquires a BODY
 	//   slot (or flips to waiting when MaxConcurrentDownloads is full).
@@ -1465,6 +1475,27 @@ func (m *Manager) InjectDownloadPhaseForTest(gid, phase string) {
 		cancel: func() {},
 		gate:   newPauseGate(),
 	}
+}
+
+// MarkCompleteForTest stamps an in-flight GID complete with files so API
+// tests can serve Play video without waiting on BODY.
+func (m *Manager) MarkCompleteForTest(gid string, files []string) bool {
+	if m == nil || gid == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	dl := m.downloads[gid]
+	if dl == nil {
+		return false
+	}
+	dl.status = "complete"
+	dl.setPhase("")
+	dl.files = append([]string(nil), files...)
+	if len(files) > 0 {
+		dl.stagingDir = filepath.Dir(files[0])
+	}
+	return true
 }
 
 // Subscribe registers a new SSE subscriber. Returns a buffered channel (cap 1)

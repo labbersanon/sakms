@@ -1977,13 +1977,29 @@ type NewznabCatalogReport struct {
 }
 
 // Claude 2026-10-23: Discover On Demand list (verified NZBs only).
-// Reason: chip reads this; Play is later. NzbID is the t=get hash, not a URL.
+// Reason: chip reads this; Play POSTs indexer+nzbId. NzbID is the t=get hash, not a URL.
 // Troubleshooting: frontend missing types → make dto.
-// Review if: Play adds fields (do not add enclosure/apikey URLs).
+// Review if: Play adds enclosure/apikey URLs (do not).
 type OndemandQuality struct {
 	Indexer string `json:"indexer"`
 	NzbID   string `json:"nzbId"`
 	Label   string `json:"label"`
+}
+
+// OndemandPlayRequest is POST /api/modes/{mode}/ondemand/play.
+type OndemandPlayRequest struct {
+	Indexer string `json:"indexer"`
+	NzbID   string `json:"nzbId"`
+}
+
+// OndemandPlayStatus is POST/GET /api/modes/{mode}/ondemand/play.
+// PlaySrc is set only when staging has a playable file. No enclosure URLs.
+type OndemandPlayStatus struct {
+	GID          string `json:"gid"`
+	Status       string `json:"status"`
+	Phase        string `json:"phase,omitempty"`
+	PlaySrc      string `json:"playSrc,omitempty"`
+	ErrorMessage string `json:"errorMessage,omitempty"`
 }
 
 // OndemandTitle is one Discover On Demand card.

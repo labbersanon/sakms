@@ -13291,3 +13291,19 @@ status stays active.
 | File | Change |
 |---|---|
 | `cmd/ondemand-bitrate-backfill/main.go` | removed |
+
+## 2026-10-23 — On Demand Play from DetailPopup without a library import
+
+**Problem:** On Demand titles had Grab but no way to watch without putting the title in the library.
+**Root cause:** GET `/ondemand` listed verified NZBs; Play was deferred. Cached NZBs were never added to the Usenet engine.
+**Fix:** POST `/api/modes/{mode}/ondemand/play` loads the cached NZB and `AddParsedNZB` skips STAT (already verified). No grab row, so `UsenetCompleteImporter` does not import. GET status/video/HLS serve staging. DetailPopup quality cells Play; Grab stays. Start-while-downloading and 24h sweep are later.
+**Outcome:** `TestAddParsedNZB_SkipsPrecheck`, `TestStore_GetVerifiedByNZBID`, `TestOndemandPlayHandler_StartsFromCacheWithoutURLs`, `TestOndemandPlayVideoHandler_ServesCompleteStaging`, DetailPopup On Demand Play POST.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/usenet/manager.go` | `AddParsedNZB` skip STAT |
+| `internal/newznabondemand/store.go` | `GetVerified` by indexer+nzbId |
+| `internal/api/newznab_ondemand_play.go` | POST/GET play + video/HLS |
+| `frontend/src/screens/discover/DetailPopup.tsx` | On Demand Play cells |

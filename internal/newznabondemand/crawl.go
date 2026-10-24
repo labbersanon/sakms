@@ -246,7 +246,7 @@ func statRow(ctx context.Context, store *Store, nntp *usenet.Manager, dataDir st
 	if skipOnDemandStat(row.PayloadSegments, row.BitrateMbps) {
 		return false, skipStatBudget(ctx, store, row)
 	}
-	nzb, err := loadNZB(dataDir, row.NZBRelPath)
+	nzb, err := LoadNZB(dataDir, row.NZBRelPath)
 	if err != nil {
 		row.Status = StatusError
 		row.RejectReason = "nzb cache missing"
@@ -321,7 +321,8 @@ func writeNZB(dataDir, indexer, guid string, data []byte) (string, error) {
 	return rel, nil
 }
 
-func loadNZB(dataDir, rel string) (*usenet.NZB, error) {
+// LoadNZB reads a cached t=get document. rel is under dataDir/ondemand/nzb.
+func LoadNZB(dataDir, rel string) (*usenet.NZB, error) {
 	if rel == "" || strings.Contains(rel, "..") {
 		return nil, errors.New("newznab ondemand: bad nzb path")
 	}

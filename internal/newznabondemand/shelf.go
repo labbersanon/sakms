@@ -17,7 +17,7 @@ import (
 // Reason: chip must not recrawl or return enclosure/apikey/details URLs.
 // Troubleshooting: empty grid → crawler still fetching/STAT, kind mismatch,
 //   or catalog.tmdb_id empty/0 (no IMDb→TMDB match).
-// Review if: Play starts-while-downloading (keep nzbId as GetNZBID hash).
+// Review if: Play streams before BODY completes (keep nzbId as GetNZBID hash).
 
 var (
 	episodeToken = regexp.MustCompile(`(?i)^s\d{1,2}e\d{1,3}$`)

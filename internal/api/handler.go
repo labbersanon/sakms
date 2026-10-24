@@ -445,11 +445,15 @@ func NewMux(httpClient *http.Client, connStore *connections.Store, scStore *serv
 	// tracked in grabsStore rather than propStore (see internal/grabs'
 	// package doc for why this isn't a proposals.Kind).
 	mux.HandleFunc("GET /api/modes/{mode}/discover", discoverHandler(httpClient, connStore, scStore, settingsStore, discoverCache))
-	// Claude 2026-10-23: Discover On Demand chip — verified NZBs, no Play yet.
+	// Claude 2026-10-23: Discover On Demand chip — verified NZBs.
 	// Reason: status=verified only; nzbId is GetNZBID hash, never a URL.
 	// Troubleshooting: empty grid → AttachNewznabOndemand or crawler still STAT.
 	// Review if: Play starts-while-downloading.
 	mux.HandleFunc("GET /api/modes/{mode}/ondemand", ondemandHandler())
+	mux.HandleFunc("POST /api/modes/{mode}/ondemand/play", ondemandPlayHandler(nzb))
+	mux.HandleFunc("GET /api/modes/{mode}/ondemand/play/{gid}", ondemandPlayStatusHandler(nzb))
+	mux.HandleFunc("GET /api/modes/{mode}/ondemand/play/{gid}/video", ondemandPlayVideoHandler(nzb))
+	mux.HandleFunc("GET /api/modes/{mode}/ondemand/play/{gid}/video/hls/{file}", ondemandPlayVideoHLSHandler(nzb))
 	// Discover detail popup: on-demand, per-click availability preview (a
 	// single user-triggered Prowlarr search — same trigger shape/cost as the
 	// manual Search screen, NOT a reintroduction of the removed automatic

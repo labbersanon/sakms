@@ -4,7 +4,7 @@
 // Claude 2026-10-23: one card per tmdbId (series episodes collapse).
 // Reason: Discover is title-shaped; episode pick lives in DetailPopup.
 // Troubleshooting: per-episode On Demand cards → this unique was skipped.
-// Review if: Play streams a specific NZB from DetailPopup quality cells.
+// Review if: Play starts-while-downloading from those quality cells.
 
 import type { AdultDiscoverItem, DiscoverItem, OndemandTitle } from "@dto";
 

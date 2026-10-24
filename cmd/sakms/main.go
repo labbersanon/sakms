@@ -254,6 +254,11 @@ func run() error {
 	// Troubleshooting: empty chip → AttachNewznabOndemand missing.
 	// Review if: Play starts-while-downloading.
 	api.AttachNewznabOndemand(ondemandStore)
+	// Claude 2026-10-23: Play loads cached NZBs from dataDir/ondemand/nzb.
+	// Reason: t=get files never go on the wire; AddParsedNZB reads the cache.
+	// Troubleshooting: Play 404 nzb cache missing → AttachNewznabOndemandDir unset.
+	// Review if: Play starts-while-downloading (path stays the cache, not a URL).
+	api.AttachNewznabOndemandDir(cfg.DataDir)
 	// traktStore persists Trakt's single application connection + linked
 	// account tokens (its own table, not connections.Store — see
 	// internal/trakt's package doc for why); secretStore encrypts the same

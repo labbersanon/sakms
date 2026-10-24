@@ -351,3 +351,20 @@ func TestStatPayload_NoSubscriptionsIsInconclusive(t *testing.T) {
 		t.Fatalf("res=%+v err=%v", res, err)
 	}
 }
+
+func TestAddParsedNZB_SkipsPrecheck(t *testing.T) {
+	p := makePayload(t, 8, 512)
+	srv := newFakeNNTP(t)
+	srv.serveAll(p)
+	m := New(Config{Servers: []ServerConfig{srv.cfg()}, StagingDir: t.TempDir()})
+	gid, err := m.AddParsedNZB(context.Background(), parsePayloadNZB(t, p), "Cached")
+	if err != nil {
+		t.Fatalf("AddParsedNZB: %v", err)
+	}
+	if gid == "" || !IsOwnedStagingName(gid) {
+		t.Fatalf("gid=%q", gid)
+	}
+	if n := srv.statCount.Load(); n != 0 {
+		t.Fatalf("STAT ran on verified Play path: statCount=%d", n)
+	}
+}

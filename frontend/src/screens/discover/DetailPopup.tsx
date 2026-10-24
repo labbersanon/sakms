@@ -61,7 +61,8 @@ import {
   onMount,
   Show,
 } from "solid-js";
-import type { AvailabilityCandidate, AvailabilityPreview, OfficialRating, TitleDetail } from "@dto";
+import type { AvailabilityCandidate, AvailabilityPreview, OfficialRating, OndemandQuality, TitleDetail } from "@dto";
+import { fetchOndemandPlay, startOndemandPlay } from "../../api/ondemand";
 import {
   type AdultDiscoverItem,
   type DiscoverItem,
@@ -653,6 +654,11 @@ export const DetailPopup: Component<{
   // Library in-app play URL under Watch Trailer. Movies/Adult pass a file URL.
   // Owned series computes Play/Resume from GET .../seasons. Empty hides it.
   playSrc?: string;
+  // Claude 2026-10-23: On Demand quality cells Play a verified NZB without import.
+  // Reason: Grab/download stays on AvailabilityGrab; Play uses POST .../ondemand/play.
+  // Troubleshooting: no Play buttons → parent did not pass qualities from the shelf.
+  // Review if: Play starts-while-downloading (poll still waits for playSrc).
+  ondemandQualities?: OndemandQuality[];
   // Claude 2026-09-24: library series id mounts SeriesEpisodesPanel + Play Show.
   // Reason: catalog-only popups must not grow a play list; owned detail keys by
   //   library_series.id, not TMDB id.
@@ -788,7 +794,42 @@ export const DetailPopup: Component<{
   };
   const headerPlay = () =>
     headerPlayFromSeasons(ownedSeasons.error ? [] : (ownedSeasons() ?? []));
-  const headerPlaySrc = () => headerPlay()?.src || (props.playSrc ?? "").trim();
+  const [ondemandSrc, setOndemandSrc] = createSignal("");
+  const [ondemandBusy, setOndemandBusy] = createSignal("");
+  const [ondemandErr, setOndemandErr] = createSignal("");
+  const [ondemandPhase, setOndemandPhase] = createSignal("");
+  let ondemandPlayGen = 0;
+  onCleanup(() => {
+    ondemandPlayGen++;
+  });
+  const playOndemand = async (q: OndemandQuality) => {
+    const gen = ++ondemandPlayGen;
+    setOndemandBusy(q.nzbId);
+    setOndemandErr("");
+    setOndemandPhase("");
+    try {
+      let st = await startOndemandPlay(mode(), q.indexer, q.nzbId);
+      while (gen === ondemandPlayGen && st.status === "active" && !st.playSrc) {
+        setOndemandPhase(st.phase || st.status);
+        await new Promise((r) => setTimeout(r, 1000));
+        st = await fetchOndemandPlay(mode(), st.gid);
+      }
+      if (gen !== ondemandPlayGen) return;
+      if (st.playSrc) {
+        setOndemandSrc(st.playSrc);
+        setOndemandPhase("");
+      } else {
+        setOndemandErr(st.errorMessage || "Play failed");
+      }
+    } catch (e) {
+      if (gen !== ondemandPlayGen) return;
+      setOndemandErr((e as Error).message || "Play failed");
+    } finally {
+      if (gen === ondemandPlayGen) setOndemandBusy("");
+    }
+  };
+  const headerPlaySrc = () =>
+    headerPlay()?.src || (props.playSrc ?? "").trim() || ondemandSrc();
 
   // Series needs season/episode BEFORE the availability fetch can run.
   // Library (allowGrab=false) skips that gate so F1 metadata is immediate.
@@ -1686,6 +1727,31 @@ export const DetailPopup: Component<{
       </div>
       </div>
 
+      <Show when={(props.ondemandQualities?.length ?? 0) > 0}>
+        <div class="mb-3" data-testid="ondemand-play">
+          <Muted class="mb-2">On Demand</Muted>
+          <For each={props.ondemandQualities}>
+            {(q) => (
+              <div class="mb-1.5 flex items-center gap-2">
+                <span class="min-w-0 flex-1 truncate text-sm text-fg">{q.label}</span>
+                <button
+                  type="button"
+                  class="shrink-0 rounded-md border border-border bg-surface-2 px-3 py-1 text-xs font-medium text-fg transition hover:opacity-90"
+                  disabled={!!ondemandBusy()}
+                  onClick={() => void playOndemand(q)}
+                >
+                  {ondemandBusy() === q.nzbId
+                    ? ondemandPhase()
+                      ? `Preparing (${ondemandPhase()})…`
+                      : "Preparing…"
+                    : "Play"}
+                </button>
+              </div>
+            )}
+          </For>
+          <ErrorText>{ondemandErr()}</ErrorText>
+        </div>
+      </Show>
       {/* Claude 2026-09-22: quality prefs + season monitors sit UNDER poster/
           synopsis. Library passes the same blocks via children (seriesID key)
           and must not get a second Discover TMDB-keyed copy.

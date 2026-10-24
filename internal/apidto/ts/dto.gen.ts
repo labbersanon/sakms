@@ -1963,14 +1963,32 @@ export interface NewznabCatalogReport {
 }
 /**
  * Claude 2026-10-23: Discover On Demand list (verified NZBs only).
- * Reason: chip reads this; Play is later. NzbID is the t=get hash, not a URL.
+ * Reason: chip reads this; Play POSTs indexer+nzbId. NzbID is the t=get hash, not a URL.
  * Troubleshooting: frontend missing types → make dto.
- * Review if: Play adds fields (do not add enclosure/apikey URLs).
+ * Review if: Play adds enclosure/apikey URLs (do not).
  */
 export interface OndemandQuality {
   indexer: string;
   nzbId: string;
   label: string;
+}
+/**
+ * OndemandPlayRequest is POST /api/modes/{mode}/ondemand/play.
+ */
+export interface OndemandPlayRequest {
+  indexer: string;
+  nzbId: string;
+}
+/**
+ * OndemandPlayStatus is POST/GET /api/modes/{mode}/ondemand/play.
+ * PlaySrc is set only when staging has a playable file. No enclosure URLs.
+ */
+export interface OndemandPlayStatus {
+  gid: string;
+  status: string;
+  phase?: string;
+  playSrc?: string;
+  errorMessage?: string;
 }
 /**
  * OndemandTitle is one Discover On Demand card.

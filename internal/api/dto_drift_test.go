@@ -135,6 +135,8 @@ func TestHandlerDTOMirrorNoDrift(t *testing.T) {
 		// ondemandTitle/ondemandList are excluded: Qualities/Items are nested
 		// named slices whose Go type strings differ by package.
 		{"ondemandQuality/OndemandQuality", ondemandQuality{}, apidto.OndemandQuality{}},
+		{"ondemandPlayRequest/OndemandPlayRequest", ondemandPlayRequest{}, apidto.OndemandPlayRequest{}},
+		{"ondemandPlayStatus/OndemandPlayStatus", ondemandPlayStatus{}, apidto.OndemandPlayStatus{}},
 		{"sectionLockSectionsRequest/SectionLockSectionsRequest", sectionLockSectionsRequest{}, apidto.SectionLockSectionsRequest{}},
 	}
 

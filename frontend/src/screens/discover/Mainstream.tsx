@@ -28,7 +28,7 @@ import {
   For,
   Show,
 } from "solid-js";
-import type { OndemandTitle } from "@dto";
+import type { OndemandQuality, OndemandTitle } from "@dto";
 import {
   type DiscoverItem,
   type DiscoverCategory,
@@ -771,7 +771,7 @@ export const MainstreamDiscover: Component<{
   // Claude 2026-10-23: On Demand chip — same PosterCard + DetailPopup filter.
   // Reason: not a second screen; Grab/download is already on DetailPopup.
   // Troubleshooting: quality-only modal → OnDemandView was remounted.
-  // Review if: Play without download is wired on that same popup.
+  // Review if: Play starts-while-downloading on that same popup.
   browseView?: () => DiscoverBrowseView;
   onBrowseViewChange?: (view: DiscoverBrowseView) => void;
   initialTier?: string;
@@ -800,10 +800,12 @@ export const MainstreamDiscover: Component<{
   };
   const ownedMode = (): "movies" | "series" =>
     props.contentType === "series" ? "series" : "movies";
+  const [ondemandQualities, setOndemandQualities] = createSignal<OndemandQuality[]>([]);
   const closeDetail = () => {
     setDetailTarget(null);
     setOwnedDetail(null);
     setReplaceSlot(null);
+    setOndemandQualities([]);
   };
   const [setupError, setSetupError] = createSignal<unknown>(null);
   const [dismissedSetup, setDismissedSetup] = createSignal(false);
@@ -1389,6 +1391,7 @@ export const MainstreamDiscover: Component<{
                     item={item}
                     onDetail={(t) => {
                       setOwnedDetail(null);
+                      setOndemandQualities(item.qualities ?? []);
                       setDetailTarget(t);
                     }}
                   />
@@ -1595,6 +1598,9 @@ export const MainstreamDiscover: Component<{
                 ? playableLibrarySrc(ownedDetail()!.mode, ownedDetail()!.item) ||
                   undefined
                 : undefined
+            }
+            ondemandQualities={
+              ownedDetail() ? undefined : ondemandQualities()
             }
             replaceSlot={replaceSlot() ?? undefined}
             ownedLibraryId={ownedDetail()?.item.id}

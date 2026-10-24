@@ -16,13 +16,20 @@ import (
 // Review if: Play starts-while-downloading (do not add URL fields).
 
 var (
-	ondemandMu    sync.RWMutex
-	ondemandStore *newznabondemand.Store
+	ondemandMu      sync.RWMutex
+	ondemandStore   *newznabondemand.Store
+	ondemandDataDir string
 )
 
 func AttachNewznabOndemand(st *newznabondemand.Store) {
 	ondemandMu.Lock()
 	ondemandStore = st
+	ondemandMu.Unlock()
+}
+
+func AttachNewznabOndemandDir(dir string) {
+	ondemandMu.Lock()
+	ondemandDataDir = dir
 	ondemandMu.Unlock()
 }
 

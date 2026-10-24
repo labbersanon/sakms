@@ -241,3 +241,42 @@ func TestLooksLikeURL(t *testing.T) {
 		t.Fatal("looksLikeURL")
 	}
 }
+
+func TestStore_GetVerifiedByNZBID(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	ctx := context.Background()
+	st := NewStore(sqlDB)
+	guid := "https://nzbgeek.info/geekseek.php?guid=hash1"
+	if err := st.Save(ctx, Row{
+		Indexer: "newznab", GUID: guid, Kind: newznabcatalog.KindMovies,
+		Title: "Shelf.Movie.2021", Status: StatusVerified, Streamable: true,
+		NZBRelPath: filepath.Join("ondemand", "nzb", "newznab", "ab.nzb"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Save(ctx, Row{
+		Indexer: "newznab", GUID: "https://nzbgeek.info/geekseek.php?guid=hash10",
+		Kind: newznabcatalog.KindMovies, Title: "Other", Status: StatusVerified, Streamable: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Save(ctx, Row{
+		Indexer: "newznab", GUID: "deadhash", Kind: newznabcatalog.KindMovies,
+		Status: StatusDead, Streamable: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := st.GetVerified(ctx, newznabcatalog.KindMovies, "newznab", "hash1")
+	if err != nil || !ok || got.GUID != guid {
+		t.Fatalf("got=%+v ok=%v err=%v", got, ok, err)
+	}
+	if _, ok, err := st.GetVerified(ctx, newznabcatalog.KindMovies, "newznab", "deadhash"); err != nil || ok {
+		t.Fatalf("dead must not play ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := st.GetVerified(ctx, newznabcatalog.KindSeries, "newznab", "hash1"); err != nil || ok {
+		t.Fatalf("kind mismatch ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := st.GetVerified(ctx, newznabcatalog.KindMovies, "newznab", "https://x/apikey=secret"); err != nil || ok {
+		t.Fatalf("url nzbId ok=%v err=%v", ok, err)
+	}
+}

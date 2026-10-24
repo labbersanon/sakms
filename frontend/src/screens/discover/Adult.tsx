@@ -40,6 +40,7 @@ import {
   For,
   Show,
 } from "solid-js";
+import type { OndemandQuality } from "@dto";
 import { fetchOndemand } from "../../api/ondemand";
 import {
   type AdultDiscoverItem,
@@ -195,6 +196,7 @@ export function useAdultOwnedLookup(): AdultOwnedLookup | undefined {
 const AdultDiscoverDetail: Component<{
   target: DetailTarget;
   owned: TrackedItem | null;
+  ondemandQualities?: OndemandQuality[];
   onClose: () => void;
   onRematch?: () => void;
   onLibraryRemoved?: (gone: boolean) => void;
@@ -224,6 +226,7 @@ const AdultDiscoverDetail: Component<{
           ? playableLibrarySrc("adult", props.owned) || undefined
           : undefined
       }
+      ondemandQualities={props.owned ? undefined : props.ondemandQualities}
       librarySceneId={librarySceneId()}
       ownedPosterUrl={ownedPosterUrl()}
       onPosterPicked={(url) => {
@@ -610,9 +613,11 @@ export const AdultDiscover: Component<{
     setOwnedDetail(item);
     setDetailTarget(t);
   };
+  const [ondemandQualities, setOndemandQualities] = createSignal<OndemandQuality[]>([]);
   const closeDetail = () => {
     setDetailTarget(null);
     setOwnedDetail(null);
+    setOndemandQualities([]);
   };
   const [setupError, setSetupError] = createSignal<unknown>(null);
   const [dismissedSetup, setDismissedSetup] = createSignal(false);
@@ -1175,6 +1180,7 @@ export const AdultDiscover: Component<{
                     item={ondemandToAdultItem(item)}
                     onDetail={(t) => {
                       setOwnedDetail(null);
+                      setOndemandQualities(item.qualities ?? []);
                       setDetailTarget(t);
                     }}
                     aspect={cardAspect()}
@@ -1459,6 +1465,7 @@ export const AdultDiscover: Component<{
           <AdultDiscoverDetail
             target={t()}
             owned={ownedDetail()}
+            ondemandQualities={ondemandQualities()}
             onRematch={
               ownedDetail()
                 ? () => {

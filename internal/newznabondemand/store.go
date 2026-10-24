@@ -304,7 +304,72 @@ func (s *Store) NextRequeueableSkip(ctx context.Context, maxSegs int, losslessMb
 		LIMIT 1`, StatusStatSkipped, maxSegs, losslessMbps))
 }
 
+// Claude 2026-10-23: Play looks up one verified NZB by indexer + GetNZBID hash.
+// Reason: the list wire never returns catalog GUIDs or enclosure URLs.
+// Troubleshooting: 404 on Play → status not verified, kind mismatch, or hash
+//
+//	did not match GetNZBID(guid).
+//
+// Review if: nzb_id is stored as its own column.
+func (s *Store) GetVerified(ctx context.Context, kind, indexer, nzbID string) (Row, bool, error) {
+	if s == nil || s.db == nil {
+		return Row{}, false, nil
+	}
+	kind = strings.TrimSpace(kind)
+	indexer = strings.TrimSpace(indexer)
+	nzbID = strings.TrimSpace(nzbID)
+	if kind == "" || indexer == "" || nzbID == "" {
+		return Row{}, false, nil
+	}
+	if looksLikeURL(indexer) || looksLikeURL(nzbID) || strings.ContainsAny(nzbID, "%_") {
+		return Row{}, false, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT indexer, guid, kind, title, status, streamable, reject_reason, nzb_relpath,
+			payload_files, payload_segments, stat_checked, stat_missing, plan_json, updated_at, verified_at,
+			payload_bytes, bitrate_mbps
+		FROM newznab_ondemand
+		WHERE indexer = $1 AND kind = $2 AND status = $3 AND streamable = TRUE
+			AND (
+				guid = $4
+				OR guid LIKE '%guid=' || $4 || '%'
+				OR guid LIKE '%/' || $4
+			)`, indexer, kind, StatusVerified, nzbID)
+	if err != nil {
+		return Row{}, false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		row, err := scanOndemandVals(rows)
+		if err != nil {
+			return Row{}, false, err
+		}
+		if newznab.GetNZBID(row.GUID) == nzbID {
+			return row, true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return Row{}, false, err
+	}
+	return Row{}, false, nil
+}
+
 func scanOndemand(q *sql.Row) (Row, bool, error) {
+	row, err := scanOndemandVals(q)
+	if err == sql.ErrNoRows {
+		return row, false, nil
+	}
+	if err != nil {
+		return row, false, err
+	}
+	return row, true, nil
+}
+
+type ondemandScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanOndemandVals(q ondemandScanner) (Row, error) {
 	var row Row
 	var plan string
 	err := q.Scan(
@@ -312,14 +377,15 @@ func scanOndemand(q *sql.Row) (Row, bool, error) {
 		&row.RejectReason, &row.NZBRelPath, &row.PayloadFiles, &row.PayloadSegments,
 		&row.StatChecked, &row.StatMissing, &plan, &row.UpdatedAt, &row.VerifiedAt,
 		&row.PayloadBytes, &row.BitrateMbps)
-	if err == sql.ErrNoRows {
-		return row, false, nil
-	}
 	if err != nil {
-		return row, false, err
+		return row, err
 	}
 	_ = json.Unmarshal([]byte(plan), &row.Plan)
-	return row, true, nil
+	return row, nil
+}
+
+func LooksLikeURL(s string) bool {
+	return looksLikeURL(s)
 }
 
 func (s *Store) Save(ctx context.Context, row Row) error {

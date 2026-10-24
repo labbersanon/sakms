@@ -156,7 +156,7 @@ func TestStep_SkipLosslessUnblocksCatalog(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	worked, err := step(ctx, st, nil, nil, nil, t.TempDir(), nil)
+	worked, err := step(ctx, st, nil, nil, nil, t.TempDir(), nil, nil)
 	if err != nil || !worked {
 		t.Fatalf("worked=%v err=%v", worked, err)
 	}
@@ -180,12 +180,109 @@ func TestStep_RequeuesSizeSkipUnder4KHighCap(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	worked, err := step(ctx, st, nil, nil, nil, t.TempDir(), nil)
+	worked, err := step(ctx, st, nil, nil, nil, t.TempDir(), nil, nil)
 	if err != nil || !worked {
 		t.Fatalf("worked=%v err=%v", worked, err)
 	}
 	row, ok, err := st.NextFetched(ctx)
 	if err != nil || !ok || row.GUID != "omen" || row.Status != StatusFetched {
 		t.Fatalf("row=%+v ok=%v err=%v", row, ok, err)
+	}
+}
+
+func TestFetchNext_SkipsNonPreferredLanguageWithoutGet(t *testing.T) {
+	var gotGet bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotGet = true
+		http.Error(w, "should not t=get", http.StatusTeapot)
+	}))
+	defer srv.Close()
+
+	sqlDB := dbtest.New(t)
+	ctx := context.Background()
+	cat := newznabcatalog.NewStore(sqlDB)
+	if _, err := cat.InsertHits(ctx, newznabcatalog.KindMovies, []newznab.CatalogHit{
+		{Indexer: "newznab", GUID: "de1", Title: "Film.2021.GERMAN.1080p-GRP"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	st := NewStore(sqlDB)
+	client := &newznab.Client{HTTP: srv.Client(), Interval: time.Nanosecond}
+	idx := newznab.Indexer{Name: "newznab", Endpoint: srv.URL + "/api", APIKey: "k"}
+	worked, err := fetchNext(ctx, st, client, []newznab.Indexer{idx}, t.TempDir(), nil)
+	if err != nil || !worked {
+		t.Fatalf("worked=%v err=%v", worked, err)
+	}
+	if gotGet {
+		t.Fatal("t=get must not run for a GERMAN title when preferred is english-assumed")
+	}
+	var status, reason string
+	if err := sqlDB.QueryRowContext(ctx, `SELECT status, reject_reason FROM newznab_ondemand WHERE guid='de1'`).Scan(&status, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if status != StatusLangSkipped || reason != "language" {
+		t.Fatalf("german status=%q reason=%q", status, reason)
+	}
+}
+
+func TestStep_SkipsFetchedNonPreferredWithoutSTAT(t *testing.T) {
+	sqlDB := dbtest.New(t)
+	ctx := context.Background()
+	st := NewStore(sqlDB)
+	if err := st.Save(ctx, Row{
+		Indexer: "newznab", GUID: "de1", Kind: newznabcatalog.KindMovies,
+		Title: "Film.2021.GERMAN.1080p-GRP", Status: StatusFetched, Streamable: true,
+		PayloadSegments: 1000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	worked, err := step(ctx, st, nil, nil, nil, t.TempDir(), nil, nil)
+	if err != nil || !worked {
+		t.Fatalf("worked=%v err=%v", worked, err)
+	}
+	if _, ok, err := st.NextFetched(ctx); err != nil || ok {
+		t.Fatalf("german fetched row must leave the STAT queue ok=%v err=%v", ok, err)
+	}
+	var status string
+	if err := sqlDB.QueryRowContext(ctx, `SELECT status FROM newznab_ondemand WHERE guid='de1'`).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != StatusLangSkipped {
+		t.Fatalf("status=%q", status)
+	}
+}
+
+func TestFetchNext_FetchesUnmarkedAfterSkippingGerman(t *testing.T) {
+	var gotGUID string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotGUID = r.URL.Query().Get("id")
+		io.WriteString(w, `<?xml version="1.0"?>
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+  <file subject="&quot;Movie.part001.rar&quot; yEnc (1/1)">
+    <groups><group>alt.binaries.movies</group></groups>
+    <segments><segment bytes="1" number="1">a@x</segment></segments>
+  </file>
+</nzb>`)
+	}))
+	defer srv.Close()
+
+	sqlDB := dbtest.New(t)
+	ctx := context.Background()
+	cat := newznabcatalog.NewStore(sqlDB)
+	if _, err := cat.InsertHits(ctx, newznabcatalog.KindMovies, []newznab.CatalogHit{
+		{Indexer: "newznab", GUID: "de1", Title: "Film.2021.GERMAN.1080p-GRP"},
+		{Indexer: "newznab", GUID: "en1", Title: "Movie.2021.1080p-GRP"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	st := NewStore(sqlDB)
+	client := &newznab.Client{HTTP: srv.Client(), Interval: time.Nanosecond}
+	idx := newznab.Indexer{Name: "newznab", Endpoint: srv.URL + "/api", APIKey: "k"}
+	worked, err := fetchNext(ctx, st, client, []newznab.Indexer{idx}, t.TempDir(), nil)
+	if err != nil || !worked {
+		t.Fatalf("worked=%v err=%v", worked, err)
+	}
+	if gotGUID != "en1" {
+		t.Fatalf("t=get id=%q want en1", gotGUID)
 	}
 }

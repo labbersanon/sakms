@@ -23,6 +23,13 @@ const (
 	StatusDead        = "dead"
 	StatusError       = "error"
 	StatusStatSkipped = "stat_skipped"
+	// Claude 2026-10-24: language skip is not stat_skipped.
+	// Reason: NextRequeueableSkip would STAT a GERMAN NZB once the bitrate
+	//   cap moves. Preferred grab languages are a hard exclude.
+	// Troubleshooting: skip-lang rows STAT'd → this status was folded into
+	//   stat_skipped.
+	// Review if: preferred languages change and lang_skipped should retry.
+	StatusLangSkipped = "lang_skipped"
 )
 
 // Row is one catalog NZB's On Demand cache + STAT result.

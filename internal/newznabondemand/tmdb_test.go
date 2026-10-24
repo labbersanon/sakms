@@ -201,7 +201,7 @@ func TestStep_BackfillsVerifiedTMDBBeforeSTAT(t *testing.T) {
 		t.Fatal(err)
 	}
 	finder := &stubFinder{movie: map[string]int{"tt0111161": 278}}
-	worked, err := step(ctx, st, nil, nil, nil, t.TempDir(), finder)
+	worked, err := step(ctx, st, nil, nil, nil, t.TempDir(), finder, nil)
 	if err != nil || !worked {
 		t.Fatalf("worked=%v err=%v", worked, err)
 	}
@@ -232,7 +232,7 @@ func TestStep_BackfillsVerifiedTMDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	finder := &stubFinder{movie: map[string]int{"tt0111161": 278}}
-	worked, err := step(ctx, st, nil, nil, nil, t.TempDir(), finder)
+	worked, err := step(ctx, st, nil, nil, nil, t.TempDir(), finder, nil)
 	if err != nil || !worked {
 		t.Fatalf("worked=%v err=%v", worked, err)
 	}

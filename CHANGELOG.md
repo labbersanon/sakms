@@ -13416,3 +13416,19 @@ status stays active.
 | `internal/newznabcatalog/crawl.go` | backfill before crawl |
 | `internal/api/newznab_catalog.go` | 5s GET timeout |
 | `frontend/src/screens/Dashboard.tsx` | skip poll while loading |
+
+## 2026-10-24 — On Demand crawler skips non-preferred language titles
+
+**Problem:** On Demand t=get/STAT ran on GERMAN/FRENCH NZBs that autograb already rejects.
+**Root cause:** Preferred grab languages gated Discover/autograb only. The catalog walker had no TitleLanguageAllowed check.
+**Fix:** Same Settings list. Before t=get (and before STAT/requeue) mark `lang_skipped`. Empty list stays unmarked+english-assumed. Batch 100 catalog skips per step. Not TMDB original_language.
+**Outcome:** `TestFetchNext_SkipsNonPreferredLanguageWithoutGet`; `TestStep_SkipsFetchedNonPreferredWithoutSTAT`; `TestFetchNext_FetchesUnmarkedAfterSkippingGerman`.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/newznabondemand/crawl.go` | language gate before t=get/STAT |
+| `internal/newznabondemand/store.go` | `StatusLangSkipped` |
+| `cmd/sakms/main.go` | pass LoadPreferredLanguages |
+| `internal/api/grablanguage.go` | export LoadPreferredLanguages |

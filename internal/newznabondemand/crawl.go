@@ -15,6 +15,7 @@ import (
 
 	"github.com/labbersanon/sakms/internal/connections"
 	"github.com/labbersanon/sakms/internal/newznab"
+	"github.com/labbersanon/sakms/internal/release"
 	"github.com/labbersanon/sakms/internal/usenet"
 )
 
@@ -22,6 +23,10 @@ import (
 // Reason: quality is bitrate. Matches autograb Lossless@2160 (70 Mbps x264-eq).
 // Review if: Settings lossless floor at 2160 changes.
 const onDemandLosslessMbps = 70
+
+// langSkipBatch is how many non-preferred catalog titles one fetchNext
+// records before yielding. t=get/STAT must not spend a step on them.
+const langSkipBatch = 100
 
 const (
 	getInterval  = time.Second
@@ -38,7 +43,7 @@ var catalogServices = []string{"newznab", "newznab2"}
 // with at most OnDemandStatWorkers Usenet sockets. After verify it maps
 // IMDb/TVDB onto catalog.tmdb_id (finder). It does not scrape HTML and
 // does not store enclosure URLs.
-func Run(ctx context.Context, store *Store, conns *connections.Store, nntp *usenet.Manager, dataDir string, httpClient *http.Client, finder IMDBFinder) {
+func Run(ctx context.Context, store *Store, conns *connections.Store, nntp *usenet.Manager, dataDir string, httpClient *http.Client, finder IMDBFinder, langs func(context.Context) []string) {
 	if store == nil || conns == nil {
 		return
 	}
@@ -58,7 +63,7 @@ func Run(ctx context.Context, store *Store, conns *connections.Store, nntp *usen
 			}
 			continue
 		}
-		worked, err := step(ctx, store, client, idxs, nntp, dataDir, finder)
+		worked, err := step(ctx, store, client, idxs, nntp, dataDir, finder, langs)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -103,7 +108,7 @@ func Run(ctx context.Context, store *Store, conns *connections.Store, nntp *usen
 	}
 }
 
-func step(ctx context.Context, store *Store, client *newznab.Client, idxs []newznab.Indexer, nntp *usenet.Manager, dataDir string, finder IMDBFinder) (bool, error) {
+func step(ctx context.Context, store *Store, client *newznab.Client, idxs []newznab.Indexer, nntp *usenet.Manager, dataDir string, finder IMDBFinder, langs func(context.Context) []string) (bool, error) {
 	// Claude 2026-10-23: TMDB backfill before STAT. A 30k-seg STAT would hide
 	//   already-verified titles for a long time; Find-by-IMDb is one HTTP call.
 	// Troubleshooting: letter tiles after deploy → NextFetched is starving this.
@@ -126,6 +131,14 @@ func step(ctx context.Context, store *Store, client *newznab.Client, idxs []newz
 		return false, err
 	}
 	if ok {
+		// Claude 2026-10-24: language gate before requeue-to-STAT.
+		// Reason: a GERMAN WEB-DL under the 4K High cap is still not preferred.
+		// Troubleshooting: skip-lang then fetched → this check missing.
+		// Review if: preferred languages change (lang_skipped stays skipped).
+		if !release.TitleLanguageAllowed(row.Title, preferredOf(ctx, langs)) {
+			log.Printf("newznab ondemand: skip-lang indexer=%s kind=%s", row.Indexer, row.Kind)
+			return true, skipLanguage(ctx, store, row.Indexer, row.GUID, row.Kind, row.Title)
+		}
 		row.Status = StatusFetched
 		row.RejectReason = ""
 		row.UpdatedAt = time.Now().Unix()
@@ -137,32 +150,74 @@ func step(ctx context.Context, store *Store, client *newznab.Client, idxs []newz
 		return false, err
 	}
 	if ok {
+		if !release.TitleLanguageAllowed(row.Title, preferredOf(ctx, langs)) {
+			log.Printf("newznab ondemand: skip-lang indexer=%s kind=%s", row.Indexer, row.Kind)
+			return true, skipLanguage(ctx, store, row.Indexer, row.GUID, row.Kind, row.Title)
+		}
 		inconc, err := statRow(ctx, store, nntp, dataDir, row, finder)
 		if err != nil || !inconc {
 			return true, err
 		}
 		// Inconclusive STAT must not HOL-block t=get on the same fetched row.
 	}
-	return fetchNext(ctx, store, client, idxs, dataDir)
+	return fetchNext(ctx, store, client, idxs, dataDir, langs)
 }
 
-func fetchNext(ctx context.Context, store *Store, client *newznab.Client, idxs []newznab.Indexer, dataDir string) (bool, error) {
-	ref, ok, err := store.NextFromCatalog(ctx)
-	if err != nil {
-		return false, err
+func fetchNext(ctx context.Context, store *Store, client *newznab.Client, idxs []newznab.Indexer, dataDir string, langs func(context.Context) []string) (bool, error) {
+	prefs := preferredOf(ctx, langs)
+	skipped := 0
+	defer func() {
+		if skipped > 0 {
+			log.Printf("newznab ondemand: skip-lang n=%d", skipped)
+		}
+	}()
+	for skipped < langSkipBatch {
+		ref, ok, err := store.NextFromCatalog(ctx)
+		if err != nil {
+			return skipped > 0, err
+		}
+		if !ok {
+			return skipped > 0, nil
+		}
+		// Claude 2026-10-24: skip non-preferred language tags before t=get.
+		// Reason: Settings preferred grab languages already gate autograb;
+		//   GERMAN/FRENCH NZBs were still STAT'd here.
+		// Troubleshooting: skip-lang then t=get → TitleLanguageAllowed not
+		//   applied, or NextFromCatalog still returns StatusError only.
+		// Review if: TMDB original_language becomes the film gate (this is
+		//   the release title, same as autograb).
+		if !release.TitleLanguageAllowed(ref.Title, prefs) {
+			if err := skipLanguage(ctx, store, ref.Indexer, ref.GUID, ref.Kind, ref.Title); err != nil {
+				return true, err
+			}
+			skipped++
+			continue
+		}
+		idx, ok := indexerNamed(idxs, ref.Indexer)
+		if !ok {
+			now := time.Now().Unix()
+			return true, store.Save(ctx, Row{
+				Indexer: ref.Indexer, GUID: ref.GUID, Kind: ref.Kind, Title: ref.Title,
+				Status: StatusError, RejectReason: "indexer unset", UpdatedAt: now,
+			})
+		}
+		return true, fetchRow(ctx, store, client, idx, dataDir, ref)
 	}
-	if !ok {
-		return false, nil
+	return true, nil
+}
+
+func preferredOf(ctx context.Context, langs func(context.Context) []string) []string {
+	if langs == nil {
+		return nil
 	}
-	idx, ok := indexerNamed(idxs, ref.Indexer)
-	if !ok {
-		now := time.Now().Unix()
-		return true, store.Save(ctx, Row{
-			Indexer: ref.Indexer, GUID: ref.GUID, Kind: ref.Kind, Title: ref.Title,
-			Status: StatusError, RejectReason: "indexer unset", UpdatedAt: now,
-		})
-	}
-	return true, fetchRow(ctx, store, client, idx, dataDir, ref)
+	return langs(ctx)
+}
+
+func skipLanguage(ctx context.Context, store *Store, indexer, guid, kind, title string) error {
+	return store.Save(ctx, Row{
+		Indexer: indexer, GUID: guid, Kind: kind, Title: title,
+		Status: StatusLangSkipped, RejectReason: "language", UpdatedAt: time.Now().Unix(),
+	})
 }
 
 func fetchRow(ctx context.Context, store *Store, client *newznab.Client, idx newznab.Indexer, dataDir string, ref CatalogRef) error {

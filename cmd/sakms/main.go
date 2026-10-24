@@ -714,6 +714,12 @@ func run() error {
 	// Reason: 5s/host t=search; stop on shutdown. Grab Client stays 1s.
 	// Troubleshooting: catalog after SIGTERM → Run not using this ctx.
 	go newznabcatalog.Run(ctx, catalogStore, connStore, &http.Client{Timeout: outboundTimeout})
+	// Claude 2026-10-24: On Demand crawler uses preferred grab languages.
+	// Reason: t=get/STAT on GERMAN/FRENCH NZBs wasted NNTP; autograb already
+	//   excluded those titles. Same TitleLanguageAllowed gate.
+	// Troubleshooting: skip-lang missing → langs func nil (english-assumed)
+	//   or grab_preferred_languages unset.
+	// Review if: TMDB original_language becomes the film gate.
 	// Claude 2026-10-23: On Demand crawler fills catalog.tmdb_id from IMDb at verify.
 	// Reason: Newznab RSS has imdb, not tmdb. Shelf hides TmdbID<=0. Do not stamp 0 when TMDB is unset.
 	// Troubleshooting: letter tiles / empty chip → tmdb unset or FindMovieByIMDBID miss.
@@ -721,6 +727,12 @@ func run() error {
 	go newznabondemand.Run(ctx, ondemandStore, connStore, nzbManager, cfg.DataDir, &http.Client{Timeout: outboundTimeout}, &ondemandIMDBFinder{
 		conns: connStore, sc: serviceConnStore, settings: settingsStore,
 		httpClient: &http.Client{Timeout: outboundTimeout},
+	}, func(ctx context.Context) []string {
+		langs, err := api.LoadPreferredLanguages(ctx, settingsStore)
+		if err != nil {
+			return nil
+		}
+		return langs
 	})
 	go discoverrefresh.Run(ctx, discoverrefresh.LoadInterval(ctx, settingsStore), discoverrefresh.Deps{
 		HTTPClient:    &http.Client{Timeout: outboundTimeout},

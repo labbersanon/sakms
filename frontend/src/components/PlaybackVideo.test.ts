@@ -4,16 +4,18 @@ import { bindMediaSrc } from "./PlaybackVideo";
 const loadSource = vi.fn();
 const attachMedia = vi.fn();
 const destroy = vi.fn();
-let hlsOpts: { startPosition?: number } | undefined;
+let hlsOpts: { startPosition?: number; liveSyncDurationCount?: number } | undefined;
 
 vi.mock("hls.js", () => ({
   default: class MockHls {
     static isSupported() {
       return true;
     }
-    constructor(opts: { startPosition?: number }) {
+    static Events = { MANIFEST_PARSED: "hlsManifestParsed" };
+    constructor(opts: { startPosition?: number; liveSyncDurationCount?: number }) {
       hlsOpts = opts;
     }
+    on() {}
     loadSource = loadSource;
     attachMedia = attachMedia;
     destroy = destroy;
@@ -58,6 +60,7 @@ describe("bindMediaSrc", () => {
     });
     expect(attachMedia).toHaveBeenCalledWith(el);
     expect(hlsOpts?.startPosition).toBe(0);
+    expect(hlsOpts?.liveSyncDurationCount).toBe(10000);
     unbind();
     expect(destroy).toHaveBeenCalled();
   });

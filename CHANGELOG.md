@@ -13385,3 +13385,17 @@ status stays active.
 |---|---|
 | `frontend/src/components/PlaybackVideo.tsx` | startPosition 0 |
 | `internal/usenet/manager.go` | skip dismiss for playFirst |
+
+## 2026-10-23 — On Demand HLS EVENT playlists declare start at t=0
+
+**Problem:** After startPosition:0, Play still jumped (seg0 → seg1 → seg9 → seg127) on a growing EVENT playlist. No 500s.
+**Root cause:** hls.js still treated EVENT as live. liveSyncDurationCount default 3 seeks ~3 segments behind the ffmpeg edge as remux/transcode runs faster than realtime. ffmpeg does not emit EXT-X-START.
+**Fix:** Inject `#EXT-X-START:TIME-OFFSET=0` on served playlists. hls.js liveSyncDurationCount=10000 and seek to 0 on MANIFEST_PARSED.
+**Outcome:** `TestWithHLSStartAtZero_InsertsAfterEXTM3U`; follow ServeFollow body includes the START tag.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/playback/hls.go` | EXT-X-START on index.m3u8 |
+| `frontend/src/components/PlaybackVideo.tsx` | liveSyncDurationCount 10000; seek 0 |

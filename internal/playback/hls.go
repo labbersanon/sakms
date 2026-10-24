@@ -1,6 +1,7 @@
 package playback
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -167,10 +168,39 @@ func (h *Hub) serve(w http.ResponseWriter, r *http.Request, src, file string, fo
 	if file == "index.m3u8" {
 		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 		w.Header().Set("Cache-Control", "private, no-cache")
-	} else {
-		w.Header().Set("Cache-Control", "private, max-age=3600")
+		raw, err := os.ReadFile(dest)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Write(withHLSStartAtZero(raw))
+		return
 	}
+	w.Header().Set("Cache-Control", "private, max-age=3600")
 	http.ServeFile(w, r, dest)
+}
+
+// withHLSStartAtZero inserts EXT-X-START so EVENT playlists begin at the
+// opening instead of the live edge. ffmpeg does not emit this tag.
+func withHLSStartAtZero(playlist []byte) []byte {
+	if bytes.Contains(playlist, []byte("#EXT-X-START:")) {
+		return playlist
+	}
+	tag := []byte("#EXT-X-START:TIME-OFFSET=0\n")
+	i := 0
+	if idx := bytes.Index(playlist, []byte("#EXTM3U")); idx >= 0 {
+		i = idx + len("#EXTM3U")
+		if i < len(playlist) && playlist[i] == '\r' {
+			i++
+		}
+		if i < len(playlist) && playlist[i] == '\n' {
+			i++
+		}
+	}
+	out := make([]byte, 0, len(playlist)+len(tag))
+	out = append(out, playlist[:i]...)
+	out = append(out, tag...)
+	return append(out, playlist[i:]...)
 }
 
 func sessionKey(path string, st os.FileInfo) string {

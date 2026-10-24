@@ -13,6 +13,17 @@ import (
 	"time"
 )
 
+func TestWithHLSStartAtZero_InsertsAfterEXTM3U(t *testing.T) {
+	got := string(withHLSStartAtZero([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:6\n")))
+	if !strings.HasPrefix(got, "#EXTM3U\n#EXT-X-START:TIME-OFFSET=0\n") {
+		t.Fatalf("got %q", got)
+	}
+	again := string(withHLSStartAtZero([]byte(got)))
+	if strings.Count(again, "#EXT-X-START:") != 1 {
+		t.Fatalf("must be idempotent: %q", again)
+	}
+}
+
 func TestAllowedSegment(t *testing.T) {
 	for _, ok := range []string{"index.m3u8", "init.mp4", "seg0.m4s", "seg12.m4s"} {
 		if !AllowedSegment(ok) {
@@ -164,6 +175,9 @@ func TestHubServeFollow_KeepsSessionWhenSizeGrows(t *testing.T) {
 	h.ServeFollow(rr, req, src, "index.m3u8", func() bool { return true })
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status %d body %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "#EXT-X-START:TIME-OFFSET=0") {
+		t.Fatalf("follow playlist must start at 0, body %q", rr.Body.String())
 	}
 	if err := os.WriteFile(src, []byte("mkv-grown"), 0o644); err != nil {
 		t.Fatal(err)

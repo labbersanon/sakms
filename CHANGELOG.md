@@ -13326,3 +13326,18 @@ status stays active.
 | `internal/playback/hls.go` | `ServeHLSFollow` path-keyed sessions |
 | `internal/api/newznab_ondemand_play.go` | `playSrc` + video while `active` |
 | `frontend/src/screens/discover/DetailPopup.tsx` | poll 400ms until `playSrc` |
+
+## 2026-10-23 — On Demand Play mounts the player on the quality click
+
+**Problem:** Clicking Play started the NZB but never requested video. The quality button returned to Play.
+**Root cause:** `playSrc` only revealed header `Play Movie →`. Growing `.mp4` used Direct Play (`/video`), which cannot play without a moov atom.
+**Fix:** The On Demand block mounts `PlaybackVideo` (autoplay) when `playSrc` arrives. While status is `active`, `playSrc` is always the HLS follow playlist, including mp4.
+**Outcome:** `TestOndemandPlayStatus_ActiveMp4UsesHLS`; DetailPopup On Demand player aria-label.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `internal/api/newznab_ondemand_play.go` | active playSrc is HLS |
+| `frontend/src/screens/discover/DetailPopup.tsx` | inline On Demand player |
+| `frontend/src/components/PlaybackVideo.tsx` | autoplay after bind |

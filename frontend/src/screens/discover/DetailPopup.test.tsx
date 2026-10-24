@@ -1239,6 +1239,9 @@ describe("DetailPopup — Watch Trailer link", () => {
       expect(post?.body).toEqual({ indexer: "newznab", nzbId: "hash1" });
     });
     expect(await screen.findByText("Play Movie →")).toBeInTheDocument();
+    expect(
+      await screen.findByLabelText("On Demand player for Hero Movie"),
+    ).toBeInTheDocument();
   });
 
   it("renders Play Movie under Watch Trailer when playSrc is set", async () => {

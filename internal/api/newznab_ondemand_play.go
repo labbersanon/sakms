@@ -272,7 +272,16 @@ func ondemandPlaySnapshot(m mode.Mode, nzb *usenet.Manager, gid string) *ondeman
 	out.ErrorMessage = d.ErrorMessage
 	if file := ondemandPlayableFile(d); file != "" {
 		serve := "/api/modes/" + string(m) + "/ondemand/play/" + gid + "/video"
-		out.PlaySrc = playback.VideoURL(serve, file)
+		// Claude 2026-10-23: growing files are always HLS, including .mp4.
+		// Reason: incomplete mp4 has no moov; Direct Play ServeContent is a
+		//   dead player. Follow-HLS works for mkv and mp4 while BODY runs.
+		// Troubleshooting: playSrc ends in /video while status=active → this
+		//   branch was skipped. Review if: complete mp4 Direct Play is dropped.
+		if d.Status == "active" {
+			out.PlaySrc = playback.PlaylistURL(serve)
+		} else {
+			out.PlaySrc = playback.VideoURL(serve, file)
+		}
 	} else if d.Status == "complete" && out.ErrorMessage == "" {
 		out.ErrorMessage = "no video"
 	}

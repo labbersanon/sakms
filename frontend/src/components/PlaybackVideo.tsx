@@ -6,6 +6,9 @@ import { isHlsSrc } from "../playback";
 
 function attachNative(el: HTMLVideoElement, src: string): () => void {
   el.src = src;
+  if (el.autoplay) {
+    void el.play().catch(() => undefined);
+  }
   return () => {
     el.removeAttribute("src");
   };
@@ -28,6 +31,9 @@ export function bindMediaSrc(el: HTMLVideoElement, src: string): () => void {
       const hls = new Hls({ maxBufferLength: 30 });
       hls.loadSource(src);
       hls.attachMedia(el);
+      if (el.autoplay) {
+        void el.play().catch(() => undefined);
+      }
       unbind = () => {
         hls.destroy();
       };

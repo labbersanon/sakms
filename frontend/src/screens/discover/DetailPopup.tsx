@@ -85,6 +85,7 @@ import { fetchQualityPrefs } from "../../api/settings";
 import { fetchUsenetAutoGrabEnabled } from "../../api/usenet";
 import { Button, ErrorText, Muted, PillSelector, yearOf } from "../../components/ui";
 import { PlayFullscreenLink } from "../../components/TrackedPlayback";
+import { PlaybackVideo } from "../../components/PlaybackVideo";
 import { MediaFallbackTile } from "../../components/media";
 import { SeasonsPanel } from "../../components/SeasonsPanel";
 import { SeriesEpisodesPanel } from "../../components/SeriesEpisodesPanel";
@@ -798,6 +799,7 @@ export const DetailPopup: Component<{
   const [ondemandBusy, setOndemandBusy] = createSignal("");
   const [ondemandErr, setOndemandErr] = createSignal("");
   const [ondemandPhase, setOndemandPhase] = createSignal("");
+  const [ondemandPlayingId, setOndemandPlayingId] = createSignal("");
   let ondemandPlayGen = 0;
   onCleanup(() => {
     ondemandPlayGen++;
@@ -817,6 +819,7 @@ export const DetailPopup: Component<{
       if (gen !== ondemandPlayGen) return;
       if (st.playSrc) {
         setOndemandSrc(st.playSrc);
+        setOndemandPlayingId(q.nzbId);
         setOndemandPhase("");
       } else {
         setOndemandErr(st.errorMessage || "Play failed");
@@ -1744,11 +1747,29 @@ export const DetailPopup: Component<{
                     ? ondemandPhase()
                       ? `Preparing (${ondemandPhase()})…`
                       : "Preparing…"
-                    : "Play"}
+                    : ondemandPlayingId() === q.nzbId
+                      ? "Playing"
+                      : "Play"}
                 </button>
               </div>
             )}
           </For>
+          <Show when={ondemandSrc()}>
+            {/* Claude 2026-10-23: On Demand Play mounts the player here.
+                Reason: playSrc used to only reveal header "Play Movie →", so
+                  the quality Play click looked dead (no /video request).
+                Troubleshooting: Play returns to Play with no player → this
+                  Show did not get ondemandSrc. Review if: header Play Movie
+                  is removed for On Demand. */}
+            <PlaybackVideo
+              class="mt-2 w-full rounded bg-black"
+              autoplay
+              playsinline
+              preload="auto"
+              src={ondemandSrc()}
+              ariaLabel={`On Demand player for ${item().title}`}
+            />
+          </Show>
           <ErrorText>{ondemandErr()}</ErrorText>
         </div>
       </Show>
